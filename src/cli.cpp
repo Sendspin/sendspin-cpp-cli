@@ -169,9 +169,9 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
             error = std::move(message);
         }
     };
-    /// Rejects an empty value for a flag whose empty case has no meaning. `-n ""` used to
-    /// fall through to the hostname, which reads as the flag being ignored; `-P ""` and
-    /// `-f ""` would try to open a file with no name.
+    // Rejects an empty value for a flag whose empty case has no meaning. `-n ""` used to
+    // fall through to the hostname, which reads as the flag being ignored; `-P ""` and
+    // `-f ""` would try to open a file with no name.
     const auto require_value = [&fail](const char* flag, const char* value) {
         if (value[0] != '\0') {
             return true;
