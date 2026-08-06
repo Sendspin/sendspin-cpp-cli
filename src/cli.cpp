@@ -167,7 +167,8 @@ void print_usage(std::FILE* out, const char* prog) {
     std::fprintf(out, "A headless Sendspin audio player. Listens for a Sendspin server to\n");
     std::fprintf(out, "connect to it, or dials one with -s.\n\n");
     std::fprintf(out, "Options:\n");
-    std::fprintf(out, "  -o <device>   Output device (default: null). -l lists them\n");
+    std::fprintf(out, "  -o <device>   Output device (default: %s). -l lists them\n",
+                 DEFAULT_OUTPUT_DEVICE);
     std::fprintf(out, "  -l            List output devices and exit\n");
     std::fprintf(out, "  -n <name>     Friendly name (default: this host's name)\n");
     std::fprintf(out, "  -s <server>   Connect out to <host>[:<port>] or a ws:// URL\n");

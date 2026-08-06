@@ -27,12 +27,38 @@ Flesh out the flag surface: validation, `<device>` specs per backend, a real
 `--list-devices` that enumerates hardware, config-file interaction, and unit tests for
 the parser. `src/cli.cpp` currently covers the flags but not the depth behind them.
 
-### 2. `AudioSink` + ALSA backend
+### 2. `AudioSink` + ALSA backend — *shipped (audible slice)*
 
-The default Linux and Docker backend. Implement `AudioSink` over ALSA `pcm`, including
-device enumeration for `-l`, format negotiation, the mixer for hardware volume, and
-`snd_pcm_delay()`-based playout timing fed back through `on_frames_played`. In a
-container this needs only `--device /dev/snd` — no sound-server socket to forward.
+The default Linux and Docker backend. In a container this needs only
+`--device /dev/snd` — no sound-server socket to forward.
+
+**Shipped** in `src/alsa_sink.{h,cpp}`, built when `find_package(ALSA)` succeeds
+(`-DSENDSPIN_CLI_WITH_ALSA=OFF` forces it out):
+
+- `snd_pcm` playback over `SND_PCM_ACCESS_RW_INTERLEAVED`, format negotiated from the
+  stream's bit depth (`S16_LE` / `S24_3LE` / `S32_LE`, plus `S8`) at an exact rate, with
+  a close/reopen on a mid-stream format change.
+- `snd_pcm_delay()`-based playout timing fed back through `on_frames_played`, as the
+  microsecond timestamp at which the frames just written finish playing.
+- Underrun (`-EPIPE`) recovery via `snd_pcm_prepare()`, and suspend (`-ESTRPIPE`) via
+  `snd_pcm_resume()` with a `prepare()` fallback.
+- Device enumeration for `-l` through `snd_device_name_hint()`, and `-o <any PCM name>`
+  — squeezelite's model, with `null` / `stdout` / `-` still reserved. `-o` defaults to
+  `default` wherever the backend is compiled in.
+- Software volume: Q32 fixed-point sample scaling on a quadratic taper, matching
+  upstream's `PortAudioSink::apply_volume_()`.
+- libasound's own stderr diagnostics routed through the CLI logger at `debug`.
+
+**Deliberately deferred** to follow-ups:
+
+- The **ALSA hardware mixer** (`snd_mixer_*`, squeezelite's `-V`). Software scaling was
+  chosen first because the usual `default` device here is PipeWire's ALSA plugin, where
+  a hardware mixer element either does not exist or moves something other than this
+  stream.
+- **Buffer/period tuning flags** (squeezelite's `-a`). The ring is currently a fixed
+  100 ms with 20 ms periods.
+- **Richer per-card enumeration** — `-l` prints the PCM hints, not per-card capability
+  detail (supported rates, formats, channel counts).
 
 ### 3. PortAudio backend
 

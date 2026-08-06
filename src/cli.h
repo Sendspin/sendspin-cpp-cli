@@ -26,12 +26,23 @@
 
 namespace sendspin_cli {
 
+/// @brief The -o default: a real sound card where this build has one, silence otherwise.
+///
+/// ALSA's own `default` PCM follows the host's configuration (PipeWire, PulseAudio or bare
+/// hardware), so it is the name most likely to just make noise. A build without the ALSA
+/// backend has no device to fall back to, so it defaults to discarding.
+#ifdef SENDSPIN_CLI_HAVE_ALSA
+inline constexpr const char* DEFAULT_OUTPUT_DEVICE = "default";
+#else
+inline constexpr const char* DEFAULT_OUTPUT_DEVICE = "null";
+#endif
+
 /// @brief Everything the flag surface configures.
 ///
 /// The short flags deliberately mirror squeezelite's, so anyone who runs a Lyrion
 /// endpoint can drive this one from muscle memory.
 struct Options {
-    std::string device{"null"};  ///< -o <device>: audio output backend
+    std::string device{DEFAULT_OUTPUT_DEVICE};  ///< -o <device>: audio output backend
     bool list_devices{false};    ///< -l: list output devices and exit
     std::string name;            ///< -n <name>: friendly name; defaults to the hostname
     std::string server;          ///< -s <server>: dial this server instead of only listening
