@@ -51,6 +51,30 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(sendspin)
 
 # ==============================================================================
+# Audio backends
+# ==============================================================================
+
+# ALSA is optional and auto-detected: a host with libasound gets the backend, and
+# macOS or a device-less container still builds on null/stdout alone. Turning this
+# OFF forces it out even where libasound exists.
+option(SENDSPIN_CLI_WITH_ALSA "Build the ALSA output backend if libasound is available" ON)
+
+set(SENDSPIN_CLI_BACKENDS null stdout)
+set(SENDSPIN_CLI_ALSA_ENABLED OFF)
+
+if(SENDSPIN_CLI_WITH_ALSA)
+    find_package(ALSA)
+    if(ALSA_FOUND)
+        set(SENDSPIN_CLI_ALSA_ENABLED ON)
+        list(APPEND SENDSPIN_CLI_BACKENDS alsa)
+    else()
+        message(STATUS
+            "sendspin-cli: libasound not found -- building without the ALSA backend. "
+            "Install alsa-lib-devel (Fedora) or libasound2-dev (Debian) to enable it.")
+    endif()
+endif()
+
+# ==============================================================================
 # sendspin-cli
 # ==============================================================================
 
@@ -62,6 +86,12 @@ add_executable(sendspin-cli
     src/player_listener.cpp
 )
 
+if(SENDSPIN_CLI_ALSA_ENABLED)
+    target_sources(sendspin-cli PRIVATE src/alsa_sink.cpp)
+    target_link_libraries(sendspin-cli PRIVATE ALSA::ALSA)
+    target_compile_definitions(sendspin-cli PRIVATE SENDSPIN_CLI_HAVE_ALSA)
+endif()
+
 target_include_directories(sendspin-cli PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(sendspin-cli PRIVATE sendspin)
 target_compile_options(sendspin-cli PRIVATE -Wall -Wextra -Wpedantic)
@@ -70,4 +100,6 @@ target_compile_definitions(sendspin-cli PRIVATE
     SENDSPIN_CLI_LIB_TAG="${SENDSPIN_GIT_TAG}"
 )
 
+list(JOIN SENDSPIN_CLI_BACKENDS ", " SENDSPIN_CLI_BACKEND_LIST)
 message(STATUS "sendspin-cli ${PROJECT_VERSION} against sendspin-cpp ${SENDSPIN_GIT_TAG}")
+message(STATUS "sendspin-cli audio backends: ${SENDSPIN_CLI_BACKEND_LIST}")
