@@ -52,7 +52,9 @@ struct Options {
 /// @brief Parses argv into `out`.
 ///
 /// Writes only diagnostics for bad input; --help, --version and -l are reported back
-/// through `out` for the caller to act on, which keeps this function testable.
+/// through `out` for the caller to act on rather than being handled here.
+/// @note Uses getopt_long, so it relies on getopt's process-global state: a second call
+/// in the same process must reset `optind` to 1 first.
 /// @return true if the arguments were valid.
 bool parse_options(int argc, char* argv[], Options& out);
 

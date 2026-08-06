@@ -108,13 +108,16 @@ void NullAudioSink::clear() {
     if (this->output_ == NullSinkOutput::Stdout && !this->stdout_failed_.load()) {
         std::fflush(stdout);
     }
-    this->bytes_per_frame_.store(0);
+    // The frame size deliberately survives: clear() is a flush that keeps the device
+    // open, so writes after it are still part of the same format. Forgetting the format
+    // is stop()'s job.
 }
 
 void NullAudioSink::stop() {
     if (this->output_ == NullSinkOutput::Stdout && !this->stdout_failed_.load()) {
         std::fflush(stdout);
     }
+    this->bytes_per_frame_.store(0);
     cli_log(LogLevel::INFO, "%s sink: %zu bytes consumed in total", this->name().c_str(),
             this->total_bytes_.load());
 }

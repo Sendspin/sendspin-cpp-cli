@@ -79,6 +79,10 @@ public:
     /// its own playout timing (a PortAudio callback, an ALSA delay query) should invoke
     /// this; a sink that consumes instantly can leave it unset, since the sync task also
     /// counts frames from write()'s return value.
+    ///
+    /// Must be assigned before SendspinClient::start_server(), and never afterwards: a
+    /// backend may read it from its own audio thread, so reassigning it on a running
+    /// player is a data race.
     std::function<void(uint32_t frames, int64_t timestamp)> on_frames_played;
 
 protected:
