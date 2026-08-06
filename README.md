@@ -39,6 +39,8 @@ device-less.
 > propagates to anything that links it.
 
 ```bash
+git clone https://github.com/chrisuthe/sendspin-cpp-cli.git
+cd sendspin-cpp-cli
 cmake -B build
 cmake --build build
 ./build/sendspin-cli --help
