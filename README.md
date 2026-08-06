@@ -87,16 +87,42 @@ server to drive it. Until mDNS advertisement lands, either point your server at
 
 ### Choosing an output
 
-With the ALSA backend compiled in, `-o` takes any PCM name `aplay -L` prints, and
-`-l` lists them with their descriptions. Three names stay reserved for the
-device-less sinks on every build: `null` discards audio, and `stdout` (or `-`)
-writes raw interleaved PCM to standard output.
+`-l` lists what this host can play through, and for each ALSA PCM the rates,
+formats, and channel counts it actually accepts:
+
+```
+  hdmi:CARD=NVidia,DEV=0
+      HDA NVidia, HDMI 0
+      rates:    32000 44100 48000 88200 96000 176400 192000
+      formats:  S16_LE S32_LE
+      channels: 2 4 6 8
+```
+
+Only the four formats `sendspin-cli` can emit are ever listed — `S8`, `S16_LE`,
+`S24_3LE`, `S32_LE` — since anything else is a capability this player cannot
+reach. A plug-style PCM (`default`, `plughw:`, most sound-server PCMs) reports
+nearly everything because the plug layer converts, so its list says little about
+the hardware behind it. A device another process holds exclusively is reported as
+in use rather than dropping out of the listing.
+
+`-o` reads its argument in three steps, in this order:
+
+1. one of the reserved device-less names — `null` discards audio, `stdout` (or
+   `-`) writes raw interleaved PCM to standard output. These mean the same thing
+   on every build, even where ALSA ships a PCM of the same name;
+2. `<backend>:<device>`, split on the **first** colon, where the backend is one of
+   the names the build reports (`null, stdout, alsa`). The split is on the first
+   colon because ALSA device names carry their own, so `-o alsa:hw:2,0` is the
+   `alsa` backend playing `hw:2,0`;
+3. anything else is an ALSA PCM name, which is squeezelite's model — so `-o hw:2,0`
+   and `-o default` keep working with no prefix at all.
 
 ```bash
 ./build/sendspin-cli -l                 # what this host can play through
 ./build/sendspin-cli -o default         # follow the system config (PipeWire/Pulse)
 ./build/sendspin-cli -o hw:2,0          # a card directly, bypassing the sound server
 ./build/sendspin-cli -o plughw:2,0      # same, letting ALSA convert rate/format
+./build/sendspin-cli -o alsa:hw:2,0     # the same card, naming the backend explicitly
 ./build/sendspin-cli -o null            # no sound card needed at all
 ```
 
@@ -104,9 +130,39 @@ writes raw interleaved PCM to standard output.
 not. Volume is applied in software, so it works the same through PipeWire's ALSA
 plugin as through bare hardware; the ALSA hardware mixer is a follow-up.
 
+### Flags, and what they refuse
+
 The flags follow squeezelite's: `-o` output device, `-l` list devices, `-n` name,
 `-s` server, `-z` daemonize, `-P` pidfile, `-d`/`-f` logging. Run `--help` for the
 current state of each — several are scaffolding whose real behaviour is still to come.
+
+Everything is validated before the daemon starts, and a bad value exits `1` with a
+single `error:` line naming it rather than falling back to a default:
+
+```console
+$ sendspin-cli -s music.local:abc
+error: -s 'music.local:abc': 'abc' is not a port number (expected 1-65535)
+```
+
+That is a deliberate change from warn-and-continue. `-s` used to warn about a
+malformed port and dial the default anyway; a player quietly talking to the wrong
+endpoint is harder to diagnose than one that refuses to start. `-s` takes
+`<host>[:<port>]` — filling in `8927`, the port a Sendspin *server* listens on —
+or a full `ws://`/`wss://` URL. An IPv6 literal must be bracketed (`[::1]:8927`),
+since an unbracketed one cannot be told from a host with a port.
+
+## Tests
+
+```bash
+cmake -B build
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
+
+GoogleTest is fetched at configure time and pinned to a tag. The suite is built by
+default only when this is the top-level project, so vendoring `sendspin-cli` into
+another build does not pay for it; `-DSENDSPIN_CLI_BUILD_TESTS=OFF` turns it off
+outright.
 
 ## Roadmap
 
