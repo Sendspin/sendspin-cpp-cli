@@ -14,8 +14,9 @@ small flag set for identity, output, discovery, logging, and daemonization.
 - Boots a `SendspinClient` with the `player` and `metadata` roles, starts its WebSocket
   server, optionally dials a server with `-s`, pumps `client.loop()`, and shuts down
   cleanly on `SIGINT`/`SIGTERM`.
-- Defines the `AudioSink` seam (`src/audio_sink.h`) with a device-less null/stdout
-  implementation, so the binary runs where there is no sound card.
+- Defines the `AudioSink` seam (`src/audio_sink.h`) and plays real audio through it: an
+  auto-detected ALSA backend (item 2 below), with the device-less null/stdout sink as the
+  fallback, so the binary still runs where there is no sound card.
 - Parses the squeezelite-style flag surface: `-o -l -n -s -z -P -d -f --port --help
   --version`.
 
@@ -23,9 +24,13 @@ small flag set for identity, output, discovery, logging, and daemonization.
 
 ### 1. CLI argument parser
 
-Flesh out the flag surface: validation, `<device>` specs per backend, a real
-`--list-devices` that enumerates hardware, config-file interaction, and unit tests for
-the parser. `src/cli.cpp` currently covers the flags but not the depth behind them.
+Flesh out the flag surface: validation, `<device>` specs per backend, config-file
+interaction, and unit tests for the parser. `src/cli.cpp` currently covers the flags but
+not the depth behind them.
+
+`-l` already enumerates ALSA's PCM hints (item 2). What is still missing is **per-card
+capability detail** — the rates, formats, and channel counts each device actually
+accepts — so `-l` can say what a card will play rather than only what it is called.
 
 ### 2. `AudioSink` + ALSA backend — *shipped (audible slice)*
 
@@ -49,16 +54,23 @@ The default Linux and Docker backend. In a container this needs only
   upstream's `PortAudioSink::apply_volume_()`.
 - libasound's own stderr diagnostics routed through the CLI logger at `debug`.
 
-**Deliberately deferred** to follow-ups:
+**Not in this slice.** Three things were deliberately left out; each is now tracked on
+the item that owns it, rather than as a loose follow-up here:
 
-- The **ALSA hardware mixer** (`snd_mixer_*`, squeezelite's `-V`). Software scaling was
-  chosen first because the usual `default` device here is PipeWire's ALSA plugin, where
-  a hardware mixer element either does not exist or moves something other than this
-  stream.
-- **Buffer/period tuning flags** (squeezelite's `-a`). The ring is currently a fixed
+- The **ALSA hardware mixer** (`snd_mixer_*`, squeezelite's `-V`) → item 4. Software
+  scaling was chosen first because the usual `default` device here is PipeWire's ALSA
+  plugin, where a hardware mixer element either does not exist or moves something other
+  than this stream. A hardware path is worth having for `hw:` output, where it is the
+  real volume control.
+- **Buffer/period tuning** (squeezelite's `-a`) → item 4. The ring is currently a fixed
   100 ms with 20 ms periods.
-- **Richer per-card enumeration** — `-l` prints the PCM hints, not per-card capability
-  detail (supported rates, formats, channel counts).
+- **Richer per-card enumeration** → item 1. `-l` prints the PCM hints, not per-card
+  capability detail.
+
+One known rough edge: because the start threshold is a full ring, `snd_pcm_delay()`
+under-reports the finish time until playback actually begins, so the first ~100 ms of
+timestamps on a track are optimistic. It self-corrects once running. Lowering the start
+threshold is the fix if it ever shows as drift at track boundaries — see item 4.
 
 ### 3. PortAudio backend
 
@@ -67,11 +79,22 @@ examples themselves use. `examples/common/portaudio_sink.cpp` upstream is a work
 reference, including its lock-free ring buffer bridging push writes to PortAudio's pull
 callback.
 
-### 4. Player role wiring
+### 4. Player role wiring and output tuning
 
-Take the stub past "it compiles": buffer sizing, `PlayerRoleConfig` tuning
-(`fixed_delay_us`, `extra_startup_silence_ms`), correct handling of mid-stream format
-changes, underrun behaviour, and applying software volume where the backend has none.
+Take the stub past "it compiles": `PlayerRoleConfig` tuning (`fixed_delay_us`,
+`extra_startup_silence_ms`), correct handling of mid-stream format changes, and underrun
+behaviour.
+
+Also the two knobs the ALSA backend (item 2) deliberately left fixed:
+
+- **Buffer and period sizing**, exposed the way squeezelite's `-a` does it. ALSA is
+  currently pinned to a 100 ms ring with 20 ms periods, chosen to keep `snd_pcm_delay()`
+  a useful sync signal without inviting underruns. Tuning it also covers the start
+  threshold, which is what makes early-track timestamps optimistic today.
+- **Volume routing**: software scaling where the backend has no mixer (what ALSA does
+  now, and the right answer through PipeWire), and the **ALSA hardware mixer**
+  (`snd_mixer_*`, squeezelite's `-V`) where there is a real one to drive — chiefly `hw:`
+  output straight to a card.
 
 ### 5. mDNS advertise/discovery + outbound mode
 
