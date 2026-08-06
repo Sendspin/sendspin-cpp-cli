@@ -28,14 +28,48 @@ from the same host.
 
 ## Build
 
-Requires a C++17 compiler and CMake. Dependencies (sendspin-cpp and its
-transitive deps) are fetched automatically.
+Requires **CMake ≥ 3.16**, a **C++20** compiler, and network access on the first
+configure. sendspin-cpp is pulled in with `FetchContent` at a pinned tag, and it
+fetches its own dependencies (ArduinoJson, micro-flac, micro-opus, IXWebSocket) in
+turn. No audio libraries are needed yet — the only output backend in this build is
+device-less.
+
+> C++20 rather than C++17: sendspin-cpp's host build declares
+> `target_compile_features(sendspin PUBLIC cxx_std_20)`, so the requirement
+> propagates to anything that links it.
 
 ```bash
 cmake -B build
 cmake --build build
 ./build/sendspin-cli --help
 ```
+
+To build against a different version of the library:
+
+```bash
+cmake -B build -DSENDSPIN_GIT_TAG=v0.7.0
+```
+
+## Run
+
+`sendspin-cli` is a listener: it starts a WebSocket server and waits for a Sendspin
+server to drive it. Until mDNS advertisement lands, either point your server at
+`ws://<this-host>:8928/sendspin` or dial it from here with `-s`.
+
+```bash
+# Listen on the default port, discard audio — verifies the client boots and connects
+./build/sendspin-cli -n living-room
+
+# Dial a server, and pipe raw PCM to ALSA to actually hear it
+./build/sendspin-cli -s 192.168.1.10 -o stdout | aplay -f cd
+
+# Debug logging, in the foreground
+./build/sendspin-cli -d debug
+```
+
+The flags follow squeezelite's: `-o` output device, `-l` list devices, `-n` name,
+`-s` server, `-z` daemonize, `-P` pidfile, `-d`/`-f` logging. Run `--help` for the
+current state of each — several are scaffolding whose real behaviour is still to come.
 
 ## Roadmap
 

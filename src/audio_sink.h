@@ -1,0 +1,100 @@
+// Copyright 2026 sendspin-cpp-cli Contributors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+/// @file audio_sink.h
+/// @brief Backend-agnostic destination for the PCM the sendspin player role decodes
+
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <functional>
+#include <memory>
+#include <string>
+
+namespace sendspin_cli {
+
+/// @brief Destination for decoded PCM frames coming out of the sendspin player role.
+///
+/// One implementation per audio backend. This scaffold ships only NullAudioSink;
+/// the ALSA and PortAudio backends land as their own tasks (see docs/ROADMAP.md).
+///
+/// THREAD SAFETY: write() is called on the sendspin sync task's background thread.
+/// Every other method is called on the main loop thread. An implementation must
+/// therefore make write() safe against concurrent configure(), clear(), stop(),
+/// set_volume() and set_muted() calls.
+class AudioSink {
+public:
+    virtual ~AudioSink() = default;
+
+    AudioSink(const AudioSink&) = delete;
+    AudioSink& operator=(const AudioSink&) = delete;
+
+    /// @brief Backend name as accepted by -o, e.g. "null". Used in logs and by -l.
+    virtual std::string name() const = 0;
+
+    /// @brief Opens/reconfigures the device for a stream's format.
+    ///
+    /// Called from PlayerRoleListener::on_stream_start(), once the server has told us
+    /// the stream parameters.
+    /// @return true if the device accepted the format.
+    virtual bool configure(uint32_t sample_rate, uint8_t channels, uint8_t bits_per_sample) = 0;
+
+    /// @brief Consumes decoded PCM. Called on the sync task's background thread.
+    ///
+    /// May block for up to timeout_ms waiting for room. Partial writes are allowed but
+    /// MUST be a whole number of PCM frames (a multiple of channels * bytes-per-sample):
+    /// the sendspin sync task derives its playtime estimate from the returned count, so a
+    /// mid-frame value drifts sync and starts the next write mid-frame.
+    /// @return Number of bytes consumed.
+    virtual size_t write(const uint8_t* data, size_t length, uint32_t timeout_ms) = 0;
+
+    /// @brief Drops buffered audio without releasing the device (stream end, flush).
+    virtual void clear() {}
+
+    /// @brief Releases the device. Called once, during shutdown.
+    virtual void stop() {}
+
+    /// @brief Applies playback volume, 0-100. A backend with no volume control may ignore it.
+    virtual void set_volume(uint8_t /*volume*/) {}
+
+    /// @brief Silences output regardless of volume.
+    virtual void set_muted(bool /*muted*/) {}
+
+    /// @brief Reports frames that have actually reached the DAC, for sync feedback.
+    ///
+    /// Wired to PlayerRole::notify_audio_played() by PlayerListener. A backend that knows
+    /// its own playout timing (a PortAudio callback, an ALSA delay query) should invoke
+    /// this; a sink that consumes instantly can leave it unset, since the sync task also
+    /// counts frames from write()'s return value.
+    std::function<void(uint32_t frames, int64_t timestamp)> on_frames_played;
+
+protected:
+    AudioSink() = default;
+};
+
+/// @brief Builds the sink named by -o.
+///
+/// This is the registry every future backend hooks into: an ALSA or PortAudio task adds
+/// its device names here.
+/// @param device Device/backend spec as given to -o.
+/// @param error Set to a human-readable reason when the return value is nullptr.
+/// @return The sink, or nullptr if `device` is not recognized.
+std::unique_ptr<AudioSink> make_audio_sink(const std::string& device, std::string& error);
+
+/// @brief Prints the device specs that make_audio_sink() accepts. Backs the -l flag.
+void print_audio_devices(std::FILE* out);
+
+}  // namespace sendspin_cli
