@@ -32,6 +32,15 @@ namespace {
 constexpr const char* SENDSPIN_PATH = "/sendspin";
 constexpr const char* FALLBACK_NAME = "sendspin-cli";
 
+/// The port a Sendspin *server* listens on, for -s to dial when none is given.
+///
+/// Deliberately not SendspinClientConfig::DEFAULT_SERVER_PORT (8928): that constant is
+/// the port *this* process serves on, since a sendspin player is itself a WebSocket
+/// server that a controller connects to. Using it as the outbound default pointed -s at
+/// the wrong end of the protocol. Upstream documents the server side as
+/// `ws://server.local:8927/sendspin` (include/sendspin/client.h, src/esp/client_connection.h).
+constexpr uint16_t DEFAULT_REMOTE_SERVER_PORT = 8927U;
+
 /// Long-only option values, picked outside the short-option alphabet so `-V`/`-p` stay
 /// unclaimed for squeezelite's own meanings.
 enum LongOnly {
@@ -172,6 +181,8 @@ void print_usage(std::FILE* out, const char* prog) {
     std::fprintf(out, "  -l            List output devices and exit\n");
     std::fprintf(out, "  -n <name>     Friendly name (default: this host's name)\n");
     std::fprintf(out, "  -s <server>   Connect out to <host>[:<port>] or a ws:// URL\n");
+    std::fprintf(out, "                (the server's port defaults to %u)\n",
+                 DEFAULT_REMOTE_SERVER_PORT);
     std::fprintf(out, "  -z            Daemonize (not implemented yet)\n");
     std::fprintf(out, "  -P <path>     Write the process id to <path>\n");
     std::fprintf(out, "  -d <level>    Log level: none, error, warn, info, debug, verbose\n");
@@ -195,7 +206,7 @@ std::string server_url(const std::string& server) {
     }
 
     std::string host = server;
-    std::string port = std::to_string(SendspinClientConfig::DEFAULT_SERVER_PORT);
+    std::string port = std::to_string(DEFAULT_REMOTE_SERVER_PORT);
 
     // Split off a trailing :port, but skip past a bracketed IPv6 literal's own colons.
     size_t search_from = 0;

@@ -78,8 +78,9 @@ void print_version(std::FILE* out);
 /// @brief Turns a -s value into a WebSocket URL.
 ///
 /// Accepts a full ws:// or wss:// URL unchanged, otherwise `<host>[:<port>]`, filling in
-/// sendspin's default port and the /sendspin path. IPv6 literals must be bracketed
-/// (`[::1]:8928`) for the port to be split off correctly.
+/// the /sendspin path and, when no port is given, the port a Sendspin *server* listens on
+/// (8927) -- which is not the port this player serves on (8928). IPv6 literals must be
+/// bracketed (`[::1]:8927`) for the port to be split off correctly.
 std::string server_url(const std::string& server);
 
 /// @brief The default friendly name: this host's name, or "sendspin-cli" if unavailable.
