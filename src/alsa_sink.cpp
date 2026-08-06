@@ -55,6 +55,30 @@ constexpr int WAIT_SLICE_MS = 20;
 constexpr int RESUME_TRIES = 10;
 constexpr auto RESUME_PAUSE = std::chrono::milliseconds(10);
 
+/// The rates -l asks each PCM about. A generous ladder costs nothing: the one
+/// snd_pcm_open() is the expensive part, and every test below it runs against the
+/// already-fetched configuration space in memory.
+constexpr unsigned int PROBE_RATES[] = {22050, 32000, 44100, 48000, 88200, 96000, 176400, 192000};
+
+/// The channel counts -l asks about: mono through 7.1.
+constexpr unsigned int PROBE_CHANNELS[] = {1, 2, 4, 6, 8};
+
+/// The formats -l asks about -- exactly the four alsa_format_for() can emit.
+///
+/// Reporting anything wider would advertise a capability sendspin-cli can never use: the
+/// player hands us tightly packed little-endian PCM at one of these four depths, so a card
+/// that also takes, say, S24_LE or a big-endian format cannot be reached through it.
+struct ProbeFormat {
+    snd_pcm_format_t format;
+    const char* name;
+};
+constexpr ProbeFormat PROBE_FORMATS[] = {
+    {SND_PCM_FORMAT_S8, "S8"},
+    {SND_PCM_FORMAT_S16_LE, "S16_LE"},
+    {SND_PCM_FORMAT_S24_3LE, "S24_3LE"},
+    {SND_PCM_FORMAT_S32_LE, "S32_LE"},
+};
+
 /// Routes libasound's own diagnostics through our logger instead of letting it write
 /// straight to stderr.
 ///
@@ -168,6 +192,80 @@ void apply_volume(uint8_t* data, size_t len, uint8_t bytes_per_sample, uint64_t 
     }
 }
 
+/// Appends `value` to a space-separated list.
+void append_item(std::string& list, const std::string& value) {
+    if (!list.empty()) {
+        list += ' ';
+    }
+    list += value;
+}
+
+/// Prints what one PCM will actually take, indented under its name in -l.
+///
+/// Degrades, never fails: a busy or unopenable device gets a one-line note and the caller
+/// moves on to the next hint, because one card nobody can open must not cost the rest of
+/// the list.
+///
+/// The cost here is the single snd_pcm_open(). Everything after it queries a configuration
+/// space already in memory, so testing eight rates and four formats is no dearer than
+/// testing one.
+void print_device_capabilities(std::FILE* out, const char* name) {
+    snd_pcm_t* pcm = nullptr;
+    // NONBLOCK for probe()'s reason: a card another process holds exclusively must come
+    // back rather than park -l on it.
+    const int err = snd_pcm_open(&pcm, name, SND_PCM_STREAM_PLAYBACK, SND_PCM_NONBLOCK);
+    if (err == -EBUSY) {
+        std::fprintf(out, "      (in use -- capabilities unknown)\n");
+        return;
+    }
+    if (err < 0) {
+        std::fprintf(out, "      (cannot open: %s)\n", snd_strerror(err));
+        return;
+    }
+
+    snd_pcm_hw_params_t* hw = nullptr;
+    snd_pcm_hw_params_alloca(&hw);
+    // Narrowed to the access mode the sink actually uses before anything is tested, so the
+    // report describes how sendspin-cli would drive the card, not what it can do in modes
+    // this player never asks for.
+    if (snd_pcm_hw_params_any(pcm, hw) < 0 ||
+        snd_pcm_hw_params_set_access(pcm, hw, SND_PCM_ACCESS_RW_INTERLEAVED) < 0) {
+        std::fprintf(out, "      (no interleaved playback configuration)\n");
+        snd_pcm_close(pcm);
+        return;
+    }
+
+    std::string rates;
+    for (const unsigned int rate : PROBE_RATES) {
+        if (snd_pcm_hw_params_test_rate(pcm, hw, rate, 0) == 0) {
+            append_item(rates, std::to_string(rate));
+        }
+    }
+
+    std::string formats;
+    for (const ProbeFormat& candidate : PROBE_FORMATS) {
+        if (snd_pcm_hw_params_test_format(pcm, hw, candidate.format) == 0) {
+            append_item(formats, candidate.name);
+        }
+    }
+
+    std::string channels;
+    for (const unsigned int count : PROBE_CHANNELS) {
+        if (snd_pcm_hw_params_test_channels(pcm, hw, count) == 0) {
+            append_item(channels, std::to_string(count));
+        }
+    }
+
+    snd_pcm_close(pcm);
+
+    // An empty list is meaningful: the device opens but takes nothing this player emits.
+    std::fprintf(out, "      rates:    %s\n", rates.empty() ? "(none of the probed rates)" : rates.c_str());
+    std::fprintf(out, "      formats:  %s\n",
+                 formats.empty() ? "(none sendspin-cli can emit)" : formats.c_str());
+    std::fprintf(out, "      channels: %s\n",
+                 channels.empty() ? "(none of the probed counts)" : channels.c_str());
+}
+
 }  // namespace
 
 AlsaAudioSink::AlsaAudioSink(std::string device)
@@ -236,6 +334,7 @@ void AlsaAudioSink::list_devices(std::FILE* out) {
                 std::fprintf(out, "      %.*s\n", len, line);
                 line = (end != nullptr) ? end + 1 : nullptr;
             }
+            print_device_capabilities(out, name);
         }
 
         std::free(name);
