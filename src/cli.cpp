@@ -72,16 +72,20 @@ bool parse_port(const std::string& str, uint16_t& port) {
     return true;
 }
 
-/// Rejects an empty value for a flag whose empty case has no meaning.
+/// Names the option that getopt just reported a problem with.
 ///
-/// `-n ""` used to fall through to the hostname, which looks like the flag was ignored;
-/// `-P ""` and `-f ""` would try to open a file with no name. Saying so beats guessing.
-bool require_value(std::FILE* err, const char* flag, const char* value) {
-    if (value[0] != '\0') {
-        return true;
+/// For a short option `optopt` is the precise answer -- the argv word would name the whole
+/// cluster, so `-lo` would read as "-lo" rather than "-o". For a long option the argv word
+/// is the precise answer, and `optopt` must not be used: it carries the option's `val`,
+/// which for our long-only options is deliberately outside the char range (OPT_PORT is
+/// 0x101), so casting it to a char would print garbage.
+std::string offending_option(char* const argv[], int index) {
+    const char* word = argv[index - 1];
+    const bool is_long = word[0] == '-' && word[1] == '-';
+    if (!is_long && optopt != 0) {
+        return std::string("-") + static_cast<char>(optopt);
     }
-    std::fprintf(err, "error: %s needs a non-empty value\n", flag);
-    return false;
+    return word;
 }
 
 /// Maps a level name onto the library's LogLevel. Accepts squeezelite's vocabulary
@@ -115,7 +119,8 @@ bool parse_log_spec(const char* spec, LogLevel& level, std::FILE* err) {
     if (!parse_log_level(eq + 1, level)) {
         return false;
     }
-    std::fprintf(err, "warning: -d category '%.*s' ignored -- this build has one global log level\n",
+    std::fprintf(err,
+                 "warning: -d category '%.*s' ignored -- this build has one global log level\n",
                  static_cast<int>(eq - spec), spec);
     return true;
 }
@@ -151,28 +156,50 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
 
     reset_getopt();
 
+    // The first thing that went wrong, reported only once the whole line has been read.
+    //
+    // Deferring it is what lets -h and --version win over an earlier bad flag: appending
+    // --help to a command line you got wrong should print the flag list, not the same
+    // error again. Deferred rather than pre-scanned for "--help", because only getopt
+    // knows whether such a word is a flag or another flag's value -- `-n --help` names
+    // the player "--help".
+    std::string error;
+    const auto fail = [&error](std::string message) {
+        if (error.empty()) {
+            error = std::move(message);
+        }
+    };
+    /// Rejects an empty value for a flag whose empty case has no meaning. `-n ""` used to
+    /// fall through to the hostname, which reads as the flag being ignored; `-P ""` and
+    /// `-f ""` would try to open a file with no name.
+    const auto require_value = [&fail](const char* flag, const char* value) {
+        if (value[0] != '\0') {
+            return true;
+        }
+        fail(std::string(flag) + " needs a non-empty value");
+        return false;
+    };
+
     // The leading ':' is what separates "you left the value off" from "no such flag":
     // getopt then returns ':' for a missing argument instead of folding it into '?'.
     int opt = 0;
     while ((opt = getopt_long(argc, argv, ":o:ln:s:zP:d:f:h", long_opts, nullptr)) != -1) {
         switch (opt) {
             case 'o':
-                if (!require_value(err, "-o", optarg)) {
-                    return false;
+                if (require_value("-o", optarg)) {
+                    out.device = optarg;
+                    out.mark_given(Opt::Device);
                 }
-                out.device = optarg;
-                out.mark_given(Opt::Device);
                 break;
             case 'l':
                 out.list_devices = true;
                 out.mark_given(Opt::ListDevices);
                 break;
             case 'n':
-                if (!require_value(err, "-n", optarg)) {
-                    return false;
+                if (require_value("-n", optarg)) {
+                    out.name = optarg;
+                    out.mark_given(Opt::Name);
                 }
-                out.name = optarg;
-                out.mark_given(Opt::Name);
                 break;
             case 's':
                 // Only stored here; resolved once below, after the whole line parses.
@@ -184,67 +211,65 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
                 out.mark_given(Opt::Daemonize);
                 break;
             case 'P':
-                if (!require_value(err, "-P", optarg)) {
-                    return false;
+                if (require_value("-P", optarg)) {
+                    out.pidfile = optarg;
+                    out.mark_given(Opt::Pidfile);
                 }
-                out.pidfile = optarg;
-                out.mark_given(Opt::Pidfile);
                 break;
             case 'd':
-                if (!parse_log_spec(optarg, out.log_level, err)) {
-                    std::fprintf(err, "error: unknown log level '%s'\n", optarg);
-                    return false;
+                if (parse_log_spec(optarg, out.log_level, err)) {
+                    out.mark_given(Opt::LogLevel);
+                } else {
+                    fail("unknown log level '" + std::string(optarg) + "'");
                 }
-                out.mark_given(Opt::LogLevel);
                 break;
             case 'f':
-                if (!require_value(err, "-f", optarg)) {
-                    return false;
+                if (require_value("-f", optarg)) {
+                    out.logfile = optarg;
+                    out.mark_given(Opt::Logfile);
                 }
-                out.logfile = optarg;
-                out.mark_given(Opt::Logfile);
                 break;
             case 'h':
-                // Short-circuits: --help must work even alongside flags that would fail,
-                // since asking for the flag list is what someone does when they got one wrong.
+                // Nothing after --help can matter, so this is the one early return.
                 out.show_help = true;
                 return true;
             case OPT_VERSION:
                 out.show_version = true;
                 return true;
             case OPT_PORT:
-                if (!parse_port(optarg, out.port)) {
-                    std::fprintf(err, "error: invalid --port '%s' -- expected 1-65535\n", optarg);
-                    return false;
+                if (parse_port(optarg, out.port)) {
+                    out.mark_given(Opt::Port);
+                } else {
+                    fail("invalid --port '" + std::string(optarg) + "' -- expected 1-65535");
                 }
-                out.mark_given(Opt::Port);
                 break;
             case ':':
-                std::fprintf(err, "error: option '%s' needs a value\n", argv[optind - 1]);
-                return false;
+                fail("option '" + offending_option(argv, optind) + "' needs a value");
+                break;
             case '?':
             default:
-                if (optopt != 0) {
-                    std::fprintf(err, "error: unknown option '-%c'\n", optopt);
-                } else {
-                    std::fprintf(err, "error: unknown option '%s'\n", argv[optind - 1]);
-                }
-                return false;
+                fail("unknown option '" + offending_option(argv, optind) + "'");
+                break;
         }
     }
 
     if (optind < argc) {
-        std::fprintf(err, "error: unexpected argument '%s' -- this player takes flags only\n",
-                     argv[optind]);
-        return false;
+        fail("unexpected argument '" + std::string(argv[optind]) +
+             "' -- this player takes flags only");
     }
 
-    if (out.was_given(Opt::Server)) {
-        std::string error;
-        if (!parse_server_url(out.server, out.server_url, error)) {
-            std::fprintf(err, "error: %s\n", error.c_str());
-            return false;
+    // Skipped once something has already failed: the first complaint is the useful one,
+    // and -s cannot be resolved from a line we are not going to act on anyway.
+    if (error.empty() && out.was_given(Opt::Server)) {
+        std::string reason;
+        if (!parse_server_url(out.server, out.server_url, reason)) {
+            fail(std::move(reason));
         }
+    }
+
+    if (!error.empty()) {
+        std::fprintf(err, "error: %s\n", error.c_str());
+        return false;
     }
 
     if (out.name.empty()) {
@@ -299,6 +324,12 @@ bool parse_server_url(const std::string& server, std::string& url, std::string& 
         if (scheme != "ws" && scheme != "wss") {
             error = "-s '" + server + "': Sendspin runs over WebSocket, so the scheme must be " +
                     "ws:// or wss://, not " + scheme + "://";
+            return false;
+        }
+        // The rest is the caller's to get right -- port, path and all -- but a scheme with
+        // nothing after it names no server at all, and would fail far from here.
+        if (scheme_end + 3 == server.size()) {
+            error = "-s '" + server + "': a scheme but no host";
             return false;
         }
         url = server;

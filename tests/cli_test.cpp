@@ -166,6 +166,63 @@ TEST(ParseOptions, VersionWinsOverAnInvalidFlagAfterIt) {
     EXPECT_TRUE(parse.options().show_version);
 }
 
+TEST(ParseOptions, HelpWinsOverAnInvalidFlagBeforeIt) {
+    // The harder half, and the one worth a test per flag: appending --help to a line you
+    // already got wrong is the most likely way to reach for it. Diagnostics are collected
+    // rather than returned on, so a failure earlier in argv cannot pre-empt the flag list.
+    const std::vector<std::string> bad_prefixes[] = {
+        {"--port", "0"},      // validated inline, as -s is not
+        {"-o", ""},           // an empty value
+        {"-d", "nonsense"},   // an unknown log level
+        {"-Q"},               // an unknown flag entirely
+        {"-s", "::1"},        // resolved after the loop
+        {"extra"},            // a positional argument
+    };
+
+    for (const std::vector<std::string>& prefix : bad_prefixes) {
+        {
+            std::vector<std::string> args = prefix;
+            args.emplace_back("--help");
+            Parse parse(args);
+            EXPECT_TRUE(parse.ok()) << "--help lost to " << prefix.front();
+            EXPECT_TRUE(parse.options().show_help) << prefix.front();
+        }
+        {
+            std::vector<std::string> args = prefix;
+            args.emplace_back("--version");
+            Parse parse(args);
+            EXPECT_TRUE(parse.ok()) << "--version lost to " << prefix.front();
+            EXPECT_TRUE(parse.options().show_version) << prefix.front();
+        }
+        {
+            // Without the short-circuit the same line must still fail.
+            Parse parse(prefix);
+            EXPECT_FALSE(parse.ok()) << prefix.front() << " should not parse on its own";
+        }
+    }
+}
+
+TEST(ParseOptions, AFlagValueThatLooksLikeHelpIsNotHelp) {
+    // Why the short-circuit is deferred to getopt rather than pre-scanned for "--help":
+    // here the word is -n's value, and naming a player "--help" must not print usage.
+    Parse parse({"-n", "--help"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_FALSE(parse.options().show_help);
+    EXPECT_EQ(parse.options().name, "--help");
+}
+
+TEST(ParseOptions, OnlyTheFirstProblemIsReported) {
+    // Collecting diagnostics must not turn one bad line into a wall of them.
+    Parse parse({"--port", "0", "-o", "", "-d", "nonsense"});
+
+    ASSERT_FALSE(parse.ok());
+    const std::string diagnostics = parse.diagnostics();
+    EXPECT_NE(diagnostics.find("invalid --port"), std::string::npos) << diagnostics;
+    EXPECT_EQ(diagnostics.find("non-empty"), std::string::npos)
+        << "later problems should stay quiet: " << diagnostics;
+}
+
 // ---------------------------------------------------------------------------
 // Empty values
 // ---------------------------------------------------------------------------
@@ -273,7 +330,23 @@ TEST(ParseOptions, MissingValueIsRejected) {
     Parse parse({"-o"});
 
     EXPECT_FALSE(parse.ok());
-    EXPECT_NE(parse.diagnostics().find("needs a value"), std::string::npos);
+    EXPECT_NE(parse.diagnostics().find("option '-o' needs a value"), std::string::npos);
+}
+
+TEST(ParseOptions, MissingValueNamesTheOptionNotTheCluster) {
+    // `-lo` is -l followed by -o, and it is -o that is short a value. Naming the argv word
+    // would report "-lo", which is not an option anyone typed.
+    Parse cluster({"-lo"});
+    EXPECT_FALSE(cluster.ok());
+    EXPECT_NE(cluster.diagnostics().find("option '-o' needs a value"), std::string::npos)
+        << cluster.diagnostics();
+
+    // A long option has no cluster to disambiguate, and its getopt `val` is deliberately
+    // outside the char range, so there the argv word is the only usable name.
+    Parse long_form({"--port"});
+    EXPECT_FALSE(long_form.ok());
+    EXPECT_NE(long_form.diagnostics().find("option '--port' needs a value"), std::string::npos)
+        << long_form.diagnostics();
 }
 
 // ---------------------------------------------------------------------------
@@ -340,6 +413,8 @@ TEST(ParseServerUrl, Rejected) {
         "[]:8927",       // ditto
         "http://host",   // Sendspin is WebSocket only
         "https://host",  // ditto
+        "ws://",         // a scheme naming no server
+        "wss://",        // ditto
     };
 
     for (const char* input : cases) {

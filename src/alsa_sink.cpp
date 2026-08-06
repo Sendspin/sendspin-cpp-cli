@@ -259,7 +259,8 @@ void print_device_capabilities(std::FILE* out, const char* name) {
     snd_pcm_close(pcm);
 
     // An empty list is meaningful: the device opens but takes nothing this player emits.
-    std::fprintf(out, "      rates:    %s\n", rates.empty() ? "(none of the probed rates)" : rates.c_str());
+    std::fprintf(out, "      rates:    %s\n",
+                 rates.empty() ? "(none of the probed rates)" : rates.c_str());
     std::fprintf(out, "      formats:  %s\n",
                  formats.empty() ? "(none sendspin-cli can emit)" : formats.c_str());
     std::fprintf(out, "      channels: %s\n",
