@@ -48,14 +48,44 @@ enum LongOnly {
     OPT_PORT,
 };
 
-bool parse_port(const char* str, uint16_t& port) {
-    char* end = nullptr;
-    const unsigned long value = std::strtoul(str, &end, 10);
-    if (*str == '\0' || end == nullptr || *end != '\0' || value == 0 || value > 65535UL) {
+bool is_all_digits(const std::string& value) {
+    if (value.empty()) {
+        return false;
+    }
+    return value.find_first_not_of("0123456789") == std::string::npos;
+}
+
+/// Parses a TCP port: digits only, 1-65535.
+///
+/// The digits-only test is not redundant with strtoul's: strtoul would happily accept
+/// " 8927" and "+8927", and read "-1" as a huge unsigned that only fails the range check
+/// by accident. A port is a plain decimal number or it is a typo.
+bool parse_port(const std::string& str, uint16_t& port) {
+    if (!is_all_digits(str)) {
+        return false;
+    }
+    const unsigned long value = std::strtoul(str.c_str(), nullptr, 10);
+    if (value == 0 || value > 65535UL) {
         return false;
     }
     port = static_cast<uint16_t>(value);
     return true;
+}
+
+/// Names the option that getopt just reported a problem with.
+///
+/// For a short option `optopt` is the precise answer -- the argv word would name the whole
+/// cluster, so `-lo` would read as "-lo" rather than "-o". For a long option the argv word
+/// is the precise answer, and `optopt` must not be used: it carries the option's `val`,
+/// which for our long-only options is deliberately outside the char range (OPT_PORT is
+/// 0x101), so casting it to a char would print garbage.
+std::string offending_option(char* const argv[], int index) {
+    const char* word = argv[index - 1];
+    const bool is_long = word[0] == '-' && word[1] == '-';
+    if (!is_long && optopt != 0) {
+        return std::string("-") + static_cast<char>(optopt);
+    }
+    return word;
 }
 
 /// Maps a level name onto the library's LogLevel. Accepts squeezelite's vocabulary
@@ -81,7 +111,7 @@ bool parse_log_level(const char* str, LogLevel& level) {
 
 /// Accepts squeezelite's `-d <category>=<level>` shape. The library exposes one global
 /// level, so a category is parsed and ignored; per-category logging is a follow-up task.
-bool parse_log_spec(const char* spec, LogLevel& level) {
+bool parse_log_spec(const char* spec, LogLevel& level, std::FILE* err) {
     const char* eq = std::strchr(spec, '=');
     if (eq == nullptr) {
         return parse_log_level(spec, level);
@@ -89,22 +119,34 @@ bool parse_log_spec(const char* spec, LogLevel& level) {
     if (!parse_log_level(eq + 1, level)) {
         return false;
     }
-    std::fprintf(stderr,
+    std::fprintf(err,
                  "warning: -d category '%.*s' ignored -- this build has one global log level\n",
                  static_cast<int>(eq - spec), spec);
     return true;
 }
 
-bool is_all_digits(const std::string& value) {
-    if (value.empty()) {
-        return false;
-    }
-    return value.find_first_not_of("0123456789") == std::string::npos;
+/// Rewinds getopt's process-global scan state so parse_options() can run more than once.
+///
+/// glibc and musl treat `optind = 0` as "re-initialise everything"; `optind = 1` only
+/// rewinds the index and leaves internal state (the mid-cluster position, the argv
+/// permutation bookkeeping) from the previous call. The BSDs spell the same request
+/// `optreset`. Without this a second parse in one process reads from wherever the first
+/// one stopped -- which is exactly what a test binary does dozens of times.
+void reset_getopt() {
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+    optreset = 1;
+    optind = 1;
+#else
+    optind = 0;
+#endif
+    // getopt's own messages go to stderr and would both duplicate ours and bypass the
+    // caller's diagnostics stream, so we take over reporting entirely.
+    opterr = 0;
 }
 
 }  // namespace
 
-bool parse_options(int argc, char* argv[], Options& out) {
+bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
     static const struct option long_opts[] = {
         {"help", no_argument, nullptr, 'h'},
         {"version", no_argument, nullptr, OPT_VERSION},
@@ -112,56 +154,121 @@ bool parse_options(int argc, char* argv[], Options& out) {
         {nullptr, 0, nullptr, 0},
     };
 
+    reset_getopt();
+
+    // The first thing that went wrong, reported only once the whole line has been read.
+    //
+    // Deferring it is what lets -h and --version win over an earlier bad flag: appending
+    // --help to a command line you got wrong should print the flag list, not the same
+    // error again. Deferred rather than pre-scanned for "--help", because only getopt
+    // knows whether such a word is a flag or another flag's value -- `-n --help` names
+    // the player "--help".
+    std::string error;
+    const auto fail = [&error](std::string message) {
+        if (error.empty()) {
+            error = std::move(message);
+        }
+    };
+    // Rejects an empty value for a flag whose empty case has no meaning. `-n ""` used to
+    // fall through to the hostname, which reads as the flag being ignored; `-P ""` and
+    // `-f ""` would try to open a file with no name.
+    const auto require_value = [&fail](const char* flag, const char* value) {
+        if (value[0] != '\0') {
+            return true;
+        }
+        fail(std::string(flag) + " needs a non-empty value");
+        return false;
+    };
+
+    // The leading ':' is what separates "you left the value off" from "no such flag":
+    // getopt then returns ':' for a missing argument instead of folding it into '?'.
     int opt = 0;
-    while ((opt = getopt_long(argc, argv, "o:ln:s:zP:d:f:h", long_opts, nullptr)) != -1) {
+    while ((opt = getopt_long(argc, argv, ":o:ln:s:zP:d:f:h", long_opts, nullptr)) != -1) {
         switch (opt) {
             case 'o':
-                out.device = optarg;
+                if (require_value("-o", optarg)) {
+                    out.device = optarg;
+                    out.mark_given(Opt::Device);
+                }
                 break;
             case 'l':
                 out.list_devices = true;
+                out.mark_given(Opt::ListDevices);
                 break;
             case 'n':
-                out.name = optarg;
+                if (require_value("-n", optarg)) {
+                    out.name = optarg;
+                    out.mark_given(Opt::Name);
+                }
                 break;
             case 's':
+                // Only stored here; resolved once below, after the whole line parses.
                 out.server = optarg;
+                out.mark_given(Opt::Server);
                 break;
             case 'z':
                 out.daemonize = true;
+                out.mark_given(Opt::Daemonize);
                 break;
             case 'P':
-                out.pidfile = optarg;
+                if (require_value("-P", optarg)) {
+                    out.pidfile = optarg;
+                    out.mark_given(Opt::Pidfile);
+                }
                 break;
             case 'd':
-                if (!parse_log_spec(optarg, out.log_level)) {
-                    std::fprintf(stderr, "error: unknown log level '%s'\n", optarg);
-                    return false;
+                if (parse_log_spec(optarg, out.log_level, err)) {
+                    out.mark_given(Opt::LogLevel);
+                } else {
+                    fail("unknown log level '" + std::string(optarg) + "'");
                 }
                 break;
             case 'f':
-                out.logfile = optarg;
+                if (require_value("-f", optarg)) {
+                    out.logfile = optarg;
+                    out.mark_given(Opt::Logfile);
+                }
                 break;
             case 'h':
+                // Nothing after --help can matter, so this is the one early return.
                 out.show_help = true;
                 return true;
             case OPT_VERSION:
                 out.show_version = true;
                 return true;
             case OPT_PORT:
-                if (!parse_port(optarg, out.port)) {
-                    std::fprintf(stderr, "error: invalid port '%s'\n", optarg);
-                    return false;
+                if (parse_port(optarg, out.port)) {
+                    out.mark_given(Opt::Port);
+                } else {
+                    fail("invalid --port '" + std::string(optarg) + "' -- expected 1-65535");
                 }
                 break;
+            case ':':
+                fail("option '" + offending_option(argv, optind) + "' needs a value");
+                break;
+            case '?':
             default:
-                // getopt_long has already described the problem.
-                return false;
+                fail("unknown option '" + offending_option(argv, optind) + "'");
+                break;
         }
     }
 
     if (optind < argc) {
-        std::fprintf(stderr, "error: unexpected argument '%s'\n", argv[optind]);
+        fail("unexpected argument '" + std::string(argv[optind]) +
+             "' -- this player takes flags only");
+    }
+
+    // Skipped once something has already failed: the first complaint is the useful one,
+    // and -s cannot be resolved from a line we are not going to act on anyway.
+    if (error.empty() && out.was_given(Opt::Server)) {
+        std::string reason;
+        if (!parse_server_url(out.server, out.server_url, reason)) {
+            fail(std::move(reason));
+        }
+    }
+
+    if (!error.empty()) {
+        std::fprintf(err, "error: %s\n", error.c_str());
         return false;
     }
 
@@ -176,9 +283,12 @@ void print_usage(std::FILE* out, const char* prog) {
     std::fprintf(out, "A headless Sendspin audio player. Listens for a Sendspin server to\n");
     std::fprintf(out, "connect to it, or dials one with -s.\n\n");
     std::fprintf(out, "Options:\n");
-    std::fprintf(out, "  -o <device>   Output device (default: %s). -l lists them\n",
+    std::fprintf(out, "  -o <device>   Output device (default: %s). Either a reserved name\n",
                  DEFAULT_OUTPUT_DEVICE);
-    std::fprintf(out, "  -l            List output devices and exit\n");
+    std::fprintf(out, "                (null, stdout, -), a <backend>:<device> pair split on\n");
+    std::fprintf(out, "                the first colon (-o alsa:hw:2,0), or an ALSA PCM name\n");
+    std::fprintf(out, "                on its own (-o hw:2,0). -l lists them\n");
+    std::fprintf(out, "  -l            List output devices with their capabilities, and exit\n");
     std::fprintf(out, "  -n <name>     Friendly name (default: this host's name)\n");
     std::fprintf(out, "  -s <server>   Connect out to <host>[:<port>] or a ws:// URL\n");
     std::fprintf(out, "                (the server's port defaults to %u)\n",
@@ -200,33 +310,87 @@ void print_version(std::FILE* out) {
     std::fprintf(out, "sendspin-cpp %s\n", SENDSPIN_CLI_LIB_TAG);
 }
 
-std::string server_url(const std::string& server) {
-    if (server.rfind("ws://", 0) == 0 || server.rfind("wss://", 0) == 0) {
-        return server;
+bool parse_server_url(const std::string& server, std::string& url, std::string& error) {
+    if (server.empty()) {
+        error = "-s needs a server: <host>[:<port>], or a full ws:// URL";
+        return false;
     }
 
-    std::string host = server;
-    std::string port = std::to_string(DEFAULT_REMOTE_SERVER_PORT);
-
-    // Split off a trailing :port, but skip past a bracketed IPv6 literal's own colons.
-    size_t search_from = 0;
-    if (!host.empty() && host.front() == '[') {
-        const size_t bracket = host.find(']');
-        search_from = (bracket == std::string::npos) ? 0 : bracket;
-    }
-    const size_t colon = host.find(':', search_from);
-    if (colon != std::string::npos) {
-        const std::string given = host.substr(colon + 1);
-        if (is_all_digits(given)) {
-            port = given;
-        } else {
-            std::fprintf(stderr, "warning: '%s' is not a port number, using %s\n", given.c_str(),
-                         port.c_str());
+    // A scheme means the caller is spelling out the whole URL -- path, port and all -- so
+    // the only thing to check is that it is one we can actually speak.
+    const size_t scheme_end = server.find("://");
+    if (scheme_end != std::string::npos) {
+        const std::string scheme = server.substr(0, scheme_end);
+        if (scheme != "ws" && scheme != "wss") {
+            error = "-s '" + server + "': Sendspin runs over WebSocket, so the scheme must be " +
+                    "ws:// or wss://, not " + scheme + "://";
+            return false;
         }
-        host = host.substr(0, colon);
+        // The rest is the caller's to get right -- port, path and all -- but a scheme with
+        // nothing after it names no server at all, and would fail far from here.
+        if (scheme_end + 3 == server.size()) {
+            error = "-s '" + server + "': a scheme but no host";
+            return false;
+        }
+        url = server;
+        return true;
     }
 
-    return "ws://" + host + ":" + port + SENDSPIN_PATH;
+    std::string host;
+    std::string port_text;
+    bool has_port = false;
+
+    if (server.front() == '[') {
+        // A bracketed IPv6 literal keeps its brackets in the URL; only what follows the
+        // closing bracket can be a port.
+        const size_t bracket = server.find(']');
+        if (bracket == std::string::npos) {
+            error = "-s '" + server + "': unterminated '[' -- an IPv6 literal reads [::1]:8927";
+            return false;
+        }
+        host = server.substr(0, bracket + 1);
+        const std::string rest = server.substr(bracket + 1);
+        if (!rest.empty()) {
+            if (rest.front() != ':') {
+                error = "-s '" + server + "': expected ':<port>' after ']', got '" + rest + "'";
+                return false;
+            }
+            port_text = rest.substr(1);
+            has_port = true;
+        }
+    } else {
+        const size_t colon = server.find(':');
+        if (colon == std::string::npos) {
+            host = server;
+        } else if (server.find(':', colon + 1) != std::string::npos) {
+            // More than one colon and no brackets: an IPv6 literal written bare, where
+            // there is no way to tell the address's colons from a port separator.
+            error = "-s '" + server + "': an IPv6 literal must be bracketed -- try '[" + server +
+                    "]' or '[" + server + "]:<port>'";
+            return false;
+        } else {
+            host = server.substr(0, colon);
+            port_text = server.substr(colon + 1);
+            has_port = true;
+        }
+    }
+
+    // "[]" is as empty a host as "".
+    if (host.empty() || host == "[]") {
+        error = "-s '" + server + "': no host before the port";
+        return false;
+    }
+
+    // Only when no ':' was written at all does the server's own default apply. A written
+    // but empty port is a truncated line, not a request for the default.
+    uint16_t port = DEFAULT_REMOTE_SERVER_PORT;
+    if (has_port && !parse_port(port_text, port)) {
+        error = "-s '" + server + "': '" + port_text + "' is not a port number (expected 1-65535)";
+        return false;
+    }
+
+    url = "ws://" + host + ":" + std::to_string(port) + SENDSPIN_PATH;
+    return true;
 }
 
 std::string default_client_name() {

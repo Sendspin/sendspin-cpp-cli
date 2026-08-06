@@ -233,10 +233,11 @@ int main(int argc, char* argv[]) {
             "ws://<this-host>:%u/sendspin, or dial one with -s. See docs/ROADMAP.md.",
             opts.port);
 
-    if (!opts.server.empty()) {
-        const std::string url = server_url(opts.server);
-        cli_log(LogLevel::INFO, "Connecting to %s", url.c_str());
-        client.connect_to(url);
+    // Already validated and resolved during parsing, so there is nothing left to get
+    // wrong here -- and nothing to fail on after the server is up.
+    if (!opts.server_url.empty()) {
+        cli_log(LogLevel::INFO, "Connecting to %s", opts.server_url.c_str());
+        client.connect_to(opts.server_url);
     }
 
     while (g_running.load()) {

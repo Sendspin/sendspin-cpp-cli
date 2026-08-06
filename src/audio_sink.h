@@ -89,10 +89,43 @@ protected:
     AudioSink() = default;
 };
 
+/// @brief Which backend a -o spec named.
+enum class SinkBackend {
+    Null,    ///< discard everything; needs no device
+    Stdout,  ///< raw interleaved PCM on stdout; needs no device
+    Alsa,    ///< an ALSA PCM, named by DeviceSpec::device
+};
+
+/// @brief A -o spec resolved into a backend and the device to hand it.
+struct DeviceSpec {
+    SinkBackend backend{SinkBackend::Null};
+    std::string device;  ///< backend-specific device name; empty for the device-less sinks
+};
+
+/// @brief Resolves a -o spec, without opening anything.
+///
+/// The rule, in this order:
+///  1. The whole string is a reserved device-less name (`null`, `stdout`, `-`).
+///  2. The string contains a colon and the text before the **first** colon names a
+///     backend -- first colon only, because ALSA device names carry their own, so
+///     `alsa:hw:2,0` is the ALSA backend playing `hw:2,0`.
+///  3. Otherwise it is an ALSA PCM name, which is squeezelite's `-o` model. `hw:2,0` and
+///     `default` keep working with no prefix at all.
+///
+/// Separate from make_audio_sink() because this half is pure string work: it can be
+/// tested, and reasoned about, without a sound card in the machine.
+/// @param error Set to a human-readable reason when the return value is false.
+/// @return true if `spec` named something this build can play through.
+bool resolve_device_spec(const std::string& spec, DeviceSpec& out, std::string& error);
+
+/// @brief The backend prefixes this build has, e.g. "null, stdout, alsa". For diagnostics.
+std::string audio_backend_list();
+
 /// @brief Builds the sink named by -o.
 ///
-/// This is the registry every future backend hooks into: an ALSA or PortAudio task adds
-/// its device names here.
+/// Resolves the spec (see resolve_device_spec()) and opens what it names. This is the
+/// registry every future backend hooks into: a PortAudio task adds its entry there and
+/// its construction here.
 /// @param device Device/backend spec as given to -o.
 /// @param error Set to a human-readable reason when the return value is nullptr.
 /// @return The sink, or nullptr if `device` is not recognized.
