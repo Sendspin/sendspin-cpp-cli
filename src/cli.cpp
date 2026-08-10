@@ -15,6 +15,7 @@
 #include "cli.h"
 
 #include "audio_sink.h"
+#include "mdns.h"
 
 #include <getopt.h>
 #include <unistd.h>
@@ -31,7 +32,6 @@ using sendspin::SendspinClientConfig;
 
 namespace {
 
-constexpr const char* SENDSPIN_PATH = "/sendspin";
 constexpr const char* FALLBACK_NAME = "sendspin-cli";
 
 /// The port a Sendspin *server* listens on, for -s to dial when none is given.
@@ -49,6 +49,8 @@ enum LongOnly {
     OPT_VERSION = 0x100,
     OPT_PORT,
     OPT_BUFFER_MS,
+    OPT_NO_MDNS,
+    OPT_MDNS_NAME,
 };
 
 bool is_all_digits(const std::string& value) {
@@ -171,6 +173,8 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
         {"version", no_argument, nullptr, OPT_VERSION},
         {"port", required_argument, nullptr, OPT_PORT},
         {"buffer-ms", required_argument, nullptr, OPT_BUFFER_MS},
+        {"no-mdns", no_argument, nullptr, OPT_NO_MDNS},
+        {"mdns-name", required_argument, nullptr, OPT_MDNS_NAME},
         {nullptr, 0, nullptr, 0},
     };
 
@@ -271,6 +275,16 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
                          std::to_string(MIN_BUFFER_MS) + "-" + std::to_string(MAX_BUFFER_MS));
                 }
                 break;
+            case OPT_NO_MDNS:
+                out.no_mdns = true;
+                out.mark_given(Opt::NoMdns);
+                break;
+            case OPT_MDNS_NAME:
+                if (require_value("--mdns-name", optarg)) {
+                    out.mdns_name = optarg;
+                    out.mark_given(Opt::MdnsName);
+                }
+                break;
             case ':':
                 fail("option '" + offending_option(argv, optind) + "' needs a value");
                 break;
@@ -289,9 +303,23 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
     // Skipped once something has already failed: the first complaint is the useful one,
     // and -s cannot be resolved from a line we are not going to act on anyway.
     if (error.empty() && out.was_given(Opt::Server)) {
-        std::string reason;
-        if (!parse_server_url(out.server, out.server_url, reason)) {
-            fail(std::move(reason));
+        if (parse_discovery_spec(out.server, out.discover_name)) {
+            out.discover = true;
+#ifndef SENDSPIN_CLI_HAVE_MDNS
+            // Refused here rather than at startup, for the reason -o gives a backend this
+            // build lacks: a flag that parses and then quietly discovers nothing is worse
+            // than one that says the build cannot do it.
+            out.discover = false;
+            fail("-s '" + out.server +
+                 "': this build has no mDNS support, so it cannot discover a server. Rebuild "
+                 "with dns_sd.h available (libavahi-compat-libdnssd-dev on Debian/Ubuntu, "
+                 "avahi-compat-libdns_sd-devel on Fedora), or give -s an address.");
+#endif
+        } else {
+            std::string reason;
+            if (!parse_server_url(out.server, out.server_url, reason)) {
+                fail(std::move(reason));
+            }
         }
     }
 
@@ -300,8 +328,20 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
         return false;
     }
 
+    // Inert rather than contradictory, so it warns instead of failing: -s picks the outbound
+    // mode, which the spec forbids advertising alongside, so there is no instance to name.
+    if (out.was_given(Opt::MdnsName) && out.was_given(Opt::Server)) {
+        std::fprintf(err,
+                     "warning: --mdns-name is unused with -s -- a client that dials out must "
+                     "not advertise %s, so there is no instance to name\n",
+                     MDNS_CLIENT_SERVICE);
+    }
+
     if (out.name.empty()) {
         out.name = default_client_name();
+    }
+    if (out.mdns_name.empty()) {
+        out.mdns_name = out.name;
     }
     return true;
 }
@@ -323,8 +363,24 @@ void print_usage(std::FILE* out, const char* prog) {
     std::fprintf(out, "  -l            List output devices with their capabilities, and exit\n");
     std::fprintf(out, "  -n <name>     Friendly name (default: this host's name)\n");
     std::fprintf(out, "  -s <server>   Connect out to <host>[:<port>] or a ws:// URL\n");
-    std::fprintf(out, "                (the server's port defaults to %u)\n",
+    std::fprintf(out, "                (the server's port defaults to %u), retrying until it\n",
                  DEFAULT_REMOTE_SERVER_PORT);
+    std::fprintf(out, "                answers. Any -s turns off the mDNS advertisement: the\n");
+    std::fprintf(out, "                spec forbids advertising %s while\n", MDNS_CLIENT_SERVICE);
+    std::fprintf(out, "                the client is the one initiating the connection\n");
+#ifdef SENDSPIN_CLI_HAVE_MDNS
+    std::fprintf(out, "                -s %s<name> instead discovers a server over mDNS,\n",
+                 DISCOVERY_PREFIX);
+    std::fprintf(out, "                by its advertised name; -s %s takes any server.\n",
+                 DISCOVERY_PREFIX);
+    std::fprintf(out, "                '%s' is reserved before the first colon only, so a\n",
+                 DISCOVERY_PREFIX);
+    std::fprintf(out, "                bare -s mdns is still a host called mdns\n");
+#else
+    std::fprintf(out, "                (-s %s<name> discovery needs mDNS, which this build\n",
+                 DISCOVERY_PREFIX);
+    std::fprintf(out, "                does not have)\n");
+#endif
     std::fprintf(out, "  -z            Daemonize (not implemented yet)\n");
     std::fprintf(out, "  -P <path>     Write the process id to <path>\n");
     std::fprintf(out, "  -d <level>    Log level: none, error, warn, info, debug, verbose\n");
@@ -339,14 +395,28 @@ void print_usage(std::FILE* out, const char* prog) {
                  DEFAULT_BUFFER_MS);
     std::fprintf(out, "                device-less sink ignores it, and a device that needs\n");
     std::fprintf(out, "                more than it asks for gets more\n");
+    std::fprintf(out, "  --no-mdns     Do not advertise over mDNS (no effect with -s, which\n");
+    std::fprintf(out, "                already suppresses it)\n");
+    std::fprintf(out, "  --mdns-name <name>\n");
+    std::fprintf(out, "                Instance name to advertise (default: -n). Unused with -s\n");
     std::fprintf(out, "  -h, --help    Show this help\n");
     std::fprintf(out, "  --version     Show version information\n\n");
-    std::fprintf(out, "This is an early scaffold; see docs/ROADMAP.md for what is still missing.\n");
+    std::fprintf(out,
+                 "This is an early scaffold; see docs/ROADMAP.md for what is still missing.\n");
 }
 
 void print_version(std::FILE* out) {
     std::fprintf(out, "sendspin-cli %s\n", SENDSPIN_CLI_VERSION);
     std::fprintf(out, "sendspin-cpp %s\n", SENDSPIN_CLI_LIB_TAG);
+}
+
+bool parse_discovery_spec(const std::string& server, std::string& name) {
+    const std::string prefix = DISCOVERY_PREFIX;
+    if (server.compare(0, prefix.size(), prefix) != 0) {
+        return false;
+    }
+    name = server.substr(prefix.size());
+    return true;
 }
 
 bool parse_server_url(const std::string& server, std::string& url, std::string& error) {

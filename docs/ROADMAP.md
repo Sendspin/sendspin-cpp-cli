@@ -12,14 +12,17 @@ small flag set for identity, output, discovery, logging, and daemonization.
 
 - Builds `sendspin-cli`, pulling `sendspin-cpp` via CMake `FetchContent` (pinned tag).
 - Boots a `SendspinClient` with the `player` and `metadata` roles, starts its WebSocket
-  server, optionally dials a server with `-s`, pumps `client.loop()`, and shuts down
-  cleanly on `SIGINT`/`SIGTERM`.
+  server, pumps `client.loop()`, and shuts down cleanly on `SIGINT`/`SIGTERM`.
+- Speaks both of the protocol's connection modes, and keeps them exclusive as the spec
+  requires: it advertises `_sendspin._tcp` over mDNS by default, and any `-s` instead
+  makes it dial out — to an address, or to a server discovered on
+  `_sendspin-server._tcp` — retrying with a backoff until it answers (item 5).
 - Defines the `AudioSink` seam (`src/audio_sink.h`) and plays real audio through it:
   auto-detected ALSA (item 2) and PortAudio (item 3) backends, with the device-less
   null/stdout sink as the fallback, so the binary still runs where there is no sound card.
 - Parses the squeezelite-style flag surface: `-o -l -n -s -z -P -d -f --port --buffer-ms
-  --help --version`, validating every value at parse time and refusing to start on a bad
-  one (item 1).
+  --no-mdns --mdns-name --help --version`, validating every value at parse time and
+  refusing to start on a bad one (item 1).
 - Advertises the formats the selected output device will actually take, derived by probing
   it and crossed with what each codec can carry (item 4).
 
@@ -264,12 +267,116 @@ carrying the constraints found while scoping this one:
   closes/reopens otherwise, and `PortAudioSink` does the same behind its stream-generation
   guard. They shipped in items 2 and 3.
 
-### 5. mDNS advertise/discovery + outbound mode
+### 5. mDNS advertise/discovery + outbound mode — *shipped*
 
-Advertise `_sendspin._tcp` so servers discover the player without being told about it.
-Upstream's example uses `dns_sd.h` (Bonjour on macOS, `libavahi-compat-libdnssd` on
-Linux); an Avahi-native path avoids the compat shim. Also make `-s` a first-class
-outbound mode: retry, reconnect, and discovery of a named server.
+The player only listened, and said so: `src/main.cpp` logged "This build does not
+advertise over mDNS yet", and `-s` fired exactly one `connect_to()` that was never
+retried. Both halves of the protocol's connection model land here.
+
+**Shipped** in `src/mdns.h`, `src/mdns_common.cpp`, `src/mdns_dnssd.cpp`,
+`src/mdns_null.cpp`, `src/outbound.{h,cpp}`, `src/last_server.{h,cpp}`,
+`src/cli.{h,cpp}`, `src/main.cpp` and `tests/`:
+
+- **`_sendspin._tcp` advertisement** on the `--port` port, TXT `path=/sendspin` and
+  TXT `name`, via `dns_sd.h` — Bonjour on macOS (built in), `libavahi-compat-libdnssd`
+  on Linux. Optional and auto-detected exactly like the audio backends, reported in
+  its own configure line, with `src/mdns_null.cpp` keeping a build without it working.
+  The register callback is kept rather than upstream's `nullptr`, so the name **logged
+  is the name that actually registered** — the daemon renames on a collision. The
+  record is withdrawn explicitly during shutdown, before the client disconnects.
+- **The two modes, made exclusive**, because the spec says so: "Do not advertise
+  `_sendspin._tcp` if the client plans to initiate the connection." Any `-s`
+  suppresses the advertisement and logs which flag did it; `--no-mdns` covers the
+  no-`-s` case; `--mdns-name` alongside `-s` warns it is unused rather than failing.
+  Nothing can turn both on together.
+- **`-s mdns:[<name>]`**, discovery on the existing flag via a reserved prefix split
+  on the **first** colon — the idiom `-o` already uses for `<backend>:<device>`. Every
+  existing `-s` form is untouched, `hifi:8927` is still a host and a port, and a bare
+  `-s mdns` is still a host. A separate `--discover` was the alternative; the prefix
+  keeps `-s` as the one place a server is named. Discovery is not a bare `-s` because
+  the optstring is `s:`, so a bare one would swallow the next word. On a build without
+  dns_sd it is refused at **parse** time, as `-o portaudio` already is without PortAudio.
+- **Discovery of `_sendspin-server._tcp`**: browse, resolve, then A/AAAA queries, with
+  the URL built from the server's own TXT `path`. An instance whose `path` is missing
+  or does not start with `/` is skipped and said so at `debug`, matching the reference
+  server. A non-link-local IPv4 wins over IPv6, and an IPv6-only server yields a
+  bracketed URL. The browse stays open for the daemon's lifetime, and an instance that
+  goes away leaves the candidate set rather than staying in it as a dial target.
+- **Server selection**, which the spec leaves implementation-defined: the `-s
+  mdns:<name>` filter is a hard constraint, and among what survives it the last server
+  whose handshake completed wins, else the first to resolve. That preference is
+  decidable *before* dialling because the `_sendspin-server._tcp` instance label **is**
+  the protocol `server_id` — the reference server registers `f"{id}.{service_type}"`
+  and sends the same `id` in `server/hello`, which was confirmed against a live server.
+- **Outbound retry**, since the library deliberately does none:
+  `ConnectionManager::connect_to()` calls `set_auto_reconnect(false)` and
+  `SendspinClientListener` has no connect/disconnect callback. 1 s doubling to a 30 s
+  ceiling, reset on a completed handshake, restarted from the floor on a drop, and no
+  dialling at all while connected — including when the connection came *in*.
+- **A no-background-threads model.** Every `DNSServiceRef` is `poll()`ed with a zero
+  timeout from the main loop and `DNSServiceProcessResult()` is called only on a
+  descriptor already shown readable, so every callback — and therefore every
+  `connect_to()` — lands on the thread both are documented to require. Upstream's
+  `examples/tui_client` instead runs a browse thread plus a detached thread per
+  resolve.
+- **28 new tests** across `tests/discovery_test.cpp`, `tests/last_server_test.cpp` and
+  `tests/cli_test.cpp`, none of which opens a socket or the mDNS daemon: the browse
+  result is a plain struct and `RetryPacer` is handed its clock.
+
+**Three correctness points worth writing down**, each one a thing that fails silently
+if got wrong:
+
+- **Redials are paced from the last `connect_to()`, not from observing "not
+  connected".** `is_connected()` only goes true on a *completed handshake*, so it reads
+  false for the whole of an in-flight attempt — and `connect_to()` releases any previous
+  outbound nursery entry with `ANOTHER_SERVER` before pushing the new one. Redialling
+  per tick would therefore cancel the attempt in progress every time. The 30 s ceiling
+  matches the library's own `NURSERY_ESTABLISH_TIMEOUT_S`, in its private
+  `src/connection_manager.h` — not included from there, so a `SENDSPIN_GIT_TAG` bump
+  should re-check it.
+- **`DNSServiceGetAddrInfo` is not usable.** It is a Bonjour extension that
+  `libavahi-compat-libdnssd` does not implement *at all* — not even as a stub — so the
+  obvious resolve chain would take the Linux build with it. `DNSServiceQueryRecord` is
+  in the compat layer and is asynchronous, so A/AAAA lookup stays on the one thread;
+  upstream's example falls back to a threaded POSIX `getaddrinfo()` instead. Addresses
+  are resolved rather than putting the `.local.` target in the URL, because that only
+  resolves through `getaddrinfo` where nss-mdns is installed.
+- **Resolves are issued on `kDNSServiceInterfaceIndexAny`, not on the browse reply's
+  interface.** A multi-homed host gets one browse reply per interface, and a resolve
+  pinned to an interface the instance is not really on simply never calls back — a
+  silent stall, since there is no negative reply. Only one candidate is kept per
+  instance, so the daemon is left to answer from wherever it can.
+
+**Not in this slice:**
+
+- **An Avahi-native backend** → item 16, split out with what was found here.
+- **Activities-based inbound admission** → item 17, likewise.
+- **A configurable state-file path, and a real `SendspinPersistenceProvider`** → item 8,
+  which already owns persistence. This task added only the one small file its own
+  tie-break needs, deliberately *not* via that provider: it stores an FNV1 hash computed
+  by `ConnectionManager::fnv1_hash()`, which lives in the library's `src/` and is not
+  installed, so a browsed candidate could not be matched against it without
+  reimplementing a private hash and staying bit-compatible across tag bumps.
+- **`-z` daemonization**, which an advertising player wants → item 6, unchanged.
+
+**What has and has not been exercised.** Driven against **two real
+`aiosendspin`/Music Assistant servers on macOS**, both modes: the announce mode was
+discovered and dialled by a server with no configuration at all (handshake complete,
+`connection_reason=discovery`), and `-s mdns:` browsed, resolved both servers to IPv4,
+dialled, completed a handshake and received metadata. The remembered-server preference,
+the `-s mdns:<name>` filter (matching and non-matching), `--no-mdns`, the 1/2/4/8 s
+retry ramp against a closed port, prompt `SIGTERM` during a backoff, and the parse-time
+refusal on a `-DSENDSPIN_CLI_WITH_MDNS=OFF` build were each exercised directly. Clean
+under `-fsanitize=thread` in the announce mode. **The Linux path is unexercised** —
+`libavahi-compat-libdnssd` has not been run against, only read; that is item 12's build
+matrix to close, and the Avahi compat findings above are the specific thing it should
+check. A mid-session server disappearance and the reconnect-after-drop path were
+covered by unit tests rather than in the field.
+
+**One known rough edge, not caused here.** `src/portaudio_sink.cpp:495` takes
+`.c_str()` on a temporary returned by `this->name()`, which clang reports as
+`-Wdangling-gsl`. It predates this task and is untouched by it; it belongs to item 14's
+area and should be fixed there or as its own small change.
 
 ### 6. Daemonization and logging
 
@@ -289,6 +396,16 @@ This is the deliberate addition to the squeezelite model.
 Persist identity, output device, and server so a daemon does not need a long flag line.
 Also a `SendspinPersistenceProvider` implementation, which the library already supports
 for the last-played server and the static delay.
+
+Item 5 shipped a deliberately minimal `src/last_server.{h,cpp}` — one server id, one file
+under `$XDG_STATE_HOME` — because discovery needed a tie-break and could not use the
+provider. **The constraint it found belongs here:** `SendspinPersistenceProvider` stores an
+FNV1 *hash* of the server id, computed by `ConnectionManager::fnv1_hash()`, which lives in
+the library's `src/` and is **not installed**. So nothing outside the library can produce a
+matching key without reimplementing a private hash and staying bit-compatible with it
+across `SENDSPIN_GIT_TAG` bumps. Whatever this item does with the provider, the discovery
+tie-break needs the id itself; folding `last_server` into a general config/state layer, and
+making its path configurable, is this item's job.
 
 The parser hook this needs is already in place (item 1): `Options::was_given()` reports
 which options the user actually typed, so config values can layer *under* the command line
@@ -317,11 +434,17 @@ The harness this calls already exists (item 1): GoogleTest via `FetchContent` pi
 tag, wired to CTest with `gtest_discover_tests()`, defaulting ON only when this is the
 top-level project. `cmake -B build && ctest --test-dir build` is the whole invocation. The
 parser suite lives in `tests/`, and item 3 added a `pcm_volume` suite for the Q32 scaling
-both backends share; item 4 added a `supported_formats` suite for the capability crossing.
-**The sink contract itself is still untested** — that is what a
-`NullAudioSink`/`AlsaAudioSink`/`PortAudioSink` suite would add, alongside the matrix and
-the smoke test. Nothing in `tests/` opens an audio device, which is what keeps the suite
-runnable on a sound-card-less CI runner.
+both backends share; item 4 added a `supported_formats` suite for the capability crossing;
+item 5 added `discovery` and `last_server` suites. **The sink contract itself is still
+untested** — that is what a `NullAudioSink`/`AlsaAudioSink`/`PortAudioSink` suite would
+add, alongside the matrix and the smoke test. Nothing in `tests/` opens an audio device, a
+socket, or the mDNS daemon, which is what keeps the suite runnable on a bare CI runner.
+
+Two things the matrix specifically owes item 5, since it was built and exercised on macOS
+only: that `libavahi-compat-libdnssd` really does implement `DNSServiceQueryRecord` for A
+and AAAA as read (it has no `DNSServiceGetAddrInfo` at all), and that the Linux build picks
+it up through `find_path`/`find_library`. The `-DSENDSPIN_CLI_WITH_MDNS=OFF` configuration
+should be one of the matrix legs, since it changes which translation unit is compiled.
 
 ### 13. `PlayerRoleConfig` wiring
 
@@ -362,3 +485,40 @@ Keep `src/pcm_volume.{h,cpp}` for plugin devices: the usual `default` PCM is Pip
 plugin, where a mixer element is either absent or moves something other than this stream.
 One path or the other per device, chosen at open time — never both stacked, which would
 square the taper.
+
+### 16. Avahi-native mDNS backend
+
+Linux only, and a *second* backend rather than a replacement — which is why item 5 shipped
+the `dns_sd.h` one first and left this its own item. The `MdnsService` seam
+(`src/mdns.h`, one implementation per build chosen by CMake) is what makes it a drop-in.
+
+What it buys, all of it specific to `libavahi-compat-libdnssd`:
+
+- **Daemon-restart recovery that is told to us.** The compat shim reports
+  `kDNSServiceErr_ServiceNotRunning` on every ref once `avahi-daemon` restarts; item 5
+  handles that by tearing down and re-registering on a backoff, which works but is a
+  poll. Avahi's own client has a state callback that says it directly.
+- **Collision signalling.** With `flags = 0` the daemon renames on a conflict and the
+  register callback reports the new name — good enough, but Avahi names the collision.
+- **No compat shim**, and so no `*** WARNING *** The program 'sendspin-cli' uses the Apache
+  Portable Runtime...`-style stderr banner the shim prints on some distributions, outside
+  the CLI logger entirely.
+- **`DNSServiceGetAddrInfo`'s absence stops mattering.** Item 5 works around it with
+  `DNSServiceQueryRecord`; Avahi has a first-class address resolver.
+
+### 17. Activities-based inbound admission
+
+**Real spec drift, found while scoping item 5, and inbound-only — so it did not block that
+item, but it should not be lost.** The spec has moved inbound arbitration to an
+`activities` ranking: `management` > `playback` > `pairing` > empty, provisional until the
+first `server/activate`, with "higher or equal is accepted, lower is rejected", plus a
+persisted last-*playback* server.
+
+Pinned `sendspin-cpp` v0.7.0 has **no `activities` and no `server/activate` at all**, and
+still implements the older `connection_reason` DISCOVERY/PLAYBACK handoff. So this item is
+gated on a library that speaks the newer shape, and is likely to arrive with a
+`SENDSPIN_GIT_TAG` bump rather than on its own.
+
+Item 5's `src/last_server.{h,cpp}` is the nearest thing that exists today and is
+deliberately named for what it observes — the last server whose *handshake* completed, not
+its last *playback* server, which v0.7.0 gives no way to know.

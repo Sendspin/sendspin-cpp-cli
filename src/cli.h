@@ -26,6 +26,21 @@
 
 namespace sendspin_cli {
 
+/// @brief The WebSocket endpoint this player serves, and the spec's recommended value.
+///
+/// One constant because it is now read three ways: `parse_server_url()` fills it into a
+/// bare `-s <host>`, the mDNS advertisement carries it as the required TXT `path`, and a
+/// discovered server's own TXT `path` is compared against nothing else -- the spec makes it
+/// per-instance, so a server is free to serve elsewhere.
+inline constexpr const char* SENDSPIN_PATH = "/sendspin";
+
+/// @brief The reserved `-s` prefix that means "discover a server" rather than "dial this one".
+///
+/// Split on the **first** colon, exactly as `-o` splits `<backend>:<device>`, so every
+/// existing `-s` form is untouched and `hifi:8927` is still a host and a port. A host
+/// genuinely named `mdns` is still reachable as a bare `-s mdns`; only `mdns:` is reserved.
+inline constexpr const char* DISCOVERY_PREFIX = "mdns:";
+
 /// @brief The -o default: a real sound card where this build has one, silence otherwise.
 ///
 /// ALSA's own `default` PCM follows the host's configuration (PipeWire, PulseAudio or bare
@@ -74,6 +89,8 @@ enum class Opt : unsigned {
     LogLevel,     ///< -d
     Port,         ///< --port
     BufferMs,     ///< --buffer-ms
+    NoMdns,       ///< --no-mdns
+    MdnsName,     ///< --mdns-name
 };
 
 /// @brief Everything the flag surface configures.
@@ -107,14 +124,40 @@ struct Options {
     /// small for one callback's worth of audio.
     uint32_t buffer_ms{DEFAULT_BUFFER_MS};
 
+    /// --no-mdns: do not advertise `_sendspin._tcp`. Only meaningful without -s, which
+    /// already suppresses the advertisement on its own.
+    bool no_mdns{false};
+
+    /// --mdns-name <name>: the instance label to advertise, when it should differ from -n.
+    /// Empty means "use -n", which itself defaults to the hostname.
+    std::string mdns_name;
+
     bool show_help{false};     ///< -h, --help
     bool show_version{false};  ///< --version
 
     /// The WebSocket URL `server` resolved to, validated during parsing. Empty when -s
-    /// was not given. Resolved once here so nothing downstream re-parses a value that has
+    /// was not given, and when -s asked for discovery -- there is no URL until a server has
+    /// been found. Resolved once here so nothing downstream re-parses a value that has
     /// already been accepted -- and so a bad -s fails before the daemon starts, rather
     /// than dialling something plausible-looking.
     std::string server_url;
+
+    /// True when -s asked for discovery rather than naming an address.
+    bool discover{false};
+
+    /// The TXT `name` a discovered server must carry, from `-s mdns:<name>`. Empty for
+    /// `-s mdns:`, which takes any server.
+    std::string discover_name;
+
+    /// @brief True when this run should advertise `_sendspin._tcp`.
+    ///
+    /// The spec's rule, not a preference: "Do not advertise `_sendspin._tcp` if the client
+    /// plans to initiate the connection", which is what prevents both ends dialling each
+    /// other. So *any* -s suppresses it, and there is deliberately no flag that forces the
+    /// two modes on together.
+    bool advertises() const {
+        return !this->no_mdns && !this->was_given(Opt::Server);
+    }
 
     /// @brief True if `opt` was named on the command line rather than left at its default.
     bool was_given(Opt opt) const {
@@ -166,6 +209,15 @@ void print_version(std::FILE* out);
 /// @param error Set to a human-readable reason when the return value is false.
 /// @return true if `server` resolved to a URL.
 bool parse_server_url(const std::string& server, std::string& url, std::string& error);
+
+/// @brief Reads a -s value as the reserved discovery form, if that is what it is.
+///
+/// `mdns:<name>` asks for a server whose TXT `name` is `<name>`; a bare `mdns:` asks for
+/// any server. Split on the first colon, so only the exact prefix is reserved -- `hifi:8927`
+/// and a bare `mdns` are still a host, and go to parse_server_url() as they always did.
+/// @param name Set to the TXT `name` filter, empty when none was given.
+/// @return true if `server` is the discovery form.
+bool parse_discovery_spec(const std::string& server, std::string& name);
 
 /// @brief The default friendly name: this host's name, or "sendspin-cli" if unavailable.
 std::string default_client_name();
