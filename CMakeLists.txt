@@ -37,8 +37,9 @@ set(SENDSPIN_ENABLE_ARTWORK OFF CACHE BOOL "Enable sendspin artwork role")
 set(SENDSPIN_ENABLE_VISUALIZER OFF CACHE BOOL "Enable sendspin visualizer role")
 
 # The library only builds its own examples when it is the top-level project, which
-# it is not under FetchContent. Pinned off anyway so a future CMake change there
-# cannot start pulling example-only dependencies (FTXUI, PortAudio) into our build.
+# it is not under FetchContent. Pinned off anyway so a future CMake change there cannot start
+# building programs we do not ship, and pulling in what only they need (FTXUI). This says
+# nothing about PortAudio: our own backend depends on it deliberately, and finds it itself.
 set(BUILD_EXAMPLES OFF CACHE BOOL "Build sendspin-cpp's own examples")
 
 include(FetchContent)
@@ -59,8 +60,14 @@ FetchContent_MakeAvailable(sendspin)
 # OFF forces it out even where libasound exists.
 option(SENDSPIN_CLI_WITH_ALSA "Build the ALSA output backend if libasound is available" ON)
 
+# PortAudio is optional and auto-detected the same way, and is what makes macOS audible --
+# there is no ALSA there at all. Turning this OFF forces it out even where libportaudio exists.
+option(SENDSPIN_CLI_WITH_PORTAUDIO
+    "Build the PortAudio output backend if libportaudio is available" ON)
+
 set(SENDSPIN_CLI_BACKENDS null stdout)
 set(SENDSPIN_CLI_ALSA_ENABLED OFF)
+set(SENDSPIN_CLI_PORTAUDIO_ENABLED OFF)
 
 if(SENDSPIN_CLI_WITH_ALSA)
     find_package(ALSA)
@@ -74,6 +81,34 @@ if(SENDSPIN_CLI_WITH_ALSA)
     endif()
 endif()
 
+if(SENDSPIN_CLI_WITH_PORTAUDIO)
+    # PortAudio ships no CMake config module, so pkg-config is the only portable way to find
+    # it. IMPORTED_TARGET is what makes that usable: on macOS the .pc file is the only thing
+    # that knows the CoreAudio/AudioToolbox/AudioUnit frameworks have to be linked too, and
+    # PkgConfig::PORTAUDIO carries them through where raw ${PORTAUDIO_LIBRARIES} would not.
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(PORTAUDIO QUIET IMPORTED_TARGET portaudio-2.0)
+    endif()
+
+    if(TARGET PkgConfig::PORTAUDIO)
+        set(SENDSPIN_CLI_PORTAUDIO_ENABLED ON)
+        list(APPEND SENDSPIN_CLI_BACKENDS portaudio)
+    elseif(NOT PkgConfig_FOUND)
+        # Named separately from "no portaudio": a host missing pkg-config would otherwise be
+        # told to install a library it already has.
+        message(STATUS
+            "sendspin-cli: pkg-config not found -- building without the PortAudio backend. "
+            "Install pkgconf (brew install pkgconf) or pkg-config, alongside portaudio, "
+            "to enable it.")
+    else()
+        message(STATUS
+            "sendspin-cli: libportaudio not found -- building without the PortAudio backend. "
+            "Install portaudio (brew install portaudio) or portaudio19-dev (Debian) "
+            "to enable it.")
+    endif()
+endif()
+
 # ==============================================================================
 # sendspin-cli
 # ==============================================================================
@@ -81,12 +116,16 @@ endif()
 # Everything except main() lives in a library, so the tests can link the parser and the
 # -o spec resolver without dragging in a process entry point. The compile definitions and
 # the include directory are PUBLIC because the headers use them: cli.h picks its default
-# -o device off SENDSPIN_CLI_HAVE_ALSA, so a test compiled without it would see a
-# different Options than the binary does.
+# -o device off SENDSPIN_CLI_HAVE_ALSA and SENDSPIN_CLI_HAVE_PORTAUDIO, so a test compiled
+# without them would see a different Options than the binary does.
+#
+# The backend libraries are PUBLIC for a separate reason: a static archive does not record
+# its own dependencies, so anything linking this one has to be handed them too.
 add_library(sendspin-cli-core STATIC
     src/cli.cpp
     src/audio_sink.cpp
     src/null_sink.cpp
+    src/pcm_volume.cpp
     src/player_listener.cpp
 )
 
@@ -94,6 +133,12 @@ if(SENDSPIN_CLI_ALSA_ENABLED)
     target_sources(sendspin-cli-core PRIVATE src/alsa_sink.cpp)
     target_link_libraries(sendspin-cli-core PUBLIC ALSA::ALSA)
     target_compile_definitions(sendspin-cli-core PUBLIC SENDSPIN_CLI_HAVE_ALSA)
+endif()
+
+if(SENDSPIN_CLI_PORTAUDIO_ENABLED)
+    target_sources(sendspin-cli-core PRIVATE src/portaudio_sink.cpp)
+    target_link_libraries(sendspin-cli-core PUBLIC PkgConfig::PORTAUDIO)
+    target_compile_definitions(sendspin-cli-core PUBLIC SENDSPIN_CLI_HAVE_PORTAUDIO)
 endif()
 
 target_include_directories(sendspin-cli-core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -149,6 +194,7 @@ if(SENDSPIN_CLI_BUILD_TESTS)
     add_executable(sendspin-cli-tests
         tests/cli_test.cpp
         tests/device_spec_test.cpp
+        tests/pcm_volume_test.cpp
     )
     target_link_libraries(sendspin-cli-tests PRIVATE sendspin-cli-core GTest::gtest_main)
     target_compile_options(sendspin-cli-tests PRIVATE -Wall -Wextra -Wpedantic)

@@ -29,10 +29,15 @@ namespace sendspin_cli {
 /// @brief The -o default: a real sound card where this build has one, silence otherwise.
 ///
 /// ALSA's own `default` PCM follows the host's configuration (PipeWire, PulseAudio or bare
-/// hardware), so it is the name most likely to just make noise. A build without the ALSA
-/// backend has no device to fall back to, so it defaults to discarding.
+/// hardware), so it is the name most likely to just make noise. It wins wherever both
+/// backends are built, because on Linux PortAudio is itself a layer over ALSA and going
+/// direct is one layer fewer. `portaudio` on its own follows the host's default output, which
+/// is what makes a bare run play on macOS. A build with neither backend has no device to fall
+/// back to, so it defaults to discarding.
 #ifdef SENDSPIN_CLI_HAVE_ALSA
 inline constexpr const char* DEFAULT_OUTPUT_DEVICE = "default";
+#elif defined(SENDSPIN_CLI_HAVE_PORTAUDIO)
+inline constexpr const char* DEFAULT_OUTPUT_DEVICE = "portaudio";
 #else
 inline constexpr const char* DEFAULT_OUTPUT_DEVICE = "null";
 #endif

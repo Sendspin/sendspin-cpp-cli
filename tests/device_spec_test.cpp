@@ -16,7 +16,7 @@
 /// @brief resolve_device_spec(): how -o reads its argument
 ///
 /// Pure string work, so none of this opens a device -- these tests pass on a machine with
-/// no sound card, and the ALSA-specific expectations are compiled per build.
+/// no sound card, and each backend's expectations are compiled per build.
 
 #include "audio_sink.h"
 
@@ -81,16 +81,6 @@ TEST(ResolveDeviceSpec, DeviceLessBackendsRefuseADevice) {
     EXPECT_NE(rejected("stdout:something").find("takes no device"), std::string::npos);
 }
 
-TEST(ResolveDeviceSpec, AReservedBackendPrefixThisBuildLacksIsNamed) {
-    // Reserved on purpose: without the entry this would fall through to rule 3 and be
-    // handed to ALSA as a PCM name, failing with "Unknown PCM portaudio:2" rather than
-    // saying which backends exist.
-    const std::string error = rejected("portaudio:2");
-    EXPECT_NE(error.find("PortAudio"), std::string::npos);
-    EXPECT_NE(error.find(audio_backend_list()), std::string::npos)
-        << "the error should name the backends this build has";
-}
-
 TEST(ResolveDeviceSpec, BackendListMatchesTheBuild) {
     EXPECT_NE(audio_backend_list().find("null"), std::string::npos);
     EXPECT_NE(audio_backend_list().find("stdout"), std::string::npos);
@@ -98,6 +88,11 @@ TEST(ResolveDeviceSpec, BackendListMatchesTheBuild) {
     EXPECT_NE(audio_backend_list().find("alsa"), std::string::npos);
 #else
     EXPECT_EQ(audio_backend_list().find("alsa"), std::string::npos);
+#endif
+#ifdef SENDSPIN_CLI_HAVE_PORTAUDIO
+    EXPECT_NE(audio_backend_list().find("portaudio"), std::string::npos);
+#else
+    EXPECT_EQ(audio_backend_list().find("portaudio"), std::string::npos);
 #endif
 }
 
@@ -143,19 +138,76 @@ TEST(ResolveDeviceSpec, AlsaPrefixSaysItIsNotInThisBuild) {
     // Distinct from the message a backend this project has never built gets: this one is
     // a build-configuration problem with a build-configuration fix.
     const std::string error = rejected("alsa:default");
+    EXPECT_NE(error.find("ALSA backend"), std::string::npos);
     EXPECT_NE(error.find("not in this build"), std::string::npos);
     EXPECT_NE(error.find("SENDSPIN_CLI_WITH_ALSA"), std::string::npos);
     EXPECT_NE(error.find(audio_backend_list()), std::string::npos);
-    EXPECT_EQ(error.find("PortAudio"), std::string::npos);
 }
 
 TEST(ResolveDeviceSpec, BarePcmNamesHaveNowhereToGo) {
     const std::string error = rejected("hw:2,0");
     EXPECT_NE(error.find("unknown output device"), std::string::npos);
     EXPECT_NE(error.find(audio_backend_list()), std::string::npos);
+#ifdef SENDSPIN_CLI_HAVE_PORTAUDIO
+    // The likeliest reason to land here on a PortAudio-only build is a device name typed
+    // without its prefix, so the message has to name the prefix, not just the backend list.
+    EXPECT_NE(error.find("-o portaudio:hw:2,0"), std::string::npos);
+#endif
 }
 
 #endif  // SENDSPIN_CLI_HAVE_ALSA
+
+// ---------------------------------------------------------------------------
+// The PortAudio prefix, whose device is optional
+// ---------------------------------------------------------------------------
+
+#ifdef SENDSPIN_CLI_HAVE_PORTAUDIO
+
+TEST(ResolveDeviceSpec, BarePortaudioMeansThisHostsDefaultOutput) {
+    // The one backend that resolves with no device: an empty DeviceSpec::device is how the
+    // sink is told to follow whatever the host's default output currently is.
+    const DeviceSpec spec = resolved("portaudio");
+    EXPECT_EQ(spec.backend, SinkBackend::PortAudio);
+    EXPECT_TRUE(spec.device.empty());
+}
+
+TEST(ResolveDeviceSpec, PortaudioTakesAnIndexOrAName) {
+    EXPECT_EQ(resolved("portaudio:2").backend, SinkBackend::PortAudio);
+    EXPECT_EQ(resolved("portaudio:2").device, "2");
+
+    // Device names carry spaces, and everything after the first colon is the device -- so a
+    // name with a colon of its own survives too.
+    EXPECT_EQ(resolved("portaudio:Built-in Output").device, "Built-in Output");
+    EXPECT_EQ(resolved("portaudio:MacBook Pro Speakers").device, "MacBook Pro Speakers");
+    EXPECT_EQ(resolved("portaudio:hw:1,0").device, "hw:1,0");
+}
+
+TEST(ResolveDeviceSpec, PortaudioPrefixWithNothingAfterTheColonIsRejected) {
+    // A written-but-empty device is a truncated command line, not a request for the default:
+    // -o portaudio already says that, and saying it twice two ways would hide a typo.
+    const std::string error = rejected("portaudio:");
+    EXPECT_NE(error.find("no device"), std::string::npos);
+    EXPECT_NE(error.find("-o portaudio on its own"), std::string::npos)
+        << "the message should point at the form that does mean the default";
+}
+
+#else  // no PortAudio backend in this build
+
+TEST(ResolveDeviceSpec, PortaudioSaysItIsNotInThisBuild) {
+    // Reserved on purpose: without the entry this would fall through to rule 3 and be handed
+    // to ALSA as a PCM name, failing with "Unknown PCM portaudio:2" rather than saying which
+    // backends exist and which flag turns this one on.
+    for (const char* spec : {"portaudio", "portaudio:2", "portaudio:Built-in Output"}) {
+        const std::string error = rejected(spec);
+        EXPECT_NE(error.find("PortAudio backend"), std::string::npos) << spec;
+        EXPECT_NE(error.find("not in this build"), std::string::npos) << spec;
+        EXPECT_NE(error.find("SENDSPIN_CLI_WITH_PORTAUDIO"), std::string::npos) << spec;
+        EXPECT_NE(error.find(audio_backend_list()), std::string::npos)
+            << spec << ": the error should name the backends this build has";
+    }
+}
+
+#endif  // SENDSPIN_CLI_HAVE_PORTAUDIO
 
 }  // namespace
 }  // namespace sendspin_cli

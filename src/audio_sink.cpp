@@ -20,6 +20,10 @@
 #include "alsa_sink.h"
 #endif
 
+#ifdef SENDSPIN_CLI_HAVE_PORTAUDIO
+#include "portaudio_sink.h"
+#endif
+
 #include <memory>
 #include <string>
 
@@ -27,20 +31,34 @@ namespace sendspin_cli {
 
 namespace {
 
+/// Whether `-o <name>` wants a device after it.
+enum class DeviceArg {
+    None,      ///< `<name>` alone; `<name>:<device>` is an error
+    Required,  ///< `<name>:<device>` only; a bare `<name>` is an error
+    Optional,  ///< either, where a bare `<name>` means the backend's own default device
+};
+
 /// A backend prefix this build can resolve.
 struct BuiltBackend {
     const char* name;
     SinkBackend backend;
-    bool takes_device;  ///< false for the device-less sinks, which reject `<name>:<device>`
+    DeviceArg device_arg;
 };
 
 /// The `null` and `stdout` sinks exist on every build, so those two names mean the same
 /// thing everywhere. ALSA ships a PCM called "null" too; ours wins.
+///
+/// PortAudio's device is optional because it has a meaningful default of its own -- the
+/// host's default output -- which is what makes a bare `-o portaudio` play. ALSA's is
+/// required because its equivalent is a PCM *named* `default`, reachable by rule 3.
 constexpr BuiltBackend BUILT_BACKENDS[] = {
-    {"null", SinkBackend::Null, false},
-    {"stdout", SinkBackend::Stdout, false},
+    {"null", SinkBackend::Null, DeviceArg::None},
+    {"stdout", SinkBackend::Stdout, DeviceArg::None},
 #ifdef SENDSPIN_CLI_HAVE_ALSA
-    {"alsa", SinkBackend::Alsa, true},
+    {"alsa", SinkBackend::Alsa, DeviceArg::Required},
+#endif
+#ifdef SENDSPIN_CLI_HAVE_PORTAUDIO
+    {"portaudio", SinkBackend::PortAudio, DeviceArg::Optional},
 #endif
 };
 
@@ -50,19 +68,20 @@ struct ReservedBackend {
     const char* reason;
 };
 
-/// Backend names reserved on purpose, so `-o <name>:<device>` gets a straight answer.
+/// Every backend prefix this project knows, and why a build might not have it.
 ///
-/// Without an entry here the spec would fall through to rule 3 and be handed to ALSA as a
-/// PCM name -- so `-o portaudio:2` would fail with "Unknown PCM portaudio:2" rather than
-/// saying which backends exist. Reserving the name is also the hook the PortAudio task
-/// (docs/ROADMAP.md item 3) removes when it fills the backend in.
+/// Consulted only after BUILT_BACKENDS misses, so an entry for a backend this build *does*
+/// have is unreachable -- which is why the table needs no #ifdefs of its own. Without it a
+/// spec would fall through to rule 3 and be handed to ALSA as a PCM name, so `-o portaudio:2`
+/// on a build without PortAudio would fail with "Unknown PCM portaudio:2" rather than saying
+/// what this build has and which flag turns the backend on.
 constexpr ReservedBackend RESERVED_BACKENDS[] = {
-#ifndef SENDSPIN_CLI_HAVE_ALSA
     {"alsa",
      "the ALSA backend is not in this build -- libasound was missing, or it was configured "
      "with -DSENDSPIN_CLI_WITH_ALSA=OFF"},
-#endif
-    {"portaudio", "the PortAudio backend is not implemented yet -- see docs/ROADMAP.md item 3"},
+    {"portaudio",
+     "the PortAudio backend is not in this build -- libportaudio was missing, or it was "
+     "configured with -DSENDSPIN_CLI_WITH_PORTAUDIO=OFF"},
 };
 
 /// Reports a prefix this build recognizes but cannot serve. Always names what it *can*
@@ -90,7 +109,7 @@ bool resolve_device_spec(const std::string& spec, DeviceSpec& out, std::string& 
         return false;
     }
 
-    // 1. A reserved whole-string name for one of the device-less sinks.
+    // 1. A whole-string backend name: the device-less sinks, or one whose device is optional.
     if (spec == "-") {
         out = {SinkBackend::Stdout, ""};
         return true;
@@ -99,15 +118,17 @@ bool resolve_device_spec(const std::string& spec, DeviceSpec& out, std::string& 
         if (spec != entry.name) {
             continue;
         }
-        if (!entry.takes_device) {
-            out = {entry.backend, ""};
-            return true;
+        if (entry.device_arg == DeviceArg::Required) {
+            // A bare backend name that needs one. Saying so beats handing "alsa" to ALSA as a
+            // PCM name and reporting that no such PCM exists.
+            error = "-o '" + spec + "' names a backend but no device -- write -o " + spec +
+                    ":<device>, or -l to list them";
+            return false;
         }
-        // A bare backend name that needs one. Saying so beats handing "alsa" to ALSA as a
-        // PCM name and reporting that no such PCM exists.
-        error = "-o '" + spec + "' names a backend but no device -- write -o " + spec +
-                ":<device>, or -l to list them";
-        return false;
+        // An empty device is what None and Optional both resolve to; the backend decides what
+        // it means, which for PortAudio is this host's default output.
+        out = {entry.backend, ""};
+        return true;
     }
 
     // 2. <backend>:<device>. First colon only: ALSA device names carry their own, so
@@ -120,14 +141,19 @@ bool resolve_device_spec(const std::string& spec, DeviceSpec& out, std::string& 
             if (prefix != entry.name) {
                 continue;
             }
-            if (!entry.takes_device) {
+            if (entry.device_arg == DeviceArg::None) {
                 error = "the " + prefix + " backend takes no device, so -o '" + spec +
                         "' means nothing -- use -o " + prefix + " on its own";
                 return false;
             }
             if (rest.empty()) {
-                error = "-o '" + spec + "' names no device -- write -o " + prefix +
-                        ":<device>, or -l to list them";
+                // A written-but-empty device is a truncated command line, not a request for
+                // the default -- the same call parse_server_url() makes about a bare `host:`.
+                error = "-o '" + spec + "' names no device -- write -o " + prefix + ":<device>";
+                if (entry.device_arg == DeviceArg::Optional) {
+                    error += ", or -o " + prefix + " on its own for this host's default";
+                }
+                error += ", or -l to list them";
                 return false;
             }
             out = {entry.backend, rest};
@@ -142,13 +168,21 @@ bool resolve_device_spec(const std::string& spec, DeviceSpec& out, std::string& 
     }
 
     // 3. Anything else is an ALSA PCM name, which is how squeezelite's -o behaves: there
-    //    is no fixed device list to keep in sync with the host's hardware.
+    //    is no fixed device list to keep in sync with the host's hardware. PortAudio is
+    //    deliberately not reachable this way -- it *does* enumerate its devices, so the
+    //    justification does not carry over, and a bare name resolving per host is exactly
+    //    what rule 1 keeps `null` safe from.
 #ifdef SENDSPIN_CLI_HAVE_ALSA
     out = {SinkBackend::Alsa, spec};
     return true;
 #else
-    error = "unknown output device '" + spec + "' -- this build has: " + audio_backend_list() +
-            " (run with -l)";
+    error = "unknown output device '" + spec + "' -- this build has: " + audio_backend_list();
+#ifdef SENDSPIN_CLI_HAVE_PORTAUDIO
+    // On a PortAudio-only build the commonest way to land here is a device name typed without
+    // its prefix, so name the prefix rather than only the backend list.
+    error += ". A PortAudio device needs its prefix: -o portaudio:" + spec;
+#endif
+    error += " (run with -l)";
     return false;
 #endif
 }
@@ -175,6 +209,15 @@ std::unique_ptr<AudioSink> make_audio_sink(const std::string& device, std::strin
 #else
             break;  // unreachable: resolve_device_spec() never yields Alsa without the backend
 #endif
+        case SinkBackend::PortAudio:
+#ifdef SENDSPIN_CLI_HAVE_PORTAUDIO
+            if (!PortAudioSink::probe(spec.device, error)) {
+                return nullptr;
+            }
+            return std::make_unique<PortAudioSink>(spec.device);
+#else
+            break;  // unreachable, for the same reason as Alsa above
+#endif
     }
 
     error = "internal error: output device '" + device + "' resolved to a backend this build "
@@ -187,6 +230,9 @@ void print_audio_devices(std::FILE* out) {
     std::fprintf(out, "  null      discard audio; needs no sound card at all\n");
     std::fprintf(out, "  stdout    raw interleaved PCM on stdout, e.g. | aplay -f cd\n");
     std::fprintf(out, "  -         alias for stdout\n");
+#ifdef SENDSPIN_CLI_HAVE_PORTAUDIO
+    std::fprintf(out, "  portaudio this host's default output device, whatever it currently is\n");
+#endif
 
     std::fprintf(out,
                  "\nHow -o reads its argument, in this order:\n"
@@ -203,7 +249,12 @@ void print_audio_devices(std::FILE* out) {
 #else
     std::fprintf(out,
                  "  3. anything else would be an ALSA PCM name, but this build has no ALSA\n"
-                 "     backend, so only the names above resolve here.\n");
+                 "     backend, so only the forms above resolve here.\n");
+#ifdef SENDSPIN_CLI_HAVE_PORTAUDIO
+    std::fprintf(out,
+                 "     A PortAudio device is reached through its prefix, never bare -- see the\n"
+                 "     device list below.\n");
+#endif
 #endif
 
 #ifdef SENDSPIN_CLI_HAVE_ALSA
@@ -219,8 +270,24 @@ void print_audio_devices(std::FILE* out) {
                  "so its list says little about the hardware behind it. Only the formats\n"
                  "sendspin-cli can emit are shown: S8, S16_LE, S24_3LE, S32_LE.\n");
 #else
-    std::fprintf(out, "\nThis build has no ALSA backend (libasound was missing, or it was\n");
-    std::fprintf(out, "configured with -DSENDSPIN_CLI_WITH_ALSA=OFF).\n");
+    std::fprintf(out,
+                 "\nThis build has no ALSA backend (libasound was missing, or it was configured\n"
+                 "with -DSENDSPIN_CLI_WITH_ALSA=OFF), so it plays through: %s.\n",
+                 audio_backend_list().c_str());
+#endif
+
+#ifdef SENDSPIN_CLI_HAVE_PORTAUDIO
+    std::fprintf(out, "\nPortAudio output devices on this host (-o portaudio:<index|name>):\n");
+    PortAudioSink::list_devices(out);
+    std::fprintf(out,
+                 "\nThe name is the form worth writing down. PortAudio numbers devices as it\n"
+                 "walks each host API, so an index shifts as devices come and go; a name is\n"
+                 "matched in full and case-insensitively, and one that matches more than one\n"
+                 "device is refused rather than guessed at. -o portaudio with no device at all\n"
+                 "follows this host's default output, resolved afresh at every stream.\n"
+                 "\nInput-only devices are left out, since -o cannot play through them. The\n"
+                 "rate shown is each device's default, not a limit -- the stream's own rate is\n"
+                 "what gets requested, and the host API resamples where it must.\n");
 #endif
 }
 

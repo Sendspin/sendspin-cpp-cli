@@ -18,6 +18,7 @@
 #pragma once
 
 #include "audio_sink.h"
+#include "pcm_volume.h"
 
 #include <alsa/asoundlib.h>
 
@@ -46,10 +47,14 @@ namespace sendspin_cli {
 /// room in short slices (snd_pcm_wait) and re-checks the abort flag between them. That is
 /// the write_mutex_ + abort_write_ pairing upstream's PortAudio sink uses.
 ///
-/// Volume is applied in software (Q32 fixed-point, quadratic taper), mirroring upstream's
-/// PortAudioSink::apply_volume_(). The ALSA hardware mixer is deliberately not used: the
-/// default device here is usually PipeWire's ALSA plugin, where a hardware mixer element
-/// is either absent or controls something other than this stream.
+/// Volume is applied in software, through the shared Q32 fixed-point scaling in pcm_volume.h,
+/// so a stream sounds the same here as through PortAudio. Scaling happens on the way *into*
+/// the device, so a volume change reaches only audio not yet written -- unlike PortAudioSink,
+/// which scales in its callback and so also affects what is already buffered.
+///
+/// The ALSA hardware mixer is deliberately not used: the default device here is usually
+/// PipeWire's ALSA plugin, where a hardware mixer element is either absent or controls
+/// something other than this stream.
 class AlsaAudioSink final : public AudioSink {
 public:
     explicit AlsaAudioSink(std::string device);
@@ -109,8 +114,8 @@ private:
 
     std::atomic<uint8_t> volume_{100};
     std::atomic<bool> muted_{false};
-    /// Q32 fixed-point gain: 1<<32 is unity, 0 is silence. Read on the audio thread.
-    std::atomic<uint64_t> volume_multiplier_;
+    /// Q32 fixed-point gain: Q32_ONE is unity, 0 is silence. Read on the audio thread.
+    std::atomic<uint64_t> volume_multiplier_{Q32_ONE};
 };
 
 }  // namespace sendspin_cli

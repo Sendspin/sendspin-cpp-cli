@@ -22,8 +22,9 @@ from the same host.
 - **Library:** sendspin-cpp (`player` role; FLAC / Opus / PCM), pulled via CMake
   `FetchContent`.
 - **Audio out:** an `AudioSink` seam — ALSA (the default Linux/Docker backend,
-  with `snd_pcm_delay()`-based sync feedback), a null/stdout sink for device-less
-  containers, and PortAudio for cross-platform development still to come.
+  with `snd_pcm_delay()`-based sync feedback), PortAudio (the cross-platform one,
+  and the only way to make noise on macOS), and a null/stdout sink for
+  device-less containers.
 - **Binary:** `sendspin-cli`.
 
 ## Build
@@ -33,22 +34,28 @@ configure. sendspin-cpp is pulled in with `FetchContent` at a pinned tag, and it
 fetches its own dependencies (ArduinoJson, micro-flac, micro-opus, IXWebSocket) in
 turn.
 
-**libasound (ALSA) is optional and auto-detected.** Where the development headers
-are present, the ALSA output backend is compiled in and becomes the default `-o`;
-where they are not, the build silently falls back to the device-less sinks, so
-macOS and sound-card-less containers still build and run. The configure output
-says which backends you got:
+**Both audio backends are optional and auto-detected.** Whichever of libasound
+and libportaudio is present gets compiled in; where neither is, the build falls
+back to the device-less sinks, so a sound-card-less container still builds and
+runs. The configure output says which backends you got:
 
 ```
--- sendspin-cli audio backends: null, stdout, alsa
+-- sendspin-cli audio backends: null, stdout, alsa, portaudio
 ```
 
 ```bash
-sudo dnf install alsa-lib-devel      # Fedora / RHEL
-sudo apt install libasound2-dev      # Debian / Ubuntu
+sudo dnf install alsa-lib-devel portaudio-devel   # Fedora / RHEL
+sudo apt install libasound2-dev portaudio19-dev   # Debian / Ubuntu
+brew install portaudio pkgconf                    # macOS (there is no ALSA)
 ```
 
-Pass `-DSENDSPIN_CLI_WITH_ALSA=OFF` to leave ALSA out even where it is available.
+ALSA is found with CMake's own `find_package(ALSA)`; PortAudio ships no CMake
+config module, so it is found with `pkg-config` (`portaudio-2.0`) — on macOS that
+is also the only thing that knows the CoreAudio frameworks have to be linked too.
+A host without `pkg-config` gets its own configure message saying so.
+
+Pass `-DSENDSPIN_CLI_WITH_ALSA=OFF` or `-DSENDSPIN_CLI_WITH_PORTAUDIO=OFF` to
+leave a backend out even where its library is available.
 
 > C++20 rather than C++17: sendspin-cpp's host build declares
 > `target_compile_features(sendspin PUBLIC cxx_std_20)`, so the requirement
@@ -105,17 +112,30 @@ nearly everything because the plug layer converts, so its list says little about
 the hardware behind it. A device another process holds exclusively is reported as
 in use rather than dropping out of the listing.
 
+On a host with PortAudio, `-l` also lists its output devices — index, name, host
+API, output channel count and default rate, with the system default marked and
+input-only devices left out:
+
+```
+  idx  name                                   host API     out ch  default rate
+    0  Odyssey G95NC                          Core Audio    2 ch   48000 Hz
+    2  MacBook Pro Speakers                   Core Audio    2 ch   48000 Hz  (system default)
+```
+
 `-o` reads its argument in three steps, in this order:
 
-1. one of the reserved device-less names — `null` discards audio, `stdout` (or
-   `-`) writes raw interleaved PCM to standard output. These mean the same thing
-   on every build, even where ALSA ships a PCM of the same name;
+1. a backend name on its own — `null` discards audio, `stdout` (or `-`) writes raw
+   interleaved PCM to standard output, and `portaudio` follows whatever this host's
+   default output currently is. These mean the same thing on every build, even
+   where ALSA ships a PCM of the same name;
 2. `<backend>:<device>`, split on the **first** colon, where the backend is one of
-   the names the build reports (`null, stdout, alsa`). The split is on the first
-   colon because ALSA device names carry their own, so `-o alsa:hw:2,0` is the
-   `alsa` backend playing `hw:2,0`;
+   the names the build reports (`null, stdout, alsa, portaudio`). The split is on
+   the first colon because ALSA device names carry their own, so `-o alsa:hw:2,0`
+   is the `alsa` backend playing `hw:2,0`;
 3. anything else is an ALSA PCM name, which is squeezelite's model — so `-o hw:2,0`
-   and `-o default` keep working with no prefix at all.
+   and `-o default` keep working with no prefix at all. This step is deliberately
+   ALSA-only: PortAudio *does* enumerate its devices, so letting a bare name reach
+   one would make the same command line mean different things per host.
 
 ```bash
 ./build/sendspin-cli -l                 # what this host can play through
@@ -123,12 +143,29 @@ in use rather than dropping out of the listing.
 ./build/sendspin-cli -o hw:2,0          # a card directly, bypassing the sound server
 ./build/sendspin-cli -o plughw:2,0      # same, letting ALSA convert rate/format
 ./build/sendspin-cli -o alsa:hw:2,0     # the same card, naming the backend explicitly
+./build/sendspin-cli -o portaudio       # this host's default output (what macOS wants)
+./build/sendspin-cli -o portaudio:2     # a PortAudio device by index, as -l prints it
+./build/sendspin-cli -o "portaudio:MacBook Pro Speakers"   # ...or by name
 ./build/sendspin-cli -o null            # no sound card needed at all
 ```
 
-`default` is the default when the ALSA backend is present, and `null` when it is
-not. Volume is applied in software, so it works the same through PipeWire's ALSA
-plugin as through bare hardware; the ALSA hardware mixer is a follow-up.
+A PortAudio device name is matched in full and case-insensitively. The **name is
+the form worth writing down**: PortAudio numbers devices as it walks each host
+API, so an index shifts as devices come and go. A name matching more than one
+device is refused, naming the candidates, rather than guessed at — two host APIs
+can offer the same card under the same name.
+
+The default `-o` is `default` where the ALSA backend is present, `portaudio` where
+only that one is, and `null` where neither is. ALSA wins over PortAudio wherever
+both are built, because on Linux PortAudio is itself a layer over ALSA and going
+direct is one layer fewer.
+
+Volume is applied in software on both backends, sharing one Q32 fixed-point
+implementation, so a stream sounds the same either way — and works the same
+through PipeWire's ALSA plugin as through bare hardware. The ALSA hardware mixer
+is a follow-up. The one audible difference: PortAudio scales in its audio
+callback, so a volume change also reaches audio already buffered, where ALSA
+scales on the way in and so only affects what has not been written yet.
 
 ### Flags, and what they refuse
 
@@ -142,6 +179,9 @@ single `error:` line naming it rather than falling back to a default:
 ```console
 $ sendspin-cli -s music.local:abc
 error: -s 'music.local:abc': 'abc' is not a port number (expected 1-65535)
+
+$ sendspin-cli -o portaudio:99
+error: -o portaudio:99: no device at that index -- indices run 0-2 here, and -l lists the ones -o can reach
 ```
 
 That is a deliberate change from warn-and-continue. `-s` used to warn about a

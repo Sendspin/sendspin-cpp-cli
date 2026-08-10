@@ -14,6 +14,8 @@
 
 #include "cli.h"
 
+#include "audio_sink.h"
+
 #include <getopt.h>
 #include <unistd.h>
 
@@ -285,9 +287,13 @@ void print_usage(std::FILE* out, const char* prog) {
     std::fprintf(out, "Options:\n");
     std::fprintf(out, "  -o <device>   Output device (default: %s). Either a reserved name\n",
                  DEFAULT_OUTPUT_DEVICE);
-    std::fprintf(out, "                (null, stdout, -), a <backend>:<device> pair split on\n");
-    std::fprintf(out, "                the first colon (-o alsa:hw:2,0), or an ALSA PCM name\n");
-    std::fprintf(out, "                on its own (-o hw:2,0). -l lists them\n");
+    std::fprintf(out, "                (null, stdout, -), or a <backend>:<device> pair split on\n");
+    std::fprintf(out, "                the first colon, where <backend> is one of: %s\n",
+                 audio_backend_list().c_str());
+#ifdef SENDSPIN_CLI_HAVE_ALSA
+    std::fprintf(out, "                Anything else is an ALSA PCM name: -o hw:2,0, -o default\n");
+#endif
+    std::fprintf(out, "                -l lists this host's devices and what they accept\n");
     std::fprintf(out, "  -l            List output devices with their capabilities, and exit\n");
     std::fprintf(out, "  -n <name>     Friendly name (default: this host's name)\n");
     std::fprintf(out, "  -s <server>   Connect out to <host>[:<port>] or a ws:// URL\n");

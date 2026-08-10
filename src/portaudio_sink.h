@@ -1,0 +1,249 @@
+// Copyright 2026 sendspin-cpp-cli Contributors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+/// @file portaudio_sink.h
+/// @brief AudioSink over PortAudio, with callback DAC-time sync feedback
+
+#pragma once
+
+#include "audio_sink.h"
+#include "pcm_volume.h"
+
+#include <portaudio.h>
+
+#include <atomic>
+#include <condition_variable>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <mutex>
+#include <string>
+#include <vector>
+
+namespace sendspin_cli {
+
+/// @brief Holds one Pa_Initialize()/Pa_Terminate() pair for as long as it lives.
+///
+/// PortAudio reference-counts the pair, so a scoped guard around a one-off query composes
+/// with the one a live sink holds: whichever guard is destroyed last is the one that really
+/// terminates. That is what lets probe() and list_devices() be static and self-contained.
+///
+/// THREAD SAFETY: neither Pa_Initialize() nor Pa_Terminate() is thread-safe, so every guard
+/// must be constructed and destroyed on the main loop thread. It is -- probe(),
+/// list_devices() and the sink's own constructor and destructor all run there, per the
+/// AudioSink threading contract.
+class PortAudioGuard {
+public:
+    PortAudioGuard();
+    ~PortAudioGuard();
+
+    PortAudioGuard(const PortAudioGuard&) = delete;
+    PortAudioGuard& operator=(const PortAudioGuard&) = delete;
+
+    /// @brief True if PortAudio came up. When false, no other Pa_* call will work.
+    bool ok() const;
+
+    /// @brief Why initialization failed. Only meaningful when ok() is false.
+    const char* error() const;
+
+private:
+    PaError err_;
+};
+
+/// @brief Lock-free single-producer/single-consumer byte ring buffer.
+///
+/// Bridges AudioSink::write()'s push model to PortAudio's pull callback: the sync task
+/// writes, the audio callback reads, and neither waits on the other. The ring itself needs no
+/// lock and allocates nothing; what the callback does around it -- notifying the producer's
+/// condition variable, and invoking on_frames_played -- is not strictly realtime-safe, and is
+/// the same pragmatic trade upstream's reference makes.
+///
+/// The producer owns write_pos_ and the consumer owns read_pos_. That each index has exactly
+/// one writer is the invariant the whole class rests on, and it is why request_clear() only
+/// *asks* for a drain that the consumer performs on its next read() -- resetting read_pos_
+/// from the producer side would break it.
+///
+/// Lifted from upstream's PortAudioSink (examples/common/portaudio_sink.cpp), so the two
+/// implementations buffer alike.
+class PortAudioRingBuffer {
+public:
+    /// @brief Writes up to `len` bytes. Producer side.
+    /// @return Bytes actually written, which is short of `len` when the ring is nearly full.
+    size_t write(const uint8_t* data, size_t len);
+
+    /// @brief Reads up to `len` bytes, zero-filling any shortfall. Consumer side.
+    ///
+    /// Zeroed bytes are silence for the signed PCM the player emits, so a starved callback
+    /// outputs a gap rather than whatever the device buffer last held.
+    /// @return Bytes of real audio read, not counting the silence padding.
+    size_t read(uint8_t* dest, size_t len);
+
+    /// @brief Bytes available to read.
+    size_t available() const;
+
+    /// @brief Bytes that can be written before the ring is full.
+    size_t free_space() const;
+
+    /// @brief Asks the consumer to drop everything buffered, on its next read().
+    ///
+    /// Safe to call while the callback is running, and the only clearing operation that is.
+    void request_clear();
+
+    /// @brief Drops everything buffered, here and now.
+    ///
+    /// Writes both positions, so it is only safe with no reader running -- after
+    /// Pa_AbortStream(), with the producer's mutex held.
+    void drop();
+
+    /// @brief Resizes the ring and drops everything in it. Same restriction as drop().
+    void reset(size_t capacity);
+
+private:
+    std::vector<uint8_t> buffer_;
+    size_t capacity_{0};
+    std::atomic<size_t> write_pos_{0};
+    std::atomic<size_t> read_pos_{0};
+    std::atomic<bool> clear_requested_{false};
+};
+
+/// @brief An AudioSink that plays through PortAudio.
+///
+/// The cross-platform backend, and the only one that makes noise on macOS. The device string
+/// is what followed `-o portaudio:` -- an index as `-l` prints it, a device name matched in
+/// full and case-insensitively, or empty for whatever this host's default output is.
+///
+/// The device is resolved afresh at every configure() rather than once at construction, so a
+/// bare `-o portaudio` follows the host's default output as the user changes it, and a device
+/// that was absent at startup is picked up at the next stream.
+///
+/// THREAD SAFETY: mutex_ guards stream_ and the ring buffer's producer side. The audio
+/// callback deliberately takes no lock: it reads the ring lock-free, and reads the format
+/// fields (bytes_per_frame_, bits_, stream_rate_) as plain values. Those unsynchronised reads
+/// are legal only because of one ordering invariant -- **everything the callback reads is
+/// mutated only while the callback provably cannot run**: either before Pa_StartStream(), which
+/// is what first lets it run, or after Pa_AbortStream()/Pa_CloseStream(), neither of which
+/// returns while it is still running. That covers the ring's own storage as well as the format
+/// fields.
+///
+/// write() blocks on a condition variable rather than holding mutex_ throughout, which is
+/// where this sink differs from AlsaAudioSink: waiting releases the mutex, so configure() and
+/// clear() can run to completion while a write() is parked. stream_generation_ is what makes
+/// that safe -- see its declaration.
+///
+/// Volume is applied in the callback, on PortAudio's own output buffer, mirroring upstream.
+/// That needs no scratch copy -- unlike AlsaAudioSink, which scales on the way in -- at the
+/// cost of a volume change also reaching audio that is already buffered. Both are correct;
+/// this one just takes effect sooner.
+class PortAudioSink final : public AudioSink {
+public:
+    explicit PortAudioSink(std::string device);
+    ~PortAudioSink() override;
+
+    std::string name() const override;
+    bool configure(uint32_t sample_rate, uint8_t channels, uint8_t bits_per_sample) override;
+    size_t write(const uint8_t* data, size_t length, uint32_t timeout_ms) override;
+    void clear() override;
+    void stop() override;
+    void set_volume(uint8_t volume) override;
+    void set_muted(bool muted) override;
+
+    /// @brief Checks that `device` names exactly one output device on this host.
+    ///
+    /// Called from make_audio_sink() so a bad -o fails at startup rather than at the first
+    /// stream. Deliberately resolution only: no format is tested, because a device that
+    /// refuses 44.1 kHz but plays 48 kHz is configure()'s business to report per stream, not
+    /// a reason to refuse to start.
+    /// @param error Set to a human-readable reason when the return value is false.
+    /// @return true if the device spec names one usable output device.
+    static bool probe(const std::string& device, std::string& error);
+
+    /// @brief Prints this host's PortAudio output devices. Backs part of -l.
+    ///
+    /// Index, name, host API, output channel count and default rate, with the system default
+    /// marked. Input-only devices are left out, since -o cannot reach them.
+    static void list_devices(std::FILE* out);
+
+private:
+    static int pa_callback(const void* input, void* output, unsigned long frame_count,
+                           const PaStreamCallbackTimeInfo* time_info,
+                           PaStreamCallbackFlags status_flags, void* user_data);
+
+    /// Opens and starts a stream on `device` for a format. Caller holds mutex_ and has
+    /// already closed any previous stream.
+    bool open_stream_(PaDeviceIndex device, uint32_t sample_rate, uint8_t channels,
+                      uint8_t bits_per_sample);
+    /// Stops and closes the stream if open, and forgets the format. Caller holds mutex_.
+    /// Idempotent, and deliberately leaves stopping_ alone -- see stop().
+    void close_stream_();
+    /// Restarts the open stream from an empty ring, for a new stream of the same format.
+    /// Caller holds mutex_ and stream_ is not null.
+    /// @return true if the stream is running again.
+    bool restart_stream_();
+    /// True while the open stream is still being driven by PortAudio. Caller holds mutex_.
+    bool stream_alive_() const;
+    /// Ring size in bytes for the open stream's format. Caller holds mutex_, and the format
+    /// fields are already set.
+    size_t ring_capacity_(double device_latency_s) const;
+    /// Recomputes volume_multiplier_ from volume_ and muted_.
+    void update_volume_multiplier_();
+
+    /// Held for the sink's whole life, and declared first so it is destroyed last: the
+    /// stream has to be closed before PortAudio is terminated under it.
+    PortAudioGuard pa_;
+
+    /// The device as -o spelled it, resolved per stream rather than kept as an index.
+    std::string device_;
+
+    /// Serialises stream_, the format fields, and the ring buffer's producer side.
+    std::mutex mutex_;
+    /// Signalled by the audio callback once it has drained a buffer's worth of the ring.
+    std::condition_variable space_available_;
+    PortAudioRingBuffer ring_;
+    PaStream* stream_{nullptr};
+    PaDeviceIndex device_index_{paNoDevice};
+    uint32_t rate_{0};
+    uint8_t channels_{0};
+    uint8_t bits_{0};
+    /// Read by the audio callback. See the ordering invariant in the class docstring.
+    size_t bytes_per_frame_{0};
+    /// The rate PortAudio says it really opened, for the callback's frame-to-time maths.
+    /// Read by the audio callback, under the same invariant.
+    double stream_rate_{0.0};
+
+    /// Bumped whenever the stream is opened, closed, restarted or flushed.
+    ///
+    /// write() captures it before waiting and compares it on waking. Waiting releases mutex_,
+    /// so a configure() or clear() can complete in that window -- and the rest of the caller's
+    /// buffer then belongs to a stream that no longer exists, or to audio the player has just
+    /// asked us to drop. Without this the loop would feed those bytes to the new stream, using
+    /// the frame size of the old one, and report them as consumed.
+    uint64_t stream_generation_{0};
+
+    /// Set before stop() takes the mutex, so a write() blocked on a full ring bails out
+    /// promptly instead of making shutdown wait for the device. Latches: nothing clears it,
+    /// which is why close_stream_() must not touch it -- a format change would otherwise
+    /// un-latch a shutdown already in progress.
+    std::atomic<bool> stopping_{false};
+    /// Latches when write() first finds no usable stream, purely so it complains once rather
+    /// than on every buffer -- writes arrive around fifty times a second. Whether to discard
+    /// is stream_alive_()'s call, not this flag's. Cleared by a configure() that succeeds.
+    std::atomic<bool> failed_{false};
+
+    std::atomic<uint8_t> volume_{100};
+    std::atomic<bool> muted_{false};
+    /// Q32 fixed-point gain: Q32_ONE is unity, 0 is silence. Read by the audio callback.
+    std::atomic<uint64_t> volume_multiplier_{Q32_ONE};
+};
+
+}  // namespace sendspin_cli

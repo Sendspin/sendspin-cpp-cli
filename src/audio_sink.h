@@ -28,8 +28,9 @@ namespace sendspin_cli {
 
 /// @brief Destination for decoded PCM frames coming out of the sendspin player role.
 ///
-/// One implementation per audio backend. This scaffold ships only NullAudioSink;
-/// the ALSA and PortAudio backends land as their own tasks (see docs/ROADMAP.md).
+/// One implementation per audio backend: NullAudioSink (the device-less null/stdout pair),
+/// AlsaAudioSink and PortAudioSink, the last two compiled in only where their library is
+/// available.
 ///
 /// THREAD SAFETY: write() is called on the sendspin sync task's background thread.
 /// Every other method is called on the main loop thread. An implementation must
@@ -91,26 +92,33 @@ protected:
 
 /// @brief Which backend a -o spec named.
 enum class SinkBackend {
-    Null,    ///< discard everything; needs no device
-    Stdout,  ///< raw interleaved PCM on stdout; needs no device
-    Alsa,    ///< an ALSA PCM, named by DeviceSpec::device
+    Null,       ///< discard everything; needs no device
+    Stdout,     ///< raw interleaved PCM on stdout; needs no device
+    Alsa,       ///< an ALSA PCM, named by DeviceSpec::device
+    PortAudio,  ///< a PortAudio device by index or name, or this host's default if empty
 };
 
 /// @brief A -o spec resolved into a backend and the device to hand it.
 struct DeviceSpec {
     SinkBackend backend{SinkBackend::Null};
-    std::string device;  ///< backend-specific device name; empty for the device-less sinks
+    /// Backend-specific device name. Empty for the device-less sinks, and for a backend whose
+    /// device is optional -- PortAudio reads an empty one as this host's default output.
+    std::string device;
 };
 
 /// @brief Resolves a -o spec, without opening anything.
 ///
 /// The rule, in this order:
-///  1. The whole string is a reserved device-less name (`null`, `stdout`, `-`).
+///  1. The whole string names a backend on its own: a reserved device-less name (`null`,
+///     `stdout`, `-`), or a backend whose device is optional (`portaudio`). A backend that
+///     requires a device (`alsa`) is rejected here rather than handed an empty one.
 ///  2. The string contains a colon and the text before the **first** colon names a
 ///     backend -- first colon only, because ALSA device names carry their own, so
 ///     `alsa:hw:2,0` is the ALSA backend playing `hw:2,0`.
 ///  3. Otherwise it is an ALSA PCM name, which is squeezelite's `-o` model. `hw:2,0` and
-///     `default` keep working with no prefix at all.
+///     `default` keep working with no prefix at all. This stays ALSA-only on purpose:
+///     PortAudio *does* have an enumerable device list, so reaching one of its devices
+///     without the prefix would make the same `-o` mean different things per host.
 ///
 /// Separate from make_audio_sink() because this half is pure string work: it can be
 /// tested, and reasoned about, without a sound card in the machine.
@@ -124,8 +132,8 @@ std::string audio_backend_list();
 /// @brief Builds the sink named by -o.
 ///
 /// Resolves the spec (see resolve_device_spec()) and opens what it names. This is the
-/// registry every future backend hooks into: a PortAudio task adds its entry there and
-/// its construction here.
+/// registry every backend hooks into: an entry in the table resolve_device_spec() reads,
+/// and its construction here.
 /// @param device Device/backend spec as given to -o.
 /// @param error Set to a human-readable reason when the return value is nullptr.
 /// @return The sink, or nullptr if `device` is not recognized.
