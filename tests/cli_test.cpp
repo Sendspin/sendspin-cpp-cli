@@ -489,6 +489,181 @@ TEST(ParseServerUrl, Rejected) {
 }
 
 // ---------------------------------------------------------------------------
+// -s mdns:, the discovery form
+// ---------------------------------------------------------------------------
+
+TEST(ParseDiscoverySpec, RecognisesBothDiscoveryForms) {
+    std::string name = "stale";
+    ASSERT_TRUE(parse_discovery_spec("mdns:", name));
+    EXPECT_TRUE(name.empty());
+
+    ASSERT_TRUE(parse_discovery_spec("mdns:Living room", name));
+    EXPECT_EQ(name, "Living room");
+}
+
+TEST(ParseDiscoverySpec, SplitsOnTheFirstColonOnly) {
+    // Everything after the prefix is the name, colons and all -- a server may well be
+    // called something with one in it.
+    std::string name;
+    ASSERT_TRUE(parse_discovery_spec("mdns:a:b", name));
+    EXPECT_EQ(name, "a:b");
+}
+
+TEST(ParseDiscoverySpec, LeavesEveryOtherFormAlone) {
+    // The reservation is the exact `mdns:` prefix. A host whose name merely starts with
+    // those letters, or a bare `mdns`, is still an address.
+    const char* addresses[] = {
+        "hifi:8927", "mdns", "mdnsx:8927", "192.168.1.10", "ws://mdns:8927/sendspin", "",
+    };
+
+    for (const char* input : addresses) {
+        std::string name;
+        EXPECT_FALSE(parse_discovery_spec(input, name)) << "claimed '" << input << "'";
+    }
+}
+
+TEST(ParseOptions, DiscoveryReachesTheOptions) {
+    Parse parse({"-s", "mdns:Living room"});
+
+#ifdef SENDSPIN_CLI_HAVE_MDNS
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_TRUE(parse.options().discover);
+    EXPECT_EQ(parse.options().discover_name, "Living room");
+    // There is no URL until a server has actually been found.
+    EXPECT_TRUE(parse.options().server_url.empty());
+#else
+    // A build with no mDNS refuses at parse time rather than discovering nothing forever.
+    EXPECT_FALSE(parse.ok());
+    EXPECT_NE(parse.diagnostics().find("error:"), std::string::npos);
+    EXPECT_NE(parse.diagnostics().find("mDNS"), std::string::npos) << parse.diagnostics();
+#endif
+}
+
+TEST(ParseOptions, DiscoveryWithNoNameFilter) {
+    Parse parse({"-s", "mdns:"});
+
+#ifdef SENDSPIN_CLI_HAVE_MDNS
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_TRUE(parse.options().discover);
+    EXPECT_TRUE(parse.options().discover_name.empty());
+#else
+    EXPECT_FALSE(parse.ok());
+#endif
+}
+
+TEST(ParseOptions, AHostWithAColonIsStillAHost) {
+    // The regression the reserved prefix has to not cause: `hifi:8927` was a host and a
+    // port before this flag existed, and still is.
+    Parse parse({"-s", "hifi:8927"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_FALSE(parse.options().discover);
+    EXPECT_EQ(parse.options().server_url, "ws://hifi:8927/sendspin");
+}
+
+TEST(ParseOptions, ABareMdnsIsStillAHost) {
+    Parse parse({"-s", "mdns"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_FALSE(parse.options().discover);
+    EXPECT_EQ(parse.options().server_url, "ws://mdns:8927/sendspin");
+}
+
+// ---------------------------------------------------------------------------
+// The two connection modes are exclusive
+// ---------------------------------------------------------------------------
+
+TEST(ParseOptions, AdvertisesByDefault) {
+    Parse parse({});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_TRUE(parse.options().advertises());
+}
+
+TEST(ParseOptions, AnyServerSuppressesTheAdvertisement) {
+    // The spec's rule, so it holds for every -s form there is -- there is deliberately no
+    // flag that turns the advertisement back on alongside one.
+    const char* servers[] = {"192.168.1.10", "host:9000", "ws://host:9000/sendspin", "[::1]"};
+
+    for (const char* server : servers) {
+        Parse parse({"-s", server});
+        ASSERT_TRUE(parse.ok()) << server << ": " << parse.diagnostics();
+        EXPECT_FALSE(parse.options().advertises()) << server;
+    }
+}
+
+TEST(ParseOptions, DiscoverySuppressesTheAdvertisementToo) {
+    Parse parse({"-s", "mdns:"});
+
+#ifdef SENDSPIN_CLI_HAVE_MDNS
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+#endif
+    EXPECT_FALSE(parse.options().advertises());
+}
+
+TEST(ParseOptions, NoMdnsSuppressesTheAdvertisementWithoutAServer) {
+    Parse parse({"--no-mdns"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_TRUE(parse.options().no_mdns);
+    EXPECT_FALSE(parse.options().advertises());
+}
+
+// ---------------------------------------------------------------------------
+// --mdns-name
+// ---------------------------------------------------------------------------
+
+TEST(ParseOptions, MdnsNameDefaultsToTheFriendlyName) {
+    Parse parse({"-n", "kitchen"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_EQ(parse.options().mdns_name, "kitchen");
+    EXPECT_FALSE(parse.options().was_given(Opt::MdnsName));
+}
+
+TEST(ParseOptions, MdnsNameFallsAllTheWayBackToTheHostname) {
+    Parse parse({});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_FALSE(parse.options().mdns_name.empty());
+    EXPECT_EQ(parse.options().mdns_name, parse.options().name);
+}
+
+TEST(ParseOptions, MdnsNameOverridesTheFriendlyName) {
+    Parse parse({"-n", "kitchen", "--mdns-name", "Kitchen Player"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_EQ(parse.options().name, "kitchen");
+    EXPECT_EQ(parse.options().mdns_name, "Kitchen Player");
+}
+
+TEST(ParseOptions, MdnsNameNeedsAValue) {
+    Parse parse({"--mdns-name", ""});
+
+    EXPECT_FALSE(parse.ok());
+    EXPECT_NE(parse.diagnostics().find("--mdns-name needs a non-empty value"), std::string::npos)
+        << parse.diagnostics();
+}
+
+TEST(ParseOptions, MdnsNameWithAServerWarnsButStillStarts) {
+    // Inert rather than contradictory: the name names an advertisement that -s has already
+    // ruled out, so refusing to start would be a worse trade than saying so.
+    Parse parse({"-s", "192.168.1.10", "--mdns-name", "Kitchen"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_NE(parse.diagnostics().find("warning:"), std::string::npos) << parse.diagnostics();
+    EXPECT_NE(parse.diagnostics().find("--mdns-name is unused with -s"), std::string::npos)
+        << parse.diagnostics();
+}
+
+TEST(ParseOptions, MdnsNameAloneDoesNotWarn) {
+    Parse parse({"--mdns-name", "Kitchen"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_EQ(parse.diagnostics().find("warning:"), std::string::npos) << parse.diagnostics();
+}
+
+// ---------------------------------------------------------------------------
 // Config-file precedence hooks (roadmap item 8)
 // ---------------------------------------------------------------------------
 

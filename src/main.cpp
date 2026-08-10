@@ -17,10 +17,18 @@
 ///
 /// Boots a SendspinClient in the `player` role, points it at an AudioSink, and pumps
 /// client.loop() until a signal arrives. A Sendspin server drives everything else.
+///
+/// Two connection modes, which the spec makes mutually exclusive: by default the player
+/// advertises `_sendspin._tcp` and waits to be dialled, and any -s instead makes it dial
+/// out -- to an address, or to a server it discovers over mDNS -- with the advertisement
+/// suppressed.
 
 #include "audio_sink.h"
 #include "cli.h"
+#include "last_server.h"
 #include "log.h"
+#include "mdns.h"
+#include "outbound.h"
 #include "player_listener.h"
 #include "supported_formats.h"
 
@@ -33,12 +41,13 @@
 #include <unistd.h>
 
 #include <atomic>
-#include <chrono>
 #include <cerrno>
+#include <chrono>
 #include <csignal>
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -56,6 +65,17 @@ std::atomic<bool> g_running{true};
 
 void handle_signal(int /*sig*/) {
     g_running.store(false);
+}
+
+/// A monotonic millisecond count, for pacing redials and the mDNS retry.
+///
+/// steady_clock rather than system_clock so neither schedule is disturbed by the host's
+/// wall clock being stepped, which on a small player is most likely to happen at boot --
+/// exactly when the retry loop is busiest.
+int64_t monotonic_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
 }
 
 /// The library asks the platform whether the network is usable before it starts serving.
@@ -159,6 +179,162 @@ std::vector<sendspin::AudioSupportedFormatObject> advertised_formats(const Audio
     return formats;
 }
 
+/// The outbound half of the daemon: choose a server, dial it, and keep dialling.
+///
+/// Only used when -s was given. The library deliberately does not do this for us --
+/// `ConnectionManager::connect_to()` turns auto-reconnect off, and there is no connect or
+/// disconnect callback on `SendspinClientListener` -- and in this direction nothing else
+/// re-establishes the link: per the spec, "servers cannot reclaim clients by reconnecting".
+class OutboundMode {
+public:
+    OutboundMode(const Options& opts, MdnsService& mdns)
+        : opts_(opts), mdns_(mdns), state_path_(last_server_path()) {
+        if (this->state_path_.empty()) {
+            cli_log(LogLevel::DEBUG,
+                    "Neither $XDG_STATE_HOME nor $HOME is set, so the server used will not be "
+                    "remembered across restarts");
+        } else if (load_last_server(this->state_path_, this->remembered_) && opts.discover) {
+            // Only worth saying when discovering: with an address there is nothing to
+            // choose between, and the memory only exists to break that tie.
+            cli_log(LogLevel::INFO,
+                    "Last server used was \"%s\" -- it wins if it turns up among the candidates",
+                    this->remembered_.c_str());
+        }
+    }
+
+    /// @brief One main-loop tick: reconnect if it is time to, and remember what answered.
+    ///
+    /// Must run on the main loop thread, which is what makes the connect_to() below legal.
+    void tick(sendspin::SendspinClient& client, int64_t now_ms) {
+        const bool connected = client.is_connected();
+        if (this->pacer_.note_connection_state(connected, now_ms)) {
+            cli_log(LogLevel::WARN, "Connection lost -- reconnecting in %u ms",
+                    this->pacer_.delay_ms());
+            // The next connection may be to a different server, so it is owed its own look.
+            this->remembered_this_connection_ = false;
+        }
+        // Covers an inbound connection too: a server that dialled us first is a connection,
+        // and dialling out over the top of it would only fight with it.
+        if (connected) {
+            this->remember(client);
+            return;
+        }
+        if (!this->pacer_.should_dial(now_ms)) {
+            return;
+        }
+
+        std::string url;
+        if (this->opts_.discover) {
+            if (!this->choose(url)) {
+                return;
+            }
+        } else {
+            url = this->opts_.server_url;
+            cli_log(LogLevel::INFO, "Connecting to %s", url.c_str());
+        }
+
+        // Stamped before the dial rather than after, so the backoff measures from when the
+        // attempt started -- which is the whole point of pacing from the dial.
+        this->pacer_.note_dial(now_ms);
+        client.connect_to(url);
+    }
+
+private:
+    /// Picks a discovered server, or reports that there is nothing to dial yet.
+    bool choose(std::string& url) {
+        const std::vector<DiscoveredServer> servers = this->mdns_.servers();
+        std::string reason;
+        const DiscoveredServer* chosen =
+            select_server(servers, this->opts_.discover_name, this->remembered_, reason);
+        if (chosen == nullptr) {
+            return false;
+        }
+        std::string error;
+        if (!discovered_server_url(*chosen, url, error)) {
+            // Discovery already said why, at debug, when the instance first resolved.
+            return false;
+        }
+        cli_log(LogLevel::INFO, "Connecting to %s (server \"%s\") -- chosen because %s",
+                url.c_str(), chosen->instance.c_str(), reason.c_str());
+        return true;
+    }
+
+    /// Records the server a handshake just completed with, so a later run can prefer it.
+    ///
+    /// The spec's own concept is the last *playback* server, but v0.7.0 has neither
+    /// `activities` nor `server/activate`, so a completed handshake is the strongest signal
+    /// available here. Named for what it actually is rather than for what the spec means.
+    void remember(sendspin::SendspinClient& client) {
+        // Once per connection, not once per tick: this runs at the main loop's rate, and
+        // get_server_information() builds a fresh object with its strings on every call.
+        if (this->remembered_this_connection_) {
+            return;
+        }
+        const std::optional<sendspin::ServerInformationObject> info =
+            client.get_server_information();
+        if (!info.has_value() || info->server_id.empty() || info->server_id == this->remembered_) {
+            return;
+        }
+        this->remembered_this_connection_ = true;
+        this->remembered_ = info->server_id;
+        if (this->state_path_.empty()) {
+            return;
+        }
+        if (save_last_server(this->state_path_, this->remembered_)) {
+            cli_log(LogLevel::DEBUG, "Remembered server \"%s\" in %s", this->remembered_.c_str(),
+                    this->state_path_.c_str());
+        } else {
+            cli_log(LogLevel::WARN,
+                    "Could not write %s -- this server will not be preferred after a restart",
+                    this->state_path_.c_str());
+        }
+    }
+
+    const Options& opts_;
+    MdnsService& mdns_;
+    std::string state_path_;
+    std::string remembered_;
+    bool remembered_this_connection_{false};
+    RetryPacer pacer_;
+};
+
+/// Starts the mDNS advertisement, or explains why this run has none.
+///
+/// The suppression rule is the spec's: "Do not advertise `_sendspin._tcp` if the client
+/// plans to initiate the connection", which is what stops both ends dialling each other.
+/// So it names the flag that caused it -- "not advertising" on its own reads like a bug.
+void start_advertising(MdnsService& mdns, const Options& opts) {
+    if (!opts.advertises()) {
+        if (opts.was_given(Opt::Server)) {
+            cli_log(LogLevel::INFO,
+                    "Not advertising %s: -s makes this player the one initiating the "
+                    "connection, and the Sendspin spec forbids advertising while it is",
+                    MDNS_CLIENT_SERVICE);
+        } else {
+            cli_log(LogLevel::INFO, "Not advertising %s: --no-mdns was given", MDNS_CLIENT_SERVICE);
+        }
+        return;
+    }
+
+    if (!mdns_available()) {
+        cli_log(LogLevel::INFO,
+                "This build has no mDNS support, so it cannot be discovered: point a server at "
+                "ws://<this-host>:%u%s, or dial one with -s. See docs/ROADMAP.md.",
+                opts.port, SENDSPIN_PATH);
+        return;
+    }
+
+    std::string error;
+    if (!mdns.advertise(opts.mdns_name, opts.port, SENDSPIN_PATH, opts.name, error)) {
+        // Not fatal: the player still serves on its port, so a server that is told the URL
+        // can still reach it. The retry inside MdnsService keeps trying meanwhile.
+        cli_log(LogLevel::WARN,
+                "mDNS: %s -- retrying; until it succeeds, point a server at "
+                "ws://<this-host>:%u%s",
+                error.c_str(), opts.port, SENDSPIN_PATH);
+    }
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -243,26 +419,48 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    cli_log(LogLevel::INFO, "sendspin-cli %s listening on port %u as \"%s\" (output: %s)",
-            SENDSPIN_CLI_VERSION, opts.port, opts.name.c_str(), sink->name().c_str());
     cli_log(LogLevel::INFO,
-            "This build does not advertise over mDNS yet: point a server at "
-            "ws://<this-host>:%u/sendspin, or dial one with -s. See docs/ROADMAP.md.",
-            opts.port);
+            "sendspin-cli %s listening on port %u as \"%s\" (output: %s, mDNS: %s)",
+            SENDSPIN_CLI_VERSION, opts.port, opts.name.c_str(), sink->name().c_str(),
+            mdns_backend_name().c_str());
 
-    // Already validated and resolved during parsing, so there is nothing left to get
-    // wrong here -- and nothing to fail on after the server is up.
-    if (!opts.server_url.empty()) {
-        cli_log(LogLevel::INFO, "Connecting to %s", opts.server_url.c_str());
-        client.connect_to(opts.server_url);
+    // Started after start_server(), so the port being advertised is one that is already
+    // accepting -- a server that discovers us and dials immediately then finds a listener.
+    MdnsService mdns;
+    start_advertising(mdns, opts);
+
+    // Already validated during parsing, so there is nothing left here that can be wrong --
+    // and nothing to fail on after the server is up.
+    std::unique_ptr<OutboundMode> outbound;
+    if (opts.was_given(Opt::Server)) {
+        if (opts.discover) {
+            std::string error;
+            if (!mdns.browse(error)) {
+                cli_log(LogLevel::WARN, "mDNS: %s -- retrying", error.c_str());
+            }
+            cli_log(LogLevel::INFO, "Looking for a Sendspin server on %s%s%s%s",
+                    MDNS_SERVER_SERVICE, opts.discover_name.empty() ? "" : " named \"",
+                    opts.discover_name.c_str(), opts.discover_name.empty() ? "" : "\"");
+        }
+        outbound = std::make_unique<OutboundMode>(opts, mdns);
     }
 
     while (g_running.load()) {
+        const int64_t now_ms = monotonic_ms();
         client.loop();
+        // Both of these run dns_sd callbacks and connect_to() on this thread, which is what
+        // each of them requires.
+        mdns.poll(now_ms);
+        if (outbound) {
+            outbound->tick(client, now_ms);
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(LOOP_INTERVAL_MS));
     }
 
     cli_log(LogLevel::INFO, "Shutting down");
+    // Withdrawn before the client goes, so a restart does not race a record still naming a
+    // port nothing is listening on.
+    mdns.stop();
     client.disconnect(sendspin::SendspinGoodbyeReason::SHUTDOWN);
     sink->stop();
     return 0;

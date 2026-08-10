@@ -34,19 +34,22 @@ configure. sendspin-cpp is pulled in with `FetchContent` at a pinned tag, and it
 fetches its own dependencies (ArduinoJson, micro-flac, micro-opus, IXWebSocket) in
 turn.
 
-**Both audio backends are optional and auto-detected.** Whichever of libasound
-and libportaudio is present gets compiled in; where neither is, the build falls
-back to the device-less sinks, so a sound-card-less container still builds and
-runs. The configure output says which backends you got:
+**The audio backends and mDNS are all optional and auto-detected.** Whichever of
+libasound and libportaudio is present gets compiled in; where neither is, the build
+falls back to the device-less sinks, so a sound-card-less container still builds and
+runs. mDNS comes from `dns_sd.h` — Bonjour on macOS, where it needs nothing
+installed, and `libavahi-compat-libdnssd` on Linux. The configure output says what
+you got:
 
 ```
 -- sendspin-cli audio backends: null, stdout, alsa, portaudio
+-- sendspin-cli mDNS: dns_sd (/usr/lib/x86_64-linux-gnu/libdns_sd.so)
 ```
 
 ```bash
-sudo dnf install alsa-lib-devel portaudio-devel   # Fedora / RHEL
-sudo apt install libasound2-dev portaudio19-dev   # Debian / Ubuntu
-brew install portaudio pkgconf                    # macOS (there is no ALSA)
+sudo dnf install alsa-lib-devel portaudio-devel avahi-compat-libdns_sd-devel  # Fedora / RHEL
+sudo apt install libasound2-dev portaudio19-dev libavahi-compat-libdnssd-dev  # Debian / Ubuntu
+brew install portaudio pkgconf                    # macOS (no ALSA, and Bonjour is built in)
 ```
 
 ALSA is found with CMake's own `find_package(ALSA)`; PortAudio ships no CMake
@@ -54,8 +57,8 @@ config module, so it is found with `pkg-config` (`portaudio-2.0`) — on macOS t
 is also the only thing that knows the CoreAudio frameworks have to be linked too.
 A host without `pkg-config` gets its own configure message saying so.
 
-Pass `-DSENDSPIN_CLI_WITH_ALSA=OFF` or `-DSENDSPIN_CLI_WITH_PORTAUDIO=OFF` to
-leave a backend out even where its library is available.
+Pass `-DSENDSPIN_CLI_WITH_ALSA=OFF`, `-DSENDSPIN_CLI_WITH_PORTAUDIO=OFF` or
+`-DSENDSPIN_CLI_WITH_MDNS=OFF` to leave one out even where its library is available.
 
 > C++20 rather than C++17: sendspin-cpp's host build declares
 > `target_compile_features(sendspin PUBLIC cxx_std_20)`, so the requirement
@@ -77,20 +80,123 @@ cmake -B build -DSENDSPIN_GIT_TAG=v0.7.0
 
 ## Run
 
-`sendspin-cli` is a listener: it starts a WebSocket server and waits for a Sendspin
-server to drive it. Until mDNS advertisement lands, either point your server at
-`ws://<this-host>:8928/sendspin` or dial it from here with `-s`.
-
 ```bash
-# Listen on the default port and play through the system's default sound card
+# Advertise over mDNS and wait to be found — the usual way to run it
 ./build/sendspin-cli -n living-room
 
-# Dial a server explicitly
+# Dial a server explicitly, retrying until it answers
 ./build/sendspin-cli -s 192.168.1.10
+
+# Discover a server and dial that instead
+./build/sendspin-cli -s mdns:
 
 # Debug logging, in the foreground
 ./build/sendspin-cli -d debug
 ```
+
+### The two connection modes
+
+The protocol has two, and they are **mutually exclusive** — the spec's rule, not a
+preference here:
+
+> Do not advertise `_sendspin._tcp` if the client plans to initiate the connection.
+
+**Server-initiated (the default).** `sendspin-cli` advertises `_sendspin._tcp` on
+its `--port`, with the required TXT `path=/sendspin` and a TXT `name`, and waits
+for a server to dial it. Nothing needs configuring on either side.
+
+```console
+$ sendspin-cli -n living-room
+sendspin-cli 0.1.0 listening on port 8928 as "living-room" (output: default)
+mDNS: advertising _sendspin._tcp. as "living-room" on port 8928 (path /sendspin)
+```
+
+The instance name comes from `--mdns-name`, falling back to `-n`, falling back to
+this host's name. The name that is *logged* is the one that actually registered —
+the mDNS daemon renames on a collision, so two players called `living-room` will
+not fight over it. `--no-mdns` turns the advertisement off without switching modes.
+
+**Client-initiated (`-s`).** Any `-s` makes this player the one dialling, so the
+advertisement is suppressed and the run says so:
+
+```console
+$ sendspin-cli -s 192.168.1.10
+Not advertising _sendspin._tcp: -s makes this player the one initiating the connection,
+and the Sendspin spec forbids advertising while it is
+```
+
+There is deliberately no flag that turns both on together. `--mdns-name` alongside
+`-s` warns that it is unused rather than failing — it names an advertisement the
+mode has already ruled out.
+
+`-s` takes an address, or `mdns:` to go and find one:
+
+```bash
+./build/sendspin-cli -s 192.168.1.10          # a host, port 8927 assumed
+./build/sendspin-cli -s music.local:9000      # host and port
+./build/sendspin-cli -s ws://music:9000/sendspin   # a full URL
+./build/sendspin-cli -s "[2001:db8::1]:8927"  # IPv6 must be bracketed
+./build/sendspin-cli -s mdns:                 # discover any server
+./build/sendspin-cli -s "mdns:Music Assistant"  # ...or one by its advertised name
+```
+
+`mdns:` is reserved **before the first colon only**, the same way `-o` reads
+`<backend>:<device>`, so every address form still works — `hifi:8927` is a host
+and a port, and a bare `-s mdns` is still a host called `mdns`. Discovery is not a
+bare `-s` because `-s` takes a required argument, so a bare one would swallow the
+next word.
+
+Discovery browses `_sendspin-server._tcp`, resolves each instance to an address,
+and dials `ws://<addr>:<port><path>` built from the server's own TXT `path`. An
+instance advertising no `path`, or one not starting with `/`, is skipped and said
+so at `debug`. A non-link-local IPv4 wins over IPv6; an IPv6-only server yields a
+bracketed URL. The browse stays open, so a server that appears later is picked up
+without a restart.
+
+Among several servers, the one this player last completed a handshake with wins,
+and otherwise the first to resolve. That works because the `_sendspin-server._tcp`
+instance label *is* the protocol `server_id`, so the preference is decidable before
+anything is dialled. It is remembered in `$XDG_STATE_HOME/sendspin-cli/last-server`
+(falling back to `~/.local/state/...`); a process with neither variable set, or an
+unwritable directory, simply does not remember and says so at `debug`.
+
+```console
+$ sendspin-cli -s mdns:
+mDNS: found server "OraobU4l…" (name: Music Assistant) at ws://10.0.2.8:8927/sendspin
+mDNS: found server "oGsvjWZw…" (name: Music Assistant) at ws://10.0.1.6:8927/sendspin
+Connecting to ws://10.0.1.6:8927/sendspin (server "oGsvjWZw…") -- chosen because it is
+the last server whose handshake completed
+```
+
+**Retries are part of the mode.** In this direction nothing else re-establishes the
+link — per the spec, "servers cannot reclaim clients by reconnecting" — so `-s`
+retries on its own: 1 s, doubling to a 30 s ceiling, reset when a handshake
+completes and restarted from the floor when a connection drops. The ceiling matches
+the library's own 30 s establish timeout. Redials are paced from the last dial
+rather than from "not connected yet", because an attempt in flight reads as not
+connected and redialling over it would cancel it.
+
+### When the build has no mDNS
+
+mDNS is optional and auto-detected, like the audio backends. Without it the player
+still builds, starts and plays — it just has to be told where its server is:
+
+```console
+$ cmake -B build
+-- sendspin-cli mDNS: none
+
+$ ./build/sendspin-cli
+This build has no mDNS support, so it cannot be discovered: point a server at
+ws://<this-host>:8928/sendspin, or dial one with -s. See docs/ROADMAP.md.
+
+$ ./build/sendspin-cli -s mdns:
+error: -s 'mdns:': this build has no mDNS support, so it cannot discover a server.
+Rebuild with dns_sd.h available (libavahi-compat-libdnssd-dev on Debian/Ubuntu,
+avahi-compat-libdns_sd-devel on Fedora), or give -s an address.
+```
+
+Discovery is refused at *parse* time rather than starting and quietly finding
+nothing, which is how `-o` already treats a backend the build lacks.
 
 ### Choosing an output
 
@@ -207,10 +313,11 @@ rather than leaving a player that looks healthy and plays nothing.
 ### Flags, and what they refuse
 
 The flags follow squeezelite's: `-o` output device, `-l` list devices, `-n` name,
-`-s` server, `-z` daemonize, `-P` pidfile, `-d`/`-f` logging. Two are long-only
-because they are not squeezelite's: `--port`, the port this player serves on, and
-`--buffer-ms`. Run `--help` for the current state of each — several are scaffolding
-whose real behaviour is still to come.
+`-s` server, `-z` daemonize, `-P` pidfile, `-d`/`-f` logging. Four are long-only
+because they are not squeezelite's: `--port`, the port this player serves on,
+`--buffer-ms`, and the two mDNS flags `--no-mdns` and `--mdns-name`. Run `--help`
+for the current state of each — several are scaffolding whose real behaviour is
+still to come.
 
 Everything is validated before the daemon starts, and a bad value exits `1` with a
 single `error:` line naming it rather than falling back to a default:
@@ -230,8 +337,9 @@ That is a deliberate change from warn-and-continue. `-s` used to warn about a
 malformed port and dial the default anyway; a player quietly talking to the wrong
 endpoint is harder to diagnose than one that refuses to start. `-s` takes
 `<host>[:<port>]` — filling in `8927`, the port a Sendspin *server* listens on —
-or a full `ws://`/`wss://` URL. An IPv6 literal must be bracketed (`[::1]:8927`),
-since an unbracketed one cannot be told from a host with a port.
+or a full `ws://`/`wss://` URL, or `mdns:[<name>]` to discover one. An IPv6 literal
+must be bracketed (`[::1]:8927`), since an unbracketed one cannot be told from a
+host with a port.
 
 ## Tests
 

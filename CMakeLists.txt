@@ -110,6 +110,43 @@ if(SENDSPIN_CLI_WITH_PORTAUDIO)
 endif()
 
 # ==============================================================================
+# mDNS
+# ==============================================================================
+
+# Optional and auto-detected, like the audio backends: a host with dns_sd.h gets discovery
+# and advertisement, and one without still builds and runs -- it just has to be told where
+# its server is. Turning this OFF forces it out even where dns_sd.h exists.
+#
+# Bonjour on macOS, libavahi-compat-libdnssd on Linux. An Avahi-native backend would avoid
+# the compat shim and recover from a daemon restart more directly, but only on Linux; it is
+# tracked as its own roadmap item rather than replacing this one.
+option(SENDSPIN_CLI_WITH_MDNS "Build mDNS advertisement/discovery if dns_sd.h is available" ON)
+
+set(SENDSPIN_CLI_MDNS_ENABLED OFF)
+set(SENDSPIN_CLI_MDNS_DESCRIPTION "none")
+
+if(SENDSPIN_CLI_WITH_MDNS)
+    if(APPLE)
+        # dns_sd lives in libSystem here, so there is nothing to find and nothing to link.
+        set(SENDSPIN_CLI_MDNS_ENABLED ON)
+        set(SENDSPIN_CLI_MDNS_DESCRIPTION "dns_sd (Bonjour, built in)")
+    else()
+        find_path(SENDSPIN_CLI_DNS_SD_INCLUDE_DIR dns_sd.h)
+        find_library(SENDSPIN_CLI_DNS_SD_LIBRARY dns_sd)
+        if(SENDSPIN_CLI_DNS_SD_INCLUDE_DIR AND SENDSPIN_CLI_DNS_SD_LIBRARY)
+            set(SENDSPIN_CLI_MDNS_ENABLED ON)
+            set(SENDSPIN_CLI_MDNS_DESCRIPTION "dns_sd (${SENDSPIN_CLI_DNS_SD_LIBRARY})")
+        else()
+            message(STATUS
+                "sendspin-cli: dns_sd.h not found -- building without mDNS. Install "
+                "libavahi-compat-libdnssd-dev (Debian/Ubuntu) or avahi-compat-libdns_sd-devel "
+                "(Fedora) to enable it; without it the player cannot be discovered and -s "
+                "mdns: is refused at parse time.")
+        endif()
+    endif()
+endif()
+
+# ==============================================================================
 # sendspin-cli
 # ==============================================================================
 
@@ -124,11 +161,29 @@ endif()
 add_library(sendspin-cli-core STATIC
     src/cli.cpp
     src/audio_sink.cpp
+    src/last_server.cpp
+    src/mdns_common.cpp
     src/null_sink.cpp
+    src/outbound.cpp
     src/pcm_volume.cpp
     src/player_listener.cpp
     src/supported_formats.cpp
 )
+
+# One of these two, never both: they define the same MdnsService, and which one a build
+# gets is a property of the host rather than a runtime choice. The pure parts of discovery
+# -- URL construction, candidate selection -- are in mdns_common.cpp above, so they are
+# compiled and tested in either configuration.
+if(SENDSPIN_CLI_MDNS_ENABLED)
+    target_sources(sendspin-cli-core PRIVATE src/mdns_dnssd.cpp)
+    target_compile_definitions(sendspin-cli-core PUBLIC SENDSPIN_CLI_HAVE_MDNS)
+    if(NOT APPLE)
+        target_include_directories(sendspin-cli-core PRIVATE ${SENDSPIN_CLI_DNS_SD_INCLUDE_DIR})
+        target_link_libraries(sendspin-cli-core PUBLIC ${SENDSPIN_CLI_DNS_SD_LIBRARY})
+    endif()
+else()
+    target_sources(sendspin-cli-core PRIVATE src/mdns_null.cpp)
+endif()
 
 if(SENDSPIN_CLI_ALSA_ENABLED)
     target_sources(sendspin-cli-core PRIVATE src/alsa_sink.cpp)
@@ -157,6 +212,7 @@ target_compile_options(sendspin-cli PRIVATE -Wall -Wextra -Wpedantic)
 list(JOIN SENDSPIN_CLI_BACKENDS ", " SENDSPIN_CLI_BACKEND_LIST)
 message(STATUS "sendspin-cli ${PROJECT_VERSION} against sendspin-cpp ${SENDSPIN_GIT_TAG}")
 message(STATUS "sendspin-cli audio backends: ${SENDSPIN_CLI_BACKEND_LIST}")
+message(STATUS "sendspin-cli mDNS: ${SENDSPIN_CLI_MDNS_DESCRIPTION}")
 
 # ==============================================================================
 # Tests
@@ -195,6 +251,8 @@ if(SENDSPIN_CLI_BUILD_TESTS)
     add_executable(sendspin-cli-tests
         tests/cli_test.cpp
         tests/device_spec_test.cpp
+        tests/discovery_test.cpp
+        tests/last_server_test.cpp
         tests/pcm_volume_test.cpp
         tests/supported_formats_test.cpp
     )
