@@ -60,6 +60,12 @@ A host without `pkg-config` gets its own configure message saying so.
 Pass `-DSENDSPIN_CLI_WITH_ALSA=OFF`, `-DSENDSPIN_CLI_WITH_PORTAUDIO=OFF` or
 `-DSENDSPIN_CLI_WITH_MDNS=OFF` to leave one out even where its library is available.
 
+`-DSENDSPIN_CLI_WERROR=ON` makes warnings fatal, for sendspin-cli's own three
+targets and nothing else — the `sendspin` and GoogleTest trees fetched at
+configure time are not ours to keep clean. It is off by default so that a fresh
+diagnostic from a newer compiler cannot block a contributor who did not cause it;
+CI turns it on, which is where the line is actually held.
+
 > C++20 rather than C++17: sendspin-cpp's host build declares
 > `target_compile_features(sendspin PUBLIC cxx_std_20)`, so the requirement
 > propagates to anything that links it.
@@ -499,6 +505,37 @@ GoogleTest is fetched at configure time and pinned to a tag. The suite is built 
 default only when this is the top-level project, so vendoring `sendspin-cli` into
 another build does not pay for it; `-DSENDSPIN_CLI_BUILD_TESTS=OFF` turns it off
 outright.
+
+The suite is pure — nothing in `tests/` opens an audio device, a socket or the
+mDNS daemon, which is what keeps `ctest` runnable anywhere at all. What that
+leaves out is everything needing a real process, and that is a script instead:
+
+```bash
+scripts/smoke_test.sh build/sendspin-cli
+```
+
+It checks that the binary runs, comes up on its port, forks under `-z`, refuses a
+second instance holding the same `-P`, survives an mDNS daemon it cannot reach,
+and exits `0` on `SIGTERM`. CI runs it on every platform leg; run it yourself
+against any build.
+
+## CI
+
+Every push and pull request builds on `ubuntu-24.04`, `ubuntu-24.04-arm` and
+`macos-14`, plus a fourth leg configured `-DSENDSPIN_CLI_WITH_MDNS=OFF` — which
+compiles `src/mdns_null.cpp` in place of `src/mdns_dnssd.cpp`, so that
+configuration is built rather than assumed. Every leg builds with
+`-DSENDSPIN_CLI_WERROR=ON` and runs the unit suite, and each asserts from its own
+configure output that it found the backends it expects: a missing `-dev` package
+does not fail a configure, so without that check the matrix would happily go green
+on a deaf, undiscoverable binary.
+
+To try a commit without building it, open its run under the repository's Actions
+tab and take `sendspin-cli-<version>-<os>-<arch>` from the run summary. Inside is
+a tarball holding the binary, this README, the licence, and a `BUILD-INFO.txt`
+naming the runtime packages it needs. These are build outputs kept for 14 days
+rather than an installation — `install()` rules, a systemd unit and distribution
+packages are [`docs/ROADMAP.md`](docs/ROADMAP.md) item 10.
 
 ## Roadmap
 

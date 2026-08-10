@@ -2,6 +2,7 @@
 build/
 build-*/
 _deps/
+.deps/
 
 # CMake
 CMakeCache.txt
