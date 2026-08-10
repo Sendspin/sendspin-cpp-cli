@@ -193,7 +193,9 @@ public:
             cli_log(LogLevel::DEBUG,
                     "Neither $XDG_STATE_HOME nor $HOME is set, so the server used will not be "
                     "remembered across restarts");
-        } else if (load_last_server(this->state_path_, this->remembered_)) {
+        } else if (load_last_server(this->state_path_, this->remembered_) && opts.discover) {
+            // Only worth saying when discovering: with an address there is nothing to
+            // choose between, and the memory only exists to break that tie.
             cli_log(LogLevel::INFO,
                     "Last server used was \"%s\" -- it wins if it turns up among the candidates",
                     this->remembered_.c_str());

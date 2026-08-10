@@ -41,6 +41,7 @@
 #include <cstring>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -97,7 +98,8 @@ struct MdnsService::Impl {
         std::string path;
         std::string host;  ///< SRV target, the input to the address queries
         uint16_t port{0};
-        uint32_t interface_index{0};
+        uint32_t interface_index{0};  ///< where it resolved, and so where addresses are asked
+        std::set<uint32_t> interfaces;  ///< every interface the browse still reports it on
         std::vector<std::string> addresses;
 
         DNSServiceRef resolve_ref{nullptr};
@@ -248,12 +250,19 @@ struct MdnsService::Impl {
         }
     }
 
+    /// Starts whatever is wanted and not already running.
+    ///
+    /// Only what is missing: a registration and a browse can fail independently -- one
+    /// starting while the other does not is the ordinary case at boot -- and re-running a
+    /// live one would overwrite its `DNSServiceRef` without deallocating it, leaking the
+    /// ref and leaving two advertisements of the same instance.
     void restart() {
         std::string error;
-        if (this->advertise_wanted && !this->start_register(error)) {
+        if (this->advertise_wanted && this->register_ref == nullptr &&
+            !this->start_register(error)) {
             cli_log(LogLevel::WARN, "mDNS: %s", error.c_str());
         }
-        if (this->browse_wanted && !this->start_browse(error)) {
+        if (this->browse_wanted && this->browse_ref == nullptr && !this->start_browse(error)) {
             cli_log(LogLevel::WARN, "mDNS: %s", error.c_str());
         }
     }
@@ -488,20 +497,32 @@ struct MdnsService::Impl {
         cli_log(LogLevel::DEBUG, "mDNS: browse %s \"%s\" on interface %u",
                 (flags & kDNSServiceFlagsAdd) != 0 ? "found" : "lost", instance.c_str(),
                 interface_index);
+        Candidate* existing = impl->find(instance);
+
+        // Adds and removes are per interface, and one instance is normally reported on
+        // several. So the candidate is only dropped once the *last* interface carrying it
+        // has gone -- dropping it on the first Remove would lose a server that is still
+        // there, and the browse would not re-Add it, since it never went away as far as the
+        // daemon is concerned.
         if ((flags & kDNSServiceFlagsAdd) == 0) {
-            // A server that goes away leaves the candidate set, rather than staying in it
-            // as something the next retry would dial.
-            impl->doomed.push_back(instance);
+            if (existing != nullptr) {
+                existing->interfaces.erase(interface_index);
+                if (existing->interfaces.empty()) {
+                    impl->doomed.push_back(instance);
+                }
+            }
             return;
         }
 
-        if (impl->find(instance) != nullptr) {
+        if (existing != nullptr) {
+            existing->interfaces.insert(interface_index);
             return;
         }
 
         auto candidate = std::make_unique<Candidate>();
         candidate->instance = instance;
         candidate->interface_index = interface_index;
+        candidate->interfaces.insert(interface_index);
 
         // Resolved across every interface rather than on the one this reply arrived on, and
         // the regtype and domain are passed through from the reply rather than rebuilt.
@@ -545,7 +566,17 @@ struct MdnsService::Impl {
         }
 
         // One resolve is enough: the SRV target and TXT are the same on every interface the
-        // instance answers on, and the address queries below carry their own interface.
+        // instance answers on.
+        //
+        // The guard is not belt-and-braces. A resolve delivers one reply per interface, and
+        // a single DNSServiceProcessResult() call hands over all of the ones already
+        // waiting -- so this fires several times in a row, before poll_once() gets to look
+        // at `resolve_ref` again. Without the check the same ref would be retired once per
+        // reply and then deallocated that many times, and the address queries below would
+        // be reissued over the top of their own live refs.
+        if (candidate->resolve_ref == nullptr) {
+            return;
+        }
         candidate->resolve_ref = nullptr;
         ctx->impl->retired.push_back(ref);
 
