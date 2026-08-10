@@ -48,6 +48,7 @@ constexpr uint16_t DEFAULT_REMOTE_SERVER_PORT = 8927U;
 enum LongOnly {
     OPT_VERSION = 0x100,
     OPT_PORT,
+    OPT_BUFFER_MS,
 };
 
 bool is_all_digits(const std::string& value) {
@@ -71,6 +72,22 @@ bool parse_port(const std::string& str, uint16_t& port) {
         return false;
     }
     port = static_cast<uint16_t>(value);
+    return true;
+}
+
+/// Parses a buffer size in milliseconds: digits only, MIN_BUFFER_MS to MAX_BUFFER_MS.
+///
+/// Digits-only for parse_port()'s reason -- strtoul would take " 100" and "+100", and read
+/// "-1" as a huge unsigned that fails the range check only by accident.
+bool parse_buffer_ms(const std::string& str, uint32_t& buffer_ms) {
+    if (!is_all_digits(str)) {
+        return false;
+    }
+    const unsigned long value = std::strtoul(str.c_str(), nullptr, 10);
+    if (value < MIN_BUFFER_MS || value > MAX_BUFFER_MS) {
+        return false;
+    }
+    buffer_ms = static_cast<uint32_t>(value);
     return true;
 }
 
@@ -153,6 +170,7 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
         {"help", no_argument, nullptr, 'h'},
         {"version", no_argument, nullptr, OPT_VERSION},
         {"port", required_argument, nullptr, OPT_PORT},
+        {"buffer-ms", required_argument, nullptr, OPT_BUFFER_MS},
         {nullptr, 0, nullptr, 0},
     };
 
@@ -245,6 +263,14 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
                     fail("invalid --port '" + std::string(optarg) + "' -- expected 1-65535");
                 }
                 break;
+            case OPT_BUFFER_MS:
+                if (parse_buffer_ms(optarg, out.buffer_ms)) {
+                    out.mark_given(Opt::BufferMs);
+                } else {
+                    fail("invalid --buffer-ms '" + std::string(optarg) + "' -- expected " +
+                         std::to_string(MIN_BUFFER_MS) + "-" + std::to_string(MAX_BUFFER_MS));
+                }
+                break;
             case ':':
                 fail("option '" + offending_option(argv, optind) + "' needs a value");
                 break;
@@ -306,6 +332,13 @@ void print_usage(std::FILE* out, const char* prog) {
     std::fprintf(out, "  -f <path>     Write log output to <path> instead of stderr\n");
     std::fprintf(out, "  --port <port> Port our own server listens on (default: %u)\n",
                  SendspinClientConfig::DEFAULT_SERVER_PORT);
+    std::fprintf(out, "  --buffer-ms <ms>\n");
+    std::fprintf(out, "                Audio the output backend keeps buffered, %u-%u\n",
+                 MIN_BUFFER_MS, MAX_BUFFER_MS);
+    std::fprintf(out, "                (default: %u). One figure for every backend; a\n",
+                 DEFAULT_BUFFER_MS);
+    std::fprintf(out, "                device-less sink ignores it, and a device that needs\n");
+    std::fprintf(out, "                more than it asks for gets more\n");
     std::fprintf(out, "  -h, --help    Show this help\n");
     std::fprintf(out, "  --version     Show version information\n\n");
     std::fprintf(out, "This is an early scaffold; see docs/ROADMAP.md for what is still missing.\n");

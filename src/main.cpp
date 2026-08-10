@@ -22,6 +22,7 @@
 #include "cli.h"
 #include "log.h"
 #include "player_listener.h"
+#include "supported_formats.h"
 
 #include <sendspin/client.h>
 #include <sendspin/config.h>
@@ -129,17 +130,33 @@ bool redirect_log(const std::string& path) {
     return true;
 }
 
-/// The formats advertised to the server in the hello handshake. All 16-bit signed PCM
-/// after decoding, which is what lets NullAudioSink treat zeroed bytes as silence.
-std::vector<sendspin::AudioSupportedFormatObject> supported_formats() {
-    using sendspin::SendspinCodecFormat;
-    return {
-        {SendspinCodecFormat::FLAC, 2, 44100, 16},
-        {SendspinCodecFormat::FLAC, 2, 48000, 16},
-        {SendspinCodecFormat::OPUS, 2, 48000, 16},
-        {SendspinCodecFormat::PCM, 2, 44100, 16},
-        {SendspinCodecFormat::PCM, 2, 48000, 16},
-    };
+/// The formats to advertise for `sink`, derived from what its device will actually take.
+///
+/// Logged as well as returned: a field report on "the server never sent me anything I could
+/// play" starts with what went out in `client/hello`, and on a derived list that is a
+/// property of the host rather than of this binary.
+std::vector<sendspin::AudioSupportedFormatObject> advertised_formats(const AudioSink& sink) {
+    std::vector<sendspin::AudioSupportedFormatObject> formats =
+        supported_formats(sink.capabilities());
+    if (formats.empty()) {
+        // The device opens but takes nothing this player emits. Advertising an empty list
+        // would leave the server unable to send anything at all, so fall back to the
+        // permissive set and let the refusal path report per stream what really happens.
+        cli_log(LogLevel::WARN,
+                "Output device '%s' reports no format sendspin-cli can emit -- advertising "
+                "everything and letting the device refuse per stream",
+                sink.name().c_str());
+        formats = supported_formats(SinkCapabilities::permissive());
+    }
+
+    cli_log(LogLevel::INFO, "Advertising %zu formats for '%s': %s", formats.size(),
+            sink.name().c_str(), describe_formats(formats).c_str());
+    // The digest above groups the axes, which cannot show which combinations really went
+    // out. At debug the entries are listed one per line, exactly as the server sees them.
+    for (const sendspin::AudioSupportedFormatObject& format : formats) {
+        cli_log(LogLevel::DEBUG, "  %s", describe_formats({format}).c_str());
+    }
+    return formats;
 }
 
 }  // namespace
@@ -185,7 +202,7 @@ int main(int argc, char* argv[]) {
     std::signal(SIGTERM, handle_signal);
 
     std::string sink_error;
-    std::unique_ptr<AudioSink> sink = make_audio_sink(opts.device, sink_error);
+    std::unique_ptr<AudioSink> sink = make_audio_sink(opts.device, opts.buffer_ms, sink_error);
     if (!sink) {
         std::fprintf(stderr, "error: %s\n", sink_error.c_str());
         return 1;
@@ -208,7 +225,7 @@ int main(int argc, char* argv[]) {
     sendspin::SendspinClient client(std::move(config));
 
     sendspin::PlayerRoleConfig player_config;
-    player_config.audio_formats = supported_formats();
+    player_config.audio_formats = advertised_formats(*sink);
     sendspin::PlayerRole& player = client.add_player(std::move(player_config));
     player.set_static_delay_adjustable(true);
     sendspin::MetadataRole& metadata = client.add_metadata();

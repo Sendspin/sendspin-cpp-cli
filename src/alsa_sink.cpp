@@ -20,6 +20,7 @@
 #include <sendspin/client.h>
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <chrono>
 #include <cstdarg>
@@ -27,7 +28,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <string>
 #include <thread>
+#include <vector>
 
 namespace sendspin_cli {
 
@@ -35,11 +38,10 @@ using sendspin::LogLevel;
 
 namespace {
 
-/// Target ring size and granularity handed to ALSA. Small enough that snd_pcm_delay()
-/// stays a useful sync signal, large enough to ride out scheduling jitter. Making these
-/// tunable is squeezelite's -a flag, which this task leaves to a follow-up.
-constexpr unsigned int BUFFER_TIME_US = 100000;  // 100 ms of ring
-constexpr unsigned int PERIOD_TIME_US = 20000;   // 20 ms per wakeup
+/// How many periods the ring is divided into. The ring itself comes from --buffer-ms; the
+/// period is what ALSA wakes us on, so this is the granularity/overhead trade rather than a
+/// second knob. Five keeps the 100 ms ring / 20 ms period the defaults have always meant.
+constexpr unsigned int PERIODS_PER_BUFFER = 5;
 
 /// Longest single snd_pcm_wait() slice. write() re-checks the abort flag and the caller's
 /// deadline between slices, so this bounds how long a shutdown waits on a busy device.
@@ -50,29 +52,19 @@ constexpr int WAIT_SLICE_MS = 20;
 constexpr int RESUME_TRIES = 10;
 constexpr auto RESUME_PAUSE = std::chrono::milliseconds(10);
 
-/// The rates -l asks each PCM about. A generous ladder costs nothing: the one
-/// snd_pcm_open() is the expensive part, and every test below it runs against the
-/// already-fetched configuration space in memory.
-constexpr unsigned int PROBE_RATES[] = {22050, 32000, 44100, 48000, 88200, 96000, 176400, 192000};
-
-/// The channel counts -l asks about: mono through 7.1.
-constexpr unsigned int PROBE_CHANNELS[] = {1, 2, 4, 6, 8};
-
-/// The formats -l asks about -- exactly the four alsa_format_for() can emit.
+/// How each of PROBE_BIT_DEPTHS is spelled on this backend, in the same order.
 ///
-/// Reporting anything wider would advertise a capability sendspin-cli can never use: the
-/// player hands us tightly packed little-endian PCM at one of these four depths, so a card
-/// that also takes, say, S24_LE or a big-endian format cannot be reached through it.
-struct ProbeFormat {
-    snd_pcm_format_t format;
-    const char* name;
+/// The rate, depth and channel ladders themselves are shared with PortAudio (audio_sink.h);
+/// only the spelling is ALSA's. 24-bit is S24_3LE (three packed bytes), not S24_LE (three
+/// bytes padded into four), because the player hands us tightly packed samples.
+constexpr std::array<snd_pcm_format_t, PROBE_BIT_DEPTHS.size()> PROBE_FORMATS{
+    SND_PCM_FORMAT_S8,
+    SND_PCM_FORMAT_S16_LE,
+    SND_PCM_FORMAT_S24_3LE,
+    SND_PCM_FORMAT_S32_LE,
 };
-constexpr ProbeFormat PROBE_FORMATS[] = {
-    {SND_PCM_FORMAT_S8, "S8"},
-    {SND_PCM_FORMAT_S16_LE, "S16_LE"},
-    {SND_PCM_FORMAT_S24_3LE, "S24_3LE"},
-    {SND_PCM_FORMAT_S32_LE, "S32_LE"},
-};
+constexpr std::array<const char*, PROBE_BIT_DEPTHS.size()> PROBE_FORMAT_NAMES{"S8", "S16_LE",
+                                                                              "S24_3LE", "S32_LE"};
 
 /// Routes libasound's own diagnostics through our logger instead of letting it write
 /// straight to stderr.
@@ -110,56 +102,58 @@ int64_t now_us() {
 }
 
 /// Maps the stream's bit depth onto the interleaved little-endian PCM format ALSA wants.
-/// 24-bit is S24_3LE (three packed bytes), not S24_LE (three bytes padded into four),
-/// because the player hands us tightly packed samples.
 bool alsa_format_for(uint8_t bits_per_sample, snd_pcm_format_t& format) {
-    switch (bits_per_sample) {
-        case 8:
-            format = SND_PCM_FORMAT_S8;
+    for (size_t i = 0; i < PROBE_BIT_DEPTHS.size(); ++i) {
+        if (PROBE_BIT_DEPTHS[i] == bits_per_sample) {
+            format = PROBE_FORMATS[i];
             return true;
-        case 16:
-            format = SND_PCM_FORMAT_S16_LE;
-            return true;
-        case 24:
-            format = SND_PCM_FORMAT_S24_3LE;
-            return true;
-        case 32:
-            format = SND_PCM_FORMAT_S32_LE;
-            return true;
-        default:
-            return false;
+        }
     }
+    return false;
 }
 
-/// Appends `value` to a space-separated list.
-void append_item(std::string& list, const std::string& value) {
-    if (!list.empty()) {
-        list += ' ';
-    }
-    list += value;
-}
+/// Why a probe could not describe a PCM. Ok is the only value with capabilities behind it.
+enum class ProbeStatus {
+    Ok,
+    Busy,           ///< -EBUSY: the name resolves, another process holds it right now
+    CannotOpen,     ///< any other snd_pcm_open() failure
+    NoInterleaved,  ///< opens, but has no SND_PCM_ACCESS_RW_INTERLEAVED configuration
+};
 
-/// Prints what one PCM will actually take, indented under its name in -l.
+struct ProbeResult {
+    ProbeStatus status{ProbeStatus::Ok};
+    /// snd_strerror() text, only for CannotOpen.
+    std::string detail;
+    /// Empty on anything but Ok. Callers that need an answer regardless substitute
+    /// SinkCapabilities::permissive(); -l prints the status instead.
+    SinkCapabilities caps;
+};
+
+/// Asks one PCM what it will take, without keeping it.
 ///
-/// Degrades, never fails: a busy or unopenable device gets a one-line note and the caller
-/// moves on to the next hint, because one card nobody can open must not cost the rest of
-/// the list.
+/// The single source of truth behind both -l's per-PCM detail and the advertised format
+/// list, so the two agree by construction rather than by two ladders happening to match.
 ///
-/// The cost here is the single snd_pcm_open(). Everything after it queries a configuration
-/// space already in memory, so testing eight rates and four formats is no dearer than
-/// testing one.
-void print_device_capabilities(std::FILE* out, const char* name) {
+/// The cost is the one snd_pcm_open(). Everything after it queries a configuration space
+/// already in memory, so testing eight rates and four formats is no dearer than testing one.
+///
+/// Degrades, never fails: a busy or unopenable device comes back with a status, because one
+/// card nobody can open must cost neither the rest of -l's listing nor the player's startup.
+ProbeResult probe_capabilities(const char* name) {
+    ProbeResult result;
+
     snd_pcm_t* pcm = nullptr;
     // NONBLOCK for probe()'s reason: a card another process holds exclusively must come
-    // back rather than park -l on it.
+    // back rather than park the caller on it.
     const int err = snd_pcm_open(&pcm, name, SND_PCM_STREAM_PLAYBACK, SND_PCM_NONBLOCK);
     if (err == -EBUSY) {
-        std::fprintf(out, "      (in use -- capabilities unknown)\n");
-        return;
+        result.status = ProbeStatus::Busy;
+        return result;
     }
     if (err < 0) {
-        std::fprintf(out, "      (cannot open: %s)\n", snd_strerror(err));
-        return;
+        result.status = ProbeStatus::CannotOpen;
+        result.detail = snd_strerror(err);
+        return result;
     }
 
     snd_pcm_hw_params_t* hw = nullptr;
@@ -169,46 +163,54 @@ void print_device_capabilities(std::FILE* out, const char* name) {
     // this player never asks for.
     if (snd_pcm_hw_params_any(pcm, hw) < 0 ||
         snd_pcm_hw_params_set_access(pcm, hw, SND_PCM_ACCESS_RW_INTERLEAVED) < 0) {
-        std::fprintf(out, "      (no interleaved playback configuration)\n");
         snd_pcm_close(pcm);
-        return;
+        result.status = ProbeStatus::NoInterleaved;
+        return result;
     }
 
-    std::string rates;
-    for (const unsigned int rate : PROBE_RATES) {
+    for (const uint32_t rate : PROBE_RATES) {
         if (snd_pcm_hw_params_test_rate(pcm, hw, rate, 0) == 0) {
-            append_item(rates, std::to_string(rate));
+            result.caps.rates.push_back(rate);
         }
     }
-
-    std::string formats;
-    for (const ProbeFormat& candidate : PROBE_FORMATS) {
-        if (snd_pcm_hw_params_test_format(pcm, hw, candidate.format) == 0) {
-            append_item(formats, candidate.name);
+    for (size_t i = 0; i < PROBE_BIT_DEPTHS.size(); ++i) {
+        if (snd_pcm_hw_params_test_format(pcm, hw, PROBE_FORMATS[i]) == 0) {
+            result.caps.bit_depths.push_back(PROBE_BIT_DEPTHS[i]);
         }
     }
-
-    std::string channels;
-    for (const unsigned int count : PROBE_CHANNELS) {
+    for (const uint8_t count : PROBE_CHANNELS) {
         if (snd_pcm_hw_params_test_channels(pcm, hw, count) == 0) {
-            append_item(channels, std::to_string(count));
+            result.caps.channels.push_back(count);
         }
     }
 
     snd_pcm_close(pcm);
+    return result;
+}
 
-    // An empty list is meaningful: the device opens but takes nothing this player emits.
-    std::fprintf(out, "      rates:    %s\n",
-                 rates.empty() ? "(none of the probed rates)" : rates.c_str());
-    std::fprintf(out, "      formats:  %s\n",
-                 formats.empty() ? "(none sendspin-cli can emit)" : formats.c_str());
-    std::fprintf(out, "      channels: %s\n",
-                 channels.empty() ? "(none of the probed counts)" : channels.c_str());
+/// Prints what one PCM will actually take, indented under its name in -l.
+void print_device_capabilities(std::FILE* out, const char* name) {
+    const ProbeResult result = probe_capabilities(name);
+    switch (result.status) {
+        case ProbeStatus::Busy:
+            std::fprintf(out, "      (in use -- capabilities unknown)\n");
+            return;
+        case ProbeStatus::CannotOpen:
+            std::fprintf(out, "      (cannot open: %s)\n", result.detail.c_str());
+            return;
+        case ProbeStatus::NoInterleaved:
+            std::fprintf(out, "      (no interleaved playback configuration)\n");
+            return;
+        case ProbeStatus::Ok:
+            break;
+    }
+    print_sink_capabilities(out, result.caps, PROBE_FORMAT_NAMES);
 }
 
 }  // namespace
 
-AlsaAudioSink::AlsaAudioSink(std::string device) : device_(std::move(device)) {}
+AlsaAudioSink::AlsaAudioSink(std::string device, uint32_t buffer_ms)
+    : device_(std::move(device)), buffer_ms_(buffer_ms) {}
 
 AlsaAudioSink::~AlsaAudioSink() {
     // stop() is the documented shutdown path, but a sink destroyed without it must still
@@ -242,6 +244,25 @@ bool AlsaAudioSink::probe(const std::string& device, std::string& error) {
     error = "cannot open ALSA device '" + device + "': " + snd_strerror(err) +
             " -- run with -l to list this host's PCMs";
     return false;
+}
+
+SinkCapabilities AlsaAudioSink::capabilities() const {
+    install_alsa_error_handler();
+
+    // What this *device name* will take, which is the question the advertisement answers --
+    // not a description of the hardware. `default` is usually PipeWire's or PulseAudio's ALSA
+    // plugin, and a plug layer converts, so it reports nearly everything whatever card is
+    // behind it. That is still the honest answer to "what can I push through this -o value".
+    const ProbeResult result = probe_capabilities(this->device_.c_str());
+    if (result.status != ProbeStatus::Ok) {
+        // Busy, absent or interleaved-incapable. Advertising nothing would leave the player
+        // unable to play at all, where being over-broad costs at worst a per-stream refusal.
+        cli_log(LogLevel::DEBUG,
+                "alsa sink: could not probe '%s' -- advertising everything sendspin-cli can emit",
+                this->device_.c_str());
+        return SinkCapabilities::permissive();
+    }
+    return result.caps;
 }
 
 void AlsaAudioSink::list_devices(std::FILE* out) {
@@ -327,14 +348,17 @@ bool AlsaAudioSink::open_device_(uint32_t sample_rate, uint8_t channels, uint8_t
         // Exact: a device that would silently resample is not what the sync maths assumes.
         err = snd_pcm_hw_params_set_rate(this->pcm_, hw, sample_rate, 0);
     }
+    const unsigned int buffer_time_us = this->buffer_ms_ * 1000U;
     if (err >= 0) {
         step = "buffer time";
-        unsigned int buffer_time = BUFFER_TIME_US;
+        unsigned int buffer_time = buffer_time_us;
         err = snd_pcm_hw_params_set_buffer_time_near(this->pcm_, hw, &buffer_time, nullptr);
     }
     if (err >= 0) {
         step = "period time";
-        unsigned int period_time = PERIOD_TIME_US;
+        // Derived from the ring rather than asked for separately: --buffer-ms is one figure
+        // for both backends, and a period is the wakeup granularity within it.
+        unsigned int period_time = buffer_time_us / PERIODS_PER_BUFFER;
         err = snd_pcm_hw_params_set_period_time_near(this->pcm_, hw, &period_time, nullptr);
     }
     if (err >= 0) {
@@ -352,16 +376,28 @@ bool AlsaAudioSink::open_device_(uint32_t sample_rate, uint8_t channels, uint8_t
     snd_pcm_uframes_t buffer_size = 0;
     snd_pcm_uframes_t period_size = 0;
     snd_pcm_hw_params_get_buffer_size(hw, &buffer_size);
-    snd_pcm_hw_params_get_period_size(hw, &period_size, nullptr);
+    err = snd_pcm_hw_params_get_period_size(hw, &period_size, nullptr);
+    if (err < 0 || period_size == 0) {
+        // Both software parameters below are the period, so a zero would set a start
+        // threshold that never trips and an avail_min that turns write()'s snd_pcm_wait()
+        // into a spin. Refusing here degrades to the discard path, which is bounded.
+        cli_log(LogLevel::ERROR, "alsa sink: '%s' reported no period size", this->device_.c_str());
+        this->close_device_();
+        return false;
+    }
 
     snd_pcm_sw_params_t* sw = nullptr;
     snd_pcm_sw_params_alloca(&sw);
     err = snd_pcm_sw_params_current(this->pcm_, sw);
     if (err >= 0) {
-        // Start only once the ring is full: the extra cushion costs a little startup
-        // latency and buys a lot of underrun immunity, and the server compensates for the
-        // delay through the timestamps write() feeds back.
-        err = snd_pcm_sw_params_set_start_threshold(this->pcm_, sw, buffer_size);
+        // Start at the first period boundary rather than waiting for a full ring. What that
+        // buys is a truthful sync signal from the first write: snd_pcm_delay() only counts
+        // frames queued ahead of a *running* stream, so a device still waiting to start
+        // reports a finish time that has not begun ticking. What it costs is the underrun
+        // margin those unplayed frames represented -- recover_() turns an -EPIPE into a
+        // prepare() and playback continues, and --buffer-ms is the knob for a host that
+        // needs more headroom.
+        err = snd_pcm_sw_params_set_start_threshold(this->pcm_, sw, period_size);
     }
     if (err >= 0) {
         err = snd_pcm_sw_params_set_avail_min(this->pcm_, sw, period_size);

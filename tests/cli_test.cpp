@@ -262,6 +262,68 @@ TEST(ParseOptions, PortEdgesAreAccepted) {
 }
 
 // ---------------------------------------------------------------------------
+// --buffer-ms
+// ---------------------------------------------------------------------------
+
+TEST(ParseOptions, BufferMsIsAccepted) {
+    Parse parse({"--buffer-ms", "250"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_EQ(parse.options().buffer_ms, 250U);
+    EXPECT_TRUE(parse.options().was_given(Opt::BufferMs));
+}
+
+TEST(ParseOptions, BufferMsDefaultsWithoutBeingGiven) {
+    Parse parse({});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_EQ(parse.options().buffer_ms, DEFAULT_BUFFER_MS);
+    EXPECT_FALSE(parse.options().was_given(Opt::BufferMs));
+}
+
+TEST(ParseOptions, BufferMsBounds) {
+    // Zero, non-numeric, empty, signed and either side of the range all refuse to start --
+    // nothing here warns and carries on with the default.
+    for (const char* value : {"0", "9", "2001", "abc", "12x", "", "-1", " 100", "+100", "100.5"}) {
+        Parse parse({"--buffer-ms", value});
+
+        EXPECT_FALSE(parse.ok()) << "--buffer-ms accepted '" << value << "'";
+        const std::string diagnostics = parse.diagnostics();
+        EXPECT_NE(diagnostics.find("error: invalid --buffer-ms"), std::string::npos) << value;
+        // The message names the value it refused, not just the flag.
+        EXPECT_NE(diagnostics.find(std::string("'") + value + "'"), std::string::npos) << value;
+    }
+}
+
+TEST(ParseOptions, BufferMsEdgesAreAccepted) {
+    Parse low({"--buffer-ms", std::to_string(MIN_BUFFER_MS)});
+    Parse high({"--buffer-ms", std::to_string(MAX_BUFFER_MS)});
+
+    ASSERT_TRUE(low.ok()) << low.diagnostics();
+    ASSERT_TRUE(high.ok()) << high.diagnostics();
+    EXPECT_EQ(low.options().buffer_ms, MIN_BUFFER_MS);
+    EXPECT_EQ(high.options().buffer_ms, MAX_BUFFER_MS);
+}
+
+TEST(ParseOptions, BufferMsNeedsAValue) {
+    Parse parse({"--buffer-ms"});
+
+    ASSERT_FALSE(parse.ok());
+    EXPECT_NE(parse.diagnostics().find("option '--buffer-ms' needs a value"), std::string::npos)
+        << parse.diagnostics();
+}
+
+TEST(ParseOptions, BufferMsDoesNotClaimDashA) {
+    // squeezelite's -a is deliberately left unclaimed: its <b>:<p>:<f>:<m> grammar is
+    // ALSA-only, and two of its four subfields are already fixed here.
+    Parse parse({"-a", "100"});
+
+    EXPECT_FALSE(parse.ok());
+    EXPECT_NE(parse.diagnostics().find("unknown option '-a'"), std::string::npos)
+        << parse.diagnostics();
+}
+
+// ---------------------------------------------------------------------------
 // -d
 // ---------------------------------------------------------------------------
 
@@ -445,11 +507,11 @@ TEST(ParseOptions, TracksWhichOptionsWereExplicitlyGiven) {
 
 TEST(ParseOptions, ExplicitlyGivenTracksEveryOption) {
     Parse parse({"-o", "null", "-l", "-n", "kitchen", "-s", "host", "-z", "-P", "/run/x.pid", "-d",
-                 "debug", "-f", "/var/log/x.log", "--port", "9000"});
+                 "debug", "-f", "/var/log/x.log", "--port", "9000", "--buffer-ms", "200"});
 
     ASSERT_TRUE(parse.ok()) << parse.diagnostics();
     for (const Opt opt : {Opt::Device, Opt::ListDevices, Opt::Name, Opt::Server, Opt::Daemonize,
-                          Opt::Pidfile, Opt::Logfile, Opt::LogLevel, Opt::Port}) {
+                          Opt::Pidfile, Opt::Logfile, Opt::LogLevel, Opt::Port, Opt::BufferMs}) {
         EXPECT_TRUE(parse.options().was_given(opt))
             << "option " << static_cast<unsigned>(opt) << " not recorded as given";
     }

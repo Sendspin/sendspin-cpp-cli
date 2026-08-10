@@ -127,6 +127,7 @@ add_library(sendspin-cli-core STATIC
     src/null_sink.cpp
     src/pcm_volume.cpp
     src/player_listener.cpp
+    src/supported_formats.cpp
 )
 
 if(SENDSPIN_CLI_ALSA_ENABLED)
@@ -195,6 +196,7 @@ if(SENDSPIN_CLI_BUILD_TESTS)
         tests/cli_test.cpp
         tests/device_spec_test.cpp
         tests/pcm_volume_test.cpp
+        tests/supported_formats_test.cpp
     )
     target_link_libraries(sendspin-cli-tests PRIVATE sendspin-cli-core GTest::gtest_main)
     target_compile_options(sendspin-cli-tests PRIVATE -Wall -Wextra -Wpedantic)

@@ -24,8 +24,11 @@
 #include "portaudio_sink.h"
 #endif
 
+#include <algorithm>
+#include <array>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace sendspin_cli {
 
@@ -90,7 +93,29 @@ std::string unavailable_error(const ReservedBackend& reserved) {
     return std::string(reserved.reason) + ". This build has: " + audio_backend_list();
 }
 
+/// Joins `values` with spaces, or yields `empty` when there are none.
+template <typename T>
+std::string join_or(const std::vector<T>& values, const char* empty) {
+    if (values.empty()) {
+        return empty;
+    }
+    std::string list;
+    for (const T& value : values) {
+        if (!list.empty()) {
+            list += ' ';
+        }
+        list += std::to_string(static_cast<unsigned>(value));
+    }
+    return list;
+}
+
 }  // namespace
+
+SinkCapabilities SinkCapabilities::permissive() {
+    return {{PROBE_RATES.begin(), PROBE_RATES.end()},
+            {PROBE_BIT_DEPTHS.begin(), PROBE_BIT_DEPTHS.end()},
+            {PROBE_CHANNELS.begin(), PROBE_CHANNELS.end()}};
+}
 
 std::string audio_backend_list() {
     std::string list;
@@ -101,6 +126,28 @@ std::string audio_backend_list() {
         list += entry.name;
     }
     return list;
+}
+
+void print_sink_capabilities(std::FILE* out, const SinkCapabilities& caps,
+                             const std::array<const char*, PROBE_BIT_DEPTHS.size()>& depth_names) {
+    std::string formats;
+    for (size_t i = 0; i < PROBE_BIT_DEPTHS.size(); ++i) {
+        if (std::find(caps.bit_depths.begin(), caps.bit_depths.end(), PROBE_BIT_DEPTHS[i]) !=
+            caps.bit_depths.end()) {
+            if (!formats.empty()) {
+                formats += ' ';
+            }
+            formats += depth_names[i];
+        }
+    }
+
+    // An empty list is meaningful: the device is there but takes nothing this player emits.
+    std::fprintf(out, "      rates:    %s\n",
+                 join_or(caps.rates, "(none of the probed rates)").c_str());
+    std::fprintf(out, "      formats:  %s\n",
+                 formats.empty() ? "(none sendspin-cli can emit)" : formats.c_str());
+    std::fprintf(out, "      channels: %s\n",
+                 join_or(caps.channels, "(none of the probed counts)").c_str());
 }
 
 bool resolve_device_spec(const std::string& spec, DeviceSpec& out, std::string& error) {
@@ -187,7 +234,11 @@ bool resolve_device_spec(const std::string& spec, DeviceSpec& out, std::string& 
 #endif
 }
 
-std::unique_ptr<AudioSink> make_audio_sink(const std::string& device, std::string& error) {
+// buffer_ms is read only by the device-backed branches below, so a build with neither
+// backend compiled in genuinely has no use for it.
+std::unique_ptr<AudioSink> make_audio_sink(const std::string& device,
+                                           [[maybe_unused]] uint32_t buffer_ms,
+                                           std::string& error) {
     DeviceSpec spec;
     if (!resolve_device_spec(device, spec, error)) {
         return nullptr;
@@ -195,6 +246,8 @@ std::unique_ptr<AudioSink> make_audio_sink(const std::string& device, std::strin
 
     switch (spec.backend) {
         case SinkBackend::Null:
+            // buffer_ms goes nowhere here on purpose: a sink with no device consumes every
+            // write immediately, so there is nothing for it to size.
             return std::make_unique<NullAudioSink>(NullSinkOutput::Discard);
         case SinkBackend::Stdout:
             return std::make_unique<NullAudioSink>(NullSinkOutput::Stdout);
@@ -205,7 +258,7 @@ std::unique_ptr<AudioSink> make_audio_sink(const std::string& device, std::strin
             if (!AlsaAudioSink::probe(spec.device, error)) {
                 return nullptr;
             }
-            return std::make_unique<AlsaAudioSink>(spec.device);
+            return std::make_unique<AlsaAudioSink>(spec.device, buffer_ms);
 #else
             break;  // unreachable: resolve_device_spec() never yields Alsa without the backend
 #endif
@@ -214,7 +267,7 @@ std::unique_ptr<AudioSink> make_audio_sink(const std::string& device, std::strin
             if (!PortAudioSink::probe(spec.device, error)) {
                 return nullptr;
             }
-            return std::make_unique<PortAudioSink>(spec.device);
+            return std::make_unique<PortAudioSink>(spec.device, buffer_ms);
 #else
             break;  // unreachable, for the same reason as Alsa above
 #endif
@@ -286,8 +339,10 @@ void print_audio_devices(std::FILE* out) {
                  "device is refused rather than guessed at. -o portaudio with no device at all\n"
                  "follows this host's default output, resolved afresh at every stream.\n"
                  "\nInput-only devices are left out, since -o cannot play through them. The\n"
-                 "rate shown is each device's default, not a limit -- the stream's own rate is\n"
-                 "what gets requested, and the host API resamples where it must.\n");
+                 "rate on the device's own line is its default; the rates below it are what it\n"
+                 "will actually take, asked for the same way a stream would ask. Only the four\n"
+                 "formats sendspin-cli can emit are shown, and the host API converts on top of\n"
+                 "them where it must.\n");
 #endif
 }
 

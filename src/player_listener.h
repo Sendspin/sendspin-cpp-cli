@@ -21,6 +21,7 @@
 
 #include <sendspin/player_role.h>
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 
@@ -30,6 +31,11 @@ namespace sendspin_cli {
 ///
 /// This is the only place that knows about both sides, which is what lets an audio
 /// backend be written against AudioSink alone, with no sendspin headers in sight.
+///
+/// THREAD SAFETY: on_audio_write() is called on the sendspin sync task's background thread,
+/// every other callback on the main loop -- the same split AudioSink documents, since this
+/// listener is what those calls arrive through. The refusal bookkeeping below is therefore
+/// atomic: it is written on one thread and read on the other.
 class PlayerListener final : public sendspin::PlayerRoleListener {
 public:
     /// Also wires sink.on_frames_played to player.notify_audio_played(), so a backend
@@ -46,6 +52,16 @@ public:
 private:
     sendspin::PlayerRole& player_;
     AudioSink& sink_;
+
+    /// Set when configure() refuses this stream's format, cleared at the next stream start.
+    ///
+    /// Without it a refusal is one ERROR line and then silence -- the sink discards
+    /// internally and write() still reports the bytes as consumed, so nothing downstream
+    /// notices that a whole track played to nowhere.
+    std::atomic<bool> stream_refused_{false};
+    /// Bytes handed over while stream_refused_ was set. Only what this listener passed to a
+    /// sink it knows was refused: a sink discarding for its own reasons is its own to report.
+    std::atomic<uint64_t> refused_bytes_{0};
 };
 
 }  // namespace sendspin_cli

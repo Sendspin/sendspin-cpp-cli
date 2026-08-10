@@ -17,14 +17,56 @@
 
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace sendspin_cli {
+
+/// @brief The rates a device is asked about, ascending.
+///
+/// Shared by both backends, so `-l` and the advertised format list describe the same ladder
+/// whichever backend answered. Kept to eight rather than every rate a card might name,
+/// because a backend does not necessarily get the whole ladder for one device open: ALSA
+/// tests a configuration space already in memory, but PortAudio's ALSA host API opens and
+/// closes the PCM inside each Pa_IsFormatSupported().
+inline constexpr std::array<uint32_t, 8> PROBE_RATES{22050, 32000, 44100,  48000,
+                                                     88200, 96000, 176400, 192000};
+
+/// @brief The bit depths a device is asked about, ascending.
+///
+/// Exactly what this player can emit: the decoders hand over tightly packed little-endian PCM
+/// at one of these four depths, so a device that also takes, say, a padded 24-bit or a
+/// big-endian format cannot be reached through it.
+inline constexpr std::array<uint8_t, 4> PROBE_BIT_DEPTHS{8, 16, 24, 32};
+
+/// @brief The channel counts a device is asked about, ascending: mono through 7.1.
+inline constexpr std::array<uint8_t, 5> PROBE_CHANNELS{1, 2, 4, 6, 8};
+
+/// @brief What a sink's device will actually take, as far as this player can drive it.
+///
+/// The three axes are reported independently, which is how ALSA's own
+/// snd_pcm_hw_params_test_*() ladder works: a device listing 44100 and 24-bit does not
+/// promise 44100 *at* 24-bit. Good enough for an advertisement, whose refusals are
+/// per-stream anyway.
+struct SinkCapabilities {
+    std::vector<uint32_t> rates;      ///< ascending, a subset of PROBE_RATES
+    std::vector<uint8_t> bit_depths;  ///< ascending, a subset of PROBE_BIT_DEPTHS
+    std::vector<uint8_t> channels;    ///< ascending, a subset of PROBE_CHANNELS
+
+    /// @brief Everything this player can emit: the whole of all three ladders.
+    ///
+    /// The answer for a sink with no device to ask (null, stdout), and the answer a real
+    /// backend degrades to when its device cannot be probed. Deliberately permissive rather
+    /// than empty: an empty capability set advertises nothing, which leaves the player unable
+    /// to play at all, where an over-broad one costs at worst a per-stream refusal.
+    static SinkCapabilities permissive();
+};
 
 /// @brief Destination for decoded PCM frames coming out of the sendspin player role.
 ///
@@ -73,6 +115,18 @@ public:
 
     /// @brief Silences output regardless of volume.
     virtual void set_muted(bool /*muted*/) {}
+
+    /// @brief Reports what this sink's device will take, for the advertised format list.
+    ///
+    /// Called once from the main loop, before SendspinClient::start_server(), and nowhere
+    /// hot: a backend may briefly open its device to answer, despite the method being const.
+    ///
+    /// A device that cannot be probed -- busy, absent, unopenable -- must still answer
+    /// SinkCapabilities::permissive() rather than an empty set. The default does that for
+    /// every sink with no device to ask.
+    virtual SinkCapabilities capabilities() const {
+        return SinkCapabilities::permissive();
+    }
 
     /// @brief Reports frames that have actually reached the DAC, for sync feedback.
     ///
@@ -129,15 +183,27 @@ bool resolve_device_spec(const std::string& spec, DeviceSpec& out, std::string& 
 /// @brief The backend prefixes this build has, e.g. "null, stdout, alsa". For diagnostics.
 std::string audio_backend_list();
 
+/// @brief Prints one capability set as the three indented lines -l puts under every device.
+///
+/// Shared so a single -l run reads the same way whichever backend answered. Only the format
+/// spelling differs, which is what `depth_names` carries -- ALSA says `S24_3LE` where
+/// PortAudio says `paInt24`, and each is the name that host's own tooling uses.
+/// @param depth_names How this backend spells PROBE_BIT_DEPTHS, in the same order.
+void print_sink_capabilities(std::FILE* out, const SinkCapabilities& caps,
+                             const std::array<const char*, PROBE_BIT_DEPTHS.size()>& depth_names);
+
 /// @brief Builds the sink named by -o.
 ///
 /// Resolves the spec (see resolve_device_spec()) and opens what it names. This is the
 /// registry every backend hooks into: an entry in the table resolve_device_spec() reads,
 /// and its construction here.
 /// @param device Device/backend spec as given to -o.
+/// @param buffer_ms How much audio each backend should keep buffered, from --buffer-ms.
+/// Already range-checked by the parser, so a backend may take it as given.
 /// @param error Set to a human-readable reason when the return value is nullptr.
 /// @return The sink, or nullptr if `device` is not recognized.
-std::unique_ptr<AudioSink> make_audio_sink(const std::string& device, std::string& error);
+std::unique_ptr<AudioSink> make_audio_sink(const std::string& device, uint32_t buffer_ms,
+                                           std::string& error);
 
 /// @brief Prints the device specs that make_audio_sink() accepts. Backs the -l flag.
 void print_audio_devices(std::FILE* out);
