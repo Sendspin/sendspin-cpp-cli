@@ -22,6 +22,8 @@ namespace sendspin_cli {
 
 using sendspin::LogLevel;
 
+static constexpr const char* LOG_TAG = LOG_TAG_PLAYER;
+
 PlayerListener::PlayerListener(sendspin::PlayerRole& player, AudioSink& sink)
     : player_(player), sink_(sink) {
     // Capture the address by value: capturing the `player` reference parameter itself
@@ -50,7 +52,8 @@ void PlayerListener::on_stream_start() {
     if (!params.is_complete()) {
         // The sink cannot open a device without a format. The player keeps the stream
         // alive, so a later start with complete params still works.
-        cli_log(LogLevel::WARN, "Stream started without complete parameters -- sink not configured");
+        cli_log(LogLevel::WARN,
+                "Stream started without complete parameters -- sink not configured");
         return;
     }
 

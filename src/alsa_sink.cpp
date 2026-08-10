@@ -36,6 +36,10 @@ namespace sendspin_cli {
 
 using sendspin::LogLevel;
 
+/// Both sinks and the -o resolver share one tag: which backend a line came from is
+/// already in the message, and "audio" is what an operator greps for.
+static constexpr const char* LOG_TAG = LOG_TAG_AUDIO;
+
 namespace {
 
 /// How many periods the ring is divided into. The ring itself comes from --buffer-ms; the
@@ -258,7 +262,7 @@ SinkCapabilities AlsaAudioSink::capabilities() const {
         // Busy, absent or interleaved-incapable. Advertising nothing would leave the player
         // unable to play at all, where being over-broad costs at worst a per-stream refusal.
         cli_log(LogLevel::DEBUG,
-                "alsa sink: could not probe '%s' -- advertising everything sendspin-cli can emit",
+                "alsa: could not probe '%s' -- advertising everything sendspin-cli can emit",
                 this->device_.c_str());
         return SinkCapabilities::permissive();
     }
@@ -308,18 +312,18 @@ void AlsaAudioSink::list_devices(std::FILE* out) {
 bool AlsaAudioSink::open_device_(uint32_t sample_rate, uint8_t channels, uint8_t bits_per_sample) {
     snd_pcm_format_t format = SND_PCM_FORMAT_UNKNOWN;
     if (!alsa_format_for(bits_per_sample, format)) {
-        cli_log(LogLevel::ERROR, "alsa sink: unsupported bit depth %u", bits_per_sample);
+        cli_log(LogLevel::ERROR, "alsa: unsupported bit depth %u", bits_per_sample);
         return false;
     }
     if (channels == 0 || sample_rate == 0) {
-        cli_log(LogLevel::ERROR, "alsa sink: refusing stream with %u ch at %u Hz", channels,
+        cli_log(LogLevel::ERROR, "alsa: refusing stream with %u ch at %u Hz", channels,
                 sample_rate);
         return false;
     }
 
     int err = snd_pcm_open(&this->pcm_, this->device_.c_str(), SND_PCM_STREAM_PLAYBACK, 0);
     if (err < 0) {
-        cli_log(LogLevel::ERROR, "alsa sink: cannot open '%s': %s", this->device_.c_str(),
+        cli_log(LogLevel::ERROR, "alsa: cannot open '%s': %s", this->device_.c_str(),
                 snd_strerror(err));
         this->pcm_ = nullptr;
         return false;
@@ -366,7 +370,7 @@ bool AlsaAudioSink::open_device_(uint32_t sample_rate, uint8_t channels, uint8_t
         err = snd_pcm_hw_params(this->pcm_, hw);
     }
     if (err < 0) {
-        cli_log(LogLevel::ERROR, "alsa sink: '%s' rejected %s for %u Hz / %u ch / %u-bit: %s",
+        cli_log(LogLevel::ERROR, "alsa: '%s' rejected %s for %u Hz / %u ch / %u-bit: %s",
                 this->device_.c_str(), step, sample_rate, channels, bits_per_sample,
                 snd_strerror(err));
         this->close_device_();
@@ -381,7 +385,7 @@ bool AlsaAudioSink::open_device_(uint32_t sample_rate, uint8_t channels, uint8_t
         // Both software parameters below are the period, so a zero would set a start
         // threshold that never trips and an avail_min that turns write()'s snd_pcm_wait()
         // into a spin. Refusing here degrades to the discard path, which is bounded.
-        cli_log(LogLevel::ERROR, "alsa sink: '%s' reported no period size", this->device_.c_str());
+        cli_log(LogLevel::ERROR, "alsa: '%s' reported no period size", this->device_.c_str());
         this->close_device_();
         return false;
     }
@@ -406,7 +410,7 @@ bool AlsaAudioSink::open_device_(uint32_t sample_rate, uint8_t channels, uint8_t
         err = snd_pcm_sw_params(this->pcm_, sw);
     }
     if (err < 0) {
-        cli_log(LogLevel::ERROR, "alsa sink: '%s' rejected software parameters: %s",
+        cli_log(LogLevel::ERROR, "alsa: '%s' rejected software parameters: %s",
                 this->device_.c_str(), snd_strerror(err));
         this->close_device_();
         return false;
@@ -414,7 +418,7 @@ bool AlsaAudioSink::open_device_(uint32_t sample_rate, uint8_t channels, uint8_t
 
     err = snd_pcm_prepare(this->pcm_);
     if (err < 0) {
-        cli_log(LogLevel::ERROR, "alsa sink: cannot prepare '%s': %s", this->device_.c_str(),
+        cli_log(LogLevel::ERROR, "alsa: cannot prepare '%s': %s", this->device_.c_str(),
                 snd_strerror(err));
         this->close_device_();
         return false;
@@ -428,7 +432,7 @@ bool AlsaAudioSink::open_device_(uint32_t sample_rate, uint8_t channels, uint8_t
     this->failed_.store(false);
 
     cli_log(LogLevel::INFO,
-            "alsa sink: '%s' open at %u Hz, %u ch, %u-bit (%zu bytes/frame, %lu-frame ring, "
+            "alsa: '%s' open at %u Hz, %u ch, %u-bit (%zu bytes/frame, %lu-frame ring, "
             "%lu-frame period)",
             this->device_.c_str(), sample_rate, channels, bits_per_sample, this->bytes_per_frame_,
             static_cast<unsigned long>(buffer_size), static_cast<unsigned long>(period_size));
@@ -457,11 +461,10 @@ bool AlsaAudioSink::recover_(int err) {
         // routine under load, so it is a debug line rather than a warning per occurrence.
         const int prepared = snd_pcm_prepare(this->pcm_);
         if (prepared < 0) {
-            cli_log(LogLevel::ERROR, "alsa sink: underrun recovery failed: %s",
-                    snd_strerror(prepared));
+            cli_log(LogLevel::ERROR, "alsa: underrun recovery failed: %s", snd_strerror(prepared));
             return false;
         }
-        cli_log(LogLevel::DEBUG, "alsa sink: underrun recovered");
+        cli_log(LogLevel::DEBUG, "alsa: underrun recovered");
         return true;
     }
 
@@ -472,7 +475,7 @@ bool AlsaAudioSink::recover_(int err) {
             const int resumed = snd_pcm_resume(this->pcm_);
             if (resumed != -EAGAIN) {
                 if (resumed >= 0) {
-                    cli_log(LogLevel::INFO, "alsa sink: resumed after suspend");
+                    cli_log(LogLevel::INFO, "alsa: resumed after suspend");
                     return true;
                 }
                 break;
@@ -481,15 +484,14 @@ bool AlsaAudioSink::recover_(int err) {
         }
         const int prepared = snd_pcm_prepare(this->pcm_);
         if (prepared < 0) {
-            cli_log(LogLevel::ERROR, "alsa sink: suspend recovery failed: %s",
-                    snd_strerror(prepared));
+            cli_log(LogLevel::ERROR, "alsa: suspend recovery failed: %s", snd_strerror(prepared));
             return false;
         }
-        cli_log(LogLevel::INFO, "alsa sink: restarted after suspend");
+        cli_log(LogLevel::INFO, "alsa: restarted after suspend");
         return true;
     }
 
-    cli_log(LogLevel::ERROR, "alsa sink: %s", snd_strerror(err));
+    cli_log(LogLevel::ERROR, "alsa: %s", snd_strerror(err));
     return false;
 }
 
@@ -504,12 +506,12 @@ bool AlsaAudioSink::configure(uint32_t sample_rate, uint8_t channels, uint8_t bi
         snd_pcm_drop(this->pcm_);
         const int err = snd_pcm_prepare(this->pcm_);
         if (err < 0) {
-            cli_log(LogLevel::WARN, "alsa sink: could not restart '%s' (%s) -- reopening",
+            cli_log(LogLevel::WARN, "alsa: could not restart '%s' (%s) -- reopening",
                     this->device_.c_str(), snd_strerror(err));
             this->close_device_();
             return this->open_device_(sample_rate, channels, bits_per_sample);
         }
-        cli_log(LogLevel::DEBUG, "alsa sink: reusing '%s' at %u Hz, %u ch, %u-bit",
+        cli_log(LogLevel::DEBUG, "alsa: reusing '%s' at %u Hz, %u ch, %u-bit",
                 this->device_.c_str(), sample_rate, channels, bits_per_sample);
         return true;
     }
@@ -544,7 +546,7 @@ size_t AlsaAudioSink::write(const uint8_t* data, size_t length, uint32_t timeout
             // spin the sync task on a buffer it can never hand off.
             if (!this->failed_.exchange(true)) {
                 cli_log(LogLevel::ERROR,
-                        "alsa sink: '%s' is not open -- discarding audio until a stream "
+                        "alsa: '%s' is not open -- discarding audio until a stream "
                         "reconfigures it",
                         this->device_.c_str());
             }
@@ -663,7 +665,7 @@ void AlsaAudioSink::clear() {
     snd_pcm_drop(this->pcm_);
     const int err = snd_pcm_prepare(this->pcm_);
     if (err < 0) {
-        cli_log(LogLevel::WARN, "alsa sink: could not re-prepare '%s' after clear: %s",
+        cli_log(LogLevel::WARN, "alsa: could not re-prepare '%s' after clear: %s",
                 this->device_.c_str(), snd_strerror(err));
     }
 }
@@ -681,19 +683,19 @@ void AlsaAudioSink::stop() {
     // ring's worth of audio -- or indefinitely if the device has wedged.
     snd_pcm_drop(this->pcm_);
     this->close_device_();
-    cli_log(LogLevel::INFO, "alsa sink: '%s' closed", this->device_.c_str());
+    cli_log(LogLevel::INFO, "alsa: '%s' closed", this->device_.c_str());
 }
 
 void AlsaAudioSink::set_volume(uint8_t volume) {
     this->volume_.store(volume > 100 ? 100 : volume);
     this->update_volume_multiplier_();
-    cli_log(LogLevel::DEBUG, "alsa sink: volume now %u", this->volume_.load());
+    cli_log(LogLevel::DEBUG, "alsa: volume now %u", this->volume_.load());
 }
 
 void AlsaAudioSink::set_muted(bool muted) {
     this->muted_.store(muted);
     this->update_volume_multiplier_();
-    cli_log(LogLevel::DEBUG, "alsa sink: %s", muted ? "muted" : "unmuted");
+    cli_log(LogLevel::DEBUG, "alsa: %s", muted ? "muted" : "unmuted");
 }
 
 void AlsaAudioSink::update_volume_multiplier_() {

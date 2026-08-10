@@ -23,6 +23,9 @@ small flag set for identity, output, discovery, logging, and daemonization.
 - Parses the squeezelite-style flag surface: `-o -l -n -s -z -P -d -f --port --buffer-ms
   --no-mdns --mdns-name --help --version`, validating every value at parse time and
   refusing to start on a bad one (item 1).
+- Runs as a real daemon: `-z` forks and detaches, `-P` holds a locked pidfile that refuses a
+  second instance and needs no stale cleanup, and every log line carries a level letter and
+  a subsystem tag — timestamped and `SIGHUP`-reopenable under `-f` (item 6).
 - Advertises the formats the selected output device will actually take, derived by probing
   it and crossed with what each codec can carry (item 4).
 
@@ -70,7 +73,9 @@ without saying what they would play.
 - **The config file itself** — format, path search, reading → item 8. This task built only
   the hook a precedence layer needs, deliberately stopping short of choosing a format.
 - **Per-category log levels** — `-d slimproto=info` still parses the category, ignores it,
-  and says so → item 6, which owns logging.
+  and says so → item 6, which owns logging, and which closed the question rather than
+  answering it: the library has no log sink hook, so per-line tags plus `grep` are the
+  filtering that works.
 - **A CI workflow** → item 12. This task leaves a harness for it to call; wiring it into a
   build matrix is that item's job.
 
@@ -357,7 +362,7 @@ if got wrong:
   by `ConnectionManager::fnv1_hash()`, which lives in the library's `src/` and is not
   installed, so a browsed candidate could not be matched against it without
   reimplementing a private hash and staying bit-compatible across tag bumps.
-- **`-z` daemonization**, which an advertising player wants → item 6, unchanged.
+- **`-z` daemonization**, which an advertising player wants → item 6, where it shipped.
 
 **What has and has not been exercised.** Driven against **two real
 `aiosendspin`/Music Assistant servers on macOS**, both modes: the announce mode was
@@ -383,12 +388,156 @@ matrix to close, and the Avahi compat findings above are the specific thing it s
 check. A mid-session server disappearance and the reconnect-after-drop path were
 covered by unit tests rather than in the field.
 
-### 6. Daemonization and logging
+### 6. Daemonization and logging — *shipped*
 
-`-z` (fork, detach, redirect standard streams), `-P` pidfile locking rather than just
-writing, and a real logging framework behind `-d`/`-f`: per-category levels like
-squeezelite's `-d slimproto=info`, syslog, timestamps, rotation. `-z` currently exits
-with a "not implemented" error rather than silently staying in the foreground.
+`-z` was parsed and then refused: `src/main.cpp` printed "not implemented yet" and exited
+1. `-P` was a plain `fopen`/write/remove with no lock, no stale handling and no "already
+running" refusal — and it opened with `"w"`, so a second instance truncated the running
+one's pid on its way to discovering it had lost. And no log line said which part of the
+binary produced it.
+
+**Shipped** in `src/daemon.{h,cpp}`, `src/log.{h,cpp}`, `src/cli.{h,cpp}`, `src/main.cpp`,
+the five files that log, and `tests/daemon_test.cpp`:
+
+- **`-z`: one `fork()`, `setsid()`, `chdir("/")`, `umask(0022)`, fd 0 and fd 1 to
+  `/dev/null`.** A second fork is deliberately absent: `setsid()` already leaves the child
+  a session leader with no controlling terminal, and the classic second fork only stops a
+  session leader re-acquiring one by *opening* a tty, which this daemon never does.
+  `daemon(3)` is not used — deprecated on macOS, so it cannot compile clean under this
+  repo's `-Wall -Wextra -Wpedantic`, and it gives no way to keep fd 2 on an already-opened
+  logfile.
+- **No readiness handshake; the failure boundary moved instead.** Everything cheap,
+  deterministic and resource-free was hoisted *above* the fork, so it still fails at the
+  terminal: the parse, opening `-f`, and a probe of the `-P` lock. Everything after the
+  fork reports into the log, and `README.md` says which is which rather than leaving an
+  exit 0 to be discovered. A self-pipe handshake was the alternative and buys nothing the
+  hoist does not.
+- **The fork-ordering rule is written at the fork site as an invariant** — fork before the
+  process acquires *any* resource — rather than as a list of three current call sites. All
+  three are live: `make_audio_sink()` already probes the device
+  (`src/audio_sink.cpp:258,267`) and `PortAudioSink` then holds a `PortAudioGuard` that
+  brings up the CoreAudio HAL's mach ports and helper threads, `start_server()` starts the
+  sync task's `std::thread`, and a `DNSServiceRef` is a per-process connection to
+  `mDNSResponder`/`avahi-daemon`. Only the forking thread survives a fork, so an item 7
+  control socket or an item 8 config file cannot quietly land above the line without
+  reading why it must not.
+- **Two conflicts `-z` introduces, both closed before the fork.** `-z` with `-o stdout` or
+  `-o -` is refused at **parse** time: a daemon's stdout is `/dev/null`, so the PCM sink
+  would silently become a second discard sink. `-z` without `-f` is *not* refused — a
+  supervisor that captures nothing is a legitimate way to run it — but warns, because
+  otherwise the silence reads exactly like a crash.
+- **A relative `-P` or `-f` under `-z` is resolved against the invoking directory** at
+  parse time. Without that, `chdir("/")` splits one flag value into two files: the parent's
+  probe creates the one the operator typed, and the child writes `/<name>` — which for a
+  non-root user fails *after* the terminal has already been told 0.
+- **`-P` is an exclusive `flock()` held for the process lifetime**, in the one order that
+  works: `open` without `O_TRUNC` → `flock(LOCK_EX|LOCK_NB)` → `ftruncate` → `write`. The
+  lock is what makes stale detection free — a crashed process has its descriptor closed by
+  the kernel, so a leftover file simply has no lock and is reused, with no pid parsed and
+  no `kill(pid, 0)` and therefore no pid-reuse race. `EWOULDBLOCK`/`EAGAIN` is reported as
+  "already running", every other errno as itself. No `FILE*` anywhere in the path, since
+  `fclose()` would release the lock. The parent probes and the child acquires, which
+  sidesteps flock-across-fork semantics that Linux and the BSDs document differently. The
+  lock is taken **above** `make_audio_sink()`, so two instances racing collide on the
+  pidfile rather than on the sound card.
+- **Every log line carries a level letter and a tag**: `<L> <tag>: <message>`, with `cli`,
+  `audio`, `mdns`, `discovery`, `outbound`, `player` and `metadata`. The tail is
+  byte-identical to what the library's `SS_LOG*` macros emit, so `grep 'I mdns:'` and
+  `grep 'I sendspin.ws_server:'` work on the same file. The 96 existing `cli_log` call
+  sites were not touched: each file declares one `static constexpr const char* LOG_TAG`
+  — mirroring the library's own per-file `TAG` idiom — that a macro picks up, and the
+  handful of sites speaking for a second subsystem call `log_line()` with the tag
+  explicitly. `__attribute__((format(printf)))` survives on `log_line()`.
+- **A UTC timestamp under `-f` only.** That is the case where nothing else records *when*;
+  a foreground run under systemd or Docker is already stamped by journald or the container
+  runtime.
+- **`SIGHUP` reopens the `-f` path**, handing rotation to `logrotate` and `newsyslog`. The
+  handler sets a `volatile sig_atomic_t` and the main loop does the work, which flushes the
+  old stream and then logs the result -- neither of those being async-signal-safe is what
+  keeps it off the handler. The handler is installed **only** with `-f`: `SIGHUP`'s default
+  disposition is terminate, which is what a foreground run whose terminal has closed should
+  keep doing.
+- **`PidFile` and the stream redirection left `main.cpp`** for `src/daemon.{h,cpp}` and
+  `src/log.{h,cpp}` inside `sendspin-cli-core`, which is what makes the riskiest code in
+  this item testable at all — the entry point is not linked by the test binary. `main.cpp`
+  now holds only the call order.
+- **17 new tests** — 10 in `tests/daemon_test.cpp` and 7 in `tests/cli_test.cpp`, taking the
+  suite from 130 to 147 — none of which forks, opens a device or a socket, or touches the
+  mDNS daemon.
+
+**Three asks removed from this item rather than deferred**, all for one reason worth
+writing down: sendspin-cpp v0.7.0 logs through `src/platform/logging.h`'s bare
+`fprintf(stderr, "E %s: " fmt "\n", tag, ...)` macros, gated on a single global
+`int ss_host_log_level`, with **no callback or sink hook**. Library lines cannot be
+reformatted, redirected or filtered per tag by any API call this layer can make.
+
+- **syslog / `os_log`** would carry our half of the log and leave the library's half on
+  stderr, splitting one narrative across two destinations — worse than the single file
+  `-f` already gives.
+- **Per-category `-d` levels** have no coherent answer for library lines: raising the
+  global level to serve `-d mdns=debug` floods the log with unrelated library debug, and
+  not raising it shows nothing from the library. `-d` keeps its warn-and-ignore, and the
+  warning now names the tags and points at `grep`, which *is* per-category filtering after
+  the fact and works on the library's lines too.
+- **The workaround was considered and rejected**: a pipe over fd 2 plus a reader thread
+  reassembling and re-emitting lines does work, and costs a thread, a pipe, partial-line
+  buffering and a shutdown-ordering problem in order to prepend twenty bytes — while
+  breaking interactive foreground use. The correct owner of a log sink is sendspin-cpp's
+  `SS_LOG*` macros. Per `AI_POLICY.md` no upstream issue was opened here.
+
+**In-process rotation** is declined on different grounds: it duplicates `logrotate` and
+`newsyslog` wholesale, and `SIGHUP`-reopen hands them the job in about ten lines.
+
+**What has and has not been exercised.** `-z` is not in the suite — forking inside a gtest
+process leaves two runners reporting results — so it was driven **by hand on macOS**, and
+these were each checked directly: the shell returning immediately; `ps` showing the daemon
+reparented to pid 1 with no controlling terminal; `lsof` showing cwd `/`, fd 0 and 1 on
+`/dev/null` and fd 2 on the logfile; an unopenable `-f` and a `-P` under a missing
+directory both failing at the terminal with exit 1; a second instance refused at the
+terminal while the first's pidfile stayed byte-identical; `SIGKILL` followed by a clean
+restart with no cleanup; the pidfile removed on `SIGTERM` from both a foreground and a
+detached run; a relative `-P` landing where it was typed rather than under `/`; a post-fork
+device failure appearing in the log with exit 0 at the terminal; an `mv` plus `SIGHUP`
+producing a fresh file at the original path with nothing more written to the old
+descriptor; and `SIGHUP` to a foreground run with no `-f` still terminating it (128+1).
+The pidfile lock, stale reuse, the `ftruncate` case, the probe, and the reopen are covered
+by `tests/daemon_test.cpp` — affordable without forking because an `flock` lock belongs to
+the *open file description*, so two `open()` calls conflict inside one process exactly as
+two instances would (`fcntl` record locks would not, and that is why they were not used).
+
+- **`log_fatal()`, for the errors that stop the player coming up.** Tagged and stamped like
+  every other line, so under `-f` the one line explaining why a daemon never started is the
+  one `grep 'E '` finds — but past the level gate, because `-d none` means "do not narrate",
+  not "exit 1 without saying why". Emitted under the tag of the subsystem that failed rather
+  than of the startup phase, so a device that will not open joins the `audio` thread. Two
+  kinds of diagnostic stay plain `error:` lines on their own stream -- the flag parser's and
+  the pre-fork pidfile probe's -- because both answer a command line rather than recording a
+  run, and both are printed before there is a log to write them to.
+- **`open()` + `dup2()` rather than `freopen()`** for both the `-f` open and the SIGHUP
+  reopen. `freopen()` closes the stream even when it fails, which had cost three
+  workarounds: an injected diagnostics stream because the complaint could not go to the
+  stderr that had just died, that complaint landing on **stdout** where a `2>` capture
+  misses it and where `-o stdout` puts PCM, and a `/dev/null` rescue so later log lines were
+  not written through a dead `FILE*`. All three are gone: a failed open leaves stderr
+  untouched, and a failed reopen keeps the log on the descriptor it already had — so it can
+  report itself, into the file `logrotate` has just moved.
+
+**This branch was verified on Linux only against a patched tree, and that is worth being
+precise about.** The code *in* this item builds warning-free and passes 148/149 on Debian
+bookworm against real `libasound`, `portaudio` and `libavahi-compat-libdnssd`; the one
+failure is `LastServer.AnUnwritableDirectoryFails`, which fails only because the container
+runs as root and root ignores directory permissions — it passes as a normal user in the same
+container. But **`main` itself does not compile on Linux**, for a reason that predates this
+task: see item 12. Getting far enough to run these tests needed that break patched out in a
+throwaway copy, so "green on Linux" is a statement about this item's code, not about the
+tree.
+
+**Two things this item does not claim.** The library's own lines are **not timestamped**
+under `-f` and cannot be, for the same missing-sink-hook reason its category cannot be
+filtered — so a `-f` file has stamped lines from us and unstamped lines from the library.
+And "the WebSocket port is already taken" turns out **not** to be a post-fork failure at
+all: two instances on one `--port` both report listening, which is pre-existing
+sendspin-cpp/IXWebSocket behaviour and is not addressed here.
 
 ### 7. Local control channel
 
@@ -426,6 +575,11 @@ null sink for device-less containers and CI.
 
 `install()` rules, a systemd unit, and distribution packaging.
 
+Item 6 shipped what a unit file needs and stopped at documenting it: `-z` forks so
+`Type=forking` with `PIDFile=` pointing at `-P` works, and the foreground default suits
+`Type=simple`. `README.md` says which; no unit is in the tree. `sd_notify` is not wired up,
+which is what `Type=notify` would want instead.
+
 ### 11. Interactive TUI mode
 
 Optional, later. Upstream's `examples/tui_client` shows the shape.
@@ -450,6 +604,22 @@ only: that `libavahi-compat-libdnssd` really does implement `DNSServiceQueryReco
 and AAAA as read (it has no `DNSServiceGetAddrInfo` at all), and that the Linux build picks
 it up through `find_path`/`find_library`. The `-DSENDSPIN_CLI_WITH_MDNS=OFF` configuration
 should be one of the matrix legs, since it changes which translation unit is compiled.
+
+**Two known breaks a first matrix run will find immediately.** Both predate item 6, which
+found them by building on Linux for the first time and deliberately left them alone rather
+than widening its own diff:
+
+- **The Linux build does not compile at all.** `Impl::describe_error()` in
+  `src/mdns_dnssd.cpp` switches on `kDNSServiceErr_ServiceNotRunning` and
+  `kDNSServiceErr_Timeout`, and `libavahi-compat-libdnssd`'s `dns_sd.h` defines **neither**
+  — confirmed against Debian bookworm, not read. This is precisely the hazard item 5's own
+  entry predicted when it recorded that the Linux path was unexercised. `#ifdef` guards on
+  the two cases are enough; the compat layer's error set is what a matrix leg should pin
+  down.
+- **The tree does not build warning-free under clang**, because of the dangling
+  `this->name().c_str()` at `src/portaudio_sink.cpp:495` that **item 14 already records**.
+  Item 6 confirmed it still fires, and that it is still the only warning our own sources
+  produce.
 
 ### 13. `PlayerRoleConfig` wiring
 

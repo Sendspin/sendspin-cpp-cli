@@ -53,6 +53,10 @@ namespace sendspin_cli {
 
 using sendspin::LogLevel;
 
+/// The advertising half of this file. The browse, resolve and address-query callbacks
+/// speak for discovery instead, and say so by calling log_line() with that tag.
+static constexpr const char* LOG_TAG = LOG_TAG_MDNS;
+
 namespace {
 
 /// How long after its first address a candidate waits before it is offered for dialling.
@@ -174,7 +178,7 @@ struct MdnsService::Impl {
 
         if (instance.size() < this->advertise_instance.size()) {
             cli_log(LogLevel::WARN,
-                    "mDNS: instance name is longer than the %zu-byte DNS label limit -- "
+                    "instance name is longer than the %zu-byte DNS label limit -- "
                     "advertising as \"%s\"",
                     MDNS_MAX_LABEL_BYTES, instance.c_str());
         }
@@ -251,7 +255,7 @@ struct MdnsService::Impl {
     /// rather than per-operation ones, which arrive through each callback's own errorCode.
     /// So one ref reporting it means every ref is already dead.
     void fail(DNSServiceErrorType err, const char* what, int64_t now_ms) {
-        cli_log(LogLevel::ERROR, "mDNS: %s failed (%s) -- restarting mDNS in %u ms", what,
+        cli_log(LogLevel::ERROR, "%s failed (%s) -- restarting mDNS in %u ms", what,
                 Impl::describe_error(err).c_str(), next_retry_delay_ms(this->restart_attempt));
         this->teardown();
         this->schedule_restart(now_ms);
@@ -275,10 +279,10 @@ struct MdnsService::Impl {
         std::string error;
         if (this->advertise_wanted && this->register_ref == nullptr &&
             !this->start_register(error)) {
-            cli_log(LogLevel::WARN, "mDNS: %s", error.c_str());
+            cli_log(LogLevel::WARN, "%s", error.c_str());
         }
         if (this->browse_wanted && this->browse_ref == nullptr && !this->start_browse(error)) {
-            cli_log(LogLevel::WARN, "mDNS: %s", error.c_str());
+            log_line(LogLevel::WARN, LOG_TAG_DISCOVERY, "%s", error.c_str());
         }
     }
 
@@ -414,17 +418,17 @@ struct MdnsService::Impl {
                 // otherwise completely invisible, but it is also not this player's problem.
                 if (!candidate.announced) {
                     candidate.announced = true;
-                    cli_log(LogLevel::DEBUG, "mDNS: skipping server \"%s\" -- %s",
-                            candidate.instance.c_str(), error.c_str());
+                    log_line(LogLevel::DEBUG, LOG_TAG_DISCOVERY, "skipping server \"%s\" -- %s",
+                             candidate.instance.c_str(), error.c_str());
                 }
                 continue;
             }
 
             candidate.resolved_seq = this->next_seq++;
             candidate.announced = true;
-            cli_log(LogLevel::INFO, "mDNS: found server \"%s\" (name: %s) at %s",
-                    candidate.instance.c_str(),
-                    candidate.name.empty() ? "<unnamed>" : candidate.name.c_str(), url.c_str());
+            log_line(LogLevel::INFO, LOG_TAG_DISCOVERY, "found server \"%s\" (name: %s) at %s",
+                     candidate.instance.c_str(),
+                     candidate.name.empty() ? "<unnamed>" : candidate.name.c_str(), url.c_str());
         }
     }
 
@@ -452,7 +456,8 @@ struct MdnsService::Impl {
             return;
         }
         if (found->second->resolved_seq != 0) {
-            cli_log(LogLevel::INFO, "mDNS: server \"%s\" went away", instance.c_str());
+            log_line(LogLevel::INFO, LOG_TAG_DISCOVERY, "server \"%s\" went away",
+                     instance.c_str());
         }
         this->release_candidate_refs(*found->second);
         this->candidates.erase(found);
@@ -503,7 +508,7 @@ struct MdnsService::Impl {
                                             void* context) {
         auto* impl = static_cast<Impl*>(context);
         if (err != kDNSServiceErr_NoError) {
-            cli_log(LogLevel::ERROR, "mDNS: registration was refused (%s)",
+            cli_log(LogLevel::ERROR, "registration was refused (%s)",
                     Impl::describe_error(err).c_str());
             return;
         }
@@ -511,8 +516,8 @@ struct MdnsService::Impl {
         // the name that went out may not be the name that was asked for. The asked-for name
         // is deliberately left as it was, so a re-registration after a daemon restart does
         // not compound the rename into "name (2) (3)".
-        cli_log(LogLevel::INFO, "mDNS: advertising %s as \"%s\" on port %u (path %s)", regtype,
-                name, impl->advertise_port, impl->advertise_path.c_str());
+        cli_log(LogLevel::INFO, "advertising %s as \"%s\" on port %u (path %s)", regtype, name,
+                impl->advertise_port, impl->advertise_path.c_str());
         impl->restart_attempt = 0;
     }
 
@@ -522,15 +527,15 @@ struct MdnsService::Impl {
                                           const char* domain, void* context) {
         auto* impl = static_cast<Impl*>(context);
         if (err != kDNSServiceErr_NoError) {
-            cli_log(LogLevel::WARN, "mDNS: browse reported an error (%s)",
-                    Impl::describe_error(err).c_str());
+            log_line(LogLevel::WARN, LOG_TAG_DISCOVERY, "browse reported an error (%s)",
+                     Impl::describe_error(err).c_str());
             return;
         }
 
         const std::string instance = service_name;
-        cli_log(LogLevel::DEBUG, "mDNS: browse %s \"%s\" on interface %u",
-                (flags & kDNSServiceFlagsAdd) != 0 ? "found" : "lost", instance.c_str(),
-                interface_index);
+        log_line(LogLevel::DEBUG, LOG_TAG_DISCOVERY, "browse %s \"%s\" on interface %u",
+                 (flags & kDNSServiceFlagsAdd) != 0 ? "found" : "lost", instance.c_str(),
+                 interface_index);
         Candidate* existing = impl->find(instance);
 
         // Adds and removes are per interface, and one instance is normally reported on
@@ -573,8 +578,8 @@ struct MdnsService::Impl {
             &candidate->resolve_ref, 0, kDNSServiceInterfaceIndexAny, service_name, regtype, domain,
             Impl::resolve_callback, impl->context_for(instance));
         if (resolve_err != kDNSServiceErr_NoError) {
-            cli_log(LogLevel::WARN, "mDNS: could not resolve \"%s\" (%s)", instance.c_str(),
-                    Impl::describe_error(resolve_err).c_str());
+            log_line(LogLevel::WARN, LOG_TAG_DISCOVERY, "could not resolve \"%s\" (%s)",
+                     instance.c_str(), Impl::describe_error(resolve_err).c_str());
             impl->contexts.erase(instance);
             return;
         }
@@ -594,8 +599,8 @@ struct MdnsService::Impl {
         }
 
         if (err != kDNSServiceErr_NoError) {
-            cli_log(LogLevel::WARN, "mDNS: resolving \"%s\" failed (%s)", ctx->instance.c_str(),
-                    Impl::describe_error(err).c_str());
+            log_line(LogLevel::WARN, LOG_TAG_DISCOVERY, "resolving \"%s\" failed (%s)",
+                     ctx->instance.c_str(), Impl::describe_error(err).c_str());
             candidate->unusable = true;
             ctx->impl->doomed.push_back(ctx->instance);
             return;
@@ -616,8 +621,8 @@ struct MdnsService::Impl {
         candidate->resolve_ref = nullptr;
         ctx->impl->retired.push_back(ref);
 
-        cli_log(LogLevel::DEBUG, "mDNS: resolved \"%s\" to %s:%u on interface %u",
-                ctx->instance.c_str(), hosttarget, ntohs(port), interface_index);
+        log_line(LogLevel::DEBUG, LOG_TAG_DISCOVERY, "resolved \"%s\" to %s:%u on interface %u",
+                 ctx->instance.c_str(), hosttarget, ntohs(port), interface_index);
 
         candidate->host = hosttarget;
         candidate->port = ntohs(port);
@@ -637,8 +642,9 @@ struct MdnsService::Impl {
         // the next browse announcement, and one WARN is what makes the difference between
         // "nothing was found" and "something was found and then quietly lost".
         if (candidate->v4_ref == nullptr && candidate->v6_ref == nullptr) {
-            cli_log(LogLevel::WARN, "mDNS: cannot look up any address for \"%s\" (%s) -- dropping",
-                    ctx->instance.c_str(), candidate->host.c_str());
+            log_line(LogLevel::WARN, LOG_TAG_DISCOVERY,
+                     "cannot look up any address for \"%s\" (%s) -- dropping",
+                     ctx->instance.c_str(), candidate->host.c_str());
             candidate->unusable = true;
             ctx->impl->doomed.push_back(ctx->instance);
         }
@@ -657,8 +663,8 @@ struct MdnsService::Impl {
         if (err != kDNSServiceErr_NoError) {
             // Not fatal to the candidate: one family failing still leaves the other, and
             // kDNSServiceErr_NoSuchRecord is the ordinary answer for a v4-only host.
-            cli_log(LogLevel::DEBUG, "mDNS: address query for \"%s\" returned %s",
-                    ctx->instance.c_str(), Impl::describe_error(err).c_str());
+            log_line(LogLevel::DEBUG, LOG_TAG_DISCOVERY, "address query for \"%s\" returned %s",
+                     ctx->instance.c_str(), Impl::describe_error(err).c_str());
             return;
         }
 
@@ -666,8 +672,8 @@ struct MdnsService::Impl {
         if (address.empty()) {
             return;
         }
-        cli_log(LogLevel::DEBUG, "mDNS: \"%s\" %s address %s", ctx->instance.c_str(),
-                (flags & kDNSServiceFlagsAdd) != 0 ? "gained" : "lost", address.c_str());
+        log_line(LogLevel::DEBUG, LOG_TAG_DISCOVERY, "\"%s\" %s address %s", ctx->instance.c_str(),
+                 (flags & kDNSServiceFlagsAdd) != 0 ? "gained" : "lost", address.c_str());
         ctx->impl->add_address(*candidate, address, (flags & kDNSServiceFlagsAdd) != 0,
                                ctx->impl->now_ms);
     }
@@ -679,9 +685,9 @@ struct MdnsService::Impl {
                                   rrtype, kDNSServiceClass_IN, Impl::query_callback, ctx);
         if (err != kDNSServiceErr_NoError) {
             ref = nullptr;
-            cli_log(LogLevel::DEBUG, "mDNS: could not query %s for \"%s\" (%s)",
-                    rrtype == kDNSServiceType_A ? "A" : "AAAA", candidate.instance.c_str(),
-                    Impl::describe_error(err).c_str());
+            log_line(LogLevel::DEBUG, LOG_TAG_DISCOVERY, "could not query %s for \"%s\" (%s)",
+                     rrtype == kDNSServiceType_A ? "A" : "AAAA", candidate.instance.c_str(),
+                     Impl::describe_error(err).c_str());
         }
     }
 

@@ -33,6 +33,8 @@ namespace sendspin_cli {
 
 using sendspin::LogLevel;
 
+static constexpr const char* LOG_TAG = LOG_TAG_AUDIO;
+
 namespace {
 
 /// Floor on the ring, as a multiple of PortAudio's own buffer. The callback asks for a whole
@@ -443,8 +445,7 @@ PortAudioSink::PortAudioSink(std::string device, uint32_t buffer_ms)
         // Reported rather than thrown: make_audio_sink() has already run probe(), so getting
         // here means PortAudio came up once and then would not again. configure() will fail
         // and the sink degrades to discarding, which beats taking the daemon down.
-        cli_log(LogLevel::ERROR, "portaudio sink: cannot initialise PortAudio: %s",
-                this->pa_.error());
+        cli_log(LogLevel::ERROR, "portaudio: cannot initialise PortAudio: %s", this->pa_.error());
     }
 }
 
@@ -485,8 +486,7 @@ SinkCapabilities PortAudioSink::capabilities() const {
     if (!resolve_pa_device(this->device_, device, error)) {
         // Advertising nothing would leave the player unable to play at all, where being
         // over-broad costs at worst a per-stream refusal.
-        cli_log(LogLevel::DEBUG,
-                "portaudio sink: %s -- advertising everything sendspin-cli can emit",
+        cli_log(LogLevel::DEBUG, "portaudio: %s -- advertising everything sendspin-cli can emit",
                 error.c_str());
         return SinkCapabilities::permissive();
     }
@@ -498,7 +498,7 @@ SinkCapabilities PortAudioSink::capabilities() const {
         // Busy or gone. Advertising nothing would leave the player unable to play at all,
         // where being over-broad costs at worst a per-stream refusal.
         cli_log(LogLevel::DEBUG,
-                "portaudio sink: could not probe '%s' -- advertising everything sendspin-cli "
+                "portaudio: could not probe '%s' -- advertising everything sendspin-cli "
                 "can emit",
                 device_name);
         return SinkCapabilities::permissive();
@@ -506,7 +506,7 @@ SinkCapabilities PortAudioSink::capabilities() const {
     // A device that probes cleanly but accepts nothing is reported as it answered: main() is
     // the layer that names the sink and decides what to advertise instead, and having both
     // backends fall through to it is what keeps that decision in one place.
-    cli_log(LogLevel::DEBUG, "portaudio sink: capabilities probed from '%s'", device_name);
+    cli_log(LogLevel::DEBUG, "portaudio: capabilities probed from '%s'", device_name);
     return result.caps;
 }
 
@@ -559,7 +559,7 @@ bool PortAudioSink::configure(uint32_t sample_rate, uint8_t channels, uint8_t bi
         // could feed -- the latch makes it return 0 -- and would put a fresh CoreAudio stream
         // in the destructor's way. Note that this reads the latch without ever clearing it:
         // that is stop()'s alone to set and nothing's to reset.
-        cli_log(LogLevel::DEBUG, "portaudio sink: ignoring a stream start during shutdown");
+        cli_log(LogLevel::DEBUG, "portaudio: ignoring a stream start during shutdown");
         return false;
     }
 
@@ -569,7 +569,7 @@ bool PortAudioSink::configure(uint32_t sample_rate, uint8_t channels, uint8_t bi
     PaDeviceIndex device = paNoDevice;
     std::string error;
     if (!resolve_pa_device(this->device_, device, error)) {
-        cli_log(LogLevel::ERROR, "portaudio sink: %s", error.c_str());
+        cli_log(LogLevel::ERROR, "portaudio: %s", error.c_str());
         this->failed_.store(true);
         return false;
     }
@@ -580,12 +580,11 @@ bool PortAudioSink::configure(uint32_t sample_rate, uint8_t channels, uint8_t bi
         // is far cheaper than a close/open round trip, and it spares a CoreAudio device the
         // reopen -- and the gap that comes with it -- at every track boundary.
         if (this->restart_stream_()) {
-            cli_log(LogLevel::DEBUG,
-                    "portaudio sink: reusing the open stream at %u Hz, %u ch, %u-bit", sample_rate,
-                    channels, bits_per_sample);
+            cli_log(LogLevel::DEBUG, "portaudio: reusing the open stream at %u Hz, %u ch, %u-bit",
+                    sample_rate, channels, bits_per_sample);
             return true;
         }
-        cli_log(LogLevel::WARN, "portaudio sink: could not restart the stream -- reopening");
+        cli_log(LogLevel::WARN, "portaudio: could not restart the stream -- reopening");
     }
 
     this->close_stream_();
@@ -609,7 +608,7 @@ size_t PortAudioSink::write(const uint8_t* data, size_t length, uint32_t timeout
         // the sync task on a buffer it can never hand off.
         if (!this->failed_.exchange(true)) {
             cli_log(LogLevel::ERROR,
-                    "portaudio sink: '%s' is not playing -- discarding audio until a stream "
+                    "portaudio: '%s' is not playing -- discarding audio until a stream "
                     "reconfigures it",
                     this->name().c_str());
         }
@@ -699,44 +698,43 @@ void PortAudioSink::stop() {
         return;
     }
     this->close_stream_();
-    cli_log(LogLevel::INFO, "portaudio sink: '%s' closed", this->name().c_str());
+    cli_log(LogLevel::INFO, "portaudio: '%s' closed", this->name().c_str());
 }
 
 void PortAudioSink::set_volume(uint8_t volume) {
     this->volume_.store(volume > 100 ? 100 : volume);
     this->update_volume_multiplier_();
-    cli_log(LogLevel::DEBUG, "portaudio sink: volume now %u", this->volume_.load());
+    cli_log(LogLevel::DEBUG, "portaudio: volume now %u", this->volume_.load());
 }
 
 void PortAudioSink::set_muted(bool muted) {
     this->muted_.store(muted);
     this->update_volume_multiplier_();
-    cli_log(LogLevel::DEBUG, "portaudio sink: %s", muted ? "muted" : "unmuted");
+    cli_log(LogLevel::DEBUG, "portaudio: %s", muted ? "muted" : "unmuted");
 }
 
 bool PortAudioSink::open_stream_(PaDeviceIndex device, uint32_t sample_rate, uint8_t channels,
                                  uint8_t bits_per_sample) {
     PaSampleFormat format = 0;
     if (!pa_format_for(bits_per_sample, format)) {
-        cli_log(LogLevel::ERROR, "portaudio sink: unsupported bit depth %u", bits_per_sample);
+        cli_log(LogLevel::ERROR, "portaudio: unsupported bit depth %u", bits_per_sample);
         return false;
     }
     if (channels == 0 || sample_rate == 0) {
-        cli_log(LogLevel::ERROR, "portaudio sink: refusing stream with %u ch at %u Hz", channels,
+        cli_log(LogLevel::ERROR, "portaudio: refusing stream with %u ch at %u Hz", channels,
                 sample_rate);
         return false;
     }
 
     const PaDeviceInfo* info = Pa_GetDeviceInfo(device);
     if (info == nullptr) {
-        cli_log(LogLevel::ERROR, "portaudio sink: device %d disappeared before it could be opened",
+        cli_log(LogLevel::ERROR, "portaudio: device %d disappeared before it could be opened",
                 static_cast<int>(device));
         return false;
     }
     if (channels > info->maxOutputChannels) {
-        cli_log(LogLevel::ERROR,
-                "portaudio sink: '%s' has %d output channels, so it cannot play %u", info->name,
-                info->maxOutputChannels, channels);
+        cli_log(LogLevel::ERROR, "portaudio: '%s' has %d output channels, so it cannot play %u",
+                info->name, info->maxOutputChannels, channels);
         return false;
     }
 
@@ -766,9 +764,8 @@ bool PortAudioSink::open_stream_(PaDeviceIndex device, uint32_t sample_rate, uin
         Pa_OpenStream(&this->stream_, nullptr, &output_params, sample_rate,
                       paFramesPerBufferUnspecified, paNoFlag, &PortAudioSink::pa_callback, this);
     if (err != paNoError) {
-        cli_log(LogLevel::ERROR,
-                "portaudio sink: '%s' would not open at %u Hz / %u ch / %u-bit: %s", info->name,
-                sample_rate, channels, bits_per_sample, Pa_GetErrorText(err));
+        cli_log(LogLevel::ERROR, "portaudio: '%s' would not open at %u Hz / %u ch / %u-bit: %s",
+                info->name, sample_rate, channels, bits_per_sample, Pa_GetErrorText(err));
         this->stream_ = nullptr;
         this->close_stream_();
         return false;
@@ -791,7 +788,7 @@ bool PortAudioSink::open_stream_(PaDeviceIndex device, uint32_t sample_rate, uin
 
     err = Pa_StartStream(this->stream_);
     if (err != paNoError) {
-        cli_log(LogLevel::ERROR, "portaudio sink: '%s' would not start: %s", info->name,
+        cli_log(LogLevel::ERROR, "portaudio: '%s' would not start: %s", info->name,
                 Pa_GetErrorText(err));
         this->close_stream_();
         return false;
@@ -799,7 +796,7 @@ bool PortAudioSink::open_stream_(PaDeviceIndex device, uint32_t sample_rate, uin
 
     this->failed_.store(false);
     cli_log(LogLevel::INFO,
-            "portaudio sink: '%s' (%s) open at %u Hz, %u ch, %u-bit (%zu bytes/frame, "
+            "portaudio: '%s' (%s) open at %u Hz, %u ch, %u-bit (%zu bytes/frame, "
             "%zu-byte ring, %.1f ms device latency)",
             info->name, this->name().c_str(), sample_rate, channels, bits_per_sample,
             this->bytes_per_frame_, capacity, device_latency_s * 1000.0);
@@ -835,8 +832,7 @@ void PortAudioSink::close_stream_() {
 bool PortAudioSink::restart_stream_() {
     PaError err = Pa_AbortStream(this->stream_);
     if (err != paNoError && err != paStreamIsStopped) {
-        cli_log(LogLevel::DEBUG, "portaudio sink: cannot abort the stream: %s",
-                Pa_GetErrorText(err));
+        cli_log(LogLevel::DEBUG, "portaudio: cannot abort the stream: %s", Pa_GetErrorText(err));
         return false;
     }
 
@@ -849,8 +845,7 @@ bool PortAudioSink::restart_stream_() {
 
     err = Pa_StartStream(this->stream_);
     if (err != paNoError) {
-        cli_log(LogLevel::DEBUG, "portaudio sink: cannot restart the stream: %s",
-                Pa_GetErrorText(err));
+        cli_log(LogLevel::DEBUG, "portaudio: cannot restart the stream: %s", Pa_GetErrorText(err));
         return false;
     }
 
@@ -880,7 +875,7 @@ size_t PortAudioSink::ring_capacity_(double device_latency_s) const {
     // instead -- the latency floor moves with the device, MIN_RING_FRAMES does not.
     if (frames > frames_by_time) {
         cli_log(LogLevel::DEBUG,
-                "portaudio sink: --buffer-ms %u is %zu frames at %u Hz, below the %s floor of "
+                "portaudio: --buffer-ms %u is %zu frames at %u Hz, below the %s floor of "
                 "%zu frames -- using the floor",
                 this->buffer_ms_, frames_by_time, this->rate_,
                 (frames_by_latency >= MIN_RING_FRAMES) ? "device-latency" : "minimum-ring", frames);
