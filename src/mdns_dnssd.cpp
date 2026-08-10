@@ -25,6 +25,9 @@
 /// with it. QueryRecord() is in the compat layer, and being asynchronous it keeps the whole
 /// resolve chain on the one thread -- where the POSIX getaddrinfo() upstream's
 /// `examples/tui_client` falls back to needs a thread per lookup.
+///
+/// The Linux half of that is read from avahi's own `compat.c` and `unsupported.c`, not run:
+/// this has only been exercised against Bonjour. See docs/ROADMAP.md item 12.
 
 #include "mdns.h"
 
@@ -109,6 +112,7 @@ struct MdnsService::Impl {
         int64_t first_address_ms{-1};
         uint64_t resolved_seq{0};  ///< 0 until ready; otherwise the order it resolved in
         bool announced{false};     ///< whether the "found" line has already been logged
+        bool unusable{false};      ///< dropped for what it is, not for having gone away
     };
 
     /// What a callback needs to find its way back. Owned by the candidate, so it outlives
@@ -137,7 +141,9 @@ struct MdnsService::Impl {
     /// they are retired here and released once processing has returned.
     std::vector<DNSServiceRef> retired;
 
-    /// Candidates that failed mid-resolve, erased for the same reason.
+    /// Candidates to erase once the callbacks have returned -- either because the browse
+    /// says they have gone, or because they turned out to be undialable. Deferred for the
+    /// same reason `retired` is: erasing a candidate frees the refs a callback is inside.
     std::vector<std::string> doomed;
 
     uint64_t next_seq{1};
@@ -218,6 +224,11 @@ struct MdnsService::Impl {
     }
 
     void teardown() {
+        // Retired refs go first: they still carry a pointer to a CandidateContext, so
+        // clearing the contexts before releasing them would break the ownership rule the
+        // context is documented to keep.
+        this->drain_retired();
+
         for (auto& entry : this->candidates) {
             this->release_candidate_refs(*entry.second);
         }
@@ -227,7 +238,6 @@ struct MdnsService::Impl {
 
         Impl::release(this->browse_ref);
         Impl::release(this->register_ref);
-        this->drain_retired();
     }
 
     /// Tears everything down and schedules a fresh registration.
@@ -235,6 +245,11 @@ struct MdnsService::Impl {
     /// The case this exists for is `avahi-daemon` being restarted: every ref then reports
     /// kDNSServiceErr_ServiceNotRunning forever, and a player that ignored it would go
     /// permanently undiscoverable while logging nothing at all.
+    ///
+    /// Everything goes, not just the ref that reported it, and that is deliberate:
+    /// DNSServiceProcessResult() fails for connection-level reasons -- the daemon is gone --
+    /// rather than per-operation ones, which arrive through each callback's own errorCode.
+    /// So one ref reporting it means every ref is already dead.
     void fail(DNSServiceErrorType err, const char* what, int64_t now_ms) {
         cli_log(LogLevel::ERROR, "mDNS: %s failed (%s) -- restarting mDNS in %u ms", what,
                 Impl::describe_error(err).c_str(), next_retry_delay_ms(this->restart_attempt));
@@ -341,9 +356,20 @@ struct MdnsService::Impl {
         return refs;
     }
 
+    /// Whether `ref` is still one of ours, checked between callbacks: an earlier one in the
+    /// same tick may have retired it, or torn everything down.
     bool is_live(DNSServiceRef ref) const {
-        const std::vector<DNSServiceRef> refs = this->live_refs();
-        return std::find(refs.begin(), refs.end(), ref) != refs.end();
+        if (ref == this->register_ref || ref == this->browse_ref) {
+            return ref != nullptr;
+        }
+        for (const auto& entry : this->candidates) {
+            const Candidate& candidate = *entry.second;
+            if (ref == candidate.resolve_ref || ref == candidate.v4_ref ||
+                ref == candidate.v6_ref) {
+                return true;
+            }
+        }
+        return false;
     }
 
     void drain_retired() {
@@ -355,6 +381,14 @@ struct MdnsService::Impl {
 
     void purge_doomed() {
         for (const std::string& instance : this->doomed) {
+            // A Remove that emptied the interface set can be followed, in the same tick, by
+            // an Add on another one -- a flap rather than a departure. Such a candidate is
+            // only really gone if nothing has put an interface back. One marked `unusable`
+            // goes regardless: it is being dropped for what it is, not for where it is.
+            const Candidate* candidate = this->find(instance);
+            if (candidate != nullptr && !candidate->unusable && !candidate->interfaces.empty()) {
+                continue;
+            }
             this->forget(instance);
         }
         this->doomed.clear();
@@ -532,8 +566,9 @@ struct MdnsService::Impl {
         // only actually resolvable on the one it really lives on. Pinning the resolve to
         // whichever reply happened to arrive first is a coin toss that fails silently,
         // because a resolve for a service that is not on that interface simply never calls
-        // back. kDNSServiceInterfaceIndexAny lets the daemon answer from wherever it can,
-        // and the reply carries the interface the address queries then use.
+        // back. kDNSServiceInterfaceIndexAny lets the daemon answer from wherever it can:
+        // whichever interface replies first wins -- resolve_callback takes one reply and
+        // retires the ref -- and that reply carries the interface the address queries use.
         const DNSServiceErrorType resolve_err = DNSServiceResolve(
             &candidate->resolve_ref, 0, kDNSServiceInterfaceIndexAny, service_name, regtype, domain,
             Impl::resolve_callback, impl->context_for(instance));
@@ -561,6 +596,7 @@ struct MdnsService::Impl {
         if (err != kDNSServiceErr_NoError) {
             cli_log(LogLevel::WARN, "mDNS: resolving \"%s\" failed (%s)", ctx->instance.c_str(),
                     Impl::describe_error(err).c_str());
+            candidate->unusable = true;
             ctx->impl->doomed.push_back(ctx->instance);
             return;
         }
@@ -594,6 +630,18 @@ struct MdnsService::Impl {
         // change reaches the candidate set instead of stranding it on a stale one.
         ctx->impl->start_address_query(*candidate, kDNSServiceType_A, candidate->v4_ref, ctx);
         ctx->impl->start_address_query(*candidate, kDNSServiceType_AAAA, candidate->v6_ref, ctx);
+
+        // With neither query running no address can ever arrive, so the candidate would sit
+        // in the map forever: never dialable, never announced, and never re-created, since
+        // the browse has no reason to report it again. Dropping it puts it back in reach of
+        // the next browse announcement, and one WARN is what makes the difference between
+        // "nothing was found" and "something was found and then quietly lost".
+        if (candidate->v4_ref == nullptr && candidate->v6_ref == nullptr) {
+            cli_log(LogLevel::WARN, "mDNS: cannot look up any address for \"%s\" (%s) -- dropping",
+                    ctx->instance.c_str(), candidate->host.c_str());
+            candidate->unusable = true;
+            ctx->impl->doomed.push_back(ctx->instance);
+        }
     }
 
     static void DNSSD_API query_callback(DNSServiceRef /*ref*/, DNSServiceFlags flags,
@@ -712,6 +760,15 @@ std::vector<DiscoveredServer> MdnsService::servers() const {
     for (const Impl::Candidate* candidate : ready) {
         DiscoveredServer server;
         this->impl_->fill(*candidate, server);
+        // Re-checked rather than trusted from settle time: an address can be *withdrawn*
+        // after a candidate was announced, which would leave it offered here but no longer
+        // dialable. Since selection takes the first match, one such candidate at the front
+        // of the list would otherwise block every good server behind it, silently.
+        std::string url;
+        std::string error;
+        if (!discovered_server_url(server, url, error)) {
+            continue;
+        }
         servers.push_back(std::move(server));
     }
     return servers;

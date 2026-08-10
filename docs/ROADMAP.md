@@ -367,16 +367,21 @@ dialled, completed a handshake and received metadata. The remembered-server pref
 the `-s mdns:<name>` filter (matching and non-matching), `--no-mdns`, the 1/2/4/8 s
 retry ramp against a closed port, prompt `SIGTERM` during a backoff, and the parse-time
 refusal on a `-DSENDSPIN_CLI_WITH_MDNS=OFF` build were each exercised directly. Clean
-under `-fsanitize=thread` in the announce mode. **The Linux path is unexercised** —
+under `-fsanitize=thread` in the announce mode, in discovery (browse, resolve, address
+queries, dial and retry against a locally registered `_sendspin-server._tcp` record), when
+dialling a real server by address, and while a discovered server disappears mid-run.
+
+**Two things the suite does not prove, and does not claim to.** `src/mdns_dnssd.cpp` has no
+unit coverage at all — the poll/retire/doom lifecycle, the settle window, the interface
+refcount and the restart backoff are the riskiest code here and are exercised only by hand,
+on macOS. (`Impl` is factored so a fake dns_sd could drive it; that is item 12's job.) And
+the property that a per-tick redial would cancel the attempt in flight is reasoned from
+`ConnectionManager::connect_to()`'s source, not exercised — what the `RetryPacer` suite
+proves is the schedule. **The Linux path is unexercised** —
 `libavahi-compat-libdnssd` has not been run against, only read; that is item 12's build
 matrix to close, and the Avahi compat findings above are the specific thing it should
 check. A mid-session server disappearance and the reconnect-after-drop path were
 covered by unit tests rather than in the field.
-
-**One known rough edge, not caused here.** `src/portaudio_sink.cpp:495` takes
-`.c_str()` on a temporary returned by `this->name()`, which clang reports as
-`-Wdangling-gsl`. It predates this task and is untouched by it; it belongs to item 14's
-area and should be fixed there or as its own small change.
 
 ### 6. Daemonization and logging
 
@@ -469,6 +474,12 @@ change:
 unplugged mid-track stays silent until the next stream re-resolves the device. ALSA already
 recovers `-EPIPE`/`-ESTRPIPE` inside `write()`; this is the same idea for the other backend,
 without waiting for a track boundary. Split out of item 4.
+
+A second, unrelated defect in the same file, found while building item 5 and left there
+alone to keep that diff to its own subject: `src/portaudio_sink.cpp:495` calls `.c_str()`
+on the temporary `std::string` returned by `this->name()`, so `device_name` can dangle
+before it is used. clang reports it as `-Wdangling-gsl`, and it is the only warning our own
+sources produce.
 
 Note that the device is *already* re-resolved at every `configure()`, so the gap is
 specifically mid-stream. The awkward part is that recovery has to reopen a stream from the

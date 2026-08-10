@@ -210,6 +210,8 @@ public:
         if (this->pacer_.note_connection_state(connected, now_ms)) {
             cli_log(LogLevel::WARN, "Connection lost -- reconnecting in %u ms",
                     this->pacer_.delay_ms());
+            // The next connection may be to a different server, so it is owed its own look.
+            this->remembered_this_connection_ = false;
         }
         // Covers an inbound connection too: a server that dialled us first is a connection,
         // and dialling out over the top of it would only fight with it.
@@ -263,11 +265,17 @@ private:
     /// `activities` nor `server/activate`, so a completed handshake is the strongest signal
     /// available here. Named for what it actually is rather than for what the spec means.
     void remember(sendspin::SendspinClient& client) {
+        // Once per connection, not once per tick: this runs at the main loop's rate, and
+        // get_server_information() builds a fresh object with its strings on every call.
+        if (this->remembered_this_connection_) {
+            return;
+        }
         const std::optional<sendspin::ServerInformationObject> info =
             client.get_server_information();
         if (!info.has_value() || info->server_id.empty() || info->server_id == this->remembered_) {
             return;
         }
+        this->remembered_this_connection_ = true;
         this->remembered_ = info->server_id;
         if (this->state_path_.empty()) {
             return;
@@ -286,6 +294,7 @@ private:
     MdnsService& mdns_;
     std::string state_path_;
     std::string remembered_;
+    bool remembered_this_connection_{false};
     RetryPacer pacer_;
 };
 
@@ -410,8 +419,10 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    cli_log(LogLevel::INFO, "sendspin-cli %s listening on port %u as \"%s\" (output: %s)",
-            SENDSPIN_CLI_VERSION, opts.port, opts.name.c_str(), sink->name().c_str());
+    cli_log(LogLevel::INFO,
+            "sendspin-cli %s listening on port %u as \"%s\" (output: %s, mDNS: %s)",
+            SENDSPIN_CLI_VERSION, opts.port, opts.name.c_str(), sink->name().c_str(),
+            mdns_backend_name().c_str());
 
     // Started after start_server(), so the port being advertised is one that is already
     // accepting -- a server that discovers us and dials immediately then finds a listener.

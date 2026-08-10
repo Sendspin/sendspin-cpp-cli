@@ -79,6 +79,12 @@ bool load_last_server(const std::string& path, std::string& server_id) {
     std::string text(buffer, read);
     // One id per file, written with a trailing newline so the file is readable with `cat`.
     const size_t end = text.find_first_of("\r\n");
+    if (end == std::string::npos && read >= MAX_SERVER_ID_BYTES) {
+        // The whole buffer with no line ending means the id was longer than this will read.
+        // Returning the truncated prefix would be worse than returning nothing: it can never
+        // match a browsed instance, so the memory would look present and silently never work.
+        return false;
+    }
     if (end != std::string::npos) {
         text.erase(end);
     }

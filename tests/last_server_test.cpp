@@ -37,10 +37,12 @@ public:
     ScratchDir() {
         this->path_ = "last-server-test-" + std::to_string(getpid()) + "-" +
                       std::to_string(ScratchDir::next_id());
-        ::mkdir(this->path_.c_str(), 0700);
+        this->created_ = ::mkdir(this->path_.c_str(), 0700) == 0;
     }
 
     ~ScratchDir() {
+        // Restored in case a test made it unwritable, or the rmdir below cannot work.
+        ::chmod(this->path_.c_str(), 0700);
         // Only ever the one file and the one directory, so no walk is needed.
         std::remove((this->path_ + "/state/last-server").c_str());
         ::rmdir((this->path_ + "/state").c_str());
@@ -65,6 +67,12 @@ public:
         return this->path_;
     }
 
+    /// Whether the directory was actually created, so a test fails on its own setup rather
+    /// than further down in whatever it was trying to prove.
+    bool created() const {
+        return this->created_;
+    }
+
 private:
     static int next_id() {
         static int id = 0;
@@ -72,6 +80,7 @@ private:
     }
 
     std::string path_;
+    bool created_{false};
 };
 
 /// Sets an environment variable for the duration of a test, restoring it afterwards.
@@ -179,12 +188,39 @@ TEST(LastServer, AnEmptyIdIsNotWritten) {
     EXPECT_FALSE(load_last_server(scratch.file(), loaded));
 }
 
-TEST(LastServer, AnUnwritableDirectoryFailsWithoutThrowing) {
+TEST(LastServer, AMissingParentDirectoryFails) {
     const ScratchDir scratch;
+    ASSERT_TRUE(scratch.created());
 
     // Two levels deeper than anything that exists: only the leaf directory is ever created,
     // so this is the "the state directory is not there" case.
     EXPECT_FALSE(save_last_server(scratch.path() + "/a/b/last-server", "srv-abc123"));
+}
+
+TEST(LastServer, AnUnwritableDirectoryFails) {
+    const ScratchDir scratch;
+    ASSERT_TRUE(scratch.created());
+    // Read and execute but not write: the directory is there and can be walked, so this is
+    // the permissions case rather than the missing-directory one above.
+    ASSERT_EQ(::chmod(scratch.path().c_str(), 0500), 0);
+
+    EXPECT_FALSE(save_last_server(scratch.file(), "srv-abc123"));
+}
+
+TEST(LastServer, AnOverLongIdIsRejectedRatherThanTruncated) {
+    const ScratchDir scratch;
+    ASSERT_TRUE(scratch.created());
+    std::FILE* file = std::fopen(scratch.file().c_str(), "w");
+    ASSERT_NE(file, nullptr);
+    // No newline, and longer than load_last_server() will read: a truncated prefix could
+    // never match a browsed instance, so it must read as no memory at all.
+    const std::string huge(4096, 'x');
+    std::fwrite(huge.data(), 1, huge.size(), file);
+    std::fclose(file);
+
+    std::string loaded;
+    EXPECT_FALSE(load_last_server(scratch.file(), loaded));
+    EXPECT_TRUE(loaded.empty());
 }
 
 TEST(LastServer, TheTrailingNewlineIsNotPartOfTheId) {
