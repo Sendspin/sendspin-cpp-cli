@@ -14,9 +14,9 @@ small flag set for identity, output, discovery, logging, and daemonization.
 - Boots a `SendspinClient` with the `player` and `metadata` roles, starts its WebSocket
   server, optionally dials a server with `-s`, pumps `client.loop()`, and shuts down
   cleanly on `SIGINT`/`SIGTERM`.
-- Defines the `AudioSink` seam (`src/audio_sink.h`) and plays real audio through it: an
-  auto-detected ALSA backend (item 2 below), with the device-less null/stdout sink as the
-  fallback, so the binary still runs where there is no sound card.
+- Defines the `AudioSink` seam (`src/audio_sink.h`) and plays real audio through it:
+  auto-detected ALSA (item 2) and PortAudio (item 3) backends, with the device-less
+  null/stdout sink as the fallback, so the binary still runs where there is no sound card.
 - Parses the squeezelite-style flag surface: `-o -l -n -s -z -P -d -f --port --help
   --version`, validating every value at parse time and refusing to start on a bad one
   (item 1).
@@ -88,7 +88,8 @@ The default Linux and Docker backend. In a container this needs only
   — squeezelite's model, with `null` / `stdout` / `-` still reserved. `-o` defaults to
   `default` wherever the backend is compiled in.
 - Software volume: Q32 fixed-point sample scaling on a quadratic taper, matching
-  upstream's `PortAudioSink::apply_volume_()`.
+  upstream's `PortAudioSink::apply_volume_()`. Item 3 moved it to `src/pcm_volume.{h,cpp}`
+  so the PortAudio backend shares one copy rather than carrying a second.
 - libasound's own stderr diagnostics routed through the CLI logger at `debug`.
 
 **Not in this slice.** Three things were deliberately left out; each is now tracked on
@@ -109,12 +110,100 @@ under-reports the finish time until playback actually begins, so the first ~100 
 timestamps on a track are optimistic. It self-corrects once running. Lowering the start
 threshold is the fix if it ever shows as drift at track boundaries — see item 4.
 
-### 3. PortAudio backend
+### 3. PortAudio backend — *shipped (audible slice)*
 
-The cross-platform development backend (macOS and Linux), and what the sendspin-cpp
-examples themselves use. `examples/common/portaudio_sink.cpp` upstream is a working
-reference, including its lock-free ring buffer bridging push writes to PortAudio's pull
-callback.
+The cross-platform backend (macOS and Linux), and the only way this player makes noise on
+macOS, where there is no ALSA at all. Upstream's `examples/common/portaudio_sink.cpp` was
+the reference, but it is not an `AudioSink`, has no device selection, and logs with bare
+`fprintf(stderr)` — so it was ported into `src/` rather than compiled out of the
+FetchContent tree, whose `examples/` path is not a stable interface.
+
+**Shipped** in `src/portaudio_sink.{h,cpp}`, built when `pkg_check_modules(portaudio-2.0)`
+succeeds (`-DSENDSPIN_CLI_WITH_PORTAUDIO=OFF` forces it out):
+
+- A lock-free SPSC ring buffer bridging `write()`'s push model to PortAudio's pull
+  callback, lifted from upstream so both implementations buffer alike — but sized by
+  **time** (100 ms, matching ALSA's ring) rather than upstream's fixed 16 KB, which is
+  85 ms at 48 kHz/16-bit and only 10 ms at 192 kHz/32-bit. Floored at 3x the `outputLatency`
+  PortAudio reports for the open stream — the callback asks for a whole device buffer at a
+  time, so a smaller ring would starve on every wakeup — and at 1024 frames for a device
+  that reports no latency at all.
+- Callback DAC-time sync feedback through `on_frames_played`: `outputBufferDacTime`'s
+  distance from `currentTime` is an offset into the future, so it carries into our clock
+  unchanged, plus the buffer's own duration for when the last frame leaves the DAC.
+- `-o portaudio[:<device>]`, the first backend whose device is **optional**: bare means
+  this host's default output, `portaudio:2` an index as `-l` prints it, and
+  `portaudio:<name>` a full case-insensitive name match. A name matching more than one
+  device is refused naming the candidates, since two host APIs can offer the same card
+  under one name. The device is re-resolved at every stream, so a bare `-o portaudio`
+  follows the host's default as the user changes it.
+- `-l` grows a PortAudio section: index, name, host API, output channels, default rate,
+  with the system default marked and input-only devices left out. `-o` defaults to
+  `portaudio` wherever PortAudio is the only backend, so a bare run plays on macOS.
+- 8/16/24/32-bit (`paInt8`/`paInt16`/`paInt24`/`paInt32`). 8-bit is deliberately beyond
+  upstream's reference, which refuses it: `AlsaAudioSink` takes `S8`, and a stream one
+  backend plays and the other does not would be a difference with no cause. All of this is
+  **latent** for now — `supported_formats()` in `main.cpp` advertises 2 ch / 16-bit only, so
+  no server can ask for the other depths until item 4 widens it. Parity with ALSA, not
+  reachable capability.
+- Software volume shared with the ALSA backend, extracted to `src/pcm_volume.{h,cpp}`
+  rather than copied — ~50 lines of Q32 fixed-point including 24-bit sign extension, now
+  with a no-device test suite of its own.
+
+Four divergences from upstream worth knowing, the first three forced by the `AudioSink`
+contract:
+
+- **`configure()` does not call `stop()`.** Upstream's does, then clears its own abort
+  latch. Ours cannot: `stop()` is contractually "released, during shutdown" and its latch
+  must never be cleared, or a shutdown racing a final `on_stream_start()` gets un-latched.
+  Split into private `open_stream_()`/`close_stream_()` with the public `stop()` on top,
+  as `alsa_sink.cpp` does, so a mid-stream format change cannot poison writes.
+- **`configure()` refuses once `stop()` has latched.** The latch is still write-once and
+  nothing clears it; `configure()` only *reads* it. Without that, a stream start racing
+  shutdown reopens a device `write()` can never feed and the destructor then has to tear
+  down.
+- **Everything the audio callback reads is mutated only while the callback provably cannot
+  run** — before `Pa_StartStream()`, or after `Pa_AbortStream()`/`Pa_CloseStream()` has
+  returned. That is what makes the unsynchronised reads of `bytes_per_frame_`, `bits_`, the
+  stream's real rate and the ring's own storage legal; upstream writes those from
+  `configure()` while its callback may be running, which is a data race. The invariant is
+  written down in the header because it is invisible from the code.
+- **`write()` carries a stream generation.** It blocks on a condition variable rather than
+  holding the mutex throughout, which is how `stop()` stays prompt — but waiting releases the
+  mutex, so a `configure()` or `clear()` can complete while a write is parked. Without a
+  generation check the loop would resume and feed the rest of that buffer to the *new* stream,
+  using the *old* frame size, and report it as consumed — which is exactly what the sync task
+  builds its playtime estimate from. `AlsaAudioSink` needs no equivalent: it holds its mutex
+  across `snd_pcm_wait()`, so the window does not exist there.
+
+**Not in this slice:**
+
+- **Buffer and latency tuning** (squeezelite's `-a`, and PortAudio's `suggestedLatency`,
+  pinned to the device's `defaultHighOutputLatency`) → item 4, which already owns the same
+  question for ALSA. The ring is a fixed 100 ms here too.
+- **Hardware volume** → item 4. Both backends scale in software today.
+- **A CI matrix and a sink contract suite** → item 12. This task added parser-level tests
+  for the new `-o` forms and a `pcm_volume` suite, neither of which opens a device; a
+  suite that exercises `AudioSink` implementations themselves is still that item's job.
+
+**What has and has not been exercised.** The sink was driven directly on macOS — sine tone
+through Core Audio at 48 kHz/16-bit, 44.1 kHz/32-bit and 44.1 kHz/24-bit, with exact
+`on_frames_played` accounting, a plausible DAC offset against the reported device latency,
+volume and mute, the same-format restart, a mid-stream format change, recovery from a refused
+format, and the shutdown latch. It has **not** yet been driven by a real Sendspin server, so
+the sync loop converging over a live stream, controller volume, and pause/resume/next-track
+are unproven in the field. The Linux dual-backend path (`null, stdout, alsa, portaudio`, both
+`-l` sections) is likewise unexercised — this was built and tested on macOS. Item 12's build
+matrix is where that gets closed.
+
+One known rough edge, and only on Linux: `AlsaAudioSink` routes libasound's own stderr
+diagnostics through the CLI logger, but it installs that handler from its *own* `probe()`
+and `list_devices()`. So `-o portaudio:...` on a dual-backend host lets PortAudio's ALSA
+host API spray raw `ALSA lib pcm.c:...` lines onto stderr during device enumeration.
+Deliberately not fixed here: coupling the two sinks together just to suppress a diagnostic
+is a poor trade, and Linux hosts should be using `-o` ALSA directly anyway. (`-l` is
+already clean on such a host, since the ALSA section runs — and installs the handler —
+before the PortAudio one.)
 
 ### 4. Player role wiring and output tuning
 
@@ -122,14 +211,20 @@ Take the stub past "it compiles": `PlayerRoleConfig` tuning (`fixed_delay_us`,
 `extra_startup_silence_ms`), correct handling of mid-stream format changes, and underrun
 behaviour.
 
-Also the two knobs the ALSA backend (item 2) deliberately left fixed:
+Also the two knobs both shipped backends (items 2 and 3) deliberately left fixed:
 
 - **Buffer and period sizing**, exposed the way squeezelite's `-a` does it. ALSA is
   currently pinned to a 100 ms ring with 20 ms periods, chosen to keep `snd_pcm_delay()`
   a useful sync signal without inviting underruns. Tuning it also covers the start
-  threshold, which is what makes early-track timestamps optimistic today.
-- **Volume routing**: software scaling where the backend has no mixer (what ALSA does
-  now, and the right answer through PipeWire), and the **ALSA hardware mixer**
+  threshold, which is what makes early-track timestamps optimistic today. PortAudio is
+  pinned to the same 100 ms of ring, with the device's own
+  `defaultHighOutputLatency` as its `suggestedLatency`.
+- **In-place device recovery.** ALSA recovers `-EPIPE`/`-ESTRPIPE` inside `write()`, but
+  PortAudio's sink latches into discarding once `Pa_IsStreamActive()` goes false — a USB DAC
+  unplugged mid-track stays silent until the next stream re-resolves the device. Recovering
+  without waiting for a track boundary belongs here.
+- **Volume routing**: software scaling where the backend has no mixer (what both do now,
+  and the right answer through PipeWire), and the **ALSA hardware mixer**
   (`snd_mixer_*`, squeezelite's `-V`) where there is a real one to drive — chiefly `hw:`
   output straight to a card.
 
@@ -185,5 +280,8 @@ cleanly on a signal.
 The harness this calls already exists (item 1): GoogleTest via `FetchContent` pinned to a
 tag, wired to CTest with `gtest_discover_tests()`, defaulting ON only when this is the
 top-level project. `cmake -B build && ctest --test-dir build` is the whole invocation. The
-parser suite lives in `tests/`; **the sink contract is still untested** — that is what a
-`NullAudioSink`/`AlsaAudioSink` suite would add, alongside the matrix and the smoke test.
+parser suite lives in `tests/`, and item 3 added a `pcm_volume` suite for the Q32 scaling
+both backends share; **the sink contract itself is still untested** — that is what a
+`NullAudioSink`/`AlsaAudioSink`/`PortAudioSink` suite would add, alongside the matrix and
+the smoke test. Nothing in `tests/` opens an audio device, which is what keeps the suite
+runnable on a sound-card-less CI runner.

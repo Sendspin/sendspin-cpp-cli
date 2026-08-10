@@ -15,6 +15,7 @@
 #include "alsa_sink.h"
 
 #include "log.h"
+#include "pcm_volume.h"
 
 #include <sendspin/client.h>
 
@@ -33,12 +34,6 @@ namespace sendspin_cli {
 using sendspin::LogLevel;
 
 namespace {
-
-/// Unity gain in the Q32 fixed-point scale upstream's PortAudioSink uses.
-constexpr uint64_t Q32_ONE = UINT64_C(1) << 32;
-/// Fractional bits and the matching round-to-nearest term for that scale.
-constexpr int FRAC_BITS = 32;
-constexpr int64_t ROUND_TERM = INT64_C(1) << (FRAC_BITS - 1);
 
 /// Target ring size and granularity handed to ALSA. Small enough that snd_pcm_delay()
 /// stays a useful sync signal, large enough to ride out scheduling jitter. Making these
@@ -136,62 +131,6 @@ bool alsa_format_for(uint8_t bits_per_sample, snd_pcm_format_t& format) {
     }
 }
 
-/// Scales signed little-endian PCM by a Q32 gain, in place over `len` bytes.
-///
-/// A straight port of upstream's PortAudioSink::apply_volume_(), so a stream sounds the
-/// same through either backend. Scaling down can never overflow the sample type, which is
-/// why no clamping is needed here.
-void apply_volume(uint8_t* data, size_t len, uint8_t bytes_per_sample, uint64_t scale) {
-    const int64_t s_scale = static_cast<int64_t>(scale);
-
-    switch (bytes_per_sample) {
-        case 1: {
-            auto* samples = reinterpret_cast<int8_t*>(data);
-            for (size_t i = 0; i < len; ++i) {
-                const int64_t s = static_cast<int64_t>(samples[i]) * s_scale + ROUND_TERM;
-                samples[i] = static_cast<int8_t>(s >> FRAC_BITS);
-            }
-            break;
-        }
-        case 2: {
-            const size_t count = len / 2;
-            auto* samples = reinterpret_cast<int16_t*>(data);
-            for (size_t i = 0; i < count; ++i) {
-                const int64_t s = static_cast<int64_t>(samples[i]) * s_scale + ROUND_TERM;
-                samples[i] = static_cast<int16_t>(s >> FRAC_BITS);
-            }
-            break;
-        }
-        case 3: {
-            const size_t count = len / 3;
-            for (size_t i = 0; i < count; ++i) {
-                uint8_t* p = data + (i * 3);
-                int32_t sample = static_cast<int32_t>(p[0] | (p[1] << 8) | (p[2] << 16));
-                if ((sample & 0x800000) != 0) {
-                    sample |= static_cast<int32_t>(0xFF000000);
-                }
-                const int32_t out = static_cast<int32_t>(
-                    ((static_cast<int64_t>(sample) * s_scale) + ROUND_TERM) >> FRAC_BITS);
-                p[0] = static_cast<uint8_t>(out & 0xFF);
-                p[1] = static_cast<uint8_t>((out >> 8) & 0xFF);
-                p[2] = static_cast<uint8_t>((out >> 16) & 0xFF);
-            }
-            break;
-        }
-        case 4: {
-            const size_t count = len / 4;
-            auto* samples = reinterpret_cast<int32_t*>(data);
-            for (size_t i = 0; i < count; ++i) {
-                const int64_t s = static_cast<int64_t>(samples[i]) * s_scale + ROUND_TERM;
-                samples[i] = static_cast<int32_t>(s >> FRAC_BITS);
-            }
-            break;
-        }
-        default:
-            break;
-    }
-}
-
 /// Appends `value` to a space-separated list.
 void append_item(std::string& list, const std::string& value) {
     if (!list.empty()) {
@@ -269,8 +208,7 @@ void print_device_capabilities(std::FILE* out, const char* name) {
 
 }  // namespace
 
-AlsaAudioSink::AlsaAudioSink(std::string device)
-    : device_(std::move(device)), volume_multiplier_(Q32_ONE) {}
+AlsaAudioSink::AlsaAudioSink(std::string device) : device_(std::move(device)) {}
 
 AlsaAudioSink::~AlsaAudioSink() {
     // stop() is the documented shutdown path, but a sink destroyed without it must still
@@ -574,8 +512,9 @@ size_t AlsaAudioSink::write(const uint8_t* data, size_t length, uint32_t timeout
                         "reconfigures it",
                         this->device_.c_str());
             }
-            // Still frame-aligned, per the write() contract. A closed device has no frame
-            // size to align to, in which case there is no frame boundary to violate.
+            // Frame-aligned per the write() contract wherever the frame size is still known.
+            // Once it is not, the sink cannot align and the caller's own framing is what
+            // protects it -- which holds here, since the player hands over whole frames.
             return (this->bytes_per_frame_ == 0) ? length
                                                  : length - (length % this->bytes_per_frame_);
         }
@@ -722,18 +661,8 @@ void AlsaAudioSink::set_muted(bool muted) {
 }
 
 void AlsaAudioSink::update_volume_multiplier_() {
-    const uint8_t volume = this->volume_.load();
-    if (this->muted_.load() || volume == 0) {
-        this->volume_multiplier_.store(0, std::memory_order_relaxed);
-        return;
-    }
-    if (volume >= 100) {
-        this->volume_multiplier_.store(Q32_ONE, std::memory_order_relaxed);
-        return;
-    }
-    // Quadratic taper, (volume/100)^2, matching upstream so the two backends sound alike.
-    const uint64_t v = volume;
-    this->volume_multiplier_.store((v * v * Q32_ONE) / 10000, std::memory_order_relaxed);
+    this->volume_multiplier_.store(q32_gain_for(this->volume_.load(), this->muted_.load()),
+                                   std::memory_order_relaxed);
 }
 
 }  // namespace sendspin_cli
