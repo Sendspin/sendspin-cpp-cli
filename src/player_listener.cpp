@@ -32,10 +32,20 @@ PlayerListener::PlayerListener(sendspin::PlayerRole& player, AudioSink& sink)
 }
 
 size_t PlayerListener::on_audio_write(uint8_t* data, size_t length, uint32_t timeout_ms) {
-    return this->sink_.write(data, length, timeout_ms);
+    const size_t written = this->sink_.write(data, length, timeout_ms);
+    if (this->stream_refused_.load(std::memory_order_relaxed)) {
+        this->refused_bytes_.fetch_add(written, std::memory_order_relaxed);
+    }
+    return written;
 }
 
 void PlayerListener::on_stream_start() {
+    // Cleared here rather than at stream end, because the early return below never reaches
+    // one: a stream that arrives without parameters would otherwise inherit the last
+    // stream's refusal and report its audio as discarded.
+    this->stream_refused_.store(false, std::memory_order_relaxed);
+    this->refused_bytes_.store(0, std::memory_order_relaxed);
+
     const sendspin::ServerPlayerStreamObject& params = this->player_.get_current_stream_params();
     if (!params.is_complete()) {
         // The sink cannot open a device without a format. The player keeps the stream
@@ -46,13 +56,33 @@ void PlayerListener::on_stream_start() {
 
     cli_log(LogLevel::INFO, "Stream started");
     if (!this->sink_.configure(*params.sample_rate, *params.channels, *params.bit_depth)) {
-        cli_log(LogLevel::ERROR, "Output device rejected %u Hz / %u ch / %u-bit",
-                *params.sample_rate, *params.channels, *params.bit_depth);
+        // Names the device as well as the format, and says what happens next: the sink keeps
+        // accepting writes and drops them, so a player that looks healthy plays nothing.
+        cli_log(LogLevel::ERROR,
+                "Output device '%s' refused %u Hz / %u ch / %u-bit -- this stream's audio will be "
+                "discarded. Run with -l to see what the device accepts.",
+                this->sink_.name().c_str(), *params.sample_rate, *params.channels,
+                *params.bit_depth);
+        this->stream_refused_.store(true, std::memory_order_relaxed);
     }
 }
 
 void PlayerListener::on_stream_end() {
-    cli_log(LogLevel::INFO, "Stream ended");
+    // Said again at the end, so a whole track lost to one refusal is visible in the log even
+    // where the ERROR above has scrolled away -- and so "nothing came out" has a cause next
+    // to it rather than a quiet gap.
+    // Flag first, counter second: on_audio_write() reads the flag before adding, so clearing
+    // it first is what stops a write racing this from adding to a total already taken.
+    const bool refused = this->stream_refused_.exchange(false, std::memory_order_relaxed);
+    const uint64_t discarded = this->refused_bytes_.exchange(0, std::memory_order_relaxed);
+    if (refused) {
+        cli_log(LogLevel::ERROR,
+                "Stream ended having played nothing: %llu bytes discarded, because '%s' refused "
+                "its format",
+                static_cast<unsigned long long>(discarded), this->sink_.name().c_str());
+    } else {
+        cli_log(LogLevel::INFO, "Stream ended");
+    }
     this->sink_.clear();
 }
 

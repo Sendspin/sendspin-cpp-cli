@@ -42,6 +42,21 @@ inline constexpr const char* DEFAULT_OUTPUT_DEVICE = "portaudio";
 inline constexpr const char* DEFAULT_OUTPUT_DEVICE = "null";
 #endif
 
+/// @brief How much audio each backend keeps buffered by default, in milliseconds.
+///
+/// Small enough that a device's own playout timing stays a useful sync signal, large enough
+/// to ride out scheduling jitter. One figure for every backend: ALSA divides it into periods,
+/// PortAudio makes it the ring, and a sink with no device ignores it.
+inline constexpr uint32_t DEFAULT_BUFFER_MS = 100;
+
+/// @brief What --buffer-ms will accept, either side inclusive.
+///
+/// Below the floor there is not enough audio queued for any device to ride out a scheduling
+/// hiccup; above the ceiling the buffer dominates the sync loop and every seek or track
+/// change waits the whole ring out.
+inline constexpr uint32_t MIN_BUFFER_MS = 10;
+inline constexpr uint32_t MAX_BUFFER_MS = 2000;
+
 /// @brief The options a config file could also supply, for precedence tracking.
 ///
 /// A config file (docs/ROADMAP.md item 8) has to layer *under* the command line, which
@@ -58,6 +73,7 @@ enum class Opt : unsigned {
     Logfile,      ///< -f
     LogLevel,     ///< -d
     Port,         ///< --port
+    BufferMs,     ///< --buffer-ms
 };
 
 /// @brief Everything the flag surface configures.
@@ -78,6 +94,18 @@ struct Options {
     /// flag -- a sendspin player is dialled *by* the server, so the listen port is part
     /// of its identity. Long-only, to leave -p free for squeezelite's priority flag.
     uint16_t port{sendspin::SendspinClientConfig::DEFAULT_SERVER_PORT};
+
+    /// --buffer-ms <ms>: how much audio the output backend keeps buffered, MIN_BUFFER_MS to
+    /// MAX_BUFFER_MS. One figure for every backend, which is why it is not squeezelite's
+    /// `-a`: that flag's `<b>:<p>:<f>:<m>` grammar is ALSA-only, and two of its four
+    /// subfields are already fixed here -- the format is negotiated from the stream and the
+    /// access mode is pinned to interleaved. Long-only for the same reason as --port, so no
+    /// squeezelite letter is squatted.
+    ///
+    /// A request rather than a promise: a device-less sink (`null`, `stdout`) has nothing to
+    /// size and ignores it, and PortAudio's device-latency floor overrides a figure too
+    /// small for one callback's worth of audio.
+    uint32_t buffer_ms{DEFAULT_BUFFER_MS};
 
     bool show_help{false};     ///< -h, --help
     bool show_version{false};  ///< --version

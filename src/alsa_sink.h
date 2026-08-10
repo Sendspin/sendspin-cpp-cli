@@ -57,7 +57,10 @@ namespace sendspin_cli {
 /// something other than this stream.
 class AlsaAudioSink final : public AudioSink {
 public:
-    explicit AlsaAudioSink(std::string device);
+    /// @param buffer_ms How much audio to keep queued in the device ring, from --buffer-ms.
+    /// Already range-checked by the parser, so it is taken as given rather than re-clamped;
+    /// ALSA still rounds it to something the card can do (`_near`).
+    AlsaAudioSink(std::string device, uint32_t buffer_ms);
     ~AlsaAudioSink() override;
 
     std::string name() const override;
@@ -67,6 +70,12 @@ public:
     void stop() override;
     void set_volume(uint8_t volume) override;
     void set_muted(bool muted) override;
+
+    /// @brief What this PCM will take, probed through the same ladder -l reports.
+    ///
+    /// Opens the device briefly, so it follows AudioSink::capabilities()'s contract: main
+    /// loop only, before the server starts. A PCM that will not open answers permissively.
+    SinkCapabilities capabilities() const override;
 
     /// @brief Checks that `device` names a PCM this host can open, without keeping it.
     ///
@@ -93,6 +102,8 @@ private:
     void update_volume_multiplier_();
 
     std::string device_;
+    /// Ring size to ask ALSA for, in milliseconds; the period is this over PERIODS_PER_BUFFER.
+    uint32_t buffer_ms_;
 
     /// Serialises every snd_pcm_* call and the fields describing the open stream.
     std::mutex device_mutex_;

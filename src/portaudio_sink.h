@@ -147,7 +147,10 @@ private:
 /// this one just takes effect sooner.
 class PortAudioSink final : public AudioSink {
 public:
-    explicit PortAudioSink(std::string device);
+    /// @param buffer_ms How much audio to keep in the ring, from --buffer-ms. Already
+    /// range-checked by the parser, so it is taken as given rather than re-clamped -- but it
+    /// is a request, not a promise: the device-latency and minimum-ring floors still win.
+    PortAudioSink(std::string device, uint32_t buffer_ms);
     ~PortAudioSink() override;
 
     std::string name() const override;
@@ -157,6 +160,14 @@ public:
     void stop() override;
     void set_volume(uint8_t volume) override;
     void set_muted(bool muted) override;
+
+    /// @brief What the resolved device will take, probed through the same ladder -l reports.
+    ///
+    /// Opens no stream, but not free either: PortAudio's ALSA host API opens and closes the
+    /// PCM inside each Pa_IsFormatSupported(). Follows AudioSink::capabilities()'s contract:
+    /// main loop only, before the server starts. A device that will not resolve, or that
+    /// something else holds, answers permissively.
+    SinkCapabilities capabilities() const override;
 
     /// @brief Checks that `device` names exactly one output device on this host.
     ///
@@ -204,6 +215,8 @@ private:
 
     /// The device as -o spelled it, resolved per stream rather than kept as an index.
     std::string device_;
+    /// Ring size to aim for, in milliseconds, before the floors in ring_capacity_() apply.
+    uint32_t buffer_ms_;
 
     /// Serialises stream_, the format fields, and the ring buffer's producer side.
     std::mutex mutex_;

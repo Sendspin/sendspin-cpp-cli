@@ -18,6 +18,7 @@
 #include "pcm_volume.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -34,12 +35,6 @@ using sendspin::LogLevel;
 
 namespace {
 
-/// Target ring size, as a duration rather than upstream's fixed 16 KB: the same byte count
-/// is 85 ms at 48 kHz/16-bit/stereo but only 10 ms at 192 kHz/32-bit, which would underrun
-/// on every callback. Matches the 100 ms AlsaAudioSink asks ALSA for. Making it tunable is
-/// squeezelite's -a flag, which this task leaves to a follow-up.
-constexpr int64_t RING_TIME_US = 100000;
-
 /// Floor on the ring, as a multiple of PortAudio's own buffer. The callback asks for a whole
 /// device buffer at a time, so a ring no bigger than that starves on every wakeup however
 /// promptly write() refills it -- and PortAudio's high-latency buffer can exceed 100 ms.
@@ -54,28 +49,25 @@ int64_t now_us() {
         .count();
 }
 
-/// Maps the stream's bit depth onto the interleaved little-endian PCM format PortAudio wants.
-/// 24-bit is paInt24, three packed bytes, because the player hands us tightly packed samples.
+/// How each of PROBE_BIT_DEPTHS is spelled on this backend, in the same order.
 ///
+/// 24-bit is paInt24, three packed bytes, because the player hands us tightly packed samples.
 /// 8-bit is here although upstream's reference refuses it: AlsaAudioSink accepts S8, and a
 /// stream one backend plays and the other does not would be a difference with no cause.
+constexpr std::array<PaSampleFormat, PROBE_BIT_DEPTHS.size()> PROBE_FORMATS{paInt8, paInt16,
+                                                                            paInt24, paInt32};
+constexpr std::array<const char*, PROBE_BIT_DEPTHS.size()> PROBE_FORMAT_NAMES{"paInt8", "paInt16",
+                                                                              "paInt24", "paInt32"};
+
+/// Maps the stream's bit depth onto the interleaved little-endian PCM format PortAudio wants.
 bool pa_format_for(uint8_t bits_per_sample, PaSampleFormat& format) {
-    switch (bits_per_sample) {
-        case 8:
-            format = paInt8;
+    for (size_t i = 0; i < PROBE_BIT_DEPTHS.size(); ++i) {
+        if (PROBE_BIT_DEPTHS[i] == bits_per_sample) {
+            format = PROBE_FORMATS[i];
             return true;
-        case 16:
-            format = paInt16;
-            return true;
-        case 24:
-            format = paInt24;
-            return true;
-        case 32:
-            format = paInt32;
-            return true;
-        default:
-            return false;
+        }
     }
+    return false;
 }
 
 /// True if `value` is a non-empty run of decimal digits, so `-o portaudio:2abc` and
@@ -195,6 +187,129 @@ bool resolve_pa_device(const std::string& device, PaDeviceIndex& out, std::strin
 
     out = matches.front();
     return true;
+}
+
+/// Asks whether `device` will take this exact (rate, depth, channels) triple.
+///
+/// Not as cheap as it looks on every host: CoreAudio answers from its own device list, but
+/// PortAudio's ALSA host API opens and closes the PCM per call. That is what keeps the probe
+/// below to one pass over the grid rather than one pass per axis.
+PaError pa_accepts(PaDeviceIndex device, const PaDeviceInfo* info, uint32_t rate,
+                   PaSampleFormat format, int channels) {
+    PaStreamParameters params = {};
+    params.device = device;
+    params.channelCount = channels;
+    params.sampleFormat = format;
+    // The same latency open_stream_() asks for, so the probe describes the stream this sink
+    // would really open rather than one it never asks for.
+    params.suggestedLatency = info->defaultHighOutputLatency;
+    params.hostApiSpecificStreamInfo = nullptr;
+    return Pa_IsFormatSupported(nullptr, &params, static_cast<double>(rate));
+}
+
+/// Why a probe could not describe a device, mirroring AlsaAudioSink's own probe statuses so
+/// -l reads the same way whichever backend answered.
+enum class ProbeStatus {
+    Ok,
+    Busy,      ///< paDeviceUnavailable: the device is there, something else holds it
+    NoDevice,  ///< the index does not resolve, or has no output channels
+};
+
+struct ProbeResult {
+    ProbeStatus status{ProbeStatus::Ok};
+    /// Empty on anything but Ok. Callers needing an answer regardless substitute
+    /// SinkCapabilities::permissive(); -l prints the status instead.
+    SinkCapabilities caps;
+};
+
+/// Asks one device what it will take, without opening a stream on it.
+///
+/// The PortAudio half of what AlsaAudioSink's probe_capabilities() does, and reports the three
+/// axes independently for the same reason -- Pa_IsFormatSupported() answers per triple, so
+/// each list is "supported with at least one of the others", not a promise that every
+/// combination works. A refusal is still configure()'s to report per stream.
+ProbeResult probe_capabilities(PaDeviceIndex device) {
+    ProbeResult result;
+    const PaDeviceInfo* info = Pa_GetDeviceInfo(device);
+    if (info == nullptr || info->maxOutputChannels <= 0) {
+        result.status = ProbeStatus::NoDevice;
+        return result;
+    }
+
+    // One pass over the rate x depth grid at the channel count this player would actually ask
+    // for -- stereo, or mono on a device with a single output. Both axes are read off the one
+    // grid rather than walked separately, which halves the calls on a host where each is a
+    // device open.
+    const int probe_channels = std::min(2, info->maxOutputChannels);
+    bool accepted[PROBE_RATES.size()][PROBE_BIT_DEPTHS.size()] = {};
+    for (size_t r = 0; r < PROBE_RATES.size(); ++r) {
+        for (size_t d = 0; d < PROBE_BIT_DEPTHS.size(); ++d) {
+            const PaError err =
+                pa_accepts(device, info, PROBE_RATES[r], PROBE_FORMATS[d], probe_channels);
+            if (err == paDeviceUnavailable) {
+                // Held exclusively by something else. Every further call would say the same,
+                // so stop and let the caller report "in use" rather than "supports nothing".
+                result.status = ProbeStatus::Busy;
+                result.caps = {};
+                return result;
+            }
+            accepted[r][d] = (err == paFormatIsSupported);
+        }
+    }
+
+    for (size_t r = 0; r < PROBE_RATES.size(); ++r) {
+        if (std::any_of(std::begin(accepted[r]), std::end(accepted[r]),
+                        [](bool ok) { return ok; })) {
+            result.caps.rates.push_back(PROBE_RATES[r]);
+        }
+    }
+    for (size_t d = 0; d < PROBE_BIT_DEPTHS.size(); ++d) {
+        for (size_t r = 0; r < PROBE_RATES.size(); ++r) {
+            if (accepted[r][d]) {
+                result.caps.bit_depths.push_back(PROBE_BIT_DEPTHS[d]);
+                break;
+            }
+        }
+    }
+
+    // The channel axis needs a format to ask with, so it reuses a depth the grid already
+    // accepted; a device the grid found nothing for has no channel count worth reporting.
+    if (result.caps.bit_depths.empty()) {
+        return result;
+    }
+    PaSampleFormat probe_format = PROBE_FORMATS[0];
+    for (size_t d = 0; d < PROBE_BIT_DEPTHS.size(); ++d) {
+        if (PROBE_BIT_DEPTHS[d] == result.caps.bit_depths.front()) {
+            probe_format = PROBE_FORMATS[d];
+        }
+    }
+    const auto probe_rate = static_cast<uint32_t>(info->defaultSampleRate);
+    for (const uint8_t count : PROBE_CHANNELS) {
+        if (count > info->maxOutputChannels) {
+            break;  // PROBE_CHANNELS ascends, so nothing after this fits either
+        }
+        if (pa_accepts(device, info, probe_rate, probe_format, count) == paFormatIsSupported) {
+            result.caps.channels.push_back(count);
+        }
+    }
+    return result;
+}
+
+/// Prints what one device will take, indented under it in -l -- the same three lines, and the
+/// same failure notes, AlsaAudioSink prints per PCM.
+void print_device_capabilities(std::FILE* out, PaDeviceIndex device) {
+    const ProbeResult result = probe_capabilities(device);
+    switch (result.status) {
+        case ProbeStatus::Busy:
+            std::fprintf(out, "      (in use -- capabilities unknown)\n");
+            return;
+        case ProbeStatus::NoDevice:
+            std::fprintf(out, "      (cannot query: the device went away)\n");
+            return;
+        case ProbeStatus::Ok:
+            break;
+    }
+    print_sink_capabilities(out, result.caps, PROBE_FORMAT_NAMES);
 }
 
 }  // namespace
@@ -322,7 +437,8 @@ void PortAudioRingBuffer::reset(size_t capacity) {
 // PortAudioSink
 // ============================================================================
 
-PortAudioSink::PortAudioSink(std::string device) : device_(std::move(device)) {
+PortAudioSink::PortAudioSink(std::string device, uint32_t buffer_ms)
+    : device_(std::move(device)), buffer_ms_(buffer_ms) {
     if (!this->pa_.ok()) {
         // Reported rather than thrown: make_audio_sink() has already run probe(), so getting
         // here means PortAudio came up once and then would not again. configure() will fail
@@ -357,6 +473,43 @@ bool PortAudioSink::probe(const std::string& device, std::string& error) {
     return resolve_pa_device(device, index, error);
 }
 
+SinkCapabilities PortAudioSink::capabilities() const {
+    // Answered once, for the hello handshake -- but configure() re-resolves the device at
+    // every stream, so a bare `-o portaudio` follows the host's default output as the user
+    // changes it. This therefore describes whichever device was default *when the player
+    // started*, and a later switch to a narrower device is not reflected in what the server
+    // was told. What catches that is the refusal path: PlayerListener names the device and
+    // the format it would not take, rather than the player going quietly silent.
+    PaDeviceIndex device = paNoDevice;
+    std::string error;
+    if (!resolve_pa_device(this->device_, device, error)) {
+        // Advertising nothing would leave the player unable to play at all, where being
+        // over-broad costs at worst a per-stream refusal.
+        cli_log(LogLevel::DEBUG,
+                "portaudio sink: %s -- advertising everything sendspin-cli can emit",
+                error.c_str());
+        return SinkCapabilities::permissive();
+    }
+
+    const PaDeviceInfo* info = Pa_GetDeviceInfo(device);
+    const char* device_name = (info != nullptr) ? info->name : this->name().c_str();
+    ProbeResult result = probe_capabilities(device);
+    if (result.status != ProbeStatus::Ok) {
+        // Busy or gone. Advertising nothing would leave the player unable to play at all,
+        // where being over-broad costs at worst a per-stream refusal.
+        cli_log(LogLevel::DEBUG,
+                "portaudio sink: could not probe '%s' -- advertising everything sendspin-cli "
+                "can emit",
+                device_name);
+        return SinkCapabilities::permissive();
+    }
+    // A device that probes cleanly but accepts nothing is reported as it answered: main() is
+    // the layer that names the sink and decides what to advertise instead, and having both
+    // backends fall through to it is what keeps that decision in one place.
+    cli_log(LogLevel::DEBUG, "portaudio sink: capabilities probed from '%s'", device_name);
+    return result.caps;
+}
+
 void PortAudioSink::list_devices(std::FILE* out) {
     const PortAudioGuard pa;
     if (!pa.ok()) {
@@ -389,6 +542,7 @@ void PortAudioSink::list_devices(std::FILE* out) {
                      info->name, (host != nullptr) ? host->name : "(unknown host API)",
                      info->maxOutputChannels, info->defaultSampleRate,
                      (i == fallback) ? "  (system default)" : "");
+        print_device_capabilities(out, i);
         ++listed;
     }
 
@@ -716,10 +870,21 @@ bool PortAudioSink::stream_alive_() const {
 
 size_t PortAudioSink::ring_capacity_(double device_latency_s) const {
     const auto frames_by_time =
-        static_cast<size_t>((static_cast<int64_t>(this->rate_) * RING_TIME_US) / 1000000);
+        static_cast<size_t>((static_cast<int64_t>(this->rate_) * this->buffer_ms_) / 1000);
     const auto frames_by_latency =
         static_cast<size_t>(device_latency_s * this->stream_rate_ * RING_LATENCY_MULTIPLE);
     const size_t frames = std::max({frames_by_time, frames_by_latency, MIN_RING_FRAMES});
+    // --buffer-ms is a request, not a promise: a ring that cannot hold a whole device buffer
+    // starves on every callback however promptly write() refills it. Naming which floor won
+    // is the difference between "your figure was ignored" and knowing what to ask for
+    // instead -- the latency floor moves with the device, MIN_RING_FRAMES does not.
+    if (frames > frames_by_time) {
+        cli_log(LogLevel::DEBUG,
+                "portaudio sink: --buffer-ms %u is %zu frames at %u Hz, below the %s floor of "
+                "%zu frames -- using the floor",
+                this->buffer_ms_, frames_by_time, this->rate_,
+                (frames_by_latency >= MIN_RING_FRAMES) ? "device-latency" : "minimum-ring", frames);
+    }
     // The spare byte the ring keeps to tell full from empty, so `frames` really do fit.
     return (frames * this->bytes_per_frame_) + 1;
 }

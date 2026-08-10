@@ -17,9 +17,11 @@ small flag set for identity, output, discovery, logging, and daemonization.
 - Defines the `AudioSink` seam (`src/audio_sink.h`) and plays real audio through it:
   auto-detected ALSA (item 2) and PortAudio (item 3) backends, with the device-less
   null/stdout sink as the fallback, so the binary still runs where there is no sound card.
-- Parses the squeezelite-style flag surface: `-o -l -n -s -z -P -d -f --port --help
-  --version`, validating every value at parse time and refusing to start on a bad one
-  (item 1).
+- Parses the squeezelite-style flag surface: `-o -l -n -s -z -P -d -f --port --buffer-ms
+  --help --version`, validating every value at parse time and refusing to start on a bad
+  one (item 1).
+- Advertises the formats the selected output device will actually take, derived by probing
+  it and crossed with what each codec can carry (item 4).
 
 ## Child tasks
 
@@ -95,20 +97,15 @@ The default Linux and Docker backend. In a container this needs only
 **Not in this slice.** Three things were deliberately left out; each is now tracked on
 the item that owns it, rather than as a loose follow-up here:
 
-- The **ALSA hardware mixer** (`snd_mixer_*`, squeezelite's `-V`) → item 4. Software
+- The **ALSA hardware mixer** (`snd_mixer_*`, squeezelite's `-V`) → item 15. Software
   scaling was chosen first because the usual `default` device here is PipeWire's ALSA
   plugin, where a hardware mixer element either does not exist or moves something other
   than this stream. A hardware path is worth having for `hw:` output, where it is the
   real volume control.
-- **Buffer/period tuning** (squeezelite's `-a`) → item 4. The ring is currently a fixed
-  100 ms with 20 ms periods.
+- **Buffer/period tuning** → item 4, where it shipped as `--buffer-ms`. The ring was a
+  fixed 100 ms with 20 ms periods; it is now that by default and settable from one flag.
 - **Richer per-card enumeration** → item 1, where it shipped. `-l` now prints each PCM's
   rates, formats, and channel counts alongside its hint.
-
-One known rough edge: because the start threshold is a full ring, `snd_pcm_delay()`
-under-reports the finish time until playback actually begins, so the first ~100 ms of
-timestamps on a track are optimistic. It self-corrects once running. Lowering the start
-threshold is the fix if it ever shows as drift at track boundaries — see item 4.
 
 ### 3. PortAudio backend — *shipped (audible slice)*
 
@@ -142,10 +139,9 @@ succeeds (`-DSENDSPIN_CLI_WITH_PORTAUDIO=OFF` forces it out):
   `portaudio` wherever PortAudio is the only backend, so a bare run plays on macOS.
 - 8/16/24/32-bit (`paInt8`/`paInt16`/`paInt24`/`paInt32`). 8-bit is deliberately beyond
   upstream's reference, which refuses it: `AlsaAudioSink` takes `S8`, and a stream one
-  backend plays and the other does not would be a difference with no cause. All of this is
-  **latent** for now — `supported_formats()` in `main.cpp` advertises 2 ch / 16-bit only, so
-  no server can ask for the other depths until item 4 widens it. Parity with ALSA, not
-  reachable capability.
+  backend plays and the other does not would be a difference with no cause. Item 4 made
+  these reachable: the advertised list is derived from the device rather than pinned to
+  2 ch / 16-bit, so a server can now ask for the other depths.
 - Software volume shared with the ALSA backend, extracted to `src/pcm_volume.{h,cpp}`
   rather than copied — ~50 lines of Q32 fixed-point including 24-bit sign extension, now
   with a no-device test suite of its own.
@@ -178,10 +174,9 @@ contract:
 
 **Not in this slice:**
 
-- **Buffer and latency tuning** (squeezelite's `-a`, and PortAudio's `suggestedLatency`,
-  pinned to the device's `defaultHighOutputLatency`) → item 4, which already owns the same
-  question for ALSA. The ring is a fixed 100 ms here too.
-- **Hardware volume** → item 4. Both backends scale in software today.
+- **Buffer and latency tuning** → item 4, where the ring became `--buffer-ms`.
+  PortAudio's `suggestedLatency` stays pinned to the device's `defaultHighOutputLatency`.
+- **Hardware volume** → item 15. Both backends scale in software today.
 - **A CI matrix and a sink contract suite** → item 12. This task added parser-level tests
   for the new `-o` forms and a `pcm_volume` suite, neither of which opens a device; a
   suite that exercises `AudioSink` implementations themselves is still that item's job.
@@ -205,28 +200,69 @@ is a poor trade, and Linux hosts should be using `-o` ALSA directly anyway. (`-l
 already clean on such a host, since the ALSA section runs — and installs the handler —
 before the PortAudio one.)
 
-### 4. Player role wiring and output tuning
+### 4. Output buffer tuning and a device-derived format list — *shipped*
 
-Take the stub past "it compiles": `PlayerRoleConfig` tuning (`fixed_delay_us`,
-`extra_startup_silence_ms`), correct handling of mid-stream format changes, and underrun
-behaviour.
+Both backends sized their buffer by a fixed constant, and `supported_formats()` advertised
+2 ch / 16-bit whatever the device could do — so the 8/24/32-bit paths items 2 and 3 built
+were unreachable by construction.
 
-Also the two knobs both shipped backends (items 2 and 3) deliberately left fixed:
+**Shipped** in `src/cli.{h,cpp}`, `src/audio_sink.{h,cpp}`, both sinks,
+`src/supported_formats.{h,cpp}` (new), `src/player_listener.{h,cpp}` and `src/main.cpp`:
 
-- **Buffer and period sizing**, exposed the way squeezelite's `-a` does it. ALSA is
-  currently pinned to a 100 ms ring with 20 ms periods, chosen to keep `snd_pcm_delay()`
-  a useful sync signal without inviting underruns. Tuning it also covers the start
-  threshold, which is what makes early-track timestamps optimistic today. PortAudio is
-  pinned to the same 100 ms of ring, with the device's own
-  `defaultHighOutputLatency` as its `suggestedLatency`.
-- **In-place device recovery.** ALSA recovers `-EPIPE`/`-ESTRPIPE` inside `write()`, but
-  PortAudio's sink latches into discarding once `Pa_IsStreamActive()` goes false — a USB DAC
-  unplugged mid-track stays silent until the next stream re-resolves the device. Recovering
-  without waiting for a track boundary belongs here.
-- **Volume routing**: software scaling where the backend has no mixer (what both do now,
-  and the right answer through PipeWire), and the **ALSA hardware mixer**
-  (`snd_mixer_*`, squeezelite's `-V`) where there is a real one to drive — chiefly `hw:`
-  output straight to a card.
+- **`--buffer-ms <ms>`**, 10–2000, one figure for both backends. ALSA divides it into five
+  periods (so the default is the 100 ms ring / 20 ms period it has always been); PortAudio
+  makes it the ring, where the 3× `outputLatency` and 1024-frame floors still win and say
+  at `debug` which of the two did. Validated at parse time and hard-failing, per item 1.
+  Deliberately **not** squeezelite's `-a`: that flag's `<b>:<p>:<f>:<m>` grammar is
+  ALSA-only, and two of its four subfields are already fixed here — the format is
+  negotiated from the stream and the access mode is pinned to interleaved. One flag with
+  two grammars per backend is the failure `src/audio_sink.h` already refuses for `-o`, so
+  `-a` is left unclaimed and the flag is long-only, as `--port` is.
+- **A lower ALSA start threshold**: one period rather than a full ring. `snd_pcm_delay()`
+  only counts frames queued ahead of a *running* stream, so starting on a full ring meant
+  the first ring's worth of timestamps described a stream that had not begun — the "known
+  rough edge" item 2 recorded. It is a timing-correctness fix rather than a knob, and it
+  rides here because it shares the `sw_params` path with the buffer work.
+- **`AudioSink::capabilities()`**, a `SinkCapabilities` of rates, depths and channel counts
+  with a permissive default — everything this player can emit — so `NullAudioSink` needs no
+  override. `AlsaAudioSink` answers it from the *same* prober that backs `-l`'s per-PCM
+  detail, split out of `print_device_capabilities()` so the two cannot drift.
+  `PortAudioSink` answers via `Pa_IsFormatSupported()` and grows the same three lines under
+  each device in `-l`. A busy, absent or unopenable device yields the permissive set, never
+  an empty one — an empty advertisement leaves the player unable to play at all.
+- **A derived advertisement**, crossed per codec rather than as one cross product:
+  OPUS only at 48 kHz / 16-bit (the decoder writes `int16_t`), FLAC and PCM at every depth
+  and rate the device takes. The crossing is a pure function in `src/supported_formats.cpp`
+  with its own no-device test suite, and the result is logged at startup — a digest at
+  `info`, every entry at `debug`.
+- **Loud refusals**, which is why the capability work and this ship together: widening the
+  advertisement multiplies the routes into a player that looks healthy and plays nothing.
+  A refused `configure()` now names the format *and* the device and says the audio is being
+  discarded, and a stream that passes entirely discarded says so again at its end rather
+  than leaving one line and silence.
+
+**Two staleness limits the derived list carries**, both commented at the point of probing
+rather than only here:
+
+- **PortAudio re-resolves its device at every stream**, so a bare `-o portaudio` follows
+  the host's default output as the user changes it — while the advertisement describes
+  whichever device was default at *startup*. The loud-refusal path above is what makes a
+  later mismatch diagnosable.
+- **ALSA's `default` is usually PipeWire's plugin**, so the probe reports what the *plugin*
+  accepts, not what the card does. That is still the honest answer to "what can I push
+  through this `-o` value", which is the question an advertisement answers — but it is not
+  a description of the hardware.
+
+**Not in this slice.** Each was split out of the original item 4 into an item of its own,
+carrying the constraints found while scoping this one:
+
+- **`PlayerRoleConfig` wiring** → item 13.
+- **PortAudio in-place device recovery** → item 14.
+- **The ALSA hardware mixer (`-V`)** → item 15.
+- **Mid-stream format changes**, which the original item 4 still asked for, were already
+  done: `AlsaAudioSink::configure()` reuses the device on a same-format restart and
+  closes/reopens otherwise, and `PortAudioSink` does the same behind its stream-generation
+  guard. They shipped in items 2 and 3.
 
 ### 5. mDNS advertise/discovery + outbound mode
 
@@ -281,7 +317,48 @@ The harness this calls already exists (item 1): GoogleTest via `FetchContent` pi
 tag, wired to CTest with `gtest_discover_tests()`, defaulting ON only when this is the
 top-level project. `cmake -B build && ctest --test-dir build` is the whole invocation. The
 parser suite lives in `tests/`, and item 3 added a `pcm_volume` suite for the Q32 scaling
-both backends share; **the sink contract itself is still untested** — that is what a
+both backends share; item 4 added a `supported_formats` suite for the capability crossing.
+**The sink contract itself is still untested** — that is what a
 `NullAudioSink`/`AlsaAudioSink`/`PortAudioSink` suite would add, alongside the matrix and
 the smoke test. Nothing in `tests/` opens an audio device, which is what keeps the suite
 runnable on a sound-card-less CI runner.
+
+### 13. `PlayerRoleConfig` wiring
+
+`fixed_delay_us` and `extra_startup_silence_ms` are still at library defaults in
+`src/main.cpp`, and `set_static_delay_adjustable(true)` is advertised with no
+`on_static_delay_changed()` override in `src/player_listener.cpp` — so a controller can
+offer the user a static delay this player then ignores. Split out of item 4.
+
+Two constraints found while scoping that item, and the reason this is not a five-minute
+change:
+
+- **`fixed_delay_us` must stay 0.** Both sinks already report *future* finish timestamps
+  that include their own buffering — `snd_pcm_delay()` on ALSA, `outputBufferDacTime` on
+  PortAudio — so folding device latency in here would count it twice.
+- **`extra_startup_silence_ms` cannot be chosen until item 4's start-threshold fix has been
+  measured on real hardware.** Under a full-ring start threshold you would have been
+  measuring the bug rather than the pipeline.
+
+### 14. PortAudio in-place device recovery
+
+`PortAudioSink` latches into discarding once `Pa_IsStreamActive()` goes false, so a USB DAC
+unplugged mid-track stays silent until the next stream re-resolves the device. ALSA already
+recovers `-EPIPE`/`-ESTRPIPE` inside `write()`; this is the same idea for the other backend,
+without waiting for a track boundary. Split out of item 4.
+
+Note that the device is *already* re-resolved at every `configure()`, so the gap is
+specifically mid-stream. The awkward part is that recovery has to reopen a stream from the
+sync task's thread or defer to the main loop, and the sink's threading invariant is that
+everything the audio callback reads is mutated only while the callback cannot run.
+
+### 15. ALSA hardware mixer (`-V`)
+
+`snd_mixer_*` where the device has a real control to drive — chiefly `hw:` output straight
+to a card, where a hardware mixer is the actual volume rather than a scaling of the samples.
+Split out of item 4; items 2 and 3 had both deferred it here.
+
+Keep `src/pcm_volume.{h,cpp}` for plugin devices: the usual `default` PCM is PipeWire's ALSA
+plugin, where a mixer element is either absent or moves something other than this stream.
+One path or the other per device, chosen at open time — never both stacked, which would
+square the taper.

@@ -119,8 +119,18 @@ input-only devices left out:
 ```
   idx  name                                   host API     out ch  default rate
     0  Odyssey G95NC                          Core Audio    2 ch   48000 Hz
+      rates:    22050 32000 44100 48000 88200 96000 176400 192000
+      formats:  paInt8 paInt16 paInt24 paInt32
+      channels: 1 2
     2  MacBook Pro Speakers                   Core Audio    2 ch   48000 Hz  (system default)
+      rates:    22050 32000 44100 48000 88200 96000 176400 192000
+      formats:  paInt8 paInt16 paInt24 paInt32
+      channels: 1 2
 ```
+
+Both backends report the same three lines, asked the same way a stream would ask —
+only the format spelling is each backend's own. The rate on a PortAudio device's
+own line is its *default*; the rates under it are what it will take.
 
 `-o` reads its argument in three steps, in this order:
 
@@ -167,11 +177,40 @@ is a follow-up. The one audible difference: PortAudio scales in its audio
 callback, so a volume change also reaches audio already buffered, where ALSA
 scales on the way in and so only affects what has not been written yet.
 
+### Buffering, and what gets advertised
+
+`--buffer-ms <ms>` (10–2000, default 100) is how much audio the output backend
+keeps queued — one figure for every backend rather than squeezelite's ALSA-only
+`-a`, whose `<b>:<p>:<f>:<m>` grammar would mean something different per backend
+here. ALSA divides it into five periods; PortAudio makes it the ring size, where
+a figure smaller than one device buffer is raised to the floor and says so at
+`debug`. A device-less sink (`null`, `stdout`) has nothing to size and ignores it.
+
+The formats advertised to the server are **derived from the device**, not fixed:
+`sendspin-cli` probes what `-o` selected — the same probe `-l` prints — and crosses
+it with what each codec can carry. FLAC and PCM get every rate and depth the device
+takes; OPUS gets 48 kHz / 16-bit only, because the decoder writes `int16_t`. The
+result is logged at startup, and a device that cannot be probed is advertised
+permissively rather than not at all.
+
+Two limits worth knowing, since both make that list a snapshot:
+
+- `-o portaudio` re-resolves the host's default output at every stream, so the
+  advertisement describes whichever device was default when the player started.
+- ALSA's `default` is usually PipeWire's plugin, so the probe describes what the
+  *plugin* accepts, not the card behind it.
+
+Either way, a format the device then refuses is reported loudly — naming the
+device, the format, and the fact that the stream's audio is being discarded —
+rather than leaving a player that looks healthy and plays nothing.
+
 ### Flags, and what they refuse
 
 The flags follow squeezelite's: `-o` output device, `-l` list devices, `-n` name,
-`-s` server, `-z` daemonize, `-P` pidfile, `-d`/`-f` logging. Run `--help` for the
-current state of each — several are scaffolding whose real behaviour is still to come.
+`-s` server, `-z` daemonize, `-P` pidfile, `-d`/`-f` logging. Two are long-only
+because they are not squeezelite's: `--port`, the port this player serves on, and
+`--buffer-ms`. Run `--help` for the current state of each — several are scaffolding
+whose real behaviour is still to come.
 
 Everything is validated before the daemon starts, and a bad value exits `1` with a
 single `error:` line naming it rather than falling back to a default:
@@ -182,6 +221,9 @@ error: -s 'music.local:abc': 'abc' is not a port number (expected 1-65535)
 
 $ sendspin-cli -o portaudio:99
 error: -o portaudio:99: no device at that index -- indices run 0-2 here, and -l lists the ones -o can reach
+
+$ sendspin-cli --buffer-ms 0
+error: invalid --buffer-ms '0' -- expected 10-2000
 ```
 
 That is a deliberate change from warn-and-continue. `-s` used to warn about a
