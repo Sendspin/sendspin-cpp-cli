@@ -217,9 +217,15 @@ jobs:
           trap - EXIT
 
           # Half two: a server published into the same daemon, discovered and resolved by our
-          # own dns_sd code. Nothing is listening on 8927, so the dial that follows will fail;
-          # what is being asserted is the URL, which only exists if QueryRecord answered.
-          avahi-publish -s "$instance-server" _sendspin-server._tcp 8927 'path=/sendspin' &
+          # own dns_sd code. Nothing is listening on 8927 and no dial is asserted -- what is
+          # asserted is that a ws:// URL was built at all, which takes an address, which takes
+          # a QueryRecord that answered.
+          #
+          # TXT `name` as well as the REQUIRED `path`, because -s mdns:<name> filters on the
+          # former: without it the instance resolves but matches nothing, and the filter goes
+          # untested.
+          avahi-publish -s "$instance-server" _sendspin-server._tcp 8927 \
+            'path=/sendspin' "name=$instance-server" &
           publisher=$!
           trap 'kill -TERM "$publisher" 2>/dev/null || true' EXIT
 
@@ -228,16 +234,15 @@ jobs:
           client=$!
           trap 'kill -TERM "$client" "$publisher" 2>/dev/null || true' EXIT
 
+          resolved="found server \"$instance-server\" .* at ws://"
           for _ in $(seq 1 300); do
-            if grep -q "Connecting to ws://.*(server \"$instance-server\")" discover.log; then
-              break
-            fi
+            if grep -q "$resolved" discover.log; then break; fi
             sleep 0.1
           done
           echo 'What the discovering client logged:'
           cat discover.log
-          grep -q "Connecting to ws://.*(server \"$instance-server\")" discover.log || {
-            echo '::error::the server was published but never discovered and resolved to a URL'
+          grep -q "$resolved" discover.log || {
+            echo '::error::the server was published but never resolved to a ws:// URL'
             exit 1
           }
 

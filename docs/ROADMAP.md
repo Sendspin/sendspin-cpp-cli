@@ -195,9 +195,10 @@ through Core Audio at 48 kHz/16-bit, 44.1 kHz/32-bit and 44.1 kHz/24-bit, with e
 volume and mute, the same-format restart, a mid-stream format change, recovery from a refused
 format, and the shutdown latch. It has **not** yet been driven by a real Sendspin server, so
 the sync loop converging over a live stream, controller volume, and pause/resume/next-track
-are unproven in the field. The Linux dual-backend path (`null, stdout, alsa, portaudio`, both
-`-l` sections) is likewise unexercised — this was built and tested on macOS. Item 12's build
-matrix is where that gets closed.
+are unproven in the field. Item 12's matrix now builds the Linux dual-backend configuration
+on every push and asserts from the configure output that it really is `null, stdout, alsa,
+portaudio` — but building it is all that proves. Neither `-l` section nor a note out of
+`AlsaAudioSink` has been exercised on Linux: this was written and heard on macOS.
 
 One known rough edge, and only on Linux: `AlsaAudioSink` routes libasound's own stderr
 diagnostics through the CLI logger, but it installs that handler from its *own* `probe()`
@@ -382,11 +383,11 @@ refcount and the restart backoff are the riskiest code here and are exercised on
 on macOS. (`Impl` is factored so a fake dns_sd could drive it; that is item 12's job.) And
 the property that a per-tick redial would cancel the attempt in flight is reasoned from
 `ConnectionManager::connect_to()`'s source, not exercised — what the `RetryPacer` suite
-proves is the schedule. **The Linux path is unexercised** —
-`libavahi-compat-libdnssd` has not been run against, only read; that is item 12's build
-matrix to close, and the Avahi compat findings above are the specific thing it should
-check. A mid-session server disappearance and the reconnect-after-drop path were
-covered by unit tests rather than in the field.
+proves is the schedule. The Linux path is no longer only read: item 12's matrix advertises,
+browses and resolves through a real `avahi-daemon` on every push, which is what confirms the
+Avahi compat findings above — a `ws://` URL cannot be built without an address, so it cannot
+be logged unless `DNSServiceQueryRecord` answered. A mid-session server disappearance and the
+reconnect-after-drop path were covered by unit tests rather than in the field.
 
 ### 6. Daemonization and logging — *shipped*
 
@@ -527,10 +528,9 @@ precise about.** The code *in* this item builds warning-free and passes 148/149 
 bookworm against real `libasound`, `portaudio` and `libavahi-compat-libdnssd`; the one
 failure is `LastServer.AnUnwritableDirectoryFails`, which fails only because the container
 runs as root and root ignores directory permissions — it passes as a normal user in the same
-container. But **`main` itself does not compile on Linux**, for a reason that predates this
-task: see item 12. Getting far enough to run these tests needed that break patched out in a
-throwaway copy, so "green on Linux" is a statement about this item's code, not about the
-tree.
+container. The `src/mdns_dnssd.cpp` break that made `main` itself uncompilable on Linux, and
+that had to be patched out in a throwaway copy to get this far, is fixed under item 12 — the
+whole tree now builds and tests on Linux in CI.
 
 **Two things this item does not claim.** The library's own lines are **not timestamped**
 under `-f` and cannot be, for the same missing-sink-hook reason its category cannot be

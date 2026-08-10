@@ -26,8 +26,9 @@
 /// resolve chain on the one thread -- where the POSIX getaddrinfo() upstream's
 /// `examples/tui_client` falls back to needs a thread per lookup.
 ///
-/// The Linux half of that is read from avahi's own `compat.c` and `unsupported.c`, not run:
-/// this has only been exercised against Bonjour. See docs/ROADMAP.md item 12.
+/// That the Linux half really behaves that way is checked rather than assumed: CI advertises,
+/// browses and resolves through a real `avahi-daemon` on every push, and a resolve cannot
+/// produce a URL without an address. See docs/ROADMAP.md item 12.
 
 #include "mdns.h"
 
