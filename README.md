@@ -47,8 +47,8 @@ you got:
 ```
 
 ```bash
-sudo dnf install alsa-lib-devel portaudio-devel avahi-compat-libdns_sd-devel  # Fedora / RHEL
-sudo apt install libasound2-dev portaudio19-dev libavahi-compat-libdnssd-dev  # Debian / Ubuntu
+sudo dnf install pkgconf alsa-lib-devel portaudio-devel avahi-compat-libdns_sd-devel  # Fedora / RHEL
+sudo apt install pkg-config libasound2-dev portaudio19-dev libavahi-compat-libdnssd-dev  # Debian / Ubuntu
 brew install portaudio pkgconf                    # macOS (no ALSA, and Bonjour is built in)
 ```
 

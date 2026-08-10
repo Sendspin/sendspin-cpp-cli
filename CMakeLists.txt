@@ -161,7 +161,7 @@ if(SENDSPIN_CLI_MDNS_ENABLED)
     # Empty on Apple, where dns_sd.h is in the SDK's default search path. Elsewhere it is the
     # same directory the mDNS sources are compiled against, so the probe reads the header the
     # build will really use rather than whichever one happens to be first on the system path.
-    set(CMAKE_REQUIRED_INCLUDES ${SENDSPIN_CLI_DNS_SD_INCLUDE_DIR})
+    set(CMAKE_REQUIRED_INCLUDES "${SENDSPIN_CLI_DNS_SD_INCLUDE_DIR}")
 
     check_cxx_source_compiles(
         "#include <dns_sd.h>

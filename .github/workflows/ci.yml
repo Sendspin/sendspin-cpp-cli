@@ -28,18 +28,39 @@ env:
   CMAKE_BUILD_PARALLEL_LEVEL: 3
 
 jobs:
+  # A gate rather than a claim: scripts/smoke_test.sh is asserted to be shellcheck-clean, and
+  # an assertion nothing enforces is one that stops being true. shellcheck ships on the Ubuntu
+  # images, so this costs a runner-minute.
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Lint the shell scripts
+        run: shellcheck scripts/*.sh
+
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
+    # Well clear of a cold cache on the slowest leg, and far under the six-hour default: the
+    # point is that a player which ignores SIGTERM fails rather than holds a runner all day.
+    timeout-minutes: 30
     strategy:
       # Every leg's result is wanted rather than only the first failure's: a break that shows
       # on one architecture and not another is precisely what the matrix is here to tell apart.
       fail-fast: false
+      # `publish` and `avahi` are spelled out on every leg, false included: an `if:` reads a
+      # missing key as false, so a leg that simply omitted one would quietly stop publishing
+      # and still go green. A new leg owes both.
       matrix:
         include:
           - name: linux-x86_64
             runner: ubuntu-24.04
             with_mdns: 'ON'
+            expect_probe: 'Failed'
             expect_backends: '^-- sendspin-cli audio backends: null, stdout, alsa, portaudio$'
             expect_mdns: '^-- sendspin-cli mDNS: dns_sd \(.*libdns_sd\.so.*\)$'
             runtime_packages: 'libasound2t64 libportaudio2 libavahi-compat-libdnssd1'
@@ -49,6 +70,7 @@ jobs:
           - name: linux-arm64
             runner: ubuntu-24.04-arm
             with_mdns: 'ON'
+            expect_probe: 'Failed'
             expect_backends: '^-- sendspin-cli audio backends: null, stdout, alsa, portaudio$'
             expect_mdns: '^-- sendspin-cli mDNS: dns_sd \(.*libdns_sd\.so.*\)$'
             runtime_packages: 'libasound2t64 libportaudio2 libavahi-compat-libdnssd1'
@@ -58,6 +80,7 @@ jobs:
           - name: macos-arm64
             runner: macos-14
             with_mdns: 'ON'
+            expect_probe: 'Success'
             expect_backends: '^-- sendspin-cli audio backends: null, stdout, portaudio$'
             expect_mdns: '^-- sendspin-cli mDNS: dns_sd \(Bonjour, built in\)$'
             runtime_packages: 'portaudio (brew). Bonjour is part of macOS.'
@@ -77,8 +100,9 @@ jobs:
             avahi: false
 
     steps:
-      # Third-party actions are pinned to a commit rather than a tag: a tag is mutable, and
-      # these run with a checkout of the repository already in hand.
+      # Every third-party action here is pinned to a commit rather than a tag, because a tag
+      # can be repointed at any time and these run with write access to the workspace. The
+      # trailing comment is the version that commit was, for a reader bumping it.
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
@@ -99,14 +123,17 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install portaudio pkgconf
 
-      # Only the fetched *sources* are cached, never anything compiled from them: a cache that
-      # carried object files would keep serving them across a compiler upgrade on the runner
-      # image, which is the classic way a green CI run stops meaning anything. Restoring the
-      # downloads alone is where the time goes anyway -- sendspin-cpp pulls its own
-      # dependencies (ixwebsocket, opus, FLAC) through FetchContent in turn.
+      # The fetched sources and the populate stamps that record they were fetched -- the
+      # stamps live in `-subbuild`, which is a generated CMake tree rather than a download, and
+      # without them every run refetches. What is deliberately *not* in here is anything
+      # compiled: `-build` is excluded and `build/` is outside this path entirely, so no object
+      # file ever survives a compiler upgrade on the runner image. Restoring the downloads is
+      # where the time goes anyway -- sendspin-cpp pulls its own dependencies (ixwebsocket,
+      # opus, FLAC) through FetchContent in turn.
       #
-      # CMakeLists.txt holds both pinned tags, so its hash is what changes the key when either
-      # one moves.
+      # Keyed per leg, and by CMakeLists.txt's hash because it holds both pinned tags. A
+      # subbuild left stale by a cmake upgrade on the image is the residual risk, and dropping
+      # the cache is its remedy.
       - name: Cache the fetched sources
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
@@ -138,16 +165,30 @@ jobs:
         env:
           EXPECT_BACKENDS: ${{ matrix.expect_backends }}
           EXPECT_MDNS: ${{ matrix.expect_mdns }}
+          EXPECT_PROBE: ${{ matrix.expect_probe }}
         run: |
+          patterns=("$EXPECT_BACKENDS" "$EXPECT_MDNS")
+
+          # The dns_sd probes are pinned to the answer this host owes, because they fail open:
+          # one that reported Failed for an unrelated reason would silently cost two case
+          # labels in describe_error(), and nothing else would complain. Empty on the no-mDNS
+          # leg, where the probes do not run at all -- and skipped rather than matched, since
+          # an empty ERE matches any non-empty file and would fail open in turn.
+          if [ -n "$EXPECT_PROBE" ]; then
+            for symbol in SERVICE_NOT_RUNNING TIMEOUT; do
+              patterns+=("^-- Performing Test SENDSPIN_CLI_HAVE_ERR_$symbol - $EXPECT_PROBE\$")
+            done
+          fi
+
           status=0
-          for expected in "$EXPECT_BACKENDS" "$EXPECT_MDNS"; do
+          for expected in "${patterns[@]}"; do
             if ! grep -Eq -e "$expected" configure.log; then
               echo "::error::configure output has no line matching: $expected"
               status=1
             fi
           done
           echo 'What configure actually reported:'
-          grep -F -- '-- sendspin-cli' configure.log ||
+          grep -E -- '^-- (sendspin-cli|Performing Test SENDSPIN_CLI)' configure.log ||
             echo '(configure.log has no sendspin-cli lines at all)'
           exit "$status"
 
@@ -157,6 +198,9 @@ jobs:
       # Run on every leg, the no-mDNS one included: the suite links sendspin-cli-core, so
       # discovery_test.cpp is compiled against whichever MdnsService went in. That
       # configuration has no other coverage in this matrix.
+      #
+      # Serial deliberately: daemon_test.cpp exercises flock paths and last_server_test writes
+      # real files, neither of which is obviously safe to run against itself in parallel.
       - name: Test
         run: ctest --test-dir build --output-on-failure
 
@@ -181,6 +225,19 @@ jobs:
         run: |
           sudo apt-get install --no-install-recommends -y avahi-daemon avahi-utils
           sudo systemctl start avahi-daemon
+
+          # Waited for rather than assumed: the socket is what the compat layer connects to,
+          # and starting the player before it exists would leave the whole check riding on the
+          # player's own retry ramp landing inside the polls below.
+          for _ in $(seq 1 200); do
+            if [ -S /run/avahi-daemon/socket ]; then break; fi
+            sleep 0.1
+          done
+          [ -S /run/avahi-daemon/socket ] || {
+            echo '::error::avahi-daemon was started but its socket never appeared'
+            systemctl status avahi-daemon --no-pager || true
+            exit 1
+          }
 
           instance="sendspin-ci-$GITHUB_RUN_ID"
 
@@ -212,8 +269,11 @@ jobs:
             exit 1
           }
 
-          kill -TERM "$player"
-          wait "$player"
+          # Guarded like the traps are: everything this half set out to prove is already
+          # proven, so a player that has since exited on its own must not turn the leg red
+          # here with nothing said about why.
+          kill -TERM "$player" 2>/dev/null || true
+          wait "$player" 2>/dev/null || true
           trap - EXIT
 
           # Half two: a server published into the same daemon, discovered and resolved by our
@@ -246,7 +306,7 @@ jobs:
             exit 1
           }
 
-          kill -TERM "$client" "$publisher"
+          kill -TERM "$client" "$publisher" 2>/dev/null || true
 
       # A build output for trying a commit on real hardware, not an installation. `install()`
       # rules, a systemd unit and distribution packages are roadmap item 10, and this tar is
@@ -262,8 +322,9 @@ jobs:
           RUNTIME_PACKAGES: ${{ matrix.runtime_packages }}
           LEG: ${{ matrix.name }}
         run: |
-          version="$(./build/sendspin-cli --version | awk 'NR == 1 { print $2 }')"
-          lib_tag="$(./build/sendspin-cli --version | awk 'NR == 2 { print $2 }')"
+          reported="$(./build/sendspin-cli --version)"
+          version="$(printf '%s\n' "$reported" | awk 'NR == 1 { print $2 }')"
+          lib_tag="$(printf '%s\n' "$reported" | awk 'NR == 2 { print $2 }')"
           name="sendspin-cli-$version-$LEG"
 
           mkdir -p "stage/$name"

@@ -142,9 +142,10 @@ await_child() {
     return "$status"
 }
 
-# Whether this host has something implementing DNS-SD for the player to register with.
-# mDNSResponder is always up on macOS; on Linux avahi-daemon is there only if the image or the
-# workflow put it there.
+# Whether this host has a daemon for the player to register with. mDNSResponder is always up
+# on macOS. The socket is an exact proxy on Linux rather than an approximate one because
+# libavahi-compat-libdnssd is the only dns_sd this build has there, and that socket is what it
+# connects to; a daemon is present only if the image or the workflow put it there.
 mdns_daemon_present() {
     if [ "$(uname -s)" = "Darwin" ]; then
         return 0
@@ -234,8 +235,7 @@ check_default_mdns_boot() {
     STARTED_PIDS+=("$pid")
 
     wait_for_line "$log" "listening on port $PORT_MDNS" "$BOOT_TIMEOUT_S" ||
-        fail "no ready log from the default configuration within ${BOOT_TIMEOUT_S}s. " \
-            "Log: $(cat "$log")"
+        fail "no ready log from the default configuration within ${BOOT_TIMEOUT_S}s. Log: $(cat "$log")"
 
     # Which of the two outcomes is the correct one is a property of the host rather than of the
     # build, so it is read off the host instead of assumed. Asserting only the branch this
@@ -247,16 +247,14 @@ check_default_mdns_boot() {
         pass "the default configuration advertises where an mDNS daemon is running"
     else
         wait_for_line "$log" '^W mdns: .*retrying' "$BOOT_TIMEOUT_S" ||
-            fail "no mDNS daemon is running, and no retry warning was logged. " \
-                "Log: $(cat "$log")"
+            fail "no mDNS daemon is running, and no retry warning was logged. Log: $(cat "$log")"
         pass "the default configuration warns and retries where no mDNS daemon is running"
     fi
 
     # The whole point of that warning: an advertisement that cannot be made is not fatal, so
     # the player must still be serving its port.
     kill -0 "$pid" 2>/dev/null ||
-        fail "the player exited rather than carrying on without an advertisement. " \
-            "Log: $(cat "$log")"
+        fail "the player exited rather than carrying on without an advertisement. Log: $(cat "$log")"
 
     kill -TERM "$pid"
     local status=0
