@@ -26,6 +26,8 @@ namespace sendspin_cli {
 
 using sendspin::LogLevel;
 
+static constexpr const char* LOG_TAG = LOG_TAG_AUDIO;
+
 namespace {
 
 /// Chunk of zeroes used to emit silence while muted, so muting costs no allocation.
@@ -54,11 +56,11 @@ bool NullAudioSink::configure(uint32_t sample_rate, uint8_t channels, uint8_t bi
         static_cast<size_t>(channels) * (static_cast<size_t>(bits_per_sample) / 8U);
     this->bytes_per_frame_.store(bytes_per_frame);
 
-    cli_log(LogLevel::INFO, "%s sink: stream %u Hz, %u ch, %u-bit (%zu bytes/frame)",
+    cli_log(LogLevel::INFO, "%s: stream %u Hz, %u ch, %u-bit (%zu bytes/frame)",
             this->name().c_str(), sample_rate, channels, bits_per_sample, bytes_per_frame);
 
     if (bytes_per_frame == 0) {
-        cli_log(LogLevel::ERROR, "%s sink: refusing stream with a zero-byte frame",
+        cli_log(LogLevel::ERROR, "%s: refusing stream with a zero-byte frame",
                 this->name().c_str());
         return false;
     }
@@ -93,8 +95,8 @@ size_t NullAudioSink::write(const uint8_t* data, size_t length, uint32_t /*timeo
         // A short write means stdout is gone (a closed downstream pipe). Latch it and
         // degrade to discarding, rather than short-writing on every call from here on.
         cli_log(LogLevel::ERROR,
-                "stdout sink: short write (%zu of %zu bytes) -- discarding audio from here on",
-                written, length);
+                "stdout: short write (%zu of %zu bytes) -- discarding audio from here on", written,
+                length);
         std::clearerr(stdout);
         this->stdout_failed_.store(true);
         consumed = length;
@@ -118,20 +120,20 @@ void NullAudioSink::stop() {
         std::fflush(stdout);
     }
     this->bytes_per_frame_.store(0);
-    cli_log(LogLevel::INFO, "%s sink: %zu bytes consumed in total", this->name().c_str(),
+    cli_log(LogLevel::INFO, "%s: %zu bytes consumed in total", this->name().c_str(),
             this->total_bytes_.load());
 }
 
 void NullAudioSink::set_volume(uint8_t volume) {
     this->volume_.store(volume);
     // Recorded, not applied: per-bit-depth sample scaling belongs to a real backend.
-    cli_log(LogLevel::DEBUG, "%s sink: volume now %u (not applied by this sink)",
-            this->name().c_str(), volume);
+    cli_log(LogLevel::DEBUG, "%s: volume now %u (not applied by this sink)", this->name().c_str(),
+            volume);
 }
 
 void NullAudioSink::set_muted(bool muted) {
     this->muted_.store(muted);
-    cli_log(LogLevel::DEBUG, "%s sink: %s", this->name().c_str(), muted ? "muted" : "unmuted");
+    cli_log(LogLevel::DEBUG, "%s: %s", this->name().c_str(), muted ? "muted" : "unmuted");
 }
 
 size_t NullAudioSink::total_bytes() const {

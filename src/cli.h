@@ -183,6 +183,10 @@ private:
 /// options it can act on without re-checking. --help, --version and -l are reported
 /// through `out` for the caller to act on rather than being handled here.
 ///
+/// Two values are also normalized rather than merely checked: with -z, a relative -P or -f
+/// path is made absolute against the current directory, because the daemon chdir()s to / and
+/// a relative path would otherwise name a different file before and after the fork.
+///
 /// @param err Where diagnostics go. Injected rather than hardcoded to stderr so tests can
 /// capture and assert on the wording; the whole parse path writes only here.
 /// @return true if the arguments were valid.

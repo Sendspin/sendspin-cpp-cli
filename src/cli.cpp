@@ -15,9 +15,11 @@
 #include "cli.h"
 
 #include "audio_sink.h"
+#include "log.h"
 #include "mdns.h"
 
 #include <getopt.h>
+#include <limits.h>
 #include <unistd.h>
 
 #include <cstdio>
@@ -130,8 +132,13 @@ bool parse_log_level(const char* str, LogLevel& level) {
     return true;
 }
 
-/// Accepts squeezelite's `-d <category>=<level>` shape. The library exposes one global
-/// level, so a category is parsed and ignored; per-category logging is a follow-up task.
+/// Accepts squeezelite's `-d <category>=<level>` shape.
+///
+/// The category is parsed and ignored, and stays that way: sendspin-cpp logs through
+/// `fprintf(stderr)` macros gated on one global int with no sink or filter hook, so raising
+/// the level for one of our categories would either flood the log with unrelated library
+/// debug or show nothing at all from the library. Every line carries a tag instead, which is
+/// per-category filtering after the fact -- and it works on the library's lines too.
 bool parse_log_spec(const char* spec, LogLevel& level, std::FILE* err) {
     const char* eq = std::strchr(spec, '=');
     if (eq == nullptr) {
@@ -140,10 +147,38 @@ bool parse_log_spec(const char* spec, LogLevel& level, std::FILE* err) {
     if (!parse_log_level(eq + 1, level)) {
         return false;
     }
+    std::string tags;
+    for (const char* tag : LOG_TAGS) {
+        if (!tags.empty()) {
+            tags += ", ";
+        }
+        tags += tag;
+    }
     std::fprintf(err,
-                 "warning: -d category '%.*s' ignored -- this build has one global log level\n",
-                 static_cast<int>(eq - spec), spec);
+                 "warning: -d category '%.*s' ignored -- this build has one global log level. "
+                 "Every line carries a tag (%s), so filter after the fact: "
+                 "-d debug 2>&1 | grep ' %s:'\n",
+                 static_cast<int>(eq - spec), spec, tags.c_str(), LOG_TAG_MDNS);
     return true;
+}
+
+/// `path` made absolute against the current directory, unchanged if it already is.
+///
+/// Only -z needs this, and it needs it badly: the daemon chdir()s to / so it does not pin a
+/// mount point, so a relative -P names the directory the operator typed it in to the parent's
+/// probe and a file directly under / to the child that actually writes it -- two files, and
+/// for a non-root user the second one fails after the terminal has already seen success. A
+/// relative -f splits the same way on the SIGHUP reopen.
+std::string absolute_path(const std::string& path) {
+    if (!path.empty() && path.front() == '/') {
+        return path;
+    }
+    char cwd[PATH_MAX];
+    if (getcwd(cwd, sizeof(cwd)) == nullptr) {
+        // Nothing better to offer than what was typed, and open() will report it either way.
+        return path;
+    }
+    return std::string(cwd) + "/" + path;
 }
 
 /// Rewinds getopt's process-global scan state so parse_options() can run more than once.
@@ -323,9 +358,31 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
         }
     }
 
+    // Contradictory rather than inert, so it fails: -z points stdout at /dev/null, which
+    // would turn the PCM sink into a second discard sink without saying so. Resolved through
+    // resolve_device_spec() rather than by comparing strings, so a future spelling of the
+    // stdout sink is covered too; a spec that does not resolve at all is left to
+    // make_audio_sink() to report, as it always was.
+    if (error.empty() && out.was_given(Opt::Daemonize) && out.was_given(Opt::Device)) {
+        DeviceSpec spec;
+        std::string reason;
+        if (resolve_device_spec(out.device, spec, reason) && spec.backend == SinkBackend::Stdout) {
+            fail("-z cannot write PCM to stdout: a daemon's stdout is /dev/null, so -o '" +
+                 out.device + "' would discard every stream. Drop -z, or pick a real device.");
+        }
+    }
+
     if (!error.empty()) {
         std::fprintf(err, "error: %s\n", error.c_str());
         return false;
+    }
+
+    // Not refused: a daemon with nowhere to log is still a working player, and -z is often
+    // paired with a supervisor that does not want a logfile. Warned about because the
+    // alternative is a silence that reads exactly like a crash.
+    if (out.was_given(Opt::Daemonize) && !out.was_given(Opt::Logfile)) {
+        std::fprintf(err, "warning: -z without -f discards all log output -- a detached daemon's "
+                          "stderr is /dev/null. Add -f <path> to keep it.\n");
     }
 
     // Inert rather than contradictory, so it warns instead of failing: -s picks the outbound
@@ -335,6 +392,17 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
                      "warning: --mdns-name is unused with -s -- a client that dials out must "
                      "not advertise %s, so there is no instance to name\n",
                      MDNS_CLIENT_SERVICE);
+    }
+
+    // Normalized here, and only under -z, so one value means one file everywhere downstream
+    // and a foreground run's paths and diagnostics read exactly as they always did.
+    if (out.was_given(Opt::Daemonize)) {
+        if (out.was_given(Opt::Pidfile)) {
+            out.pidfile = absolute_path(out.pidfile);
+        }
+        if (out.was_given(Opt::Logfile)) {
+            out.logfile = absolute_path(out.logfile);
+        }
     }
 
     if (out.name.empty()) {
@@ -381,11 +449,20 @@ void print_usage(std::FILE* out, const char* prog) {
                  DISCOVERY_PREFIX);
     std::fprintf(out, "                does not have)\n");
 #endif
-    std::fprintf(out, "  -z            Daemonize (not implemented yet)\n");
-    std::fprintf(out, "  -P <path>     Write the process id to <path>\n");
+    std::fprintf(out, "  -z            Fork into the background and detach from the terminal.\n");
+    std::fprintf(out, "                Refuses -o stdout, whose output would go to /dev/null;\n");
+    std::fprintf(out, "                warns without -f, which is where the log would go\n");
+    std::fprintf(out, "  -P <path>     Hold <path> as a locked pidfile, refusing to start if\n");
+    std::fprintf(out, "                another instance already holds it. A file left by a\n");
+    std::fprintf(out, "                crash needs no cleanup; keep it on a local filesystem\n");
     std::fprintf(out, "  -d <level>    Log level: none, error, warn, info, debug, verbose\n");
-    std::fprintf(out, "                Accepts squeezelite's <category>=<level> shape too\n");
-    std::fprintf(out, "  -f <path>     Write log output to <path> instead of stderr\n");
+    std::fprintf(out, "                One level for this player and the sendspin library\n");
+    std::fprintf(out, "                together. Accepts squeezelite's <category>=<level>\n");
+    std::fprintf(out, "                shape, but the category is ignored: every line is\n");
+    std::fprintf(out, "                '<L> <tag>: <message>', so filter it with grep\n");
+    std::fprintf(out, "  -f <path>     Write log output to <path> instead of stderr, with a\n");
+    std::fprintf(out, "                UTC timestamp on every line. SIGHUP reopens the path,\n");
+    std::fprintf(out, "                so logrotate and newsyslog can rotate it\n");
     std::fprintf(out, "  --port <port> Port our own server listens on (default: %u)\n",
                  SendspinClientConfig::DEFAULT_SERVER_PORT);
     std::fprintf(out, "  --buffer-ms <ms>\n");

@@ -25,6 +25,7 @@
 
 #include "audio_sink.h"
 #include "cli.h"
+#include "daemon.h"
 #include "last_server.h"
 #include "log.h"
 #include "mdns.h"
@@ -38,19 +39,22 @@
 #include <sendspin/player_role.h>
 #include <sendspin/types.h>
 
-#include <unistd.h>
+// For sigaction(), which <csignal> is not required to declare.
+#include <signal.h>
 
 #include <atomic>
-#include <cerrno>
 #include <chrono>
 #include <csignal>
 #include <cstdio>
-#include <cstring>
 #include <memory>
 #include <optional>
 #include <string>
 #include <thread>
 #include <vector>
+
+/// The entry point drives several subsystems in turn, so most of its lines say `cli` and the
+/// ones speaking for another subsystem call log_line() with that tag explicitly.
+static constexpr const char* LOG_TAG = sendspin_cli::LOG_TAG_CLI;
 
 namespace {
 
@@ -93,62 +97,14 @@ struct MetadataLogger : sendspin::MetadataRoleListener {
         if (!metadata.title.has_value()) {
             return;
         }
-        cli_log(LogLevel::INFO, "Now playing: %s - %s",
-                metadata.artist.value_or("Unknown artist").c_str(), metadata.title->c_str());
+        log_line(LogLevel::INFO, LOG_TAG_METADATA, "Now playing: %s - %s",
+                 metadata.artist.value_or("Unknown artist").c_str(), metadata.title->c_str());
     }
 
     void on_metadata_clear() override {
-        cli_log(LogLevel::INFO, "Metadata cleared");
+        log_line(LogLevel::INFO, LOG_TAG_METADATA, "Metadata cleared");
     }
 };
-
-/// Writes a pidfile and removes it again on destruction, so every exit path -- including
-/// a failed start_server() -- leaves no stale file behind.
-class PidFile {
-public:
-    PidFile() = default;
-
-    ~PidFile() {
-        if (!this->path_.empty()) {
-            std::remove(this->path_.c_str());
-        }
-    }
-
-    PidFile(const PidFile&) = delete;
-    PidFile& operator=(const PidFile&) = delete;
-
-    bool write(const std::string& path) {
-        std::FILE* file = std::fopen(path.c_str(), "w");
-        if (file == nullptr) {
-            cli_log(LogLevel::ERROR, "cannot write pidfile %s: %s", path.c_str(),
-                    std::strerror(errno));
-            return false;
-        }
-        std::fprintf(file, "%ld\n", static_cast<long>(getpid()));
-        if (std::fclose(file) != 0) {
-            cli_log(LogLevel::ERROR, "cannot write pidfile %s: %s", path.c_str(),
-                    std::strerror(errno));
-            return false;
-        }
-        this->path_ = path;
-        return true;
-    }
-
-private:
-    std::string path_;
-};
-
-/// Points stderr -- where all logging goes -- at a file, appending so a restart does not
-/// truncate history.
-bool redirect_log(const std::string& path) {
-    if (std::freopen(path.c_str(), "a", stderr) == nullptr) {
-        // stderr is now unusable, so complain on stdout instead.
-        std::fprintf(stdout, "error: cannot open logfile %s: %s\n", path.c_str(),
-                     std::strerror(errno));
-        return false;
-    }
-    return true;
-}
 
 /// The formats to advertise for `sink`, derived from what its device will actually take.
 ///
@@ -162,19 +118,19 @@ std::vector<sendspin::AudioSupportedFormatObject> advertised_formats(const Audio
         // The device opens but takes nothing this player emits. Advertising an empty list
         // would leave the server unable to send anything at all, so fall back to the
         // permissive set and let the refusal path report per stream what really happens.
-        cli_log(LogLevel::WARN,
-                "Output device '%s' reports no format sendspin-cli can emit -- advertising "
-                "everything and letting the device refuse per stream",
-                sink.name().c_str());
+        log_line(LogLevel::WARN, LOG_TAG_AUDIO,
+                 "Output device '%s' reports no format sendspin-cli can emit -- advertising "
+                 "everything and letting the device refuse per stream",
+                 sink.name().c_str());
         formats = supported_formats(SinkCapabilities::permissive());
     }
 
-    cli_log(LogLevel::INFO, "Advertising %zu formats for '%s': %s", formats.size(),
-            sink.name().c_str(), describe_formats(formats).c_str());
+    log_line(LogLevel::INFO, LOG_TAG_AUDIO, "Advertising %zu formats for '%s': %s", formats.size(),
+             sink.name().c_str(), describe_formats(formats).c_str());
     // The digest above groups the axes, which cannot show which combinations really went
     // out. At debug the entries are listed one per line, exactly as the server sees them.
     for (const sendspin::AudioSupportedFormatObject& format : formats) {
-        cli_log(LogLevel::DEBUG, "  %s", describe_formats({format}).c_str());
+        log_line(LogLevel::DEBUG, LOG_TAG_AUDIO, "  %s", describe_formats({format}).c_str());
     }
     return formats;
 }
@@ -190,15 +146,15 @@ public:
     OutboundMode(const Options& opts, MdnsService& mdns)
         : opts_(opts), mdns_(mdns), state_path_(last_server_path()) {
         if (this->state_path_.empty()) {
-            cli_log(LogLevel::DEBUG,
-                    "Neither $XDG_STATE_HOME nor $HOME is set, so the server used will not be "
-                    "remembered across restarts");
+            log_line(LogLevel::DEBUG, LOG_TAG_OUTBOUND,
+                     "Neither $XDG_STATE_HOME nor $HOME is set, so the server used will not be "
+                     "remembered across restarts");
         } else if (load_last_server(this->state_path_, this->remembered_) && opts.discover) {
             // Only worth saying when discovering: with an address there is nothing to
             // choose between, and the memory only exists to break that tie.
-            cli_log(LogLevel::INFO,
-                    "Last server used was \"%s\" -- it wins if it turns up among the candidates",
-                    this->remembered_.c_str());
+            log_line(LogLevel::INFO, LOG_TAG_OUTBOUND,
+                     "Last server used was \"%s\" -- it wins if it turns up among the candidates",
+                     this->remembered_.c_str());
         }
     }
 
@@ -208,8 +164,8 @@ public:
     void tick(sendspin::SendspinClient& client, int64_t now_ms) {
         const bool connected = client.is_connected();
         if (this->pacer_.note_connection_state(connected, now_ms)) {
-            cli_log(LogLevel::WARN, "Connection lost -- reconnecting in %u ms",
-                    this->pacer_.delay_ms());
+            log_line(LogLevel::WARN, LOG_TAG_OUTBOUND, "Connection lost -- reconnecting in %u ms",
+                     this->pacer_.delay_ms());
             // The next connection may be to a different server, so it is owed its own look.
             this->remembered_this_connection_ = false;
         }
@@ -230,7 +186,7 @@ public:
             }
         } else {
             url = this->opts_.server_url;
-            cli_log(LogLevel::INFO, "Connecting to %s", url.c_str());
+            log_line(LogLevel::INFO, LOG_TAG_OUTBOUND, "Connecting to %s", url.c_str());
         }
 
         // Stamped before the dial rather than after, so the backoff measures from when the
@@ -254,8 +210,9 @@ private:
             // Discovery already said why, at debug, when the instance first resolved.
             return false;
         }
-        cli_log(LogLevel::INFO, "Connecting to %s (server \"%s\") -- chosen because %s",
-                url.c_str(), chosen->instance.c_str(), reason.c_str());
+        log_line(LogLevel::INFO, LOG_TAG_OUTBOUND,
+                 "Connecting to %s (server \"%s\") -- chosen because %s", url.c_str(),
+                 chosen->instance.c_str(), reason.c_str());
         return true;
     }
 
@@ -281,12 +238,12 @@ private:
             return;
         }
         if (save_last_server(this->state_path_, this->remembered_)) {
-            cli_log(LogLevel::DEBUG, "Remembered server \"%s\" in %s", this->remembered_.c_str(),
-                    this->state_path_.c_str());
+            log_line(LogLevel::DEBUG, LOG_TAG_OUTBOUND, "Remembered server \"%s\" in %s",
+                     this->remembered_.c_str(), this->state_path_.c_str());
         } else {
-            cli_log(LogLevel::WARN,
-                    "Could not write %s -- this server will not be preferred after a restart",
-                    this->state_path_.c_str());
+            log_line(LogLevel::WARN, LOG_TAG_OUTBOUND,
+                     "Could not write %s -- this server will not be preferred after a restart",
+                     this->state_path_.c_str());
         }
     }
 
@@ -306,21 +263,22 @@ private:
 void start_advertising(MdnsService& mdns, const Options& opts) {
     if (!opts.advertises()) {
         if (opts.was_given(Opt::Server)) {
-            cli_log(LogLevel::INFO,
-                    "Not advertising %s: -s makes this player the one initiating the "
-                    "connection, and the Sendspin spec forbids advertising while it is",
-                    MDNS_CLIENT_SERVICE);
+            log_line(LogLevel::INFO, LOG_TAG_MDNS,
+                     "Not advertising %s: -s makes this player the one initiating the "
+                     "connection, and the Sendspin spec forbids advertising while it is",
+                     MDNS_CLIENT_SERVICE);
         } else {
-            cli_log(LogLevel::INFO, "Not advertising %s: --no-mdns was given", MDNS_CLIENT_SERVICE);
+            log_line(LogLevel::INFO, LOG_TAG_MDNS, "Not advertising %s: --no-mdns was given",
+                     MDNS_CLIENT_SERVICE);
         }
         return;
     }
 
     if (!mdns_available()) {
-        cli_log(LogLevel::INFO,
-                "This build has no mDNS support, so it cannot be discovered: point a server at "
-                "ws://<this-host>:%u%s, or dial one with -s. See docs/ROADMAP.md.",
-                opts.port, SENDSPIN_PATH);
+        log_line(LogLevel::INFO, LOG_TAG_MDNS,
+                 "This build has no mDNS support, so it cannot be discovered: point a server at "
+                 "ws://<this-host>:%u%s, or dial one with -s. See docs/ROADMAP.md.",
+                 opts.port, SENDSPIN_PATH);
         return;
     }
 
@@ -328,10 +286,9 @@ void start_advertising(MdnsService& mdns, const Options& opts) {
     if (!mdns.advertise(opts.mdns_name, opts.port, SENDSPIN_PATH, opts.name, error)) {
         // Not fatal: the player still serves on its port, so a server that is told the URL
         // can still reach it. The retry inside MdnsService keeps trying meanwhile.
-        cli_log(LogLevel::WARN,
-                "mDNS: %s -- retrying; until it succeeds, point a server at "
-                "ws://<this-host>:%u%s",
-                error.c_str(), opts.port, SENDSPIN_PATH);
+        log_line(LogLevel::WARN, LOG_TAG_MDNS,
+                 "%s -- retrying; until it succeeds, point a server at ws://<this-host>:%u%s",
+                 error.c_str(), opts.port, SENDSPIN_PATH);
     }
 }
 
@@ -356,36 +313,79 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    if (opts.daemonize) {
-        // Failing loudly beats pretending: a service manager that was told to expect a
-        // forked daemon would otherwise wait forever on a foreground process.
-        std::fprintf(stderr,
-                     "error: -z (daemonize) is not implemented yet. Run in the foreground and "
-                     "supervise with systemd or a container. See docs/ROADMAP.md.\n");
+    // Probed here, above -f, purely so "already running" reaches the terminal: -f replaces
+    // stderr, so nothing after it can be said to the shell that is still watching. The child
+    // takes the lock for real after the fork, and that acquisition is the authoritative one.
+    if (opts.daemonize && !opts.pidfile.empty()) {
+        std::string error;
+        if (probe_pidfile(opts.pidfile, error) != PidFileStatus::Ok) {
+            std::fprintf(stderr, "error: %s\n", error.c_str());
+            return 1;
+        }
+    }
+
+    // Opened before -z forks, so an unopenable path still fails at the terminal, and so the
+    // child inherits an fd 2 that already points at the logfile.
+    if (!opts.logfile.empty() && !log_to_file(opts.logfile)) {
         return 1;
     }
 
-    if (!opts.logfile.empty() && !redirect_log(opts.logfile)) {
-        return 1;
-    }
-
+    // Set once, and never again: the library's own level is a plain non-atomic int read from
+    // its background threads, so changing it on a running player would be a data race.
     sendspin::SendspinClient::set_log_level(opts.log_level);
+
+    // Returns only in the child. Everything cheap and fallible has been hoisted above it; from
+    // here a failure reports into the log, which README.md says out loud -- so from here the
+    // reports go through log_fatal(), which puts them in the log's own format.
+    if (opts.daemonize) {
+        // Named rather than passed inline: at the call site a bare boolean says nothing about
+        // which way round it reads.
+        const bool discard_stderr = opts.logfile.empty();
+        std::string error;
+        if (!daemonize(discard_stderr, error)) {
+            log_fatal(LOG_TAG, "%s", error.c_str());
+            return 1;
+        }
+    }
 
     // A closed downstream pipe on -o stdout must not kill the daemon: the sink notices
     // the short write and degrades to discarding.
     std::signal(SIGPIPE, SIG_IGN);
     std::signal(SIGINT, handle_signal);
     std::signal(SIGTERM, handle_signal);
+    if (!opts.logfile.empty()) {
+        // Only with -f. SIGHUP's default disposition is terminate, which is what a foreground
+        // run should keep doing when its terminal closes -- staying alive with stderr on a
+        // dead pty is worse than exiting.
+        //
+        // sigaction() rather than the std::signal() above, because this is the one handler
+        // expected to fire again and again: a rotation arrives every day for the life of the
+        // daemon. Only sigaction() *guarantees* the handler survives its own delivery -- if it
+        // were reset, the second rotation would kill the player instead of reopening its log.
+        // SA_RESTART matches what BSD-semantics signal() already gives the handlers above.
+        struct sigaction hup = {};
+        hup.sa_handler = log_handle_sighup;
+        sigemptyset(&hup.sa_mask);
+        hup.sa_flags = SA_RESTART;
+        sigaction(SIGHUP, &hup, nullptr);
+    }
+
+    // Above make_audio_sink() on purpose: two instances racing should collide on the pidfile,
+    // not on the sound card. A lost race that has already opened ALSA exclusively is a worse
+    // failure than one that has opened nothing.
+    PidFile pidfile;
+    if (!opts.pidfile.empty()) {
+        std::string error;
+        if (pidfile.acquire(opts.pidfile, error) != PidFileStatus::Ok) {
+            log_fatal(LOG_TAG, "%s", error.c_str());
+            return 1;
+        }
+    }
 
     std::string sink_error;
     std::unique_ptr<AudioSink> sink = make_audio_sink(opts.device, opts.buffer_ms, sink_error);
     if (!sink) {
-        std::fprintf(stderr, "error: %s\n", sink_error.c_str());
-        return 1;
-    }
-
-    PidFile pidfile;
-    if (!opts.pidfile.empty() && !pidfile.write(opts.pidfile)) {
+        log_fatal(LOG_TAG_AUDIO, "%s", sink_error.c_str());
         return 1;
     }
 
@@ -415,7 +415,7 @@ int main(int argc, char* argv[]) {
     client.set_network_provider(&network_provider);
 
     if (!client.start_server()) {
-        std::fprintf(stderr, "error: could not start the Sendspin server on port %u\n", opts.port);
+        log_fatal(LOG_TAG, "could not start the Sendspin server on port %u", opts.port);
         return 1;
     }
 
@@ -436,11 +436,11 @@ int main(int argc, char* argv[]) {
         if (opts.discover) {
             std::string error;
             if (!mdns.browse(error)) {
-                cli_log(LogLevel::WARN, "mDNS: %s -- retrying", error.c_str());
+                log_line(LogLevel::WARN, LOG_TAG_DISCOVERY, "%s -- retrying", error.c_str());
             }
-            cli_log(LogLevel::INFO, "Looking for a Sendspin server on %s%s%s%s",
-                    MDNS_SERVER_SERVICE, opts.discover_name.empty() ? "" : " named \"",
-                    opts.discover_name.c_str(), opts.discover_name.empty() ? "" : "\"");
+            log_line(LogLevel::INFO, LOG_TAG_DISCOVERY, "Looking for a Sendspin server on %s%s%s%s",
+                     MDNS_SERVER_SERVICE, opts.discover_name.empty() ? "" : " named \"",
+                     opts.discover_name.c_str(), opts.discover_name.empty() ? "" : "\"");
         }
         outbound = std::make_unique<OutboundMode>(opts, mdns);
     }
@@ -454,6 +454,11 @@ int main(int argc, char* argv[]) {
         if (outbound) {
             outbound->tick(client, now_ms);
         }
+        // Here rather than in the SIGHUP handler: the reopen flushes the old stream and then
+        // logs the result, and neither fflush() nor fprintf() is async-signal-safe -- the
+        // open/dup2 pair on its own would be. This is what hands rotation to logrotate and
+        // newsyslog.
+        log_reopen_if_requested();
         std::this_thread::sleep_for(std::chrono::milliseconds(LOOP_INTERVAL_MS));
     }
 

@@ -17,6 +17,8 @@
 
 #include "cli.h"
 
+#include "log.h"
+
 #include <gtest/gtest.h>
 
 #include <cstdio>
@@ -346,15 +348,99 @@ TEST(ParseOptions, LogLevelNames) {
     }
 }
 
-TEST(ParseOptions, LogCategoryIsAcceptedAndWarnedAbout) {
-    // squeezelite's -d <category>=<level> shape. One global level for now (roadmap item 6),
-    // so the category is parsed, ignored, and said out loud.
+TEST(ParseOptions, LogCategoryIsAcceptedAndWarnedAboutWithSomethingToDoInstead) {
+    // squeezelite's -d <category>=<level> shape. sendspin-cpp gates every line on one global
+    // int with no sink hook, so the category is parsed, ignored, and said out loud -- and the
+    // warning has to leave the user somewhere to go, which is the per-line tag plus grep.
     Parse parse({"-d", "slimproto=info"});
 
     ASSERT_TRUE(parse.ok()) << parse.diagnostics();
     EXPECT_EQ(parse.options().log_level, LogLevel::INFO);
-    EXPECT_NE(parse.diagnostics().find("slimproto"), std::string::npos);
-    EXPECT_NE(parse.diagnostics().find("ignored"), std::string::npos);
+    const std::string diagnostics = parse.diagnostics();
+    EXPECT_NE(diagnostics.find("slimproto"), std::string::npos) << diagnostics;
+    EXPECT_NE(diagnostics.find("ignored"), std::string::npos) << diagnostics;
+    EXPECT_NE(diagnostics.find("grep"), std::string::npos) << diagnostics;
+    for (const char* tag : LOG_TAGS) {
+        EXPECT_NE(diagnostics.find(tag), std::string::npos)
+            << tag << " missing from: " << diagnostics;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// -z
+// ---------------------------------------------------------------------------
+
+TEST(ParseOptions, DaemonizeRefusesToWritePcmToStdout) {
+    // A detached daemon's stdout is /dev/null, so the PCM sink would become a second discard
+    // sink without saying so. Both spellings of the sink, since -o accepts both.
+    for (const char* device : {"stdout", "-"}) {
+        Parse parse({"-z", "-o", device});
+
+        EXPECT_FALSE(parse.ok()) << "-z -o " << device << " was accepted";
+        EXPECT_NE(parse.diagnostics().find("-z cannot write PCM to stdout"), std::string::npos)
+            << parse.diagnostics();
+    }
+}
+
+TEST(ParseOptions, DaemonizeIsFineWithADeviceThatIsNotStdout) {
+    Parse parse({"-z", "-o", "null"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_TRUE(parse.options().daemonize);
+}
+
+TEST(ParseOptions, StdoutWithoutDaemonizeIsStillFine) {
+    // The refusal is about -z, not about the sink: piping PCM out of a foreground run is what
+    // -o stdout is for.
+    Parse parse({"-o", "stdout"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_EQ(parse.diagnostics().find("error:"), std::string::npos) << parse.diagnostics();
+}
+
+TEST(ParseOptions, DaemonizeWithoutALogfileWarnsAndStillStarts) {
+    Parse parse({"-z", "-o", "null"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_NE(parse.diagnostics().find("warning:"), std::string::npos) << parse.diagnostics();
+    EXPECT_NE(parse.diagnostics().find("-z without -f"), std::string::npos) << parse.diagnostics();
+}
+
+TEST(ParseOptions, DaemonizeWithALogfileSaysNothing) {
+    Parse parse({"-z", "-o", "null", "-f", "/tmp/sendspin-cli-test.log"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_EQ(parse.diagnostics().find("warning:"), std::string::npos) << parse.diagnostics();
+}
+
+TEST(ParseOptions, DaemonizeMakesRelativePidfileAndLogfilePathsAbsolute) {
+    // -z chdir()s to /, so a relative path would name the operator's directory to the
+    // parent's pidfile probe and a file directly under / to the child that writes it.
+    Parse parse({"-z", "-o", "null", "-P", "sendspin.pid", "-f", "sendspin.log"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_EQ(parse.options().pidfile.front(), '/') << parse.options().pidfile;
+    EXPECT_EQ(parse.options().logfile.front(), '/') << parse.options().logfile;
+    EXPECT_NE(parse.options().pidfile.find("/sendspin.pid"), std::string::npos)
+        << parse.options().pidfile;
+    EXPECT_NE(parse.options().logfile.find("/sendspin.log"), std::string::npos)
+        << parse.options().logfile;
+}
+
+TEST(ParseOptions, DaemonizeLeavesAnAbsolutePathAloneAndAForegroundRunUntouched) {
+    {
+        Parse parse({"-z", "-o", "null", "-P", "/run/sendspin-cli.pid"});
+        ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+        EXPECT_EQ(parse.options().pidfile, "/run/sendspin-cli.pid");
+    }
+    {
+        // Nothing chdir()s in the foreground, so a relative path there means what it says and
+        // is left exactly as typed.
+        Parse parse({"-o", "null", "-P", "sendspin.pid", "-f", "sendspin.log"});
+        ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+        EXPECT_EQ(parse.options().pidfile, "sendspin.pid");
+        EXPECT_EQ(parse.options().logfile, "sendspin.log");
+    }
 }
 
 TEST(ParseOptions, UnknownLogLevelIsRejected) {

@@ -90,8 +90,12 @@ cmake -B build -DSENDSPIN_GIT_TAG=v0.7.0
 # Discover a server and dial that instead
 ./build/sendspin-cli -s mdns:
 
-# Debug logging, in the foreground
-./build/sendspin-cli -d debug
+# Debug logging, in the foreground. Every line is "<L> <tag>: <message>", ours
+# and the library's alike, so one grep reaches either half
+./build/sendspin-cli -d debug 2>&1 | grep ' mdns:'
+
+# As a daemon: detached, with a locked pidfile and a logfile
+./build/sendspin-cli -z -P /run/sendspin-cli.pid -f /var/log/sendspin-cli.log
 ```
 
 ### The two connection modes
@@ -310,27 +314,169 @@ Either way, a format the device then refuses is reported loudly — naming the
 device, the format, and the fact that the stream's audio is being discarded —
 rather than leaving a player that looks healthy and plays nothing.
 
+### Running as a daemon
+
+`-z` forks once, `setsid()`s away from the controlling terminal, `chdir()`s to `/`
+so it does not pin a mount point, and points stdin and stdout at `/dev/null`. The
+parent exits `0` immediately, so the shell comes straight back.
+
+```bash
+sendspin-cli -z -P /run/sendspin-cli.pid -f /var/log/sendspin-cli.log
+```
+
+**Which failures reach the terminal, and which only reach the log.** Everything
+cheap and fallible happens *before* the fork, so it can still be reported to the
+shell that is watching: the flag parse, opening the `-f` logfile, and a probe of
+the `-P` pidfile. Those exit `1` at the terminal exactly as a foreground run does.
+
+Everything after the fork — the output device, the WebSocket server, mDNS — can
+only report into the log, because the terminal has already been given a `0`. A
+device that is busy or absent therefore looks like a clean start and then says why
+in the logfile:
+
+```console
+$ sendspin-cli -z -f /tmp/s.log -o portaudio:999 ; echo $?
+0
+$ cat /tmp/s.log
+2026-08-10T21:41:48Z E audio: -o portaudio:999: no device at that index -- indices run 0-2 here, and -l lists the ones -o can reach
+```
+
+A fatal error like that one is stamped and tagged like every other line, but it is **not**
+gated by `-d`: `-d none` means "do not narrate", not "exit without saying why".
+
+That boundary is why `-z` **without** `-f` warns. What goes to `/dev/null` is not
+just the running commentary: it is the answer to "why did my daemon not come
+up?" — and the non-zero exit is unreachable too, because the parent already
+returned `0`. A supervisor sees a clean start followed by nothing at all. It
+still starts, since a supervisor that captures nothing is a legitimate way to
+run it, but that silence is indistinguishable from a crash, which is why the
+warning exists. `-z` with `-o stdout` is refused outright rather than warned
+about, since a daemon's stdout *is* `/dev/null` and the PCM would be discarded.
+
+Under `-z`, a relative `-P` or `-f` path is resolved against the directory you ran
+it from, before the `chdir()`. A foreground run leaves relative paths exactly as
+typed.
+
+**The pidfile is a lock, not just a file.** `-P` holds it under an exclusive
+`flock()` for the process's whole life, so a second instance is refused by name:
+
+```console
+$ sendspin-cli -z -P /run/sendspin-cli.pid -f /var/log/sendspin-cli.log
+error: another sendspin-cli is already running -- it holds the lock on /run/sendspin-cli.pid
+```
+
+That also makes stale files a non-issue. A process killed with `SIGKILL` has its
+descriptor closed by the kernel, so the lock is simply gone: the next start
+truncates the leftover file and writes its own pid, with no cleanup step and no
+liveness probe. Nothing ever parses the old contents, which is what stops a
+recycled pid being read as a live instance. The file is removed on every clean
+exit path.
+
+Two things to know about *where* the pidfile goes. Keep it on a **local
+filesystem** — `flock` is emulated over NFS and is not dependable over SMB — which
+in practice means `/run` (or `/var/run`). And `/run` is `root`-owned, so a daemon
+started as a normal user wants a path it can write, such as
+`$XDG_RUNTIME_DIR/sendspin-cli.pid`.
+
+**systemd.** A forking daemon wants `Type=forking` with `PIDFile=` pointing at the
+same path as `-P`; the foreground default suits `Type=simple`, which is usually the
+better choice under a supervisor that already captures stderr. No unit file ships
+yet — that is [`docs/ROADMAP.md`](docs/ROADMAP.md) item 10.
+
+### Logging
+
+Every *log* line carries a level letter and a subsystem tag:
+
+```
+I cli: sendspin-cli 0.1.0 listening on port 8928 as "living-room" (output: default, mDNS: dns_sd (Bonjour))
+I mdns: advertising _sendspin._tcp as "living-room" on port 8928 (path /sendspin)
+I sendspin.ws_server: Starting server on port: 8928 (max connections: 4)
+```
+
+The third line is the library's. That is the point of the format: it is the shape
+sendspin-cpp's own `SS_LOG*` macros already emit, so `grep 'I mdns:'` and
+`grep 'I sendspin.ws_server:'` both work on the same file. Ours are `cli`, `audio`,
+`mdns`, `discovery`, `outbound`, `player` and `metadata`; the library's are all
+`sendspin.<subsystem>`. `audio` lines then name their own backend, since the tag
+says which subsystem but not which device is talking: `I audio: alsa: 'hw:1,0'
+closed`.
+
+Fatal startup errors are in this format too, at `E`, but they are deliberately
+**not** gated by `-d` — see the `-z` example above. The one line that explains why a
+daemon never came up has to be both greppable and impossible to switch off. Two
+kinds of diagnostic are the exception and stay plain `error: …` lines: the flag
+parser's, and the pre-fork pidfile probe's. Both answer a command line rather than
+recording a run, and both are printed before there is a log to write them to —
+which is why a `-P` conflict reads `error: …` under `-z` and `E cli: …` in the
+foreground.
+
+`-d` sets one level for this player and the library together, which is deliberate —
+a single flag turns up everything about one run. It accepts squeezelite's
+`-d <category>=<level>` shape, but **the category is ignored** and says so: the
+library gates its lines on one global integer with no sink or filter hook, so there
+is no honest way to raise the level for one category only. The per-line tag plus
+`grep` is the filtering that does work, and it works on the library's lines too.
+
+`-f <path>` sends the log to a file instead of stderr, appending, and stamps every
+line with a UTC timestamp:
+
+```
+2026-08-10T21:37:18Z I cli: sendspin-cli 0.1.0 listening on port 18931 as "living-room" (output: null, mDNS: dns_sd (Bonjour))
+```
+
+Only a `-f` file is stamped. A foreground run under systemd or Docker already gets
+a timestamp from journald or the container runtime, and a second one would only be
+noise. The library's own lines are *not* stamped, for the same reason its category
+cannot be filtered — nothing in this process gets to reformat them.
+
+**Rotation is `logrotate`'s and `newsyslog`'s job, not this daemon's.** `SIGHUP`
+reopens the `-f` path, which is the whole handshake those tools need:
+
+```
+/var/log/sendspin-cli.log {
+    daily
+    rotate 7
+    compress
+    postrotate
+        kill -HUP $(cat /run/sendspin-cli.pid)
+    endscript
+}
+```
+
+The reopen happens on the main loop rather than in the signal handler, because it
+flushes the old stream and then logs the result, and neither of those is
+async-signal-safe. The handler is installed **only** with `-f`:
+without it, `SIGHUP` keeps its default disposition and terminates the process,
+which is what a foreground run whose terminal has just closed should do.
+
 ### Flags, and what they refuse
 
 The flags follow squeezelite's: `-o` output device, `-l` list devices, `-n` name,
 `-s` server, `-z` daemonize, `-P` pidfile, `-d`/`-f` logging. Four are long-only
 because they are not squeezelite's: `--port`, the port this player serves on,
 `--buffer-ms`, and the two mDNS flags `--no-mdns` and `--mdns-name`. Run `--help`
-for the current state of each — several are scaffolding whose real behaviour is
-still to come.
+for the current state of each — a few still point at
+[`docs/ROADMAP.md`](docs/ROADMAP.md) for behaviour that is not built yet.
 
-Everything is validated before the daemon starts, and a bad value exits `1` with a
-single `error:` line naming it rather than falling back to a default:
+Everything the flags can settle is validated before anything is opened, and a bad
+value exits `1` with a single line naming it rather than falling back to a default:
 
 ```console
 $ sendspin-cli -s music.local:abc
 error: -s 'music.local:abc': 'abc' is not a port number (expected 1-65535)
 
-$ sendspin-cli -o portaudio:99
-error: -o portaudio:99: no device at that index -- indices run 0-2 here, and -l lists the ones -o can reach
-
 $ sendspin-cli --buffer-ms 0
 error: invalid --buffer-ms '0' -- expected 10-2000
+```
+
+What a flag *cannot* settle on its own is whether the thing it names will open. That
+is a startup failure rather than a bad value, so it comes out in the log's format —
+which is what puts it in the logfile under `-z`, where it is the only record of why
+the daemon never came up:
+
+```console
+$ sendspin-cli -o portaudio:99
+E audio: -o portaudio:99: no device at that index -- indices run 0-2 here, and -l lists the ones -o can reach
 ```
 
 That is a deliberate change from warn-and-continue. `-s` used to warn about a

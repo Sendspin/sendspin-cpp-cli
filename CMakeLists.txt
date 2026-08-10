@@ -161,7 +161,9 @@ endif()
 add_library(sendspin-cli-core STATIC
     src/cli.cpp
     src/audio_sink.cpp
+    src/daemon.cpp
     src/last_server.cpp
+    src/log.cpp
     src/mdns_common.cpp
     src/null_sink.cpp
     src/outbound.cpp
@@ -250,6 +252,7 @@ if(SENDSPIN_CLI_BUILD_TESTS)
 
     add_executable(sendspin-cli-tests
         tests/cli_test.cpp
+        tests/daemon_test.cpp
         tests/device_spec_test.cpp
         tests/discovery_test.cpp
         tests/last_server_test.cpp
