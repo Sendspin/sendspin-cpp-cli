@@ -99,6 +99,7 @@ StatusSnapshot playing_snapshot() {
     snapshot.player_volume = 80;
     snapshot.player_muted = false;
     snapshot.player_volume_source = VolumeSource::Server;
+    snapshot.static_delay_ms = 0;
     snapshot.output = "portaudio";
     return snapshot;
 }
@@ -131,7 +132,7 @@ TEST(ControlSubcommands, EveryCommandInTheEnumHasARow) {
     // The table is what --help prints, what the parser reads and what names a command in a
     // diagnostic, so a command reachable in one and missing from it would be invisible in the
     // other two. Checked by walking the enum's whole range rather than the table's own rows.
-    for (uint8_t value = 0; value <= static_cast<uint8_t>(ControlCommand::Switch); ++value) {
+    for (uint8_t value = 0; value <= static_cast<uint8_t>(ControlCommand::Delay); ++value) {
         const auto command = static_cast<ControlCommand>(value);
         bool found = false;
         for (const ControlSubcommand& subcommand : control_subcommands()) {
@@ -329,6 +330,39 @@ TEST(ParseControlRequest, VolumeRejectsOutOfRangeNamingTheRange) {
     }
 }
 
+TEST(ParseControlRequest, DelayTakesZeroToTheSpecsMaximum) {
+    EXPECT_EQ(parsed("delay", {"0"}).delay_ms, 0);
+    EXPECT_EQ(parsed("delay", {"250"}).delay_ms, 250);
+    EXPECT_EQ(parsed("delay", {std::to_string(MAX_STATIC_DELAY_MS)}).delay_ms, MAX_STATIC_DELAY_MS);
+}
+
+TEST(ParseControlRequest, DelayRejectsOutOfRangeRatherThanLettingItBeClamped) {
+    // The reason this repo carries its own bound: PlayerRole::update_static_delay() would take
+    // 9000 silently down to 5000 and report success for a delay nobody asked for.
+    ControlRequest request;
+    std::string error;
+    for (const char* value : {"5001", "9000", "65536", "-1", "", " 250", "+250", "250.0", "abc"}) {
+        EXPECT_FALSE(parse_control_request("delay", {value}, request, error))
+            << "accepted delay '" << value << "'";
+        // The message names the bound, so a caller learns the range from the refusal.
+        EXPECT_NE(error.find("0 to " + std::to_string(MAX_STATIC_DELAY_MS)), std::string::npos)
+            << error;
+        EXPECT_NE(error.find(std::string(value)), std::string::npos) << error;
+    }
+}
+
+TEST(ParseControlRequest, DelayDispatchesNothingAndIsNeverSentToTheServer) {
+    // The static delay is this endpoint's own player-role state, so nothing goes out as a
+    // controller command -- update_static_delay() republishes `client/state` by itself.
+    EXPECT_FALSE(protocol_command(parsed("delay", {"250"})).has_value());
+
+    // And the trap that makes the daemon's ordering load-bearing: to_client_command() falls back to
+    // PLAY for a request with no protocol command, so a `delay` that ever reached it would start
+    // playback. The dispatcher branches on Delay before send_command() precisely so it cannot.
+    EXPECT_EQ(to_client_command(parsed("delay", {"250"})).command, SendspinControllerCommand::PLAY)
+        << "the fallback changed -- the dispatcher's Delay branch is what keeps this unreachable";
+}
+
 TEST(ParseControlRequest, MuteAndShuffleTakeOnOff) {
     EXPECT_EQ(parsed("mute", {"on"}).flag, true);
     EXPECT_EQ(parsed("mute", {"off"}).flag, false);
@@ -439,6 +473,8 @@ TEST(ControlRequestWire, EveryRequestSurvivesARoundTrip) {
         {"shuffle", {"off"}},   {"repeat", {"off"}},       {"repeat", {"one"}},
         {"repeat", {"all"}},    {"seek", {"0"}},           {"seek", {"4294967295"}},
         {"seek-rel", {"-2147483648"}}, {"seek-rel", {"2147483647"}},
+        {"delay", {"0"}},
+        {"delay", {"5000"}},
     };
 
     for (const auto& [name, args] : cases) {
@@ -459,6 +495,7 @@ TEST(ControlRequestWire, EveryRequestSurvivesARoundTrip) {
         EXPECT_EQ(received.position_ms, sent.position_ms) << line;
         EXPECT_EQ(received.offset_ms, sent.offset_ms) << line;
         EXPECT_EQ(received.repeat, sent.repeat) << line;
+        EXPECT_EQ(received.delay_ms, sent.delay_ms) << line;
         EXPECT_EQ(protocol_command(received), protocol_command(sent)) << line;
     }
 }
@@ -471,6 +508,7 @@ TEST(ControlRequestWire, ZeroValuedArgumentsSurvive) {
     EXPECT_EQ(encode_control_request(parsed("seek-rel", {"0"})), "seek-rel 0");
     EXPECT_EQ(encode_control_request(parsed("mute", {"off"})), "mute off");
     EXPECT_EQ(encode_control_request(parsed("repeat", {"off"})), "repeat off");
+    EXPECT_EQ(encode_control_request(parsed("delay", {"0"})), "delay 0");
 }
 
 TEST(SplitControlLine, ReadsWordsAndRejectsAnEmptyLine) {
@@ -571,6 +609,24 @@ TEST(ControlRefusal, StatusIsNeverRefused) {
     EXPECT_FALSE(control_refusal(parsed("status", {}), everything_supported(), status, reason));
 }
 
+TEST(ControlRefusal, DelayIsNeverRefusedEither) {
+    // The other locally answered request, and the case that matters most: a speaker's own delay
+    // does not become unsettable because nothing is currently connected to it. Exempted through
+    // protocol_command() returning nothing rather than by name, so this and `status` share one
+    // rule.
+    ControllerSnapshot disconnected;
+    ControlStatus status = ControlStatus::Failed;
+    std::string reason;
+    EXPECT_FALSE(control_refusal(parsed("delay", {"250"}), disconnected, status, reason));
+    EXPECT_FALSE(control_refusal(parsed("delay", {"250"}), everything_supported(), status, reason));
+
+    // And specifically not reported as unsupported: `set_static_delay` is a *player* command, so it
+    // is not in the controller role's supported_commands and never should be looked for there.
+    ControllerSnapshot connected_no_state;
+    connected_no_state.connected = true;
+    EXPECT_FALSE(control_refusal(parsed("delay", {"250"}), connected_no_state, status, reason));
+}
+
 TEST(ControlRefusal, SeekPastSeekMaxIsRefusedNamingTheBound) {
     ControllerSnapshot snapshot = everything_supported();
     snapshot.seek_max_ms = 240000;
@@ -622,6 +678,7 @@ TEST(FormatStatus, EveryFieldIsPresentAndLabelled) {
     EXPECT_EQ(field(block, "position"), "2:05 / 9:03 (estimated)");
     EXPECT_EQ(field(block, "group volume"), "55");
     EXPECT_EQ(field(block, "player volume"), "80");
+    EXPECT_EQ(field(block, "static delay"), "0 ms");
     EXPECT_EQ(field(block, "output"), "portaudio (48000 Hz / 2 ch / 16-bit)");
     // Every line is `key: value`, so `cut -d: -f2` and `grep` both reach a field.
     EXPECT_EQ(block.back(), '\n');
@@ -644,10 +701,12 @@ TEST(FormatStatus, GroupAndPlayerVolumeAreSeparateLines) {
 }
 
 TEST(FormatStatus, AVolumeNoServerHasSetIsMarkedAsADefault) {
-    // The bug this exists to stop coming back. `PlayerRole::get_volume()` is 0 until a server
-    // sends a volume command, while every sink runs at DEFAULT_SINK_VOLUME from the first sample
-    // -- so `status` used to print `player volume: 0` at a player that was audibly at full output.
-    // It now reports the gain the sink is applying, and says nobody chose it.
+    // The bug this exists to stop coming back. The library's `PlayerRole` defaults its volume to 0
+    // while every sink runs at DEFAULT_SINK_VOLUME from the first sample, so reporting the role's
+    // number printed `player volume: 0` at a player that was audibly at full output. `status`
+    // reports the gain the sink is applying, and says nobody chose it. (`main()` now also pushes
+    // that figure into the role at startup, so the two agree on the wire -- but this line is about
+    // which of them `status` asks, which is still the sink's side.)
     StatusSnapshot snapshot = playing_snapshot();
     snapshot.player_volume = DEFAULT_SINK_VOLUME;
     snapshot.player_volume_source = VolumeSource::SinkDefault;
@@ -686,6 +745,34 @@ TEST(FormatStatus, ARestoredVolumeIsNeitherADefaultNorAServersChoice) {
     EXPECT_EQ(line.find("(default"), std::string::npos) << line;
     EXPECT_NE(line.find("remembered"), std::string::npos) << line;
     EXPECT_NE(line.find("no server has set it"), std::string::npos) << line;
+}
+
+TEST(FormatStatus, TheStaticDelayIsReportedSoItsCommandIsVisible) {
+    // Reported for the reason `repeat` and `shuffle` are: `delay` can change it, and a setting
+    // whose effect `status` cannot show leaves a user unable to see what they did or to put it
+    // back.
+    StatusSnapshot snapshot = playing_snapshot();
+    snapshot.static_delay_ms = 375;
+    EXPECT_EQ(field(format_status(snapshot), "static delay"), "375 ms");
+
+    // Zero is a real value -- the delay turned off -- and reads as such rather than as `unknown`.
+    // The role always holds a figure, whether or not anybody chose it.
+    snapshot.static_delay_ms = 0;
+    EXPECT_EQ(field(format_status(snapshot), "static delay"), "0 ms");
+
+    // Its own line rather than folded into the player volume, so `grep`/`cut -d:` reach it.
+    snapshot.static_delay_ms = MAX_STATIC_DELAY_MS;
+    EXPECT_EQ(field(format_status(snapshot), "static delay"), "5000 ms");
+}
+
+TEST(FormatStatus, TheStaticDelayIsReportedWhileDisconnected) {
+    // It is this process's own state, so unlike every server-sourced field it is knowable with
+    // nothing connected -- which is also when `delay` is most likely to have just been used.
+    StatusSnapshot snapshot;
+    snapshot.name = "kitchen";
+    snapshot.output = "null";
+    snapshot.static_delay_ms = 120;
+    EXPECT_EQ(field(format_status(snapshot), "static delay"), "120 ms");
 }
 
 TEST(FormatStatus, TheQueueModesAreReportedSoTheirCommandsAreVisible) {

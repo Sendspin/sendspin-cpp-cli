@@ -243,6 +243,23 @@ TEST(ConfigPrecedence, TheCommandLineBeatsAConfigValue) {
     EXPECT_EQ(parse.options().buffer_ms, 250);
 }
 
+TEST(ConfigPrecedence, StaticDelayIsSettableAndLosesToTheCommandLine) {
+    // It earns the key for free by being in settable_options(), which is the whole point of that
+    // table -- and a per-speaker delay is exactly the sort of thing that belongs in a file rather
+    // than in a unit's ExecStart.
+    ScratchDir scratch;
+    ASSERT_TRUE(scratch.created());
+    const std::string config = scratch.write("config", "static-delay = 375\n");
+
+    Parse from_file({}, config);
+    ASSERT_TRUE(from_file.ok()) << from_file.diagnostics();
+    EXPECT_EQ(from_file.options().static_delay_ms, 375U);
+
+    Parse overridden({"--static-delay", "120"}, config);
+    ASSERT_TRUE(overridden.ok()) << overridden.diagnostics();
+    EXPECT_EQ(overridden.options().static_delay_ms, 120U);
+}
+
 TEST(ConfigPrecedence, ABooleanFlagOnTheCommandLineBeatsAFalseInTheFile) {
     ScratchDir scratch;
     ASSERT_TRUE(scratch.created());
@@ -343,6 +360,7 @@ TEST(ConfigRefusals, ABadValueGetsTheFlagsOwnMessagePrefixedWithTheLine) {
     };
     for (const Case& test : std::vector<Case>{
              {"buffer-ms = 0", "invalid --buffer-ms '0' -- expected 10-2000"},
+             {"static-delay = 5001", "invalid --static-delay '5001' -- expected 0-5000"},
              {"port = 99999", "invalid --port '99999' -- expected 1-65535"},
              {"server = music.local:abc", "'abc' is not a port number"},
              {"log-level = shouty", "unknown log level 'shouty'"},

@@ -222,6 +222,11 @@ const std::vector<ControlSubcommand>& control_subcommands() {
         {"switch", ControlCommand::Switch, 0, nullptr,
          "Move this player through the groups available to it. Not a source selector: per the "
          "spec's switch cycle it re-homes this client between groups"},
+        {"delay", ControlCommand::Delay, 1, "<0-5000>",
+         "Tell *this* endpoint how much latency its hardware adds after the audio port -- an "
+         "amplifier, an external speaker. The player then hands audio over that much earlier, so "
+         "the sound lands in sync rather than late. Answered locally, remembered across restarts, "
+         "and not a group setting"},
     };
     return table;
 }
@@ -312,6 +317,18 @@ bool parse_control_request(const std::string& name, const std::vector<std::strin
             out.volume = static_cast<uint8_t>(volume);
             return true;
         }
+        case ControlCommand::Delay: {
+            uint64_t delay = 0;
+            // Refused rather than clamped, which is the whole reason this repo carries its own
+            // bound: PlayerRole::update_static_delay() would silently take 9000 down to 5000 and
+            // report success for a delay nobody asked for.
+            if (!parse_unsigned(value, MAX_STATIC_DELAY_MS, delay)) {
+                return reject("a static delay in milliseconds, from 0 to " +
+                              std::to_string(MAX_STATIC_DELAY_MS));
+            }
+            out.delay_ms = static_cast<uint16_t>(delay);
+            return true;
+        }
         case ControlCommand::Mute:
         case ControlCommand::Shuffle: {
             bool flag = false;
@@ -380,6 +397,8 @@ std::string encode_control_request(const ControlRequest& request) {
         line += " " + std::to_string(*request.offset_ms);
     } else if (request.repeat.has_value()) {
         line += std::string(" ") + repeat_mode_name(*request.repeat);
+    } else if (request.delay_ms.has_value()) {
+        line += " " + std::to_string(static_cast<unsigned>(*request.delay_ms));
     }
     return line;
 }
@@ -411,6 +430,11 @@ std::optional<SendspinControllerCommand> protocol_command(const ControlRequest& 
     switch (request.command) {
         case ControlCommand::Status:
             // Answered out of the daemon's own shadows; nothing goes to the server.
+            return std::nullopt;
+        case ControlCommand::Delay:
+            // This endpoint's own player-role state, set through PlayerRole::update_static_delay()
+            // -- which republishes `client/state` itself, so the server still learns the new value
+            // without a controller command carrying it.
             return std::nullopt;
         case ControlCommand::Play:
             return SendspinControllerCommand::PLAY;
@@ -470,8 +494,10 @@ bool control_refusal(const ControlRequest& request, const ControllerSnapshot& sn
                      ControlStatus& status, std::string& reason) {
     const std::optional<SendspinControllerCommand> command = protocol_command(request);
     if (!command.has_value()) {
-        // `status` is answered locally, so none of the checks below apply to it -- and a
-        // daemon with no server connection is exactly when reading it is most useful.
+        // A locally answered request -- `status` or `delay`. None of the checks below apply, since
+        // nothing about it is sent: a daemon with no server connection is exactly when reading
+        // `status` is most useful, and a speaker's own delay is no less settable for having
+        // nothing playing through it.
         return false;
     }
 
@@ -600,6 +626,11 @@ std::string format_status(const StatusSnapshot& snapshot) {
     append_line(out, "player volume",
                 format_volume(true, snapshot.player_volume, snapshot.player_muted) +
                     volume_source_note(snapshot.player_volume_source));
+    // Beside the player's own volume, since both are this endpoint's rather than the group's -- and
+    // reported at all because `delay` changes it, so an invisible effect would leave a user unable
+    // to see what they had just set or to put it back.
+    append_line(out, "static delay",
+                std::to_string(static_cast<unsigned>(snapshot.static_delay_ms)) + " ms");
 
     // One line rather than a qualifier on each field, so the block stays scannable. It earns its
     // place: every field above it that comes from the server can silently lag, and a reader who

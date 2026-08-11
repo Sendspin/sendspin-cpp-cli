@@ -24,6 +24,9 @@ namespace {
 constexpr int FRAC_BITS = 32;
 constexpr int64_t ROUND_TERM = INT64_C(1) << (FRAC_BITS - 1);
 
+/// For turning VOLUME_RAMP_MS and a sample rate into a frame count.
+constexpr uint64_t MS_PER_SECOND = 1000;
+
 }  // namespace
 
 uint64_t q32_gain_for(uint8_t volume, bool muted) {
@@ -92,6 +95,68 @@ void apply_volume(uint8_t* data, size_t len, uint8_t bytes_per_sample, uint64_t 
         default:
             break;
     }
+}
+
+uint64_t volume_ramp_step(uint32_t sample_rate) {
+    const uint64_t frames = (static_cast<uint64_t>(sample_rate) * VOLUME_RAMP_MS) / MS_PER_SECOND;
+    if (frames == 0) {
+        // No format, or a rate so low that the whole ramp is under one frame. Either way there is
+        // nothing to ramp across; 0 tells the callers below to snap.
+        return 0;
+    }
+    // Rounded *up*, so `frames` steps cover the whole scale rather than falling a few counts short
+    // of it -- which is what makes VOLUME_RAMP_MS a bound the ramp is guaranteed to finish within
+    // rather than an approximation it lands near. The overshoot this buys is clamped by
+    // ramped_gain(), so the extra fraction of a step is never audible; a truncating division, by
+    // contrast, leaves the ramp still running a frame or two after the window it advertises.
+    return (Q32_ONE + frames - 1) / frames;
+}
+
+uint64_t ramped_gain(uint64_t current, uint64_t target, uint64_t step, size_t frames) {
+    if (step == 0) {
+        return target;
+    }
+    if (current == target) {
+        return target;
+    }
+
+    const bool rising = current < target;
+    const uint64_t distance = rising ? target - current : current - target;
+    // Saturating, and computed as a division rather than a multiply-then-compare so `frames * step`
+    // cannot overflow on the way to being clamped. Past the target the answer is the target, so
+    // there is nothing to lose by clamping early.
+    const uint64_t travelled = (static_cast<uint64_t>(frames) > distance / step)
+                                   ? distance
+                                   : static_cast<uint64_t>(frames) * step;
+    return rising ? current + travelled : current - travelled;
+}
+
+uint64_t apply_volume_ramp(uint8_t* data, size_t len, uint8_t bytes_per_sample, uint8_t channels,
+                           uint64_t current, uint64_t target, uint64_t step) {
+    if (bytes_per_sample == 0 || channels == 0) {
+        // No frame width to walk. Reported as "the ramp did not move" rather than snapped, so a
+        // sink that has lost its format cannot silently skip the ramp it still owes.
+        return current;
+    }
+
+    const size_t bytes_per_frame = static_cast<size_t>(bytes_per_sample) * channels;
+    const size_t frames = len / bytes_per_frame;
+
+    // One frame at a time only while the ramp is actually moving. Sharing ramped_gain() rather
+    // than inlining a step is what keeps this in agreement with the advance a caller commits.
+    size_t frame = 0;
+    for (; frame < frames && current != target; ++frame) {
+        current = ramped_gain(current, target, step, 1);
+        apply_volume(data + (frame * bytes_per_frame), bytes_per_frame, bytes_per_sample, current);
+    }
+
+    // The steady state, in one pass. Unity is skipped because it is exactly the identity -- the
+    // same reason both sinks skip scaling altogether at unity gain.
+    if (frame < frames && target != Q32_ONE) {
+        apply_volume(data + (frame * bytes_per_frame), (frames - frame) * bytes_per_frame,
+                     bytes_per_sample, target);
+    }
+    return current;
 }
 
 }  // namespace sendspin_cli

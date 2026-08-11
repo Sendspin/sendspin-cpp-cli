@@ -328,9 +328,11 @@ public:
     ControlDispatcher(const Options& opts, sendspin::SendspinClient& client,
                       sendspin::ControllerRole& controller, sendspin::MetadataRole& metadata,
                       const MetadataLogger& metadata_logger,
-                      const PlayerListener& player_listener, const AudioSink& sink)
+                      const PlayerListener& player_listener, sendspin::PlayerRole& player,
+                      const AudioSink& sink)
         : opts_(opts), client_(client), controller_(controller), metadata_(metadata),
-          metadata_logger_(metadata_logger), player_listener_(player_listener), sink_(sink) {}
+          metadata_logger_(metadata_logger), player_listener_(player_listener), player_(player),
+          sink_(sink) {}
 
     std::string handle_control_request(const std::string& line) override {
         std::string name;
@@ -355,6 +357,28 @@ public:
 
         if (request.command == ControlCommand::Status) {
             return encode_control_reply(ControlStatus::Ok, "", format_status(this->status()));
+        }
+
+        // Above send_command(), because this one is not a command to send: the static delay is this
+        // endpoint's own player-role state. update_static_delay() persists it through
+        // CliPersistenceProvider and republishes `client/state` itself, so the server learns the
+        // new value without a controller command carrying it. The parser has already bounded the
+        // value, so nothing here can reach the library's silent clamp.
+        //
+        // Safe from this thread, which is worth stating because it is the only place this daemon
+        // writes into the player role from the control channel: the delay the sync task subtracts
+        // is an atomic it re-reads per chunk, and the persistence write and `publish_state()` that
+        // follow are both main-loop work, which is where this dispatcher runs. A change mid-stream
+        // therefore lands on the next chunk and re-times its scheduling -- expect a brief resync.
+        if (request.command == ControlCommand::Delay) {
+            const uint16_t delay_ms = request.delay_ms.value_or(0);
+            this->player_.update_static_delay(delay_ms);
+            // Logged here rather than left to the listener, which the library invokes only for a
+            // server's own `set_static_delay` -- so a locally set delay would otherwise be the one
+            // change to this value that left no trace in the log.
+            log_line(LogLevel::INFO, LOG_TAG_PLAYER, "Static delay set to %u ms locally",
+                     static_cast<unsigned>(delay_ms));
+            return encode_control_reply(ControlStatus::Ok, "", "");
         }
 
         log_line(LogLevel::DEBUG, LOG_TAG_CONTROL, "Sending '%s'",
@@ -419,12 +443,16 @@ private:
         snapshot.group_repeat = controller.repeat;
         snapshot.group_shuffle = controller.shuffle;
 
-        // From the listener rather than from PlayerRole, deliberately: the role stores 0 until a
-        // server sends a volume command, while the sink is at DEFAULT_SINK_VOLUME from the first
-        // sample. Reporting the role's number claimed a silent player that was audibly playing.
+        // From the listener rather than from PlayerRole: the listener is the only caller of
+        // `AudioSink::set_volume()`, so it is the only thing that knows what the sink was told --
+        // and `VolumeSource` has no equivalent in the role at all.
         snapshot.player_volume = this->player_listener_.applied_volume();
         snapshot.player_muted = this->player_listener_.applied_muted();
         snapshot.player_volume_source = this->player_listener_.volume_source();
+        // The other way round for the delay, and for the mirror-image reason: the role is the
+        // authority, and it is changed by a path -- `delay` on the control socket -- that does not
+        // invoke the listener. Any shadow here would be stale the moment that ran.
+        snapshot.static_delay_ms = this->player_.get_static_delay_ms();
         snapshot.output = this->sink_.name();
         return snapshot;
     }
@@ -435,6 +463,9 @@ private:
     sendspin::MetadataRole& metadata_;
     const MetadataLogger& metadata_logger_;
     const PlayerListener& player_listener_;
+    /// Non-const: `delay` reaches update_static_delay() through it. Every other member here is
+    /// read-only, which is what makes this the one request that changes the player's own state.
+    sendspin::PlayerRole& player_;
     const AudioSink& sink_;
 };
 
@@ -724,7 +755,26 @@ int main(int argc, char* argv[]) {
 
     sendspin::PlayerRoleConfig player_config;
     player_config.audio_formats = advertised_formats(*sink);
+    // Explicitly 0, and it must stay 0: both real sinks already report *future* finish timestamps
+    // that include their own buffering -- snd_pcm_delay() on ALSA, outputBufferDacTime on
+    // PortAudio -- so folding device latency in here would count it twice and push playout early
+    // by the ring's worth of audio. The library's own default is 0; it is written out so the
+    // constraint lives beside the field rather than only in the roadmap.
+    player_config.fixed_delay_us = 0;
+    // `extra_startup_silence_ms` is deliberately left unassigned, at the library's
+    // DEFAULT_EXTRA_STARTUP_SILENCE_MS of 50. It trades startup latency for decode-pipeline
+    // headroom, and choosing a different figure needs underflow measurements on real hardware
+    // across both backends -- not a guess from here.
+
+    // A first-run default only: PlayerRole::load_static_delay() prefers whatever
+    // CliPersistenceProvider hands back and reads this solely when nothing was persisted, so a
+    // remembered delay wins. Set before add_player(), which is where the role loads it.
+    player_config.initial_static_delay_ms = opts.static_delay_ms;
     sendspin::PlayerRole& player = client.add_player(std::move(player_config));
+    // Advertises the `static_delay` command, which is also what makes the stored delay *apply*:
+    // the library reports it as 0 in `client/state` and ignores it in sync timing while
+    // adjustability is off, per the spec's rule that a delay not exposed as a knob must not be
+    // applied.
     player.set_static_delay_adjustable(true);
     sendspin::MetadataRole& metadata = client.add_metadata();
     // Added unconditionally, so `client/hello` always carries `controller@v1` -- including under
@@ -796,7 +846,7 @@ int main(int argc, char* argv[]) {
     // What answers the socket opened above. Built here rather than there because it holds
     // references to the client and its roles, all of which outlive it.
     ControlDispatcher control_dispatcher(opts, client, controller, metadata, metadata_logger,
-                                        player_listener, *sink);
+                                        player_listener, player, *sink);
 
     // Already validated during parsing, so there is nothing left here that can be wrong --
     // and nothing to fail on after the server is up.

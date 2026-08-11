@@ -55,6 +55,7 @@ enum LongOnly {
     OPT_VERSION = 0x100,
     OPT_PORT,
     OPT_BUFFER_MS,
+    OPT_STATIC_DELAY,
     OPT_NO_MDNS,
     OPT_MDNS_NAME,
     OPT_CONTROL_SOCKET,
@@ -91,6 +92,7 @@ const std::vector<SettableOption>& settable_options() {
         {Opt::LogLevel, "log-level", "-d"},
         {Opt::Port, "port", "--port"},
         {Opt::BufferMs, "buffer-ms", "--buffer-ms"},
+        {Opt::StaticDelay, "static-delay", "--static-delay"},
         {Opt::NoMdns, "no-mdns", "--no-mdns"},
         {Opt::MdnsName, "mdns-name", "--mdns-name"},
         {Opt::ControlSocket, "control-socket", "--control-socket"},
@@ -152,6 +154,24 @@ bool parse_buffer_ms(const std::string& str, uint32_t& buffer_ms) {
         return false;
     }
     buffer_ms = static_cast<uint32_t>(value);
+    return true;
+}
+
+/// Parses a static delay in milliseconds: digits only, 0 to MAX_STATIC_DELAY_MS.
+///
+/// Zero is legal and meaningful -- it is the value that turns the delay off -- so unlike
+/// parse_buffer_ms() there is no floor. Digits-only for parse_port()'s reason, which matters
+/// more here than elsewhere: the library clamps a value past the end rather than refusing it,
+/// so anything this accepts loosely becomes a silently different delay.
+bool parse_static_delay(const std::string& str, uint16_t& delay_ms) {
+    if (!is_all_digits(str)) {
+        return false;
+    }
+    const unsigned long value = std::strtoul(str.c_str(), nullptr, 10);
+    if (value > MAX_STATIC_DELAY_MS) {
+        return false;
+    }
+    delay_ms = static_cast<uint16_t>(value);
     return true;
 }
 
@@ -315,6 +335,13 @@ bool apply_option(const SettableOption& option, const std::string& value, Option
             if (!parse_buffer_ms(value, out.buffer_ms)) {
                 error = "invalid --buffer-ms '" + value + "' -- expected " +
                         std::to_string(MIN_BUFFER_MS) + "-" + std::to_string(MAX_BUFFER_MS);
+                return false;
+            }
+            break;
+        case Opt::StaticDelay:
+            if (!parse_static_delay(value, out.static_delay_ms)) {
+                error = "invalid --static-delay '" + value + "' -- expected 0-" +
+                        std::to_string(MAX_STATIC_DELAY_MS);
                 return false;
             }
             break;
@@ -524,6 +551,7 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
         {"config", required_argument, nullptr, OPT_CONFIG},
         {"port", required_argument, nullptr, OPT_PORT},
         {"buffer-ms", required_argument, nullptr, OPT_BUFFER_MS},
+        {"static-delay", required_argument, nullptr, OPT_STATIC_DELAY},
         {"no-mdns", no_argument, nullptr, OPT_NO_MDNS},
         {"mdns-name", required_argument, nullptr, OPT_MDNS_NAME},
         {"control-socket", required_argument, nullptr, OPT_CONTROL_SOCKET},
@@ -660,6 +688,9 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
                 break;
             case OPT_BUFFER_MS:
                 apply(Opt::BufferMs, optarg);
+                break;
+            case OPT_STATIC_DELAY:
+                apply(Opt::StaticDelay, optarg);
                 break;
             case OPT_NO_MDNS:
                 // A switch on the command line carries its answer in its own name, so it supplies
@@ -845,7 +876,7 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
         static constexpr Opt DAEMON_ONLY[] = {
             Opt::Device,   Opt::Name,     Opt::Server,   Opt::Daemonize, Opt::Pidfile,
             Opt::Logfile,  Opt::LogLevel, Opt::BufferMs, Opt::NoMdns,    Opt::MdnsName,
-            Opt::NoControl, Opt::StateDir,
+            Opt::NoControl, Opt::StateDir, Opt::StaticDelay,
         };
         for (Opt opt : DAEMON_ONLY) {
             if (out.was_given(opt)) {
@@ -1003,6 +1034,18 @@ void print_usage(std::FILE* out, const char* prog) {
                  DEFAULT_BUFFER_MS);
     std::fprintf(out, "                device-less sink ignores it, and a device that needs\n");
     std::fprintf(out, "                more than it asks for gets more\n");
+    std::fprintf(out, "  --static-delay <ms>\n");
+    std::fprintf(out, "                How much latency this endpoint's hardware adds AFTER the\n");
+    std::fprintf(out, "                audio port -- an amplifier, an external speaker, a DSP.\n");
+    std::fprintf(out, "                0-%u, default 0. The player hands audio to the device\n",
+                 MAX_STATIC_DELAY_MS);
+    std::fprintf(out, "                that much EARLIER to compensate, so the sound lands in\n");
+    std::fprintf(out, "                sync with the group rather than late. It does not push\n");
+    std::fprintf(out, "                this speaker later than the others.\n");
+    std::fprintf(out, "                A FIRST-RUN DEFAULT only: a delay a server or\n");
+    std::fprintf(out, "                'sendspin-cli delay' has set is remembered, and the\n");
+    std::fprintf(out, "                remembered one wins over this flag every run after.\n");
+    std::fprintf(out, "                Use 'delay <ms>' to change a running player\n");
     std::fprintf(out, "  --no-mdns     Do not advertise over mDNS (no effect with -s, which\n");
     std::fprintf(out, "                already suppresses it)\n");
     std::fprintf(out, "  --mdns-name <name>\n");

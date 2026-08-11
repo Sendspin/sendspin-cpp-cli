@@ -129,7 +129,8 @@ private:
 ///
 /// THREAD SAFETY: mutex_ guards stream_ and the ring buffer's producer side. The audio
 /// callback deliberately takes no lock: it reads the ring lock-free, and reads the format
-/// fields (bytes_per_frame_, bits_, stream_rate_) as plain values. Those unsynchronised reads
+/// fields (bytes_per_frame_, bits_, channels_, stream_rate_, ramp_step_) as plain values, plus
+/// current_multiplier_, which it also writes. Those unsynchronised reads
 /// are legal only because of one ordering invariant -- **everything the callback reads is
 /// mutated only while the callback provably cannot run**: either before Pa_StartStream(), which
 /// is what first lets it run, or after Pa_AbortStream()/Pa_CloseStream(), neither of which
@@ -145,6 +146,13 @@ private:
 /// That needs no scratch copy -- unlike AlsaAudioSink, which scales on the way in -- at the
 /// cost of a volume change also reaching audio that is already buffered. Both are correct;
 /// this one just takes effect sooner.
+///
+/// A change is applied over a ramp rather than as a jump, per the spec's SHOULD. The callback
+/// advances the ramp by every frame it *scales*, because it consumes every frame it scales -- even
+/// the zero-filled tail of a short ring read, which is deliberate: the ramp is heard in wall-clock
+/// time and that silence is played rather than re-presented, so an underrun spends ramp time
+/// against it exactly as it spends real time. This is the opposite of AlsaAudioSink's rule, where
+/// unwritten frames *are* handed back and the advance has to follow what was written.
 class PortAudioSink final : public AudioSink {
 public:
     /// @param buffer_ms How much audio to keep in the ring, from --buffer-ms. Already
@@ -206,8 +214,8 @@ private:
     /// Ring size in bytes for the open stream's format. Caller holds mutex_, and the format
     /// fields are already set.
     size_t ring_capacity_(double device_latency_s) const;
-    /// Recomputes volume_multiplier_ from volume_ and muted_.
-    void update_volume_multiplier_();
+    /// Recomputes target_multiplier_ from volume_ and muted_.
+    void update_target_multiplier_();
 
     /// Held for the sink's whole life, and declared first so it is destroyed last: the
     /// stream has to be closed before PortAudio is terminated under it.
@@ -233,6 +241,13 @@ private:
     /// The rate PortAudio says it really opened, for the callback's frame-to-time maths.
     /// Read by the audio callback, under the same invariant.
     double stream_rate_{0.0};
+    /// Per-frame gain increment for this stream's rate, from volume_ramp_step().
+    ///
+    /// Precomputed rather than derived in the callback, which would put a 64-bit division on the
+    /// audio path fifty times a second for a value that only changes when the format does. Read by
+    /// the audio callback, under the same invariant. 0 means "do not ramp" -- see
+    /// volume_ramp_step().
+    uint64_t ramp_step_{0};
 
     /// Bumped whenever the stream is opened, closed, restarted or flushed.
     ///
@@ -255,8 +270,17 @@ private:
 
     std::atomic<uint8_t> volume_{DEFAULT_SINK_VOLUME};
     std::atomic<bool> muted_{false};
-    /// Q32 fixed-point gain: Q32_ONE is unity, 0 is silence. Read by the audio callback.
-    std::atomic<uint64_t> volume_multiplier_{Q32_ONE};
+    /// The Q32 gain the ramp is heading for: Q32_ONE is unity, 0 is silence. Atomic because
+    /// set_volume()/set_muted() write it from the main loop and the callback reads it.
+    std::atomic<uint64_t> target_multiplier_{Q32_ONE};
+    /// The Q32 gain actually being applied, which the callback walks toward target_multiplier_
+    /// over VOLUME_RAMP_MS.
+    ///
+    /// Plain rather than atomic, under the class's ordering invariant: the callback is the only
+    /// thing that *advances* it, and the two places the main loop snaps it -- open_stream_() and
+    /// restart_stream_() -- both run before Pa_StartStream(), where the callback provably cannot
+    /// be running. clear() deliberately does not touch it; see clear().
+    std::uint64_t current_multiplier_{Q32_ONE};
 };
 
 }  // namespace sendspin_cli

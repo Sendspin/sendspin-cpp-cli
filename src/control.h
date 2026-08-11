@@ -76,11 +76,28 @@ inline constexpr size_t MAX_CONTROL_CONNECTIONS = 8;
 /// its line immediately after `connect()`, so it never comes close.
 inline constexpr int64_t CONTROL_IDLE_TIMEOUT_MS = 5000;
 
+/// @brief The largest static delay the spec allows, and what `delay` and --static-delay accept.
+///
+/// `Sendspin/spec` `roles/player/v1.md` bounds `static_delay_ms` at 0-5000, and this tracks *that*
+/// rather than the library -- the same relationship `q32_gain_for()`'s `^1.5` taper has to
+/// upstream's `^2`. sendspin-cpp happens to agree today, but its own bound is a file-local
+/// constant in `player_role.cpp` and `update_static_delay()` **silently clamps** to it, so a value
+/// past the end would be reported as accepted and then quietly become 5000. Named here so this
+/// player refuses it at parse time instead, as every other numeric argument is refused.
+///
+/// Lives in this header rather than beside MIN_BUFFER_MS/MAX_BUFFER_MS in `cli.h` because both
+/// users are here and in `cli.cpp`, and `control_common.cpp` deliberately includes no `cli.h`.
+inline constexpr uint16_t MAX_STATIC_DELAY_MS = 5000;
+
 /// @brief What `sendspin-cli <subcommand>` can ask for.
 ///
-/// One entry per command in the spec's `controller@v1` role, which is the whole transport
-/// surface: the `player` role carries only this endpoint's own volume, mute and static delay,
-/// so anything that moves the *group* has to go out as a controller command.
+/// Mostly one entry per command in the spec's `controller@v1` role, which is the whole *transport*
+/// surface: anything that moves the group has to go out as a controller command, because the
+/// `player` role carries only this endpoint's own volume, mute and static delay.
+///
+/// Two entries are not transport at all, and both are answered without the server: `Status`, which
+/// is formatted out of the daemon's own shadows, and `Delay`, which drives this endpoint's own
+/// `PlayerRole::update_static_delay()`. See protocol_command(), which yields nothing for either.
 enum class ControlCommand : uint8_t {
     Status,  ///< not a protocol command: the daemon's own view, formatted locally
     Play,
@@ -95,6 +112,18 @@ enum class ControlCommand : uint8_t {
     Repeat,
     Shuffle,
     Switch,
+
+    /// Not a protocol command either: this endpoint's own static delay, set locally.
+    ///
+    /// The one *mutating* request answered without a server, which the spec explicitly provides
+    /// for -- the delay compensates for hardware past the audio port (an amplifier, an external
+    /// speaker), the client is required to persist it, and "clients may update `static_delay_ms`
+    /// ... when audio output changes". A server whose UI has no slider for it would otherwise
+    /// leave a physical fact only the person in the room knows unreachable.
+    ///
+    /// Keep last: `ControlSubcommands.EveryCommandInTheEnumHasARow` walks the enum's range up to
+    /// this enumerator, so a command added after it would escape that check silently.
+    Delay,
 };
 
 /// @brief How a subcommand run ended, and the exit status it leaves.
@@ -154,6 +183,7 @@ struct ControlRequest {
     std::optional<uint32_t> position_ms{};            ///< `seek`
     std::optional<int32_t> offset_ms{};               ///< `seek-rel`
     std::optional<sendspin::SendspinRepeatMode> repeat{};  ///< `repeat`
+    std::optional<uint16_t> delay_ms{};                    ///< `delay`, 0 to MAX_STATIC_DELAY_MS
 };
 
 /// @brief The subcommand and its arguments, split off the front of argv.
@@ -182,10 +212,10 @@ bool split_subcommand(int argc, char* const argv[], ControlInvocation& out, std:
 /// @brief Turns a subcommand and its arguments into a request, or says why it cannot.
 ///
 /// Every range check the client can make without asking the daemon happens here: `vol` 0-100,
-/// `seek` a non-negative value that fits `uint32_t`, `seek-rel` anything that fits `int32_t`,
-/// `mute`/`shuffle` on|off, `repeat` off|one|all. `seek` against the server's published
-/// `seek_max_ms` cannot be checked here, since only the daemon holds that -- see
-/// control_refusal().
+/// `delay` 0 to MAX_STATIC_DELAY_MS, `seek` a non-negative value that fits `uint32_t`, `seek-rel`
+/// anything that fits `int32_t`, `mute`/`shuffle` on|off, `repeat` off|one|all. `seek` against the
+/// server's published `seek_max_ms` cannot be checked here, since only the daemon holds that --
+/// see control_refusal().
 ///
 /// Also the daemon's own parser: it reads the request line back through this, so the two ends
 /// cannot drift into disagreeing about what `vol 50` means.
@@ -204,11 +234,17 @@ bool split_control_line(const std::string& line, std::string& name, std::vector<
 
 /// @brief The protocol command a request dispatches, or nothing when it dispatches none.
 ///
-/// `status` is the only request with no protocol command behind it: it is answered out of the
-/// daemon's own shadows and never reaches the server.
+/// Two requests have none, and returning `nullopt` for them is what routes them locally: `status`,
+/// answered out of the daemon's own shadows, and `delay`, which drives this endpoint's own player
+/// role. Neither ever reaches the server as a controller command -- and because control_refusal()
+/// gates on this function, neither is refused for want of a connection either.
 std::optional<sendspin::SendspinControllerCommand> protocol_command(const ControlRequest& request);
 
 /// @brief The library command object a request becomes, ready for send_command().
+///
+/// Only ever called for a request protocol_command() gives a command for; the daemon checks that
+/// first. A locally answered request reaching here would be dispatched as whatever the fallback
+/// names, which is why that check is the dispatcher's first branch rather than a nicety.
 sendspin::ClientCommandControllerObject to_client_command(const ControlRequest& request);
 
 /// @brief What the daemon knows about the server's controller state, as plain data.
@@ -242,8 +278,12 @@ struct ControllerSnapshot {
 ///    sending it would be a success that changes nothing.
 /// 3. **Out of range for this server.** Only `seek` past a published `seek_max_ms`.
 ///
-/// `status` is refused by none of them: it is answered locally, and a daemon with no server
-/// connection is exactly when it is most worth reading.
+/// The locally answered requests -- `status` and `delay` -- are refused by none of them, and for
+/// the same reason: nothing about them goes to a server, so a missing connection is no obstacle. A
+/// daemon with none is exactly when reading `status` is most worth doing, and setting a speaker's
+/// own delay does not become invalid because nothing is currently playing through it. Both are
+/// exempted by protocol_command() returning nothing, so a new locally answered command inherits
+/// this without a second list to keep in step.
 /// @param status Set to the refusal's kind when the return value is true.
 /// @param reason Set to a human-readable reason when the return value is true.
 /// @return true if the request must not be dispatched.
@@ -307,21 +347,31 @@ struct StatusSnapshot {
     bool group_shuffle{false};
 
     /// The gain this endpoint's sink is really applying, and whether it is muted -- from
-    /// `PlayerListener`, **not** from `PlayerRole::get_volume()`.
-    ///
-    /// The distinction is not pedantry. The role stores 0 until a server sends a volume command
-    /// and advertises that 0 in `client/state`, while the sink runs at DEFAULT_SINK_VOLUME until
-    /// one arrives. So on a player no server has set the volume on, the role says 0 and the
-    /// speaker is at full -- and reporting the role's number told users their player was silent
-    /// while they could hear it.
+    /// `PlayerListener`, which is the only thing that calls `AudioSink::set_volume()` and so the
+    /// only thing that knows what the sink was told. `PlayerRole::get_volume()` agrees with it
+    /// from startup, but only because `main()` pushes the sink's figure into the role before
+    /// anything can connect; it is not the authority on what is being applied.
     uint8_t player_volume{DEFAULT_SINK_VOLUME};
     bool player_muted{false};
 
     /// Who chose the pair above, which makes the line say so. A server that deliberately chose
     /// full output, a player nothing has ever spoken to, and one that restored a remembered figure
     /// are otherwise identical in the output, and only one of the three is a number a server
-    /// asserted.
+    /// asserted. The role has no equivalent, which is the other reason this comes from the
+    /// listener.
     VolumeSource player_volume_source{VolumeSource::SinkDefault};
+
+    /// This endpoint's static delay, from `PlayerRole::get_static_delay_ms()`.
+    ///
+    /// Not an `optional`: the role always holds a value, whether it came from a server, the state
+    /// store, --static-delay or the 0 default. Read straight from the role rather than shadowed in
+    /// `PlayerListener`, because `update_static_delay()` does not invoke the listener -- so a
+    /// `delay` set through this daemon's own control socket would leave any shadow stale.
+    ///
+    /// The getter reports the *effective* delay, which is the stored one only while the delay is
+    /// adjustable. `main()` sets that unconditionally; were it ever made configurable, this would
+    /// read 0 against a store holding 375, exactly as `client/state` would.
+    uint16_t static_delay_ms{0};
 
     std::string output;  ///< the sink's `name()`
 };

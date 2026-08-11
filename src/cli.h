@@ -95,6 +95,7 @@ enum class Opt : unsigned {
     LogLevel,     ///< -d, --log-level
     Port,           ///< --port
     BufferMs,       ///< --buffer-ms
+    StaticDelay,    ///< --static-delay
     NoMdns,         ///< --no-mdns
     MdnsName,       ///< --mdns-name
     ControlSocket,  ///< --control-socket
@@ -133,6 +134,22 @@ struct Options {
     /// size and ignores it, and PortAudio's device-latency floor overrides a figure too
     /// small for one callback's worth of audio.
     uint32_t buffer_ms{DEFAULT_BUFFER_MS};
+
+    /// --static-delay <ms>: `PlayerRoleConfig::initial_static_delay_ms`, 0 to
+    /// MAX_STATIC_DELAY_MS.
+    ///
+    /// **How much latency this endpoint's hardware adds *after* the audio port** -- an amplifier,
+    /// an external speaker, a DSP. Not a figure to shift playback by: the sync task *subtracts* it
+    /// from every chunk's timestamp, so a positive value hands audio to the device that much
+    /// *earlier*, and the sound then lands on the timestamp the server meant rather than late. The
+    /// spec's own framing (`roles/player/v1.md`): 0 "means audio exits the device's audio port at
+    /// the timestamp", and the value "compensates for additional delay beyond the port".
+    ///
+    /// **A first-run default, not an override.** The library prefers a persisted delay and reads
+    /// this only when the state store has none, exactly as a restored volume beats
+    /// DEFAULT_SINK_VOLUME -- so once a server or `sendspin-cli delay` has set one, this flag is
+    /// inert until the state file is cleared. Long-only, for --port's reason.
+    uint16_t static_delay_ms{0};
 
     /// --no-mdns: do not advertise `_sendspin._tcp`. Only meaningful without -s, which
     /// already suppresses the advertisement on its own.
