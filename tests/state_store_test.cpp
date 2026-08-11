@@ -15,9 +15,8 @@
 /// @file state_store_test.cpp
 /// @brief The daemon's own memory, against an injected path rather than the real one
 ///
-/// Absorbed the suite that covered `last_server.{h,cpp}` when that folded into this store: the
-/// remembered server id is now one key here rather than a file of its own, so its round trip and
-/// its degrade-rather-than-fail cases are tested through the store's accessors.
+/// Covers the shared `key = value` reader too, since the store is its first consumer and the format
+/// is where a bad line's line number comes from.
 
 #include "state_store.h"
 
@@ -104,7 +103,8 @@ void write_file(const std::string& path, const std::string& text) {
 /// A store already loaded from `path`, which is how every caller uses one.
 StateStore loaded(const std::string& path) {
     StateStore store(path);
-    store.load();
+    size_t malformed_line = 0;
+    store.load(malformed_line);
     return store;
 }
 
@@ -120,8 +120,7 @@ TEST(StateStore, RoundTripsEveryKeyAcrossAReload) {
     ASSERT_TRUE(store.set_last_server("srv-abc123"));
     ASSERT_TRUE(store.set_last_server_hash(0xDEADBEEFU));
     ASSERT_TRUE(store.set_static_delay_ms(275));
-    ASSERT_TRUE(store.set_volume(42));
-    ASSERT_TRUE(store.set_muted(true));
+    ASSERT_TRUE(store.set_volume_and_muted(42, true));
 
     // A second store over the same path is the restart this whole file exists for.
     const StateStore reloaded = loaded(scratch.file());
@@ -137,7 +136,7 @@ TEST(StateStore, RemembersMutedFalseRatherThanForgettingIt) {
     ASSERT_TRUE(scratch.created());
 
     StateStore store(scratch.file());
-    ASSERT_TRUE(store.set_muted(false));
+    ASSERT_TRUE(store.set_volume_and_muted(100, false));
 
     // `false` is a value a server chose, not an absence: a store that dropped it would have a
     // player un-mute itself on restart only when the answer was the interesting one.
@@ -149,7 +148,7 @@ TEST(StateStore, AVolumeOfZeroIsRememberedRatherThanReadAsAbsent) {
     ASSERT_TRUE(scratch.created());
 
     StateStore store(scratch.file());
-    ASSERT_TRUE(store.set_volume(0));
+    ASSERT_TRUE(store.set_volume_and_muted(0, false));
 
     // The same trap as muted=false, and worse: 0 is exactly the value whose loss is audible.
     EXPECT_EQ(loaded(scratch.file()).volume(), 0);
@@ -180,7 +179,7 @@ TEST(StateStore, SettingOneKeyKeepsTheOthers) {
     ASSERT_TRUE(scratch.created());
 
     StateStore store(scratch.file());
-    ASSERT_TRUE(store.set_volume(30));
+    ASSERT_TRUE(store.set_volume_and_muted(30, false));
     ASSERT_TRUE(store.set_static_delay_ms(120));
 
     // The whole file is rewritten on every set, so this is the case where a rewrite that only
@@ -218,7 +217,7 @@ TEST(StateStore, LeavesNoTemporaryBehind) {
     ASSERT_TRUE(scratch.created());
 
     StateStore store(scratch.file());
-    ASSERT_TRUE(store.set_volume(55));
+    ASSERT_TRUE(store.set_volume_and_muted(55, false));
 
     // The write goes through a temporary and rename(), which is what makes a kill mid-write
     // leave either the old file or the new one. A temporary left in place would be a second
@@ -237,7 +236,8 @@ TEST(StateStore, AMissingFileIsNotAnError) {
     ASSERT_TRUE(scratch.created());
 
     StateStore store(scratch.file());
-    EXPECT_FALSE(store.load());
+    size_t malformed_line = 0;
+    EXPECT_EQ(store.load(malformed_line), StateLoadResult::Absent);
     EXPECT_TRUE(store.last_server().empty());
     EXPECT_FALSE(store.volume().has_value());
     EXPECT_FALSE(store.muted().has_value());
@@ -247,11 +247,12 @@ TEST(StateStore, AMissingFileIsNotAnError) {
 
 TEST(StateStore, AnEmptyPathIsAcceptedAsHavingNoMemory) {
     StateStore store("");
-    EXPECT_FALSE(store.load());
+    size_t malformed_line = 0;
+    EXPECT_EQ(store.load(malformed_line), StateLoadResult::Absent);
     EXPECT_TRUE(store.last_server().empty());
     // Reported so main() can say so once, and non-fatal: a player that cannot remember its
     // volume is still a player.
-    EXPECT_FALSE(store.set_volume(50));
+    EXPECT_FALSE(store.set_volume_and_muted(50, false));
 }
 
 TEST(StateStore, AnEmptyServerIdIsNotWritten) {
@@ -288,18 +289,18 @@ TEST(StateStore, AFailedWriteIsNotRememberedAsASuccess) {
     const ScratchDir scratch;
     ASSERT_TRUE(scratch.created());
     StateStore store(scratch.file());
-    ASSERT_TRUE(store.set_volume(30));
+    ASSERT_TRUE(store.set_volume_and_muted(30, false));
     ASSERT_EQ(::chmod(scratch.path().c_str(), 0500), 0);
 
-    EXPECT_FALSE(store.set_volume(40));
+    EXPECT_FALSE(store.set_volume_and_muted(40, false));
     // The value held has to keep describing what is on disk. Otherwise the identical-value
     // short-circuit would answer the retry below from memory and claim a write that never happened
     // -- and a full disk that later cleared would never be written to again.
     EXPECT_EQ(store.volume(), 30);
-    EXPECT_FALSE(store.set_volume(40));
+    EXPECT_FALSE(store.set_volume_and_muted(40, false));
 
     ASSERT_EQ(::chmod(scratch.path().c_str(), 0700), 0);
-    EXPECT_TRUE(store.set_volume(40));
+    EXPECT_TRUE(store.set_volume_and_muted(40, false));
     EXPECT_EQ(loaded(scratch.file()).volume(), 40);
 }
 
@@ -312,11 +313,37 @@ TEST(StateStore, AMalformedLineIsSkippedRatherThanRefused) {
     write_file(scratch.file(), "volume = 40\nthis is not a pair\nmuted = true\n");
 
     StateStore store(scratch.file());
-    // A file was read, which is what load() reports -- the bad line is not a failure to open.
-    EXPECT_TRUE(store.load());
-    // The malformed line takes the whole file's entries with it, by design: a partly-applied
-    // corrupt file is worse to reason about than an empty one.
+    size_t malformed_line = 0;
+    // Reported as Corrupt rather than as Absent, and with the line, so main() can WARN about it.
+    // Discarding a corrupted state file silently would have the volume and delay it held come back
+    // as defaults with no explanation, and the next change overwrites the evidence.
+    EXPECT_EQ(store.load(malformed_line), StateLoadResult::Corrupt);
+    EXPECT_EQ(malformed_line, 2U);
+    // The bad line takes the whole file's entries with it, by design: a partly-applied corrupt file
+    // is worse to reason about than an empty one. Not fatal either way -- this is a file we wrote.
     EXPECT_FALSE(store.volume().has_value());
+}
+
+TEST(StateStore, WritesVolumeAndMuteInOneGo) {
+    const ScratchDir scratch;
+    ASSERT_TRUE(scratch.created());
+    StateStore store(scratch.file());
+    ASSERT_TRUE(store.set_volume_and_muted(20, false));
+
+    // The pair is one decision, so it has to reach the disk in one write: a server can send volume
+    // and mute in the same command, and two writes would let a kill land between them and persist a
+    // pair that was never true. Checked by making the write impossible and asserting that *neither*
+    // half moved, which is what one write buys and two do not.
+    ASSERT_EQ(::chmod(scratch.path().c_str(), 0500), 0);
+    EXPECT_FALSE(store.set_volume_and_muted(90, true));
+    ASSERT_EQ(::chmod(scratch.path().c_str(), 0700), 0);
+
+    const StateStore reloaded = loaded(scratch.file());
+    EXPECT_EQ(reloaded.volume(), 20);
+    EXPECT_EQ(reloaded.muted(), false);
+    // And in memory too, so the short-circuit cannot later claim the failed write succeeded.
+    EXPECT_EQ(store.volume(), 20);
+    EXPECT_EQ(store.muted(), false);
 }
 
 TEST(StateStore, AnOutOfRangeNumberReadsAsAbsentRatherThanBeingClamped) {

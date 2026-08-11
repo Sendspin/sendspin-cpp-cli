@@ -48,6 +48,12 @@ enum class KeyValueStatus {
     Malformed,   ///< a line was none of those three
 };
 
+/// @brief The longest line either file may contain, as a sanity bound rather than a format rule.
+///
+/// A line past this reads as Malformed. Both files live in directories other things can write to,
+/// so a reader that grew its buffer to whatever it was handed would be the wrong shape.
+inline constexpr size_t MAX_KEY_VALUE_LINE_BYTES = 4096;
+
 /// @brief Reads `path` as a flat `key = value` file.
 ///
 /// One pair per line, split on the **first** `=`, with the key and the value each stripped of
@@ -70,11 +76,5 @@ enum class KeyValueStatus {
 /// and left alone otherwise.
 KeyValueStatus read_key_value_file(const std::string& path, std::vector<KeyValueEntry>& entries,
                                    size_t& malformed_line);
-
-/// @brief The longest line either file may contain, as a sanity bound rather than a format rule.
-///
-/// A line past this reads as Malformed. Both files live in directories other things can write
-/// to, so a reader that grew its buffer to whatever it was handed would be the wrong shape.
-inline constexpr size_t MAX_KEY_VALUE_LINE_BYTES = 4096;
 
 }  // namespace sendspin_cli

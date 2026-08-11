@@ -31,12 +31,22 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <optional>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace sendspin_cli {
+
+/// @brief What reading the state file produced.
+enum class StateLoadResult {
+    Loaded,   ///< a file was read, and whatever it held is now in the store
+    Absent,   ///< there is no file to read, which is the normal state on a first run
+    Corrupt,  ///< a file was there and a line did not parse; nothing was taken from it
+};
 
 /// @brief Where the state file goes, or empty when there is nowhere to put it.
 ///
@@ -59,6 +69,9 @@ std::string state_store_path(const std::string& state_dir);
 /// the cost of rewriting five keys: the alternative is a later run having to reason about a
 /// truncated file, on a player whose usual way of stopping is losing power.
 ///
+/// Keys that are one decision are set together in one write, for the same reason -- see
+/// set_volume_and_muted(). A setter per key would make each key atomic and the *pair* not.
+///
 /// A store with an empty path, or one whose file cannot be written, is not an error. Every
 /// setter reports the failure so a caller can say so once, and the player carries on -- having
 /// no memory is the normal state on a first run, and a player that cannot remember its volume
@@ -75,14 +88,19 @@ public:
 
     /// @brief Reads whatever is on disk, replacing anything held.
     ///
-    /// A missing, unreadable or malformed file leaves the store empty and says so through the
-    /// return value; it is never fatal. Unlike the config file, a line that does not parse is
-    /// skipped rather than refused -- nothing but this daemon writes here, so a bad line means
-    /// the file was corrupted rather than mistyped, and refusing to start over it would strand
-    /// a player on something it wrote itself.
+    /// Never fatal, whatever it finds. Unlike the config file, a file that does not parse does not
+    /// stop the run: nothing but this daemon writes here, so a bad line means the file was
+    /// corrupted rather than mistyped, and refusing to start over something we wrote ourselves
+    /// would strand a player for no gain.
     ///
-    /// @return true if a file was read at all, whatever it contained.
-    bool load();
+    /// **`Corrupt` is still worth reporting, though.** The store carries on with nothing, and the
+    /// next setter overwrites the file -- so unless the caller says something, a corrupted state
+    /// file is silently discarded and the volume and delay it held come back as defaults with no
+    /// explanation anywhere.
+    ///
+    /// @param malformed_line Set to the 1-based line at fault when `Corrupt` comes back, and left
+    /// alone otherwise.
+    StateLoadResult load(size_t& malformed_line);
 
     const std::string& path() const {
         return this->path_;
@@ -101,31 +119,42 @@ public:
 
     /// @brief This player's static delay in milliseconds.
     ///
-    /// Persisting it is a spec MUST for players: "Clients must persist `static_delay_ms` locally
-    /// across reboots and server reconnections". The library does the reading and writing itself
+    /// The spec requires it of players: "Clients must persist `static_delay_ms` locally across
+    /// reboots and server reconnections". The library does the reading and writing itself
     /// through the persistence provider; this is only where the number lands.
     std::optional<uint16_t> static_delay_ms() const;
     bool set_static_delay_ms(uint16_t delay_ms);
 
     /// @brief The gain and mute state the sink was last told to apply, 0-100.
     ///
-    /// Persisting these is the spec's RECOMMENDED rather than a MUST, and the library has no
+    /// Persisting these is the spec's RECOMMENDED rather than a requirement, and the library has no
     /// provider hook for them, so this half is the CLI's own.
+    ///
+    /// Read separately because either can be absent on its own -- an older state file may hold a
+    /// volume and no mute -- and each restores independently of the other.
     std::optional<uint8_t> volume() const;
     std::optional<bool> muted() const;
-    bool set_volume(uint8_t volume);
-    bool set_muted(bool muted);
+
+    /// @brief Records both in **one** write, because they are one decision.
+    ///
+    /// A server that sends volume and mute in the same `server/command` fires both player callbacks
+    /// inside a single `drain_events()`, so two separate writes would let a kill land between them
+    /// and leave the new volume beside the old mute -- a pair that was never true.
+    bool set_volume_and_muted(uint8_t volume, bool muted);
 
 private:
     /// The value for `key`, or nothing when it is absent.
     std::optional<std::string> get(const std::string& key) const;
 
-    /// Records `key` and rewrites the file, unless the value is already what is being set.
+    /// Records every pair and rewrites the file once, unless all of them already hold those values.
     ///
-    /// The short-circuit is not just an optimisation: `on_volume_changed()` fires on every
-    /// server volume message, including the ones that repeat the current value, and rewriting
-    /// the file for each of those is write amplification on flash for no gain.
-    bool set(const std::string& key, const std::string& value);
+    /// The short-circuit is not just an optimisation: `on_volume_changed()` fires on every server
+    /// volume message, including the ones that repeat the current value, and rewriting the file for
+    /// each of those is write amplification on flash for no gain.
+    ///
+    /// All-or-nothing in memory as well as on disk: a failed write rolls every pair back, so what
+    /// is held keeps describing what is really on the disk.
+    bool set_all(const std::vector<std::pair<std::string, std::string>>& pairs);
 
     /// Writes every held key to `path_`, atomically and at mode 0600.
     bool write() const;

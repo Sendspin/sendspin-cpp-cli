@@ -42,6 +42,7 @@ readonly PORT_DAEMON_SECOND=39283
 readonly PORT_MDNS=39284
 readonly PORT_CONTROL=39285
 readonly PORT_CONTROL_SECOND=39286
+readonly PORT_CONFIG=39287
 
 readonly MDNS_INSTANCE="sendspin-cli-smoke"
 
@@ -69,6 +70,15 @@ readonly CONTROL_DIR
 XDG_STATE_HOME="$WORK_DIR/state-home"
 export XDG_STATE_HOME
 mkdir -p "$XDG_STATE_HOME"
+
+# And the same argument for the *config*, which every check below except check_config_file has to be
+# insulated from. The search reaches $XDG_CONFIG_HOME, $HOME/.config and /etc/sendspin-cli.conf, and
+# unlike the state directory that last one cannot be pointed somewhere else -- so exporting a
+# variable is not enough and every invocation names a config instead. /dev/null always exists,
+# always parses, and always holds nothing, which is exactly the guarantee wanted. Without this, a
+# host carrying any config file has every leg silently running on options this script never wrote,
+# and a stray `port` or `no-control` key fails them in ways that read as product bugs.
+readonly NO_CONFIG=(--config /dev/null)
 
 # Every check stops what it started on the way through, but fail() exits from wherever it is
 # called -- so the pids are tracked and swept here as well, to leave no player holding a port
@@ -207,18 +217,18 @@ mdns_daemon_present() {
 
 check_version_and_help() {
     local out
-    out="$("$BIN" --version)" || fail "--version exited $?"
+    out="$("$BIN" --version "${NO_CONFIG[@]}")" || fail "--version exited $?"
     printf '%s' "$out" | grep -q 'sendspin-cli' ||
         fail "--version exited 0 but named nothing: $out"
     pass "--version exits 0 and identifies the binary"
 
-    "$BIN" --help >/dev/null || fail "--help exited $?"
+    "$BIN" --help "${NO_CONFIG[@]}" >/dev/null || fail "--help exited $?"
     pass "--help exits 0"
 }
 
 check_foreground_signal() {
     local log="$WORK_DIR/foreground.log"
-    "$BIN" --no-mdns --no-control -o null --port "$PORT_FOREGROUND" >"$log" 2>&1 &
+    "$BIN" --no-mdns --no-control -o null --port "$PORT_FOREGROUND" "${NO_CONFIG[@]}" >"$log" 2>&1 &
     local pid=$!
     STARTED_PIDS+=("$pid")
 
@@ -240,7 +250,7 @@ check_daemon_pidfile() {
 
     # -z returns in the *parent* as soon as the child is forked, so this exit status says only
     # that the fork happened. What says the daemon is really up is the pidfile and the log.
-    "$BIN" -z -P "$pidfile" -f "$log" --no-mdns --no-control -o null --port "$PORT_DAEMON" ||
+    "$BIN" -z -P "$pidfile" -f "$log" --no-mdns --no-control -o null --port "$PORT_DAEMON" "${NO_CONFIG[@]}" ||
         fail "-z exited $? instead of forking"
 
     wait_for_nonempty_file "$pidfile" "$BOOT_TIMEOUT_S" ||
@@ -259,7 +269,7 @@ check_daemon_pidfile() {
 
     # A different --port on purpose, so what refuses the second instance is provably the lock
     # on the pidfile and not the listening socket.
-    if "$BIN" -z -P "$pidfile" --no-mdns --no-control -o null --port "$PORT_DAEMON_SECOND" \
+    if "$BIN" -z -P "$pidfile" --no-mdns --no-control -o null --port "$PORT_DAEMON_SECOND" "${NO_CONFIG[@]}" \
         >/dev/null 2>"$second_err"; then
         fail "a second instance on the same -P was allowed to start"
     fi
@@ -278,7 +288,7 @@ check_daemon_pidfile() {
 
 check_default_mdns_boot() {
     local log="$WORK_DIR/mdns.log"
-    "$BIN" -o null --no-control --port "$PORT_MDNS" --mdns-name "$MDNS_INSTANCE" >"$log" 2>&1 &
+    "$BIN" -o null --no-control --port "$PORT_MDNS" --mdns-name "$MDNS_INSTANCE" "${NO_CONFIG[@]}" >"$log" 2>&1 &
     local pid=$!
     STARTED_PIDS+=("$pid")
 
@@ -331,7 +341,7 @@ check_control_socket() {
     # what makes this check platform-independent -- check_missing_runtime_dir() covers what happens
     # when it is unset. What no source will ever be is /tmp: a world-writable directory would let
     # any local account drive the player.
-    XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" --no-mdns -o null --port "$PORT_CONTROL" \
+    XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" --no-mdns -o null --port "$PORT_CONTROL" "${NO_CONFIG[@]}" \
         >"$log" 2>&1 &
     local pid=$!
     STARTED_PIDS+=("$pid")
@@ -353,7 +363,7 @@ check_control_socket() {
 
     # A `status` against a player with no server connection: it has to answer, say it is not
     # connected, and still report what it knows locally.
-    XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" status --port "$PORT_CONTROL" >"$status_out" 2>&1 ||
+    XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" status --port "$PORT_CONTROL" "${NO_CONFIG[@]}" >"$status_out" 2>&1 ||
         fail "status exited $? against a running player. Output: $(cat "$status_out")"
     grep -q '^name: ' "$status_out" || fail "status printed no name: $(cat "$status_out")"
     grep -q '^server: not connected' "$status_out" ||
@@ -369,7 +379,7 @@ check_control_socket() {
     # A transport command with no server behind it must say *that*, and not "unsupported":
     # a dropped connection empties supported_commands, so the naive answer is the wrong one.
     local pause_err="$WORK_DIR/control-pause.err"
-    if XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" pause --port "$PORT_CONTROL" \
+    if XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" pause --port "$PORT_CONTROL" "${NO_CONFIG[@]}" \
         >/dev/null 2>"$pause_err"; then
         fail "pause reported success with no server connected"
     fi
@@ -380,7 +390,7 @@ check_control_socket() {
     # A second instance on the same socket is refused, in the same words -P uses -- and refused
     # before it opens a device or a port, which is why the lock is taken where it is.
     if XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" --no-mdns -o null \
-        --port "$PORT_CONTROL_SECOND" --control-socket "$socket" \
+        --port "$PORT_CONTROL_SECOND" --control-socket "$socket" "${NO_CONFIG[@]}" \
         >/dev/null 2>"$second_err"; then
         fail "a second instance on the same control socket was allowed to start"
     fi
@@ -394,7 +404,7 @@ check_control_socket() {
     # exactly this reason, and README.md claims parity with it.
     local second_z_err="$WORK_DIR/control-second-z.err"
     if XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" -z --no-mdns -o null \
-        --port "$PORT_CONTROL_SECOND" --control-socket "$socket" \
+        --port "$PORT_CONTROL_SECOND" --control-socket "$socket" "${NO_CONFIG[@]}" \
         >/dev/null 2>"$second_z_err"; then
         fail "a second instance under -z on the same control socket was allowed to fork"
     fi
@@ -422,7 +432,7 @@ check_stale_control_socket() {
     local first="$WORK_DIR/stale-first.log"
     local second="$WORK_DIR/stale-second.log"
 
-    "$BIN" --no-mdns -o null --port "$PORT_CONTROL" --control-socket "$socket" >"$first" 2>&1 &
+    "$BIN" --no-mdns -o null --port "$PORT_CONTROL" --control-socket "$socket" "${NO_CONFIG[@]}" >"$first" 2>&1 &
     local pid=$!
     STARTED_PIDS+=("$pid")
     wait_for_socket "$socket" "$BOOT_TIMEOUT_S" ||
@@ -435,12 +445,12 @@ check_stale_control_socket() {
     wait "$pid" 2>/dev/null || true
     [ -e "$socket" ] || fail "expected a stale socket file at $socket after SIGKILL"
 
-    "$BIN" --no-mdns -o null --port "$PORT_CONTROL" --control-socket "$socket" >"$second" 2>&1 &
+    "$BIN" --no-mdns -o null --port "$PORT_CONTROL" --control-socket "$socket" "${NO_CONFIG[@]}" >"$second" 2>&1 &
     local restarted=$!
     STARTED_PIDS+=("$restarted")
     wait_for_line "$second" "control: Listening on $socket" "$BOOT_TIMEOUT_S" ||
         fail "the restart did not take over the stale socket. Log: $(cat "$second")"
-    "$BIN" status --control-socket "$socket" >/dev/null 2>&1 ||
+    "$BIN" status --control-socket "$socket" "${NO_CONFIG[@]}" >/dev/null 2>&1 ||
         fail "the taken-over socket does not answer"
     pass "a stale control socket left by SIGKILL is taken over on the next start"
 
@@ -454,7 +464,7 @@ check_no_control() {
     local log="$WORK_DIR/no-control.log"
     local socket="$CONTROL_DIR/sendspin-cli-$PORT_CONTROL.sock"
 
-    XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" --no-mdns -o null --port "$PORT_CONTROL" --no-control \
+    XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" --no-mdns -o null --port "$PORT_CONTROL" --no-control "${NO_CONFIG[@]}" \
         >"$log" 2>&1 &
     local pid=$!
     STARTED_PIDS+=("$pid")
@@ -481,7 +491,7 @@ check_no_control() {
 check_missing_runtime_dir() {
     local log="$WORK_DIR/no-runtime-dir.log"
 
-    env -u XDG_RUNTIME_DIR "$BIN" --no-mdns -o null --port "$PORT_CONTROL" >"$log" 2>&1 &
+    env -u XDG_RUNTIME_DIR "$BIN" --no-mdns -o null --port "$PORT_CONTROL" "${NO_CONFIG[@]}" >"$log" 2>&1 &
     local pid=$!
     STARTED_PIDS+=("$pid")
 
@@ -516,7 +526,7 @@ check_missing_runtime_dir() {
             /tmp/*) fail "the platform fallback put the socket under /tmp: $socket" ;;
         esac
 
-        env -u XDG_RUNTIME_DIR "$BIN" status --port "$PORT_CONTROL" >/dev/null 2>&1 ||
+        env -u XDG_RUNTIME_DIR "$BIN" status --port "$PORT_CONTROL" "${NO_CONFIG[@]}" >/dev/null 2>&1 ||
             fail "a subcommand could not reach the fallback socket at $socket"
         pass "with no \$XDG_RUNTIME_DIR the platform's own private directory is used, 0600"
     else
@@ -547,17 +557,92 @@ check_subcommand_without_a_player() {
     local err="$WORK_DIR/no-daemon.err"
     local socket="$CONTROL_DIR/absent.sock"
 
-    if "$BIN" status --control-socket "$socket" >/dev/null 2>"$err"; then
+    if "$BIN" status --control-socket "$socket" "${NO_CONFIG[@]}" >/dev/null 2>"$err"; then
         fail "status succeeded against a socket nothing is listening on"
     fi
     # 3 rather than 1: a script has to be able to tell "no player" from a bad command line.
     local status=0
-    "$BIN" status --control-socket "$socket" >/dev/null 2>&1 || status=$?
+    "$BIN" status --control-socket "$socket" "${NO_CONFIG[@]}" >/dev/null 2>&1 || status=$?
     [ "$status" -eq 3 ] || fail "expected exit 3 for a missing player, got $status"
     grep -q 'no sendspin-cli is listening' "$err" ||
         fail "the missing player was not named as such: $(cat "$err")"
     [ ! -e "$socket" ] || fail "a subcommand created $socket instead of only connecting to it"
     pass "a subcommand with no player exits 3 and starts nothing"
+}
+
+# A player configured entirely from a file, reached by a subcommand that repeats none of it.
+#
+# The whole point of the config surface, and the one part of it no unit test can reach: the
+# subcommand is a *separate process*, so it has to find the same socket by reading the same file.
+# Get the merge wrong and this exits 3 against a player that is running and healthy.
+check_config_file() {
+    local config_home="$WORK_DIR/config-home"
+    local config="$config_home/sendspin-cli/config"
+    local log="$WORK_DIR/config.log"
+    local status_out="$WORK_DIR/config-status.out"
+    local socket="$CONTROL_DIR/sendspin-cli-$PORT_CONFIG.sock"
+
+    mkdir -p "$config_home/sendspin-cli"
+    # Deliberately exercises a comment, a blank line, a long alias's key, and a boolean -- and puts
+    # the port in the file rather than on the command line, since that is what the subcommand below
+    # has to pick up to find the socket at all.
+    cat >"$config" <<EOF
+# a player configured entirely from a file
+name = smoke-from-config
+
+port = $PORT_CONFIG
+output = null
+no-mdns = true
+buffer-ms = 250
+EOF
+
+    # $XDG_CONFIG_HOME is the first layer of the search, so this exercises the real search order
+    # rather than --config. Both processes get it, because both have to reach the same file.
+    XDG_CONFIG_HOME="$config_home" XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" >"$log" 2>&1 &
+    local pid=$!
+    STARTED_PIDS+=("$pid")
+
+    wait_for_line "$log" "listening on port $PORT_CONFIG" "$BOOT_TIMEOUT_S" ||
+        fail "no ready log in ${BOOT_TIMEOUT_S}s -- the config port did not take: $(cat "$log")"
+    grep -q "Config file: $config" "$log" ||
+        fail "the startup log did not name the config file in use: $(cat "$log")"
+    grep -q 'as "smoke-from-config"' "$log" ||
+        fail "the config's name did not take: $(cat "$log")"
+    wait_for_socket "$socket" "$BOOT_TIMEOUT_S" ||
+        fail "no control socket at $socket within ${BOOT_TIMEOUT_S}s. Log: $(cat "$log")"
+
+    # Not one flag repeated: the subcommand reads the same config and derives the same socket path.
+    XDG_CONFIG_HOME="$config_home" XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" status \
+        >"$status_out" 2>&1 ||
+        fail "status exited $? against a config-configured player. Output: $(cat "$status_out")"
+    grep -q '^name: smoke-from-config' "$status_out" ||
+        fail "status reached a different player than the config describes: $(cat "$status_out")"
+    # And it must not scold the operator about flags they never typed.
+    if grep -q 'a subcommand reads only' "$status_out"; then
+        fail "status warned about daemon-only flags that came from a config file"
+    fi
+    pass "a player configured from a file comes up, and a subcommand finds it with no flags"
+
+    # A broken config is refused rather than half-applied, and says where to look.
+    local broken="$WORK_DIR/broken.conf"
+    local broken_err="$WORK_DIR/broken.err"
+    printf '# fine\nbuffer-ms = 5\n' >"$broken"
+    if "$BIN" --config "$broken" >/dev/null 2>"$broken_err"; then
+        fail "a config with an out-of-range buffer-ms started a player"
+    fi
+    # -F rather than a pattern: the path comes from mktemp -d /tmp/sscli-smoke.XXXXXX and so
+    # contains a '.', which as a regex would match more than it means to.
+    grep -qF "$broken:2:" "$broken_err" ||
+        fail "the refusal did not name the file and line: $(cat "$broken_err")"
+    grep -q 'expected 10-2000' "$broken_err" ||
+        fail "the refusal did not use --buffer-ms's own message: $(cat "$broken_err")"
+    # And --help still works with that same file in place, which is what makes it fixable.
+    "$BIN" --config "$broken" --help >/dev/null 2>&1 ||
+        fail "--help stopped working because of a broken config"
+    pass "a broken config is refused naming file and line, and --help still explains itself"
+
+    kill -TERM "$pid" 2>/dev/null || true
+    await_child "$pid" "$EXIT_TIMEOUT_S" >/dev/null 2>&1 || true
 }
 
 main() {
@@ -574,6 +659,7 @@ main() {
     check_stale_control_socket
     check_no_control
     check_missing_runtime_dir
+    check_config_file
     printf 'smoke: every check passed\n'
 }
 

@@ -215,6 +215,7 @@ add_library(sendspin-cli-core STATIC
     src/control_client.cpp
     src/control_common.cpp
     src/control_socket.cpp
+    src/config_file.cpp
     src/daemon.cpp
     src/key_value_file.cpp
     src/log.cpp
@@ -316,6 +317,7 @@ if(SENDSPIN_CLI_BUILD_TESTS)
 
     add_executable(sendspin-cli-tests
         tests/cli_test.cpp
+        tests/config_file_test.cpp
         tests/control_test.cpp
         tests/daemon_test.cpp
         tests/device_spec_test.cpp

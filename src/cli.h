@@ -73,21 +73,26 @@ inline constexpr uint32_t DEFAULT_BUFFER_MS = 100;
 inline constexpr uint32_t MIN_BUFFER_MS = 10;
 inline constexpr uint32_t MAX_BUFFER_MS = 2000;
 
-/// @brief The options a config file could also supply, for precedence tracking.
+/// @brief Every option whose provenance the parser tracks, for precedence.
 ///
-/// A config file (docs/ROADMAP.md item 8) has to layer *under* the command line, which
-/// means telling "the user typed this" apart from "this is the parser's default". Naming
-/// each settable option gives that layer something to ask about; this task only provides
-/// the question, not the answer.
+/// A config file layers *under* the command line, which means telling "this was supplied" apart
+/// from "this is the parser's default". Which of the two supplied it is deliberately **not**
+/// recorded here: no behaviour depends on it, and a second bitmask would be a second thing to keep
+/// in step. (`src/cli.cpp` does keep the config file and line of each merged value, but only so a
+/// refusal can name them -- nothing reads it to decide anything.)
+///
+/// Not every entry here can come from a config file. The settable set is this enum minus the run
+/// shape -- `-l`, `-z`, `--config` and `--help`/`--version`, which have no place in a file -- and
+/// `src/cli.cpp` holds that list beside the keys it maps.
 enum class Opt : unsigned {
-    Device,       ///< -o
+    Device,       ///< -o, --output
     ListDevices,  ///< -l
-    Name,         ///< -n
-    Server,       ///< -s
+    Name,         ///< -n, --name
+    Server,       ///< -s, --server
     Daemonize,    ///< -z
-    Pidfile,      ///< -P
-    Logfile,      ///< -f
-    LogLevel,     ///< -d
+    Pidfile,      ///< -P, --pidfile
+    Logfile,      ///< -f, --logfile
+    LogLevel,     ///< -d, --log-level
     Port,           ///< --port
     BufferMs,       ///< --buffer-ms
     NoMdns,         ///< --no-mdns
@@ -95,6 +100,7 @@ enum class Opt : unsigned {
     ControlSocket,  ///< --control-socket
     NoControl,      ///< --no-control
     StateDir,       ///< --state-dir
+    Config,         ///< --config
 };
 
 /// @brief Everything the flag surface configures.
@@ -151,6 +157,14 @@ struct Options {
     /// `StateDirectory=` hands it `/var/lib/sendspin-cli` to be pointed at.
     std::string state_dir;
 
+    /// The config file this run is using, empty when it found none.
+    ///
+    /// Both an input and the answer: `--config` puts its value here for the search to skip, and
+    /// whatever was really read is left here for the startup log to name. When `--config` was given
+    /// the two are the same file, because a named file that cannot be read is fatal rather than
+    /// falling back.
+    std::string config_path;
+
     bool show_help{false};     ///< -h, --help
     bool show_version{false};  ///< --version
 
@@ -191,17 +205,23 @@ struct Options {
     /// The spec's rule, not a preference: "Do not advertise `_sendspin._tcp` if the client
     /// plans to initiate the connection", which is what prevents both ends dialling each
     /// other. So *any* -s suppresses it, and there is deliberately no flag that forces the
-    /// two modes on together.
+    /// two modes on together. A `server` out of a config file counts as one, which is why the
+    /// config merge marks options as given rather than only setting them.
     bool advertises() const {
         return !this->no_mdns && !this->was_given(Opt::Server);
     }
 
-    /// @brief True if `opt` was named on the command line rather than left at its default.
+    /// @brief True if `opt` was supplied rather than left at its default.
+    ///
+    /// "Supplied" means the command line **or** the config file. That is the whole of what the bit
+    /// promises, and every reader wants it that way: the advertise rule above, the -s resolution
+    /// and the control socket's length check all have to fire on a configured value exactly as they
+    /// do on a typed one.
     bool was_given(Opt opt) const {
         return (this->given_ & Options::bit(opt)) != 0;
     }
 
-    /// @brief Records that `opt` was named on the command line.
+    /// @brief Records that `opt` was supplied.
     void mark_given(Opt opt) {
         this->given_ |= Options::bit(opt);
     }

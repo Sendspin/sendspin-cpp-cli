@@ -74,19 +74,25 @@ std::string state_store_path(const std::string& state_dir) {
 
 StateStore::StateStore(std::string path) : path_(std::move(path)) {}
 
-bool StateStore::load() {
+StateLoadResult StateStore::load(size_t& malformed_line) {
     this->values_.clear();
     std::vector<KeyValueEntry> entries;
-    size_t malformed_line = 0;
-    if (read_key_value_file(this->path_, entries, malformed_line) == KeyValueStatus::Unreadable) {
-        return false;
+    switch (read_key_value_file(this->path_, entries, malformed_line)) {
+        case KeyValueStatus::Unreadable:
+            return StateLoadResult::Absent;
+        case KeyValueStatus::Malformed:
+            // The reader hands back nothing on a bad line, so there is nothing to salvage here
+            // either -- a partly-applied corrupt file is worse to reason about than an empty one.
+            return StateLoadResult::Corrupt;
+        case KeyValueStatus::Ok:
+            break;
     }
     // Last wins, which std::map::operator[] gives for free over entries in file order. Repeats
     // cannot arise from write() below, but a file salvaged or edited by hand can hold them.
     for (KeyValueEntry& entry : entries) {
         this->values_[entry.key] = std::move(entry.value);
     }
-    return true;
+    return StateLoadResult::Loaded;
 }
 
 std::string StateStore::last_server() const {
@@ -97,7 +103,7 @@ bool StateStore::set_last_server(const std::string& server_id) {
     if (server_id.empty()) {
         return false;
     }
-    return this->set(KEY_LAST_SERVER, server_id);
+    return this->set_all({{KEY_LAST_SERVER, server_id}});
 }
 
 std::optional<uint32_t> StateStore::last_server_hash() const {
@@ -109,7 +115,7 @@ std::optional<uint32_t> StateStore::last_server_hash() const {
 }
 
 bool StateStore::set_last_server_hash(uint32_t hash) {
-    return this->set(KEY_LAST_SERVER_HASH, std::to_string(hash));
+    return this->set_all({{KEY_LAST_SERVER_HASH, std::to_string(hash)}});
 }
 
 std::optional<uint16_t> StateStore::static_delay_ms() const {
@@ -121,7 +127,7 @@ std::optional<uint16_t> StateStore::static_delay_ms() const {
 }
 
 bool StateStore::set_static_delay_ms(uint16_t delay_ms) {
-    return this->set(KEY_STATIC_DELAY_MS, std::to_string(delay_ms));
+    return this->set_all({{KEY_STATIC_DELAY_MS, std::to_string(delay_ms)}});
 }
 
 std::optional<uint8_t> StateStore::volume() const {
@@ -149,12 +155,9 @@ std::optional<bool> StateStore::muted() const {
     return std::nullopt;
 }
 
-bool StateStore::set_volume(uint8_t volume) {
-    return this->set(KEY_VOLUME, std::to_string(static_cast<unsigned>(volume)));
-}
-
-bool StateStore::set_muted(bool muted) {
-    return this->set(KEY_MUTED, muted ? "true" : "false");
+bool StateStore::set_volume_and_muted(uint8_t volume, bool muted) {
+    return this->set_all({{KEY_VOLUME, std::to_string(static_cast<unsigned>(volume))},
+                          {KEY_MUTED, muted ? "true" : "false"}});
 }
 
 std::optional<std::string> StateStore::get(const std::string& key) const {
@@ -165,26 +168,38 @@ std::optional<std::string> StateStore::get(const std::string& key) const {
     return found->second;
 }
 
-bool StateStore::set(const std::string& key, const std::string& value) {
-    const auto found = this->values_.find(key);
-    if (found != this->values_.end() && found->second == value) {
+bool StateStore::set_all(const std::vector<std::pair<std::string, std::string>>& pairs) {
+    // What each key held, so every one of them can be put back if the write fails. An absent key
+    // is recorded as absent rather than as empty, since the two are different to get().
+    std::vector<std::pair<std::string, std::optional<std::string>>> previous;
+    bool changed = false;
+    for (const auto& [key, value] : pairs) {
+        const auto found = this->values_.find(key);
+        previous.emplace_back(key, found == this->values_.end()
+                                       ? std::nullopt
+                                       : std::optional<std::string>(found->second));
+        changed = changed || found == this->values_.end() || found->second != value;
+    }
+    if (!changed) {
         return true;
     }
-    const bool had_previous = found != this->values_.end();
-    const std::string previous = had_previous ? found->second : std::string();
 
-    this->values_[key] = value;
+    for (const auto& [key, value] : pairs) {
+        this->values_[key] = value;
+    }
     if (this->write()) {
         return true;
     }
     // Rolled back, so what is held keeps describing what is really on disk. Without this, a store
-    // whose write failed would answer the *next* set() of the same value from the short-circuit
+    // whose write failed would answer the *next* set of the same values from the short-circuit
     // above and report success for a write that never happened -- and a full disk that later
     // cleared would never be retried.
-    if (had_previous) {
-        this->values_[key] = previous;
-    } else {
-        this->values_.erase(key);
+    for (const auto& [key, value] : previous) {
+        if (value.has_value()) {
+            this->values_[key] = *value;
+        } else {
+            this->values_.erase(key);
+        }
     }
     return false;
 }
@@ -206,10 +221,9 @@ bool StateStore::write() const {
         return false;
     }
 
-    // Only the leaf directory is created, carried over from the file this replaced: `--state-dir`,
-    // `$XDG_STATE_HOME` and `~/.local/state` are the caller's own to provide, and silently
-    // building a whole tree under a mistyped one would scatter directories rather than fail
-    // visibly.
+    // Only the leaf directory is created: `--state-dir`, `$XDG_STATE_HOME` and `~/.local/state` are
+    // the caller's own to provide, and silently building a whole tree under a mistyped one would
+    // scatter directories rather than fail visibly.
     const std::string directory = parent_directory(this->path_);
     if (!directory.empty() && mkdir(directory.c_str(), 0700) != 0 && errno != EEXIST) {
         return false;

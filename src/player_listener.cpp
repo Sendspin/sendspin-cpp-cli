@@ -131,8 +131,10 @@ void PlayerListener::persist_volume() const {
     if (this->store_ == nullptr) {
         return;
     }
-    this->store_->set_volume(this->applied_volume_);
-    this->store_->set_muted(this->applied_muted_);
+    // One call, so the pair reaches the disk in one write. A server can send volume and mute in the
+    // same command, which fires both callbacks above inside one drain -- two writes would let a kill
+    // land between them and persist a pair that was never true.
+    this->store_->set_volume_and_muted(this->applied_volume_, this->applied_muted_);
 }
 
 }  // namespace sendspin_cli

@@ -101,9 +101,9 @@ struct HostNetworkProvider : sendspin::SendspinNetworkProvider {
 /// `ConnectionManager::fnv1_hash()`, which is not installed, so this stores the number it is
 /// handed and hands it straight back -- the library uses it to prefer the last-played server among
 /// *inbound* connections. The static delay it reads at `start_server()` and writes on every
-/// change, which is what closes the spec MUST that clients persist `static_delay_ms` across
-/// reboots and server reconnections. Applying that delay to the audio path is a separate want, and
-/// is docs/ROADMAP.md item 13's.
+/// change, which is what closes the spec's requirement that clients persist `static_delay_ms`
+/// across reboots and server reconnections. Applying that delay to the audio path is a separate
+/// want, and is docs/ROADMAP.md item 13's.
 ///
 /// Volume and mute are deliberately absent: the provider has no hook for either, so that half is
 /// PlayerListener's.
@@ -591,6 +591,22 @@ int main(int argc, char* argv[]) {
     // its background threads, so changing it on a running player would be a data race.
     sendspin::SendspinClient::set_log_level(opts.log_level);
 
+    // Which file the options came from, said even when there is nothing to say: it is the first
+    // thing any support question needs, and "no config file" is as useful an answer as a path.
+    //
+    // **Above everything a configured value can kill the run with** -- the pidfile, the control
+    // socket, the output device -- because those are exactly the failures where knowing which file
+    // supplied the offending value is the whole diagnosis. A config with `output = hw:9,0` dies in
+    // make_audio_sink() naming only the device, so this line has to already be in the log. It is
+    // still below log_to_file(), so under -z it lands in the daemon's own log rather than on a
+    // terminal that is about to be detached.
+    if (opts.config_path.empty()) {
+        cli_log(LogLevel::INFO, "No config file found; every option came from the command line "
+                                "or a built-in default");
+    } else {
+        cli_log(LogLevel::INFO, "Config file: %s", opts.config_path.c_str());
+    }
+
     // Returns only in the child. Everything cheap and fallible has been hoisted above it; from
     // here a failure reports into the log, which README.md says out loud -- so from here the
     // reports go through log_fatal(), which puts them in the log's own format.
@@ -667,8 +683,25 @@ int main(int argc, char* argv[]) {
                  "Nothing set --state-dir, $XDG_STATE_HOME or $HOME, so this run remembers "
                  "nothing across restarts");
     } else {
-        state_store.load();
-        log_line(LogLevel::DEBUG, LOG_TAG, "State file: %s", state_store.path().c_str());
+        size_t malformed_line = 0;
+        switch (state_store.load(malformed_line)) {
+            case StateLoadResult::Loaded:
+            case StateLoadResult::Absent:
+                // Neither is worth a word beyond the path: a first run has no file, and a good one
+                // needs no remark.
+                log_line(LogLevel::DEBUG, LOG_TAG, "State file: %s", state_store.path().c_str());
+                break;
+            case StateLoadResult::Corrupt:
+                // Not fatal -- this is a file we wrote ourselves, so refusing to start over it
+                // would strand the player. Said at WARN anyway, because the alternative is a
+                // volume and a static delay silently reverting to defaults, and the next change
+                // overwriting the evidence that anything was ever wrong.
+                log_line(LogLevel::WARN, LOG_TAG,
+                         "%s:%zu is not readable state -- starting with nothing remembered, and "
+                         "overwriting the file on the next change",
+                         state_store.path().c_str(), malformed_line);
+                break;
+        }
     }
     CliPersistenceProvider persistence(state_store);
 

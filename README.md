@@ -670,12 +670,15 @@ which is what a foreground run whose terminal has just closed should do.
 ### Flags, and what they refuse
 
 The flags follow squeezelite's: `-o` output device, `-l` list devices, `-n` name,
-`-s` server, `-z` daemonize, `-P` pidfile, `-d`/`-f` logging. Six are long-only
+`-s` server, `-z` daemonize, `-P` pidfile, `-d`/`-f` logging. All but `-l` and
+`-z` also have a long spelling — `--output --name --server --pidfile --logfile
+--log-level` — so that every config key is a flag name. Eight more are long-only
 because they are not squeezelite's: `--port`, the port this player serves on,
-`--buffer-ms`, the two mDNS flags `--no-mdns` and `--mdns-name`, and the two
-control-socket flags `--control-socket` and `--no-control`. Run `--help` for the
-current state of each — a few still point at
-[`docs/ROADMAP.md`](docs/ROADMAP.md) for behaviour that is not built yet.
+`--buffer-ms`, the two mDNS flags `--no-mdns` and `--mdns-name`, the two
+control-socket flags `--control-socket` and `--no-control`, and `--config` and
+`--state-dir` for the two files above. Run `--help` for the current state of each
+— a few still point at [`docs/ROADMAP.md`](docs/ROADMAP.md) for behaviour that is
+not built yet.
 
 A **subcommand comes first**, before any flag: `sendspin-cli vol 50 --port 9000`,
 not `sendspin-cli --port 9000 vol 50`. That is not getopt permutation showing
@@ -713,6 +716,112 @@ or a full `ws://`/`wss://` URL, or `mdns:[<name>]` to discover one. An IPv6 lite
 must be bracketed (`[::1]:8927`), since an unbracketed one cannot be told from a
 host with a port.
 
+### The config file, and what the player remembers
+
+Two files, and the split is deliberate: one you write and the daemon only ever
+reads, one the daemon writes and you never need to touch.
+
+**The config file** holds anything you would otherwise type. Keys are the long
+flag names without their dashes, one per line, and a value is exactly the string
+the flag would have been given:
+
+```
+# /etc/sendspin-cli.conf, or ~/.config/sendspin-cli/config
+name = kitchen
+output = hw:1,0
+buffer-ms = 250
+server = mdns:Living Room
+no-mdns = true
+```
+
+That is why `-o -n -s -P -f -d` grew the long aliases `--output --name --server
+--pidfile --logfile --log-level`: one vocabulary, so `--help` is the config
+reference rather than a second document to keep in step. `#` starts a comment
+only at the **start** of a line — a name or a path is free to contain one, and a
+reader that ate everything after a `#` would silently truncate it. Booleans take
+`true`/`yes`/`on`/`1` or `false`/`no`/`off`/`0`. Where a key appears twice, the
+last one wins.
+
+The first of these that exists is read **whole**, and nothing below it is merged
+over the top:
+
+1. `--config <path>` — and this one is **fatal if it cannot be read**, because
+   you named it. Falling back would start a player on options nobody chose.
+2. `$XDG_CONFIG_HOME/sendspin-cli/config`
+3. `$HOME/.config/sendspin-cli/config`
+4. `/etc/sendspin-cli.conf`
+
+Finding none is silent and normal. There is deliberately no `--no-config`: the
+asymmetry above already gives you `--config /dev/null`. A half-overridden config
+assembled from several layers is far harder to reason about than one file you can
+read top to bottom, which is also why there is no `$XDG_CONFIG_DIRS` traversal.
+
+**Precedence is command line > config file > built-in default**, per option
+rather than per file — `-n bathroom` on a line whose config also sets
+`buffer-ms` overrides only the name. Everything can come from a file except `-l`,
+`-z`, `--config` itself, and `--help`/`--version`, which have no meaning in one.
+Run shape stays on the command line: excluding it is
+reversible, and debugging a `daemonize` that came out of a file under systemd is
+not. A config that names one is refused as an unknown key.
+
+A configured value is validated by exactly the code that validates a typed one,
+with the same message and the line to go and fix:
+
+```console
+$ sendspin-cli
+error: /etc/sendspin-cli.conf:4: invalid --buffer-ms '5' -- expected 10-2000
+```
+
+An unknown key or a line that is not `key = value` is refused the same way. A
+silently ignored typo is the failure mode this whole surface exists to avoid — so
+is a config that is quietly skipped, which is why a file that exists and does not
+parse stops the run rather than falling through to `/etc`. `--help`, `--version`
+and `-l` short-circuit above all of it: a broken config must not stop `--help`
+from telling you how to fix it. Startup logs one line naming the file in use, or
+saying there is none.
+
+`server` from a config file behaves exactly as `-s` does, and that includes
+suppressing the mDNS advertisement — the spec forbids advertising
+`_sendspin._tcp` while this end is the one dialling out.
+
+**The state file** is the other half: what the daemon remembers for itself,
+across restarts.
+
+```
+# Written by sendspin-cli. Edits are overwritten.
+last-server = 7f3a…
+last-server-hash = 3387423128
+static-delay-ms = 375
+volume = 42
+muted = true
+```
+
+`static-delay-ms` is there because the spec requires it — *"Clients must persist
+`static_delay_ms` locally across reboots and server reconnections"* — and
+`volume`/`muted` because the spec marks those RECOMMENDED. `last-server` is the
+server id mDNS discovery uses to break a tie between candidates;
+`last-server-hash` is the opaque `uint32_t` the library asks us to keep so *it* can
+prefer the last-played server among inbound connections. They mean different things
+and are deliberately not reconciled with each other.
+
+**A remembered `static-delay-ms` is reported, not yet applied.** The player hands
+the figure back to the server so the two agree across a restart, which is the part
+the spec asks for; actually shifting playout by it is
+[`docs/ROADMAP.md`](docs/ROADMAP.md) item 13's. Until then a delay you set is
+remembered faithfully and does nothing you can hear.
+
+It lives at `$XDG_STATE_HOME/sendspin-cli/state`, then
+`$HOME/.local/state/sendspin-cli/state`, and `--state-dir <dir>` overrides both —
+a systemd **system** unit has neither variable and gets `/var/lib/sendspin-cli`
+from `StateDirectory=`. With none of the three the player still runs and simply
+remembers nothing. Writes go through a temporary, an `fsync` and a `rename` at
+mode `0600`, so a player that loses power mid-write leaves either the old file or
+the new one and never half of either.
+
+Two players on one host share this file unless you give each its own
+`--state-dir`. They already need different `--port`s; give them different state
+directories too, or the second one to save its volume overwrites the first's.
+
 ## Tests
 
 ```bash
@@ -740,8 +849,10 @@ and exits `0` on `SIGTERM` — plus the whole of the control socket, which needs
 processes by definition: that it appears at the default path as `0600`, that
 `status` round-trips, that `--no-control` binds nothing, that a stale socket is
 taken over after a `SIGKILL`, that it is gone after `SIGTERM`, and that a second
-instance on the same socket is refused. CI runs it on every platform leg; run it
-yourself against any build.
+instance on the same socket is refused. The config file is in here for the same
+reason: a player configured entirely from a file has to be findable by a
+subcommand that repeats none of it, and that is two processes agreeing on one
+path. CI runs it on every platform leg; run it yourself against any build.
 
 ## CI
 
