@@ -740,13 +740,35 @@ caller of `set_volume()`, so the only thing that knows what the sink was told â€
 distinguishable from one that never spoke. `DEFAULT_SINK_VOLUME` replaces the bare `{100}` the
 three sinks each spelled separately, with the disagreement written down beside it.
 
-**The underlying incoherence is left for item 13**, which already owns advertised state that does
-not match reality: we tell the server 0 while playing at full, so the first volume command a
-server sends is heard as a *cut* from full rather than a rise from silence. Fixing it means
-either seeding the role from the sink at startup (`update_volume(DEFAULT_SINK_VOLUME)`, which
-changes what we advertise) or seeding the sink from the role (which makes a fresh player silent
-until a server speaks). Both are behaviour changes wider than a control channel, and neither is
-this item's to make.
+**And the same disagreement was a spec violation on the wire, so it is fixed here too.** Reading
+`Sendspin/spec` settled which direction it had to go, and it is not a matter of taste:
+
+- `client/state`'s player `volume` **MUST** be included when a player advertises the `volume`
+  command, which this one does.
+- *"Group volume is the average of the volumes of players in the group that support the `volume`
+  command"* -- so group volume is **derived from us**, and a player reporting a figure it is not
+  applying corrupts the group reading for every controller in the group. The `group volume: 0` that
+  confused this whole field test was our own misreport averaged back to us, not a server oddity.
+- Setting group volume works off *"delta = requested_volume - current_group_volume"*, so that wrong
+  figure then mis-applies every later group volume change by exactly the error: a player claiming 0
+  while playing at full hears a request for 30 as a cut from full rather than a rise from silence.
+- *"A server MUST NOT assume these values are unchanged after a reconnect"* -- the player is the
+  authority and the server depends on being told.
+
+So `main.cpp` reports the sink's real gain with `player.update_volume(DEFAULT_SINK_VOLUME)` before
+anything can connect. `update_volume()` rather than reaching for the sink because it does not
+invoke `on_volume_changed()`, which fires only for server-initiated changes -- so `status` still
+tells a default apart from a volume a server chose. Confirmed against the live server: it now
+reports `group volume: 100` for a single player at 100, where it reported 0 before, and a
+subsequent `vol 30` lands at a real 30.
+
+**Two things still left for item 13**, both now known to be spec deviations rather than open
+questions. Persisting `volume` and `muted` across restarts is the spec's RECOMMENDED and needs a
+store, which item 8 owns. And the software taper is `(volume/100)^2` where the spec says
+*"`amplitude = (volume / 100)^1.5`"* -- about 3 dB quiet at volume 50 and 6 dB at 25, inherited
+from upstream's `PortAudioSink::apply_volume_()` and shared by both sinks through
+`src/pcm_volume.cpp`. The spec also says volume changes SHOULD be ramped to avoid clicks, and
+nothing here ramps.
 
 **Every command works, and finding that out took listening rather than reading.** An earlier pass
 concluded that `seek-rel`, `repeat` and `shuffle` were advertised and unimplemented at the server's

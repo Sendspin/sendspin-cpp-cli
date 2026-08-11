@@ -433,10 +433,16 @@ server does not re-report, the estimate drifts by however far you jumped. Paused
 it is the server's own snapshot and carries no marker.
 
 `player volume` is the gain **this box's output** is applying, and it says
-`(default; no server has set it)` until a server sends a volume command — because
-until one does, the sink runs at full while the library's own stored volume reads
-0. Those disagree, and the qualifier is how you tell "nobody has set this" from a
-server that deliberately chose full output.
+`(default; no server has set it)` until a server sends a volume command. The
+qualifier is how you tell "nobody has set this" from a server that deliberately
+chose full output.
+
+That figure is also what the server is told, from the first message — which the
+spec requires and which matters more than it looks: **group volume is the average
+of the players' volumes**, and setting group volume applies a *delta* against it.
+A player that reported a volume it was not applying would skew the group reading
+for every controller, and make the next group volume change land wrong by exactly
+that error.
 
 Two `status` lines are worth reading together. `state` is the **group's** transport
 state, from the metadata `playback_speed`, and reads `unknown` rather than guessing

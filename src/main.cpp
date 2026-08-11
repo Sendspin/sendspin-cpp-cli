@@ -638,6 +638,26 @@ int main(int argc, char* argv[]) {
     player_config.audio_formats = advertised_formats(*sink);
     sendspin::PlayerRole& player = client.add_player(std::move(player_config));
     player.set_static_delay_adjustable(true);
+    // Report the gain the sink is really applying, before anything can connect.
+    //
+    // Not cosmetic, and not a preference -- three spec rules make it necessary. `client/state`'s
+    // `volume` MUST be included when a player advertises the `volume` command, which this one
+    // does. Group volume is *derived* from us: "Group volume is the average of the volumes of
+    // players in the group that support the `volume` command", so a player reporting a figure it
+    // is not applying corrupts the group reading for every controller in the group. And setting
+    // group volume works off "delta = requested_volume - current_group_volume", so that wrong
+    // figure then mis-applies every later group volume change by exactly the error -- a player
+    // claiming 0 while playing at full hears a request for 30 as a cut from full, not a rise.
+    //
+    // The library's own default is 0 while every AudioSink starts at DEFAULT_SINK_VOLUME, so
+    // without this the two disagree from the first message. update_volume() is the right call
+    // rather than reaching for the sink: it does not invoke on_volume_changed(), which fires only
+    // for server-initiated changes, so `status` still distinguishes this from a volume a server
+    // chose.
+    //
+    // Persisting volume and mute across restarts is the spec's RECOMMENDED and is deliberately
+    // not done here -- that needs a store, which docs/ROADMAP.md item 8 owns.
+    player.update_volume(DEFAULT_SINK_VOLUME);
     sendspin::MetadataRole& metadata = client.add_metadata();
     // Added unconditionally, so `client/hello` always carries `controller@v1` -- including under
     // --no-control, and including on a host with no $XDG_RUNTIME_DIR to put a socket in. That is
