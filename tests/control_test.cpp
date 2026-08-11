@@ -902,6 +902,13 @@ TEST(LineAssembler, BytesAfterTheFirstNewlineAreDropped) {
 // The socket path
 // ==============================================================================
 
+/// A runtime-directory result naming `path`, for the absent-reason tests.
+ControlRuntimeDir runtime_dir_of(const std::string& path) {
+    ControlRuntimeDir runtime;
+    runtime.path = path;
+    return runtime;
+}
+
 TEST(ControlSocketPath, TheDefaultCarriesThePort) {
     // The port is what lets two players share a host, and what lets a subcommand derive the
     // same path from the same --port.
@@ -919,7 +926,7 @@ TEST(ControlSocketPath, NoRuntimeDirectoryYieldsNoPathAndAReason) {
     const std::string path = control_socket_path("", 8928);
     EXPECT_TRUE(path.empty());
 
-    const std::string reason = control_socket_absent_reason("", path);
+    const std::string reason = control_socket_absent_reason(runtime_dir_of(""), path);
     EXPECT_FALSE(reason.empty());
     EXPECT_NE(reason.find("XDG_RUNTIME_DIR"), std::string::npos) << reason;
     // Names the fix, since the player carries on without a control channel.
@@ -929,7 +936,7 @@ TEST(ControlSocketPath, NoRuntimeDirectoryYieldsNoPathAndAReason) {
 
 TEST(ControlSocketPath, AUsableDefaultHasNoAbsentReason) {
     const std::string path = control_socket_path("/run/user/1000", 8928);
-    EXPECT_TRUE(control_socket_absent_reason("/run/user/1000", path).empty());
+    EXPECT_TRUE(control_socket_absent_reason(runtime_dir_of("/run/user/1000"), path).empty());
 }
 
 TEST(ControlSocketPath, AnOverLongPathDoesNotFit) {
@@ -1074,10 +1081,21 @@ TEST(PlatformRuntimeDir, WhateverItReturnsIsPrivate) {
     // Empty where there is no platform convention to fall back on -- which is everywhere but
     // macOS -- and a verified directory where there is. Either way it must never hand back a path
     // that would fail the check the code applies before using it.
-    const std::string platform = control_platform_runtime_dir();
+    std::string rejection;
+    const std::string platform = control_platform_runtime_dir(rejection);
+#ifdef __APPLE__
+    // Asserted rather than tolerated: this is the platform the fallback exists for, and an empty
+    // answer here is the acceptance criterion failing, not a configuration to skip past.
+    ASSERT_FALSE(platform.empty())
+        << "macOS must supply a per-user runtime directory; rejected because: " << rejection;
+#else
+    // And asserted the other way, which locks in "no third source": a future accidental fallback
+    // on a platform with no convention for one would fail here rather than pass unnoticed.
+    EXPECT_TRUE(platform.empty()) << platform;
     if (platform.empty()) {
         return;
     }
+#endif
 
     std::string reason;
     EXPECT_TRUE(is_private_runtime_dir(platform, reason)) << platform << ": " << reason;
@@ -1091,6 +1109,34 @@ TEST(PlatformRuntimeDir, WhateverItReturnsIsPrivate) {
         << control_socket_path(platform, 8928);
 }
 
+TEST(PlatformRuntimeDir, ARefusedCandidateExplainsItself) {
+    // The whole point of carrying the rejection out: an empty answer *with* a candidate behind it
+    // has to say what was wrong with it, or the operator has nothing to act on. Where the platform
+    // has no candidate at all, nothing was tried, so there is nothing to explain.
+    std::string rejection;
+    const std::string platform = control_platform_runtime_dir(rejection);
+    if (platform.empty() && !rejection.empty()) {
+        // A real refusal: it must name the directory and the problem.
+        EXPECT_NE(rejection.find('/'), std::string::npos) << rejection;
+    }
+    if (!platform.empty()) {
+        EXPECT_TRUE(rejection.empty()) << "accepted a directory but also explained a refusal";
+    }
+}
+
+TEST(ControlSocketAbsentReason, ARefusedPlatformDirectoryIsNamedRatherThanGeneralised) {
+    // "not set" and "found it, and it is group-writable" are different problems with different
+    // fixes, so the reason has to distinguish them rather than collapsing both into the first.
+    ControlRuntimeDir refused;
+    refused.rejection = "/var/folders/xx/T is writable by its group or by everyone";
+
+    const std::string reason = control_socket_absent_reason(refused, "");
+    EXPECT_NE(reason.find("writable by its group"), std::string::npos) << reason;
+    EXPECT_NE(reason.find("--control-socket"), std::string::npos) << reason;
+    // And it must not claim the variable is unset, which is a different and wrong diagnosis.
+    EXPECT_EQ(reason.find("is not set"), std::string::npos) << reason;
+}
+
 TEST(ControlSocketPath, AnOverLongDefaultIsAnAbsentReasonRatherThanATruncation) {
     // A pathologically deep $XDG_RUNTIME_DIR is the same class of problem as an absent one: the
     // player carries on without a control channel and says which flag fixes it.
@@ -1098,7 +1144,7 @@ TEST(ControlSocketPath, AnOverLongDefaultIsAnAbsentReasonRatherThanATruncation) 
     const std::string path = control_socket_path(deep, 8928);
     EXPECT_FALSE(path.empty());
 
-    const std::string reason = control_socket_absent_reason(deep, path);
+    const std::string reason = control_socket_absent_reason(runtime_dir_of(deep), path);
     EXPECT_FALSE(reason.empty());
     EXPECT_NE(reason.find("--control-socket"), std::string::npos) << reason;
 }

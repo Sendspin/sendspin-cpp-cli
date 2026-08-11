@@ -820,7 +820,14 @@ TEST(ParseOptions, NoRuntimeDirectoryFallsBackToThePlatformDirectory) {
     Parse parse({});
     ASSERT_TRUE(parse.ok()) << parse.diagnostics();
 
-    const std::string platform = control_platform_runtime_dir();
+    std::string rejection;
+    const std::string platform = control_platform_runtime_dir(rejection);
+#ifdef __APPLE__
+    // The acceptance criterion itself, asserted rather than derived from the branch taken: on
+    // macOS the default path must resolve. Without this, a confstr() that regressed to empty
+    // would quietly take the other branch and still pass.
+    ASSERT_FALSE(platform.empty()) << "rejected because: " << rejection;
+#endif
     if (platform.empty()) {
         // Non-fatal on purpose: a player with no control channel is still a player.
         EXPECT_TRUE(parse.options().control_socket.empty());
@@ -856,6 +863,36 @@ TEST(ParseOptions, AnEmptyRuntimeDirectoryCountsAsUnset) {
     Parse parse({});
     ASSERT_TRUE(parse.ok()) << parse.diagnostics();
     EXPECT_EQ(parse.options().control_socket, unset_path);
+}
+
+TEST(ParseOptions, ANonPrivateRuntimeDirectoryIsUsedButWarnedAbout) {
+    // $XDG_RUNTIME_DIR is honoured even when it is not private, because it is the user's own
+    // declaration and refusing it would break setups this code cannot anticipate -- but the
+    // socket's 0600 is not the whole story if anyone can write the directory holding it, so it is
+    // said out loud. /tmp is the case that needs no setup to arrange.
+    //
+    // Not a contradiction of the never-/tmp rule: that rule is about what this code reaches for
+    // on its own, not about a path the user pointed it at.
+    ScopedEnv runtime_dir("XDG_RUNTIME_DIR", "/tmp");
+    Parse parse({});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_EQ(parse.options().control_socket, "/tmp/sendspin-cli-8928.sock");
+    EXPECT_NE(parse.diagnostics().find("warning:"), std::string::npos) << parse.diagnostics();
+    EXPECT_NE(parse.diagnostics().find("not private to this user"), std::string::npos)
+        << parse.diagnostics();
+}
+
+TEST(ParseOptions, ASubcommandDoesNotWarnAboutTheDirectoryItOnlyConnectsTo) {
+    // The daemon creates the socket, so it is the one that owes a warning about where it goes. A
+    // subcommand merely connects, and repeating it on every `status` would be noise about a
+    // decision made by another process.
+    ScopedEnv runtime_dir("XDG_RUNTIME_DIR", "/tmp");
+    Parse parse({"status"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_EQ(parse.diagnostics().find("not private to this user"), std::string::npos)
+        << parse.diagnostics();
 }
 
 TEST(ParseOptions, AnExplicitRuntimeDirectoryWinsOverThePlatformFallback) {

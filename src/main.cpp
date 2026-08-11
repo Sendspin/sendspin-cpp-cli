@@ -416,9 +416,9 @@ bool start_control_socket(ControlSocket& socket, const Options& opts) {
         return true;
     }
     if (opts.control_socket.empty()) {
-        // The missing-$XDG_RUNTIME_DIR case, and the deliberate absence of a /tmp fallback: a
-        // world-writable directory would let any local account pause playback and switch this
-        // endpoint out of its group.
+        // No source produced a usable directory -- neither $XDG_RUNTIME_DIR nor, where the
+        // platform has one, its own. Never a /tmp fallback: a world-writable directory would let
+        // any local account pause playback and switch this endpoint out of its group.
         log_line(LogLevel::WARN, LOG_TAG_CONTROL, "No control socket: %s",
                  opts.control_absent_reason.c_str());
         return true;

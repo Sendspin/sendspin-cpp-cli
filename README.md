@@ -497,11 +497,14 @@ For a system unit, pair systemd's own `RuntimeDirectory=` with `--control-socket
 `--no-control` turns the channel off and silences the warning if the player is only
 ever driven by its server.
 
-One caveat on the macOS path: the OS prunes `/var/folders` on a schedule, so a
+Two caveats on the macOS path. The OS prunes `/var/folders` on a schedule, so a
 very long-lived player could in principle have its socket unlinked from under it,
 which looks like subcommands reporting no daemon until it restarts.
 `$XDG_RUNTIME_DIR` on Linux is tmpfs cleared at logout, so it is the same class of
-impermanence — `--control-socket` is the answer to both.
+impermanence. And the directory is **per-user**, which is the point — so a player
+run as a launchd *system* daemon puts its socket in `root`'s, where your own
+`sendspin-cli status` will not find it. Both want an explicit `--control-socket`,
+exactly as a systemd system unit does.
 
 **A second instance is refused**, in the same words `-P` uses, and refused before
 it opens the sound card or its port:

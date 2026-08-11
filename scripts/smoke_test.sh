@@ -319,9 +319,10 @@ check_control_socket() {
     local status_out="$WORK_DIR/control-status.out"
     local second_err="$WORK_DIR/control-second.err"
 
-    # $XDG_RUNTIME_DIR is what the default path is built from, and it is deliberately the only
-    # thing that is: there is no /tmp fallback, since a world-writable directory would let any
-    # local account drive the player.
+    # $XDG_RUNTIME_DIR is the first source the default path is built from, and setting it here is
+    # what makes this check platform-independent -- check_missing_runtime_dir() covers what happens
+    # when it is unset. What no source will ever be is /tmp: a world-writable directory would let
+    # any local account drive the player.
     XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" --no-mdns -o null --port "$PORT_CONTROL" \
         >"$log" 2>&1 &
     local pid=$!

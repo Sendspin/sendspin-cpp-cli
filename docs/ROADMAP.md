@@ -696,7 +696,8 @@ not-connected refusal for each transport verb; `--no-control`; the contradiction
 a port; a `SIGKILL`ed daemon's stale socket taken over on restart; the socket gone after
 `SIGTERM`; the `0600` mode read off the inode; the connection cap and the 5 s idle deadline;
 the macOS fallback resolving with `$XDG_RUNTIME_DIR` unset and binding 0600
-under `/var/folders`; and, through a raw socket, an empty line, an unknown command, an out-of-range argument, an
+under `/var/folders`; and, through a raw socket, an empty line, an unknown command, an
+out-of-range argument, an
 embedded NUL, an over-long line, two lines in one write, CRLF, extra whitespace and a request
 with no trailing newline. Clean under `-fsanitize=thread` while every subcommand was driven.
 `ctest` and `scripts/smoke_test.sh` both pass on macOS, in the default and the

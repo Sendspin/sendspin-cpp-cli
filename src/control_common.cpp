@@ -729,7 +729,7 @@ bool is_private_runtime_dir(const std::string& path, std::string& reason) {
     return true;
 }
 
-std::string control_platform_runtime_dir() {
+std::string control_platform_runtime_dir(std::string& rejection) {
 #ifdef __APPLE__
     // confstr() rather than getenv("TMPDIR"): the two normally name the same per-user directory,
     // but only this one cannot be pointed somewhere else by the environment.
@@ -749,27 +749,48 @@ std::string control_platform_runtime_dir() {
         path.pop_back();
     }
 
-    std::string reason;
-    if (path.empty() || !is_private_runtime_dir(path, reason)) {
+    if (path.empty()) {
+        return {};
+    }
+    // Kept rather than discarded: is_private_runtime_dir() knows exactly what was wrong -- a
+    // group-writable directory, or one macOS has pruned away -- and "could not be used" on its
+    // own leaves an operator with nothing to act on.
+    if (!is_private_runtime_dir(path, rejection)) {
         return {};
     }
     return path;
 #else
     // Elsewhere $XDG_RUNTIME_DIR is the convention, and its absence is a real absence rather
-    // than a platform difference to paper over.
+    // than a platform difference to paper over. Nothing was tried, so nothing was rejected.
+    static_cast<void>(rejection);
     return {};
 #endif
 }
 
-std::string control_runtime_dir() {
+ControlRuntimeDir control_runtime_dir() {
+    ControlRuntimeDir result;
+
     const char* value = std::getenv("XDG_RUNTIME_DIR");
-    // Trusted rather than verified: this is the user saying where their runtime files go, and
-    // second-guessing it would refuse legitimate setups. The platform fallback below is the one
-    // this code chose, so it is the one this code checks.
     if (value != nullptr && value[0] != '\0') {
-        return value;
+        // Honoured rather than verified: this is the user saying where their runtime files go,
+        // and refusing it would break legitimate setups this code cannot anticipate. But it is
+        // still *checked*, because the socket's own 0600 is not the whole story if the directory
+        // holding it is group-writable -- a systemd unit with RuntimeDirectoryMode=0775 gets
+        // exactly that. Used and said out loud, rather than used silently or refused outright.
+        result.path = value;
+        std::string reason;
+        if (!is_private_runtime_dir(result.path, reason)) {
+            result.warning =
+                "the control socket's directory is not private to this user (" + reason +
+                "). The socket itself is 0600, but on macOS and the BSDs socket permissions are "
+                "not enforced on connect(), so the directory is what keeps other local accounts "
+                "out. Point --control-socket somewhere private, or fix the directory's mode";
+        }
+        return result;
     }
-    return control_platform_runtime_dir();
+
+    result.path = control_platform_runtime_dir(result.rejection);
+    return result;
 }
 
 std::string control_socket_path(const std::string& runtime_dir, uint16_t port) {
@@ -780,8 +801,15 @@ std::string control_socket_path(const std::string& runtime_dir, uint16_t port) {
            CONTROL_SOCKET_SUFFIX;
 }
 
-std::string control_socket_absent_reason(const std::string& runtime_dir, const std::string& path) {
-    if (runtime_dir.empty()) {
+std::string control_socket_absent_reason(const ControlRuntimeDir& runtime, const std::string& path) {
+    if (runtime.path.empty()) {
+        // A candidate that was found and refused says so, since that is actionable where "not
+        // set" is not: the directory exists and something about it is wrong.
+        if (!runtime.rejection.empty()) {
+            return "this host's own per-user directory cannot hold a control socket: " +
+                   runtime.rejection +
+                   ". Give --control-socket <path> to choose one, or --no-control to stop asking";
+        }
         // Names both sources where there are two, so the reader is not sent to check an
         // environment variable their platform never sets in the first place.
 #ifdef __APPLE__
@@ -797,8 +825,8 @@ std::string control_socket_absent_reason(const std::string& runtime_dir, const s
     if (!control_socket_path_fits(path)) {
         return "the default control socket path '" + path + "' is longer than the " +
                std::to_string(control_socket_path_limit()) +
-               " bytes a Unix socket address holds, because $XDG_RUNTIME_DIR is that deep. "
-               "Give --control-socket <a shorter path>, or --no-control";
+               " bytes a Unix socket address holds, because the directory it goes in is that "
+               "deep. Give --control-socket <a shorter path>, or --no-control";
     }
     return {};
 }

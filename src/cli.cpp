@@ -499,14 +499,20 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
                      std::to_string(control_socket_path_limit() - 1) + " on this platform");
             }
         } else {
-            const std::string runtime_dir = control_runtime_dir();
-            out.control_socket = control_socket_path(runtime_dir, out.port);
-            out.control_absent_reason =
-                control_socket_absent_reason(runtime_dir, out.control_socket);
+            const ControlRuntimeDir runtime = control_runtime_dir();
+            out.control_socket = control_socket_path(runtime.path, out.port);
+            out.control_absent_reason = control_socket_absent_reason(runtime, out.control_socket);
             if (!out.control_absent_reason.empty()) {
                 // Non-fatal, and deliberately not a fallback to a shared directory: the player
                 // is still a player without a control channel. main() warns once and carries on.
                 out.control_socket.clear();
+            }
+            // A directory that is being *used* despite failing the privacy check. Said here
+            // rather than in main(), because it is a property of the flags and the environment
+            // rather than of the run -- and only for a daemon, which is the process that creates
+            // the socket and so the one making the decision.
+            if (!runtime.warning.empty() && out.subcommand.empty()) {
+                std::fprintf(err, "warning: %s\n", runtime.warning.c_str());
             }
         }
     }
@@ -666,15 +672,23 @@ void print_usage(std::FILE* out, const char* prog) {
     std::fprintf(out, "  --mdns-name <name>\n");
     std::fprintf(out, "                Instance name to advertise (default: -n). Unused with -s\n");
     std::fprintf(out, "  --control-socket <path>\n");
-    std::fprintf(out, "                Unix socket the subcommands above talk to (default:\n");
-    std::fprintf(out, "                $XDG_RUNTIME_DIR/%s<port>%s, mode 0600).\n",
-                 CONTROL_SOCKET_PREFIX, CONTROL_SOCKET_SUFFIX);
-    std::fprintf(out, "                The <port> is --port, so two players on one host each\n");
-    std::fprintf(out, "                get their own -- and a subcommand needs the same --port\n");
-    std::fprintf(out, "                or this flag. With no $XDG_RUNTIME_DIR (a systemd system\n");
-    std::fprintf(out, "                unit has none) there is no default and the player warns\n");
-    std::fprintf(out, "                once: there is deliberately no /tmp fallback, which\n");
+    std::fprintf(out, "                Unix socket the subcommands above talk to, mode 0600.\n");
+    std::fprintf(out, "                Defaults to %s<port>%s in\n", CONTROL_SOCKET_PREFIX,
+                 CONTROL_SOCKET_SUFFIX);
+    std::fprintf(out, "                $XDG_RUNTIME_DIR, where that is set. The <port> is\n");
+    std::fprintf(out, "                --port, so two players on one host each get their own --\n");
+    std::fprintf(out, "                and a subcommand needs the same --port or this flag\n");
+#ifdef __APPLE__
+    std::fprintf(out, "                Where it is not set, as on macOS, this host's own\n");
+    std::fprintf(out, "                per-user directory is used instead. Never /tmp, which\n");
     std::fprintf(out, "                would let any local user drive this player\n");
+#else
+    std::fprintf(out, "                Where it is not set -- a systemd *system* unit has none,\n");
+    std::fprintf(out, "                so pair RuntimeDirectory= with this flag -- there is no\n");
+    std::fprintf(out, "                default and the player warns once. There is deliberately\n");
+    std::fprintf(out, "                no /tmp fallback, which would let any local user drive\n");
+    std::fprintf(out, "                this player\n");
+#endif
     std::fprintf(out, "  --no-control  Do not listen on a control socket at all\n");
     std::fprintf(out, "  -h, --help    Show this help\n");
     std::fprintf(out, "  --version     Show version information\n\n");

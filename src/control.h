@@ -364,12 +364,31 @@ const char* line_state_reason(LineState state);
 /// belongs to one player and a host can run several; it is the serve port rather than an
 /// index so a subcommand can derive the same path from the same `--port`.
 ///
-/// @param runtime_dir `$XDG_RUNTIME_DIR`, from control_runtime_dir(). Empty yields an empty
-/// path: there is deliberately no fallback to a shared directory -- see
+/// @param runtime_dir The user-private directory, from control_runtime_dir(). Empty yields an
+/// empty path: there is deliberately no fallback to a shared directory -- see
 /// control_socket_absent_reason().
 std::string control_socket_path(const std::string& runtime_dir, uint16_t port);
 
-/// @brief The user-private directory the default control socket goes in, or empty.
+/// @brief Where the default control socket should go, and anything worth saying about it.
+struct ControlRuntimeDir {
+    /// The directory, or empty when no source produced a usable one.
+    std::string path;
+
+    /// A path that is being used but failed the privacy check -- said out loud rather than
+    /// silently accepted or silently refused. Only `$XDG_RUNTIME_DIR` can produce this: it is
+    /// the user's own declaration, so it is honoured, but a group- or world-writable runtime
+    /// directory (a systemd unit with `RuntimeDirectoryMode=0775`, say) means the socket's 0600
+    /// is not the whole story and the operator should know.
+    std::string warning;
+
+    /// Why a *platform* candidate was refused, when one was found and rejected. Carried so the
+    /// absent reason can say "writable by its group" rather than only "could not be used" --
+    /// is_private_runtime_dir() knows exactly what was wrong, and dropping that on the floor
+    /// would leave an operator with no way to find out.
+    std::string rejection;
+};
+
+/// @brief The user-private directory the default control socket goes in.
 ///
 /// Two sources, in order:
 ///
@@ -387,9 +406,12 @@ std::string control_socket_path(const std::string& runtime_dir, uint16_t port);
 ///
 /// Split from control_socket_path() so that function stays pure and testable -- the environment
 /// and the filesystem are read here, once, and the result handed in.
-std::string control_runtime_dir();
+ControlRuntimeDir control_runtime_dir();
 
 /// @brief This platform's own user-private runtime directory, verified, or empty.
+///
+/// @param rejection Set to why a candidate was refused, when one was found and failed the
+/// check. Left alone when the platform has no candidate at all, which is not a failure.
 ///
 /// On **macOS** that is `confstr(_CS_DARWIN_USER_TEMP_DIR)`: the per-user, 0700 directory under
 /// `/var/folders` that launchd hands every session. It exists because launchd sets no
@@ -420,7 +442,7 @@ std::string control_runtime_dir();
 /// subcommands reporting no daemon until it is restarted. `$XDG_RUNTIME_DIR` on Linux is tmpfs
 /// cleared at logout, so it is the same class of impermanence, and `--control-socket` is the
 /// answer in both cases.
-std::string control_platform_runtime_dir();
+std::string control_platform_runtime_dir(std::string& rejection);
 
 /// @brief True if `path` is a directory this user owns and no one else can write to.
 ///
@@ -435,16 +457,18 @@ bool is_private_runtime_dir(const std::string& path, std::string& reason);
 
 /// @brief Why there is no default control socket path, or empty when there is one.
 ///
-/// A user-session variable is the only acceptable home for this socket. `$XDG_RUNTIME_DIR` is
-/// per-user and 0700, which is what makes the socket unreachable by another local user; a
-/// systemd *system* unit has no such variable, and `/tmp` is world-writable, so falling back
-/// there would hand any local account the ability to pause playback and `switch` this
-/// endpoint out of its group. So an absent variable means no socket, not a worse one.
+/// A **user-private directory** is the only acceptable home for this socket, and there are
+/// exactly two ways to name one -- see control_runtime_dir(). What there is deliberately no way
+/// to name is a shared one: `/tmp` is world-writable, so falling back there would hand any local
+/// account the ability to pause playback and `switch` this endpoint out of its group. So when
+/// neither source answers, the result is no socket rather than a worse one.
 ///
 /// Non-fatal, and the wording says what to do instead: the player is still a player without
-/// a control channel, exactly as it is still a player without an mDNS advertisement.
+/// a control channel, exactly as it is still a player without an mDNS advertisement. It also
+/// carries `runtime.rejection` when there is one, so an operator learns *why* a candidate was
+/// refused rather than only that it was.
 /// @param path The path control_socket_path() produced, so an over-long one is named as such.
-std::string control_socket_absent_reason(const std::string& runtime_dir, const std::string& path);
+std::string control_socket_absent_reason(const ControlRuntimeDir& runtime, const std::string& path);
 
 /// @brief True if `path` fits `sockaddr_un::sun_path`, which is 104 bytes on macOS.
 ///
