@@ -31,8 +31,15 @@ namespace sendspin_cli {
 /// inside a track.
 ///
 /// It is also not free to the caller: rebuilding a device list means enumerating every host API,
-/// which blocks whichever thread asks for the better part of a second. See
+/// which blocks whichever thread asks for hundreds of milliseconds to seconds. See
 /// PortAudioSink::poll(), which pays that on the main loop.
+///
+/// **This is what bounds the rescan across streams, and the per-stream budget below is not.**
+/// reset() refills that budget at every stream, and how often streams start is the server's
+/// choice, not ours -- so on hardware that opens and dies repeatedly the budget alone would allow
+/// one cycle per stream, however fast they came. Because every cycle needs a fresh escalation and
+/// each escalation must then wait this long, cycles are floored this far apart whatever the
+/// server does. Both halves of the bound are load-bearing; neither is decoration.
 inline constexpr int64_t SINK_RESCAN_DELAY_MS = 2000;
 
 /// @brief The decision half of getting a dead output device back mid-stream.
@@ -66,13 +73,15 @@ class SinkRecovery {
 public:
     /// @brief Asks whether to reopen the device in place. For a write() that found no stream.
     ///
-    /// Cheap enough to call on every write of an outage; only the first of them says yes.
+    /// Cheap enough to call on every write of an outage. At most one call per *configured
+    /// stream* says yes -- not one per outage -- so a stream that was reopened once and has died
+    /// again is told no, whether or not that first reopen worked.
     /// @return true if the caller should attempt the reopen now, and report back to
     /// reopen_done(). false means there is nothing left to try inline -- either the attempt is
     /// spent, in which case this escalates to the rescan, or that is spent too.
     bool reopen_due();
 
-    /// @brief Records what the reopen reopen_due() asked for did.
+    /// @brief Records the outcome of the reopen that reopen_due() asked for.
     ///
     /// A success owes nothing further: the stream is playing again, and its rescan stays in hand
     /// for the next outage. A failure escalates, so rescan_due() starts counting.
@@ -91,7 +100,7 @@ public:
     ///
     /// So the main loop can skip taking a lock it has no use for on all but a handful of ticks.
     /// Reading it unlocked costs at worst one tick of staleness in either direction -- a stale
-    /// false delays the rescan by one LOOP_INTERVAL_MS, a stale true buys one uncontended lock --
+    /// false delays the rescan by one main-loop tick, a stale true buys one uncontended lock --
     /// and rescan_due() decides again under the lock regardless.
     bool pending() const;
 

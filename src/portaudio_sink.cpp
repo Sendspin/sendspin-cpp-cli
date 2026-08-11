@@ -744,18 +744,18 @@ void PortAudioSink::stop() {
 }
 
 void PortAudioSink::poll(int64_t now_ms) {
-    // Read without the lock, because on all but a handful of ticks in a run there is nothing to
-    // do and no reason to contend with a write(). See SinkRecovery::pending().
-    if (!this->recovery_.pending()) {
+    // Both read without the lock, and first, because on all but a handful of ticks in a run there
+    // is nothing to do and no reason to contend with a write() for the mutex. See
+    // SinkRecovery::pending(). Shutting down is checked here rather than under the lock so that
+    // case is lock-free too, and it is checked before rescan_due() so a shutdown never burns the
+    // one rescan there is.
+    if (!this->recovery_.pending() || this->stopping_.load()) {
         return;
     }
 
     const std::lock_guard<std::mutex> lock(this->mutex_);
-    if (this->stopping_.load() || this->last_format_.sample_rate == 0) {
-        // Shutting down, or nothing was ever configured. Handing PortAudio a fresh device now
-        // would put a stream in the destructor's way, which is what configure() refuses for the
-        // same reason.
-        return;
+    if (this->last_format_.sample_rate == 0) {
+        return;  // nothing was ever configured, so there is nothing to reopen at
     }
     if (!this->recovery_.rescan_due(now_ms)) {
         return;
@@ -764,9 +764,13 @@ void PortAudioSink::poll(int64_t now_ms) {
     const StreamFormat format = this->last_format_;
     // The stream goes first whatever happens next: Pa_Terminate() with one open is undefined,
     // and every PaDeviceIndex -- device_index_ among them, which this clears -- dies with it.
+    // Nothing playing is torn down by this, because only reopen_in_place_() can ask for a rescan
+    // and it only runs on a stream that has already died.
     this->close_stream_();
 
     if (!this->pa_.reinitialize()) {
+        // The sink is now inert -- with PortAudio down, even the next configure() cannot resolve
+        // a device. Reported rather than fatal, for the reason the constructor gives.
         cli_log(LogLevel::ERROR, "portaudio: could not restart PortAudio to look for '%s': %s",
                 this->name().c_str(), this->pa_.error());
         return;
@@ -784,7 +788,13 @@ void PortAudioSink::poll(int64_t now_ms) {
     if (!this->open_stream_(device, format.sample_rate, format.channels, format.bit_depth)) {
         return;  // open_stream_() has already said why, once
     }
-    cli_log(LogLevel::INFO, "portaudio: '%s' is back after a device rescan", this->name().c_str());
+    // Names the device it landed on, not just the -o spec, because a rescan is exactly what
+    // renumbers PortAudio's device list: `-o portaudio:2` after one may well be a different card
+    // than it was before. The spec is resolved afresh either way -- so would the next configure()
+    // be -- but an operator reading this line should not have to assume which.
+    const PaDeviceInfo* info = Pa_GetDeviceInfo(device);
+    cli_log(LogLevel::INFO, "portaudio: '%s' is back after a device rescan, on '%s'",
+            this->name().c_str(), (info != nullptr) ? info->name : "(unknown device)");
 }
 
 void PortAudioSink::set_volume(uint8_t volume) {
@@ -951,10 +961,18 @@ bool PortAudioSink::restart_stream_() {
 }
 
 bool PortAudioSink::reopen_in_place_() {
-    if (this->stopping_.load() || this->last_format_.sample_rate == 0) {
-        // Shutting down, or nothing has ever been configured: no format to recover to, and a
-        // shutdown already under way must not be handed a fresh device. Read before the attempt
-        // is spent, so neither case costs the outage anything.
+    if (this->stream_ == nullptr || this->stopping_.load() || this->last_format_.sample_rate == 0) {
+        // Recovery is for a stream that was running and has died, and stream_ is what tells that
+        // apart from never having had one: PortAudio does not null the handle when a device goes
+        // away, but open_stream_() does when it fails. Without this test a device that merely
+        // *refused* a format would be chased -- a second identical failed open here, and then a
+        // whole device-list rescan on the main loop -- for a stream no rescan can help, since the
+        // device is present and simply will not take it.
+        //
+        // The other two say there is nothing to recover to, or nothing worth recovering: no
+        // format has ever been configured, or shutdown has already begun and must not be handed a
+        // fresh device. All three are read before the attempt is spent, so none costs the outage
+        // anything.
         return false;
     }
     if (!this->recovery_.reopen_due()) {

@@ -170,6 +170,11 @@ private:
 /// hold; the only other Pa_* callers, probe(), list_devices() and capabilities(), run on the main
 /// loop before the server starts and so cannot overlap anything. See reopen_in_place_().
 ///
+/// It does mean mutex_ is now held across a Pa_OpenStream(), which can take a few hundred
+/// milliseconds -- so a configure(), clear() or stop() on the main loop can block behind a
+/// recovering write() for that long. Bounded by the same budget everything else here is: at most
+/// one such open per configured stream, against the one configure() already performs anyway.
+///
 /// The one recovery step that is *not* allowed there is rebuilding PortAudio's device list, which
 /// invalidates every device index in the process: that stays on the main loop, in poll().
 ///
@@ -203,11 +208,14 @@ public:
     /// @brief Spends this sink's one device rescan, when a dead stream has escalated to it.
     ///
     /// Does nothing at all on an ordinary tick, and takes no lock to establish that. When there
-    /// is something to do it is expensive -- a Pa_Terminate()/Pa_Initialize() cycle blocks this
-    /// thread, and so the protocol client beside it, for up to about a second. That is affordable
-    /// only because it happens at most once per stream and only once playback has already
-    /// stopped: the tightest thing it delays is the time-sync burst response, which the library
-    /// gives ten seconds.
+    /// is something to do it is expensive: a Pa_Terminate()/Pa_Initialize() cycle re-enumerates
+    /// every host API, which blocks this thread -- and so SendspinClient::loop() beside it -- for
+    /// hundreds of milliseconds to seconds, depending on the host. That is affordable only
+    /// because it happens at most once per stream, only on a stream that has already died, and
+    /// never sooner than SINK_RESCAN_DELAY_MS after the last one. The transport itself runs on
+    /// its own thread, so what is delayed is the dispatch of messages already received; the
+    /// tightest deadline on that path is the time-sync burst response, which the library gives
+    /// ten seconds.
     void poll(int64_t now_ms) override;
 
     /// @brief What the resolved device will take, probed through the same ladder -l reports.

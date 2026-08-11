@@ -1117,10 +1117,10 @@ seen, with the old index left dead — so no amount of reopening reaches it, and
 made this two tiers across two threads rather than one function.
 
 **Tier 1 — one in-place reopen, inline in `write()`, on the sync task's thread.** Where `write()`
-finds `!stream_alive_()`, `reopen_in_place_()` re-resolves the device and reopens at the
-remembered format before the discard path is reached; on success the same call carries on
-filling the ring, so playback resumes without waiting for a track boundary. This is all a host
-default-output switch needs. It is safe from that thread for a reason now written into the
+finds that a stream it *had* has stopped being driven, `reopen_in_place_()` re-resolves the device
+and reopens at the remembered format before the discard path is reached; on success the same call
+carries on filling the ring, so playback resumes without waiting for a track boundary. This is all
+a host default-output switch needs. It is safe from that thread for a reason now written into the
 header, because the class previously read as though only the main loop ever opened a stream:
 
 - **The ordering invariant is about *when*, not which thread.** `Pa_AbortStream()`/
@@ -1134,11 +1134,26 @@ header, because the class previously read as though only the main loop ever open
 - **A parked `write()` was already handled.** `close_stream_()` bumps `stream_generation_` and
   notifies `space_available_`, which is the existing mechanism for exactly this.
 
+**"A stream it had" is `stream_ != nullptr`, and that test is load-bearing rather than a
+formality.** PortAudio does not null the handle when a device goes away, but `open_stream_()` does
+when it fails — so the handle is exactly what separates *this stream died* from *we never got
+one*. Without it, a device that merely **refused** a format would be chased: `configure()`'s failed
+open leaves a remembered format behind, the very next `write()` would repeat the identical failing
+open on the sync thread, and its failure would then escalate to a full device-list rescan for a
+stream no rescan can help — the device is present and simply will not take that format. That is a
+blocking open plus a main-loop stall plus duplicate errors, per stream, bought for nothing.
+`PlayerListener` keeps forwarding audio after a refusal by design, so this is the ordinary path
+for an unsupported format rather than a corner.
+
 Two smaller things fell out of it. `stopping_` is re-checked *after* a successful open, because
 `stop()` deliberately latches before it takes the mutex and so can arrive while `Pa_OpenStream()`
 is running — leaving a live stream for the destructor is the hazard `configure()` already refuses
 to create. And the discard return stays frame-aligned after a failed reopen has zeroed
 `bytes_per_frame_`, by falling back to the remembered format.
+
+The reopen holds `mutex_` across `Pa_OpenStream()`, so a `configure()`, `clear()` or `stop()` on
+the main loop can block behind it for a few hundred milliseconds. Bounded by the same budget as
+everything else here, and against the one such open `configure()` already performs per stream.
 
 **Tier 2 — the device-list rescan, on the main loop.** `AudioSink` gains
 `virtual void poll(int64_t now_ms) {}`, a no-op by default, called from `main.cpp`'s loop beside
@@ -1147,11 +1162,14 @@ to create. And the discard return stays frame-aligned after a failed reopen has 
 inlined into `write()`: it invalidates every `PaDeviceIndex` in the process, and neither
 `Pa_Initialize()` nor `Pa_Terminate()` is thread-safe.
 
-The costs are real and are documented at the call sites rather than only here. The cycle blocks
-the main loop — and so the protocol client beside it — for up to about a second while every host
-API is re-enumerated; that is affordable only because it happens at most once per stream, only
-once playback has already stopped, and the tightest thing it delays is the time-sync burst
-response, which the library gives ten seconds. It also only *really* terminates because the
+The costs are real and are documented at the call sites rather than only here. Re-enumerating
+every host API blocks the main loop — and so `SendspinClient::loop()` beside it — for hundreds of
+milliseconds to seconds, depending on the host; the figure is not pinned down, which is why the
+hardware pass below is asked to measure it. That is affordable because it happens at most once per
+stream and only on a stream that has already died (nothing but `reopen_in_place_()` can ask for a
+rescan, and it only runs on a dead stream). The transport itself runs on its own thread, so what
+is delayed is the dispatch of messages already received; the tightest deadline on that path is the
+time-sync burst response, which the library gives ten seconds. It also only *really* terminates because the
 sink's guard is the sole live one at runtime, PortAudio's init pair being reference-counted;
 anything that later reached `probe()` from the running loop would turn the rescan into a silent
 no-op, which is now noted on `reinitialize()`.
@@ -1165,9 +1183,14 @@ dies a second time goes straight to the rescan, and once both are gone the sink 
 the next `configure()`, which re-resolves anyway and now does so against a list the rescan has
 already refreshed.
 
-The two-second gap before the rescan is for the same reason it is bounded: it is the last attempt
-there is, and a replugged DAC takes the host a moment to enumerate, so spending it the instant
-the reopen failed would usually spend it before the device is back.
+The two-second gap before the rescan does two jobs, and the second is easy to miss. The obvious
+one: the rescan is the last attempt there is, and a replugged DAC takes the host a moment to
+enumerate, so spending it the instant the reopen failed would usually spend it before the device
+is back. The load-bearing one: **it is the gap, not the budget, that bounds the rescan across
+streams.** `reset()` refills the budget at every stream and how often streams start is the
+server's choice — so the budget alone would permit one teardown per stream, however fast they
+came. Because each cycle needs a fresh escalation and each escalation must then wait out the gap,
+cycles stay floored that far apart whatever the server does.
 
 **The decision lives in `src/sink_recovery.{h,cpp}` and is unit-tested there**, for the reason
 `mdns_common.cpp` and `pcm_volume.cpp` exist: `src/portaudio_sink.cpp` is compiled only under
@@ -1192,16 +1215,21 @@ comment on `capabilities()` has said since item 3. `NullAudioSink` and `AlsaAudi
 untouched — ALSA recovers inside its own `write()` and never gives up while the handle is open,
 so it has nothing to do with a main-loop tick.
 
-**What remains after this.** A device that goes away a third time within one stream is not chased;
-recovery waits for the next `configure()`. `capabilities()` still describes whichever device was
-default when the player started. And the rescan's main-loop stall is a real, if bounded, pause in
-protocol handling.
+**What remains after this.** Once both attempts are spent, recovery waits for the next
+`configure()` — which is a *second* disappearance if the first reopen failed, and a third only in
+the luckier case where it worked. A rescan renumbers PortAudio's device list, so a numeric
+`-o portaudio:2` re-resolved after one may name a different card than it did before; the recovery
+log line names the device it actually landed on rather than only the spec, but the spec's meaning
+genuinely moved, and any later `configure()` inherits the same shift. `capabilities()` still
+describes whichever device was default when the player started. And the rescan's main-loop stall
+is a real, if bounded, pause in protocol handling.
 
 **Hardware verification is still owed** and is what the *shipped* qualifier above refers to. The
 four cases to run, and to record here once run: a USB DAC unplugged and left out mid-track (logs
 once, does not spin or wedge); the same DAC replugged mid-track (playback resumes without a track
-boundary); the host default output switched mid-track under a bare `-o portaudio`; and normal
-playback, track changes and `stop()` unaffected when nothing goes wrong.
+boundary); the host default output switched mid-track under a bare `-o portaudio`; normal
+playback, track changes and `stop()` unaffected when nothing goes wrong; and a measurement of how
+long the rescan really stalls the loop, so the estimate above can be replaced with a figure.
 
 ### 15. ALSA hardware mixer (`-V`)
 
