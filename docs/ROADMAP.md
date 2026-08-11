@@ -713,7 +713,8 @@ server and coming back as state on *both* the group and the player line; `seek 6
 position; `seek` past the server's published `seek_max_ms` (231000, exactly the track duration)
 refused locally with its own exit status; the `status` block filled in from real metadata —
 `server: Music Assistant (connected)`, the track, the duration, the transport state from
-`playback_speed`; `next` and `prev` walking a real queue in both directions; `status` correctly reading `unknown` in the window before the first metadata
+`playback_speed`; `next` and `prev` walking a real queue in both directions; `status` correctly
+reading `unknown` in the window before the first metadata
 arrives; the socket bound at the macOS default path with **no flags at all**, gone after `SIGTERM`,
 and a subcommand afterwards exiting 3.
 
@@ -747,29 +748,46 @@ changes what we advertise) or seeding the sink from the role (which makes a fres
 until a server speaks). Both are behaviour changes wider than a control channel, and neither is
 this item's to make.
 
-**Three commands this server advertises and does not act on, which is worth reporting upstream.**
-`seek-rel`, `repeat` and `shuffle` are all accepted and all do nothing. The evidence that this is
-not our end: the local gate refuses any command absent from `supported_commands`, and all three
-exit 0, so the server *advertises* every one of them; `format_client_command_message()` writes
-each command's own field symmetrically; and `play`, `pause`, `next`, `prev`, `seek` and `mute`
-travel that identical path and demonstrably work -- `next`/`prev` walk the queue, `seek` moves the
-position, `mute` comes back as state. Three relative-seek offsets were tried including a negative
-one, and five queue-mode commands, with no observable effect and no change in the controller state
-the server publishes back. Per `AI_POLICY.md` no issue was opened from here.
+**Every command works, and finding that out took listening rather than reading.** An earlier pass
+concluded that `seek-rel`, `repeat` and `shuffle` were advertised and unimplemented at the server's
+end, on the evidence that nothing in `status` changed after sending them. That conclusion was
+wrong, and wrong in an instructive way: the spec does not oblige a server to republish state after
+acting, so *absence of feedback is not absence of action*. Driven again with the volume up and a
+human listening:
 
-A caveat on how firmly that can be said of `repeat` and `shuffle` specifically: because the library
-cannot distinguish an unreported field from `off` (see below), "no effect" here means "neither acted
-on in a way `status` can see, nor reported back" -- a server that applied them silently and never
-published them would look the same from here.
+- **`seek-rel` moves the audio.** A relative jump back to a track's opening was audibly
+  indistinguishable from the absolute seek used as a control — while the reported position climbed
+  straight through both of them.
+- **`shuffle` works**, proven behaviourally rather than from reported state: with it off, `next`
+  walked the album in order; with it on, `next` produced tracks from four different albums.
+- **`repeat one` works**: seeking to eight seconds before a track's end and letting it run past the
+  boundary left the same track playing instead of advancing.
+- **`next`/`prev`** walk a real queue in both directions, and `play`, `pause`, `seek` and `mute`
+  were already confirmed.
 
-**`repeat` and `shuffle` are reported with less certainty than the rest of the block, and it is an
-upstream limitation.** `ServerStateControllerObject` holds them as a plain enum and a plain bool,
-and the parser assigns them only when the field is present -- so a server that omits `repeat` leaves
-the struct's own `OFF` behind and nothing downstream can tell that from a server that said `off`.
-`seek_max_ms` in the same object is an `optional` and does not have the problem. They are reported
-anyway, because against a server that does publish them they are right and they are the only way to
-watch those two commands land, but `status`'s own docs say what the value actually means rather than
-presenting it as a fact the server asserted.
+**What is really missing is the server's reporting, and `status` now says so.** Three fields are the
+server's word and can silently lag what is true:
+
+- **`position`** is interpolated forward from the last progress the server sent whenever the group
+  is playing, so a server that does not resend progress after a seek leaves the anchor stale and the
+  figure drifts by however far the seek moved. It is marked `(estimated)` while playing, and only
+  while playing — paused, it is the server's own snapshot. Marked rather than fixed, because only
+  the server can re-anchor it.
+- **`repeat` and `shuffle`** are reported when the server sends them and default to `off` when it
+  does not, because `ServerStateControllerObject` holds them as a plain enum and a plain bool and
+  the parser assigns them only when the field is present. `seek_max_ms` in the same object is an
+  `optional` and does not have the problem. Observed lagging by minutes against a real server that
+  was demonstrably acting on both.
+- **`state`** comes from the same metadata progress as the position and shares its staleness.
+
+So the block carries one `note:` line naming those four fields, because the misreading it prevents
+is the one that produced the wrong conclusion above: a reader who has just changed something sees an
+unchanged figure and concludes the command failed. One line rather than a qualifier per field, so
+the block stays scannable and every line stays `key: value`.
+
+**Nothing here is owed upstream after all** — no issue was opened, and per `AI_POLICY.md` none
+would have been from this side anyway. Whether a server *should* resend progress after a seek is a
+question for the spec rather than a defect in either end.
 
 **One thing still not claimed.** The **kernel's `listen()` backlog is tied to
 `MAX_CONTROL_CONNECTIONS`** rather than the two being independent, because whichever is smaller

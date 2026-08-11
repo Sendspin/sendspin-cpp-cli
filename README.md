@@ -419,13 +419,18 @@ Every transport verb the protocol has, one subcommand each — `status`, `play`,
 `pause`, `stop`, `next`, `prev`, `vol`, `mute`, `seek`, `seek-rel`, `repeat`,
 `shuffle`, `switch`. `--help` lists them with their arguments.
 
-`repeat` and `shuffle` are the group's queue modes as the server last published
-them — and they carry a caveat the rest of the block does not. The library holds
-them as a plain enum and bool and fills them in only when the server sends the
-field, so a server that omits `repeat` leaves `off` behind and nothing can tell
-that from a server that said `off`. Read them as "the last value published, or
-`off` if none was", not as an assertion. (`seek_max_ms` in the same object is an
-`optional` and does not have this problem.)
+**Four fields are the server's word, and can lag what is true** — which is why the
+block ends with a `note:` line saying so. `state`, `position`, `repeat` and
+`shuffle` all come from the server's last report, and the spec does not oblige it
+to resend them after acting. Observed against a real server: `shuffle` read `off`
+for minutes while it was demonstrably shuffling, and the position climbed straight
+through seeks that audibly worked. If you have just changed something and the
+figure has not moved, that is the likely reason — not a failed command.
+
+`position` additionally says `(estimated)` while playing, because the library
+interpolates forward from the last progress the server sent. After a seek that the
+server does not re-report, the estimate drifts by however far you jumped. Paused,
+it is the server's own snapshot and carries no marker.
 
 `player volume` is the gain **this box's output** is applying, and it says
 `(default; no server has set it)` until a server sends a volume command — because

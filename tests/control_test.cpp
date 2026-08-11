@@ -619,7 +619,7 @@ TEST(FormatStatus, EveryFieldIsPresentAndLabelled) {
     EXPECT_EQ(field(block, "state"), "playing");
     EXPECT_EQ(field(block, "stream"), "receiving");
     EXPECT_EQ(field(block, "track"), "Nils Frahm - Says");
-    EXPECT_EQ(field(block, "position"), "2:05 / 9:03");
+    EXPECT_EQ(field(block, "position"), "2:05 / 9:03 (estimated)");
     EXPECT_EQ(field(block, "group volume"), "55");
     EXPECT_EQ(field(block, "player volume"), "80");
     EXPECT_EQ(field(block, "output"), "portaudio (48000 Hz / 2 ch / 16-bit)");
@@ -762,8 +762,47 @@ TEST(FormatStatus, AnUnknownGroupVolumeIsNotPrintedAsZero) {
     EXPECT_EQ(field(format_status(snapshot), "group volume"), "unknown");
 }
 
-TEST(FormatStatus, ALiveStreamsPositionNamesItsUnknownDuration) {
+TEST(FormatStatus, APlayingPositionIsMarkedAsAnEstimate) {
+    // While the group plays, the library interpolates from the last progress the server sent, so
+    // a server that does not resend it after a seek leaves the figure drifting by however far the
+    // seek moved -- observed against a real server, where both seek forms moved the audio while
+    // this number carried on climbing. Paused, it is the server's own snapshot and needs no mark.
     StatusSnapshot snapshot = playing_snapshot();
+
+    snapshot.playback_speed = 1000;
+    EXPECT_NE(field(format_status(snapshot), "position").find("(estimated)"), std::string::npos);
+
+    snapshot.playback_speed = 0;
+    EXPECT_EQ(field(format_status(snapshot), "position").find("(estimated)"), std::string::npos);
+
+    // And an absent speed is already `unknown`, which is not a figure to qualify.
+    snapshot.playback_speed.reset();
+    snapshot.progress_ms.reset();
+    EXPECT_EQ(field(format_status(snapshot), "position"), "unknown");
+}
+
+TEST(FormatStatus, AConnectedPlayerSaysWhichFieldsAreTheServersWord) {
+    // The misreading this prevents cost real debugging time: `shuffle` and `repeat` read `off`
+    // against a server that acts on them and never reports them back, and the position kept
+    // climbing through seeks that audibly worked. A reader who has just changed something needs
+    // to know which figures can lag before concluding the command failed.
+    const std::string note = field(format_status(playing_snapshot()), "note");
+    EXPECT_FALSE(note.empty());
+    for (const char* field_name : {"position", "repeat", "shuffle"}) {
+        EXPECT_NE(note.find(field_name), std::string::npos) << field_name << " not named: " << note;
+    }
+
+    // Absent when there is no server, since then nothing above it is the server's word.
+    StatusSnapshot disconnected;
+    disconnected.name = "x";
+    EXPECT_EQ(field(format_status(disconnected), "note"), "");
+}
+
+TEST(FormatStatus, ALiveStreamsPositionNamesItsUnknownDuration) {
+    // Paused, so the reading is the server's own snapshot and carries no `(estimated)` marker --
+    // this test is about the clock, not about provenance.
+    StatusSnapshot snapshot = playing_snapshot();
+    snapshot.playback_speed = 0;
     snapshot.progress_ms = 65000;
     snapshot.duration_ms = 0;
     EXPECT_EQ(field(format_status(snapshot), "position"), "1:05 / unknown");
@@ -771,6 +810,7 @@ TEST(FormatStatus, ALiveStreamsPositionNamesItsUnknownDuration) {
 
 TEST(FormatStatus, PositionsPastAnHourCarryTheHour) {
     StatusSnapshot snapshot = playing_snapshot();
+    snapshot.playback_speed = 0;
     snapshot.progress_ms = 3725000;
     snapshot.duration_ms = 7200000;
     EXPECT_EQ(field(format_status(snapshot), "position"), "1:02:05 / 2:00:00");
