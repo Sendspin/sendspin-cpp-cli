@@ -762,8 +762,27 @@ human listening:
   walked the album in order; with it on, `next` produced tracks from four different albums.
 - **`repeat one` works**: seeking to eight seconds before a track's end and letting it run past the
   boundary left the same track playing instead of advancing.
-- **`next`/`prev`** walk a real queue in both directions, and `play`, `pause`, `seek` and `mute`
-  were already confirmed.
+- **`next`/`prev`** walk a real queue in both directions.
+- **`vol` and `mute` were confirmed by ear**, alternating 12/50 twice and muting between: loudness
+  tracked the value and mute silenced it. Worth doing audibly rather than from the reported number,
+  since the reported number was exactly what had been lying earlier.
+- **`stop` differs from `pause` in a way only the `stream` line shows.** Both leave
+  `state: paused`, but `pause` keeps `stream: receiving` while `stop` drops it to `idle` -- the
+  server tears the stream down. That is the clearest justification for reporting the group's
+  transport state and this endpoint's stream state as two separate lines: without the second,
+  `pause` and `stop` are indistinguishable in the output.
+- **`switch` acts**, visible in the player log as `Stream ended` followed by `Stream started` and a
+  fresh codec header -- the stream is re-established, which is what re-homing a client between
+  groups requires. With a single group available the cycle returns to where it began, so nothing
+  else in `status` changes, which is what the spec's switch cycle should do.
+
+So all thirteen subcommands are confirmed to act, `status` included.
+
+**The three distinct failure modes were exercised against real daemons too**, not just unit-tested.
+All twelve transport commands returned **4** against a daemon that was up but had never reached a
+server (`-s` pointed at an address nothing answers), each naming the connection rather than the
+command -- while `status` on the same daemon returned **0** and printed what it knew locally, which
+is the whole point of exempting it. And **3** against a socket with no daemon behind it.
 
 **What is really missing is the server's reporting, and `status` now says so.** Three fields are the
 server's word and can silently lag what is true:
