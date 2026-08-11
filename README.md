@@ -298,6 +298,12 @@ is a follow-up. The one audible difference: PortAudio scales in its audio
 callback, so a volume change also reaches audio already buffered, where ALSA
 scales on the way in and so only affects what has not been written yet.
 
+The curve is the one the spec names, `amplitude = (volume / 100)^1.5`, because a
+Sendspin volume is **perceived loudness** rather than amplitude — volume 50 is
+meant to sound half as loud as 100, and that exponent is what makes the number on
+a controller's slider mean that. It is deliberately not upstream's `^2`, which is
+about 3 dB quieter at volume 50 and 6 dB at 25.
+
 ### Buffering, and what gets advertised
 
 `--buffer-ms <ms>` (10–2000, default 100) is how much audio the output backend
@@ -418,6 +424,31 @@ $ sendspin-cli seek-rel -30000
 Every transport verb the protocol has, one subcommand each — `status`, `play`,
 `pause`, `stop`, `next`, `prev`, `vol`, `mute`, `seek`, `seek-rel`, `repeat`,
 `shuffle`, `switch`. `--help` lists them with their arguments.
+
+**Four fields are the server's word, and can lag what is true** — which is why the
+block ends with a `note:` line saying so. `state`, `position`, `repeat` and
+`shuffle` all come from the server's last report, and the spec does not oblige it
+to resend them after acting. Observed against a real server: `shuffle` read `off`
+for minutes while it was demonstrably shuffling, and the position climbed straight
+through seeks that audibly worked. If you have just changed something and the
+figure has not moved, that is the likely reason — not a failed command.
+
+`position` additionally says `(estimated)` while playing, because the library
+interpolates forward from the last progress the server sent. After a seek that the
+server does not re-report, the estimate drifts by however far you jumped. Paused,
+it is the server's own snapshot and carries no marker.
+
+`player volume` is the gain **this box's output** is applying, and it says
+`(default; no server has set it)` until a server sends a volume command. The
+qualifier is how you tell "nobody has set this" from a server that deliberately
+chose full output.
+
+That figure is also what the server is told, from the first message — which the
+spec requires and which matters more than it looks: **group volume is the average
+of the players' volumes**, and setting group volume applies a *delta* against it.
+A player that reported a volume it was not applying would skew the group reading
+for every controller, and make the next group volume change land wrong by exactly
+that error.
 
 Two `status` lines are worth reading together. `state` is the **group's** transport
 state, from the metadata `playback_speed`, and reads `unknown` rather than guessing

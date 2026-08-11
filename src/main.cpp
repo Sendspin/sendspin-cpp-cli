@@ -292,11 +292,10 @@ public:
     /// Every reference must outlive this dispatcher, which in main() they all do.
     ControlDispatcher(const Options& opts, sendspin::SendspinClient& client,
                       sendspin::ControllerRole& controller, sendspin::MetadataRole& metadata,
-                      sendspin::PlayerRole& player, const MetadataLogger& metadata_logger,
+                      const MetadataLogger& metadata_logger,
                       const PlayerListener& player_listener, const AudioSink& sink)
         : opts_(opts), client_(client), controller_(controller), metadata_(metadata),
-          player_(player), metadata_logger_(metadata_logger), player_listener_(player_listener),
-          sink_(sink) {}
+          metadata_logger_(metadata_logger), player_listener_(player_listener), sink_(sink) {}
 
     std::string handle_control_request(const std::string& line) override {
         std::string name;
@@ -382,9 +381,15 @@ private:
             snapshot.connected && !controller.supported_commands.empty();
         snapshot.group_volume = controller.volume;
         snapshot.group_muted = controller.muted;
+        snapshot.group_repeat = controller.repeat;
+        snapshot.group_shuffle = controller.shuffle;
 
-        snapshot.player_volume = this->player_.get_volume();
-        snapshot.player_muted = this->player_.get_muted();
+        // From the listener rather than from PlayerRole, deliberately: the role stores 0 until a
+        // server sends a volume command, while the sink is at DEFAULT_SINK_VOLUME from the first
+        // sample. Reporting the role's number claimed a silent player that was audibly playing.
+        snapshot.player_volume = this->player_listener_.applied_volume();
+        snapshot.player_muted = this->player_listener_.applied_muted();
+        snapshot.player_volume_from_server = this->player_listener_.volume_set_by_server();
         snapshot.output = this->sink_.name();
         return snapshot;
     }
@@ -393,7 +398,6 @@ private:
     sendspin::SendspinClient& client_;
     sendspin::ControllerRole& controller_;
     sendspin::MetadataRole& metadata_;
-    sendspin::PlayerRole& player_;
     const MetadataLogger& metadata_logger_;
     const PlayerListener& player_listener_;
     const AudioSink& sink_;
@@ -634,6 +638,26 @@ int main(int argc, char* argv[]) {
     player_config.audio_formats = advertised_formats(*sink);
     sendspin::PlayerRole& player = client.add_player(std::move(player_config));
     player.set_static_delay_adjustable(true);
+    // Report the gain the sink is really applying, before anything can connect.
+    //
+    // Not cosmetic, and not a preference -- three spec rules make it necessary. `client/state`'s
+    // `volume` MUST be included when a player advertises the `volume` command, which this one
+    // does. Group volume is *derived* from us: "Group volume is the average of the volumes of
+    // players in the group that support the `volume` command", so a player reporting a figure it
+    // is not applying corrupts the group reading for every controller in the group. And setting
+    // group volume works off "delta = requested_volume - current_group_volume", so that wrong
+    // figure then mis-applies every later group volume change by exactly the error -- a player
+    // claiming 0 while playing at full hears a request for 30 as a cut from full, not a rise.
+    //
+    // The library's own default is 0 while every AudioSink starts at DEFAULT_SINK_VOLUME, so
+    // without this the two disagree from the first message. update_volume() is the right call
+    // rather than reaching for the sink: it does not invoke on_volume_changed(), which fires only
+    // for server-initiated changes, so `status` still distinguishes this from a volume a server
+    // chose.
+    //
+    // Persisting volume and mute across restarts is the spec's RECOMMENDED and is deliberately
+    // not done here -- that needs a store, which docs/ROADMAP.md item 8 owns.
+    player.update_volume(DEFAULT_SINK_VOLUME);
     sendspin::MetadataRole& metadata = client.add_metadata();
     // Added unconditionally, so `client/hello` always carries `controller@v1` -- including under
     // --no-control, and including on a host with no $XDG_RUNTIME_DIR to put a socket in. That is
@@ -667,8 +691,8 @@ int main(int argc, char* argv[]) {
 
     // What answers the socket opened above. Built here rather than there because it holds
     // references to the client and its roles, all of which outlive it.
-    ControlDispatcher control_dispatcher(opts, client, controller, metadata, player,
-                                        metadata_logger, player_listener, *sink);
+    ControlDispatcher control_dispatcher(opts, client, controller, metadata, metadata_logger,
+                                        player_listener, *sink);
 
     // Already validated during parsing, so there is nothing left here that can be wrong --
     // and nothing to fail on after the server is up.

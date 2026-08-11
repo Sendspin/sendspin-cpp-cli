@@ -68,7 +68,7 @@ private:
     /// Latches once stdout goes bad (a closed downstream pipe): the sink then behaves
     /// like Discard instead of stalling the sync task on every write.
     std::atomic<bool> stdout_failed_{false};
-    std::atomic<uint8_t> volume_{100};
+    std::atomic<uint8_t> volume_{DEFAULT_SINK_VOLUME};
     std::atomic<bool> muted_{false};
 };
 

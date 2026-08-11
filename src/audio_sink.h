@@ -68,6 +68,19 @@ struct SinkCapabilities {
     static SinkCapabilities permissive();
 };
 
+/// @brief The gain a sink applies until something tells it otherwise: full.
+///
+/// Full rather than silent, because `sink.set_volume()` is reached *only* from
+/// `PlayerRoleListener::on_volume_changed()` — so a server that never sends a volume command
+/// never sets it, and a player that defaulted to 0 would be permanently, inexplicably silent.
+///
+/// Worth knowing that this does **not** agree with the library, whose `PlayerRole` stores 0 until
+/// a server says otherwise and advertises that 0 in `client/state`. So an untouched player really
+/// is at full output while telling the server it is at zero. Named here, in one place, because
+/// three sinks used to spell it as a bare `{100}` and nothing said what it meant — and because
+/// `status` has to report the gain that is actually applied rather than the one the role stores.
+inline constexpr uint8_t DEFAULT_SINK_VOLUME = 100;
+
 /// @brief The three parameters configure() takes, as one value.
 ///
 /// Here rather than with the code that reports it, because it is exactly

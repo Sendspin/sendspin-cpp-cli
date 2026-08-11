@@ -14,6 +14,8 @@
 
 #include "pcm_volume.h"
 
+#include <cmath>
+
 namespace sendspin_cli {
 
 namespace {
@@ -31,8 +33,14 @@ uint64_t q32_gain_for(uint8_t volume, bool muted) {
     if (volume >= 100) {
         return Q32_ONE;
     }
-    const uint64_t v = volume;
-    return (v * v * Q32_ONE) / 10000;
+    // `amplitude = (volume / 100)^1.5`, the spec's curve. Computed in floating point rather than
+    // fixed: this runs once per volume change -- each sink caches the result and apply_volume()
+    // below is the only thing in the hot path -- so there is nothing to win by approximating a
+    // fractional power in integers, and a great deal of clarity to lose.
+    const double amplitude = std::pow(static_cast<double>(volume) / 100.0, 1.5);
+    // Rounded rather than truncated so the curve is symmetric about its true value, and safe to
+    // cast: the largest amplitude reachable here is volume 99's, which is below unity.
+    return static_cast<uint64_t>(std::llround(amplitude * static_cast<double>(Q32_ONE)));
 }
 
 void apply_volume(uint8_t* data, size_t len, uint8_t bytes_per_sample, uint64_t scale) {

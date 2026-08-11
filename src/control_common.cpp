@@ -555,17 +555,46 @@ std::string format_status(const StatusSnapshot& snapshot) {
         const uint32_t duration = snapshot.duration_ms.value_or(0);
         // A zero duration is a live or unknown-length stream rather than a zero-length track,
         // so it is named instead of printed as 0:00.
-        append_line(out, "position",
-                    duration == 0 ? position + " / unknown"
-                                  : position + " / " + format_clock(duration));
+        std::string reading = duration == 0 ? position + " / unknown"
+                                            : position + " / " + format_clock(duration);
+        // While the group is playing, the library interpolates forward from the last progress the
+        // server sent rather than knowing the position -- and a server that does not resend
+        // progress after a seek leaves that anchor stale, so the figure drifts by however far the
+        // seek moved. Observed against a real server: absolute and relative seeks both moved the
+        // audio while this number carried on climbing from the old anchor. Marked rather than
+        // fixed, because only the server can re-anchor it.
+        if (snapshot.playback_speed.value_or(0) != 0) {
+            reading += " (estimated)";
+        }
+        append_line(out, "position", reading);
     }
 
     append_line(out, "group volume",
                 format_volume(snapshot.group_state_known, snapshot.group_volume,
                               snapshot.group_muted));
-    // Always known: it is this process's own state, whether or not a server is connected.
+    // Alongside the volume because they come from the same object and are changed by the same
+    // kind of command -- and because `repeat`/`shuffle` would otherwise be the only subcommands
+    // whose effect `status` cannot show.
+    append_line(out, "repeat", snapshot.group_state_known
+                                   ? repeat_mode_name(snapshot.group_repeat)
+                                   : "unknown");
+    append_line(out, "shuffle", snapshot.group_state_known ? (snapshot.group_shuffle ? "on" : "off")
+                                                           : "unknown");
+    // Always known: it is this process's own state, whether or not a server is connected. What is
+    // *not* always known is whether anybody chose it, so an untouched player says so rather than
+    // presenting a default as a setting.
     append_line(out, "player volume",
-                format_volume(true, snapshot.player_volume, snapshot.player_muted));
+                format_volume(true, snapshot.player_volume, snapshot.player_muted) +
+                    (snapshot.player_volume_from_server ? "" : " (default; no server has set it)"));
+
+    // One line rather than a qualifier on each field, so the block stays scannable. It earns its
+    // place: every field above it that comes from the server can silently lag, and a reader who
+    // has just changed something otherwise concludes the command failed.
+    if (snapshot.connected) {
+        append_line(out, "note",
+                    "state, position, repeat and shuffle are the server's last report; a server "
+                    "that does not resend them after a change will show stale values here");
+    }
 
     if (snapshot.format.has_value()) {
         append_line(out, "output",

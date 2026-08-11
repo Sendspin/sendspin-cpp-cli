@@ -282,16 +282,45 @@ struct StatusSnapshot {
     std::optional<uint32_t> duration_ms{};
 
     /// True once the server has sent controller state this connection. False leaves the
-    /// group lines reading `unknown`, since a default-constructed state is 0/unmuted and
+    /// group lines reading `unknown`, since a default-constructed state is 0/unmuted/off and
     /// printing that would be a claim about the group rather than an absence of one.
     bool group_state_known{false};
     uint8_t group_volume{0};
     bool group_muted{false};
 
-    /// `PlayerRole::get_volume()` and `get_muted()` -- this endpoint's own output, which is
-    /// known whether or not a server is connected.
-    uint8_t player_volume{0};
+    /// The group's queue modes, from the same `server/state` controller object as the volume.
+    ///
+    /// Reported because this CLI can *change* them: shipping `repeat` and `shuffle` subcommands
+    /// whose effect is invisible in `status` would leave a user unable to see what they just did,
+    /// or to put it back. Like the volume above they read `unknown` until the server has sent
+    /// controller state at all.
+    ///
+    /// **These two carry less certainty than the rest of the block, and the reason is upstream.**
+    /// `ServerStateControllerObject` holds them as a plain enum and a plain bool, and the parser
+    /// assigns them only when the field is present -- so a server that omits `repeat` leaves the
+    /// struct's own `OFF` behind, and nothing downstream can tell that from a server that said
+    /// `off`. `seek_max_ms` in the same object is an `optional` and does not have this problem.
+    /// So read these as "the last value the server published, or `off` if it has published none",
+    /// not as a fact the server asserted. Reported anyway, because against a server that does
+    /// publish them they are correct and they are the only way to see these commands land.
+    sendspin::SendspinRepeatMode group_repeat{sendspin::SendspinRepeatMode::OFF};
+    bool group_shuffle{false};
+
+    /// The gain this endpoint's sink is really applying, and whether it is muted -- from
+    /// `PlayerListener`, **not** from `PlayerRole::get_volume()`.
+    ///
+    /// The distinction is not pedantry. The role stores 0 until a server sends a volume command
+    /// and advertises that 0 in `client/state`, while the sink runs at DEFAULT_SINK_VOLUME until
+    /// one arrives. So on a player no server has set the volume on, the role says 0 and the
+    /// speaker is at full -- and reporting the role's number told users their player was silent
+    /// while they could hear it.
+    uint8_t player_volume{DEFAULT_SINK_VOLUME};
     bool player_muted{false};
+
+    /// False until a server has set this player's volume, which makes the line say so. A server
+    /// that deliberately chose full output and one that never spoke are otherwise identical in
+    /// the output, and only one of them is a number anybody chose.
+    bool player_volume_from_server{false};
 
     std::string output;  ///< the sink's `name()`
 };

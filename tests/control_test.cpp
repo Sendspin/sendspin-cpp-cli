@@ -98,6 +98,7 @@ StatusSnapshot playing_snapshot() {
     snapshot.group_muted = false;
     snapshot.player_volume = 80;
     snapshot.player_muted = false;
+    snapshot.player_volume_from_server = true;
     snapshot.output = "portaudio";
     return snapshot;
 }
@@ -618,7 +619,7 @@ TEST(FormatStatus, EveryFieldIsPresentAndLabelled) {
     EXPECT_EQ(field(block, "state"), "playing");
     EXPECT_EQ(field(block, "stream"), "receiving");
     EXPECT_EQ(field(block, "track"), "Nils Frahm - Says");
-    EXPECT_EQ(field(block, "position"), "2:05 / 9:03");
+    EXPECT_EQ(field(block, "position"), "2:05 / 9:03 (estimated)");
     EXPECT_EQ(field(block, "group volume"), "55");
     EXPECT_EQ(field(block, "player volume"), "80");
     EXPECT_EQ(field(block, "output"), "portaudio (48000 Hz / 2 ch / 16-bit)");
@@ -640,6 +641,67 @@ TEST(FormatStatus, GroupAndPlayerVolumeAreSeparateLines) {
     EXPECT_EQ(field(block, "group volume"), "55 (muted)");
     EXPECT_EQ(field(block, "player volume"), "80");
     EXPECT_EQ(field(block, "volume"), "") << "there must be no unqualified volume line";
+}
+
+TEST(FormatStatus, AVolumeNoServerHasSetIsMarkedAsADefault) {
+    // The bug this exists to stop coming back. `PlayerRole::get_volume()` is 0 until a server
+    // sends a volume command, while every sink runs at DEFAULT_SINK_VOLUME from the first sample
+    // -- so `status` used to print `player volume: 0` at a player that was audibly at full output.
+    // It now reports the gain the sink is applying, and says nobody chose it.
+    StatusSnapshot snapshot = playing_snapshot();
+    snapshot.player_volume = DEFAULT_SINK_VOLUME;
+    snapshot.player_volume_from_server = false;
+
+    const std::string line = field(format_status(snapshot), "player volume");
+    EXPECT_NE(line.find(std::to_string(static_cast<unsigned>(DEFAULT_SINK_VOLUME))),
+              std::string::npos)
+        << line;
+    EXPECT_NE(line.find("no server has set it"), std::string::npos) << line;
+    // And the number itself must never be 0, which is the claim that sent people looking for a
+    // dead player. Taken as the leading token rather than searched for, since "100" contains a 0.
+    EXPECT_NE(line.substr(0, line.find(' ')), "0") << line;
+}
+
+TEST(FormatStatus, AVolumeAServerChoseIsNotMarkedAsADefault) {
+    // The other half: a server that deliberately set full output must not be described as a
+    // default, or the qualifier stops meaning anything.
+    StatusSnapshot snapshot = playing_snapshot();
+    snapshot.player_volume = DEFAULT_SINK_VOLUME;
+    snapshot.player_volume_from_server = true;
+
+    const std::string line = field(format_status(snapshot), "player volume");
+    EXPECT_EQ(line, std::to_string(static_cast<unsigned>(DEFAULT_SINK_VOLUME)));
+}
+
+TEST(FormatStatus, TheQueueModesAreReportedSoTheirCommandsAreVisible) {
+    // `repeat` and `shuffle` are the only subcommands whose effect status could not show, which
+    // left a user unable to see what they had just changed -- or to put it back.
+    StatusSnapshot snapshot = playing_snapshot();
+    snapshot.group_state_known = true;
+
+    for (const auto& [mode, name] : std::vector<std::pair<SendspinRepeatMode, std::string>>{
+             {SendspinRepeatMode::OFF, "off"},
+             {SendspinRepeatMode::ONE, "one"},
+             {SendspinRepeatMode::ALL, "all"}}) {
+        snapshot.group_repeat = mode;
+        EXPECT_EQ(field(format_status(snapshot), "repeat"), name);
+    }
+
+    snapshot.group_shuffle = true;
+    EXPECT_EQ(field(format_status(snapshot), "shuffle"), "on");
+    snapshot.group_shuffle = false;
+    EXPECT_EQ(field(format_status(snapshot), "shuffle"), "off");
+}
+
+TEST(FormatStatus, UnknownQueueModesAreNotPrintedAsOff) {
+    // Same trap the group volume has: a default-constructed controller object is OFF and
+    // unshuffled, so printing it would be a claim about the group rather than an absence of one.
+    StatusSnapshot snapshot = playing_snapshot();
+    snapshot.group_state_known = false;
+
+    const std::string block = format_status(snapshot);
+    EXPECT_EQ(field(block, "repeat"), "unknown");
+    EXPECT_EQ(field(block, "shuffle"), "unknown");
 }
 
 TEST(FormatStatus, TheTransportStateComesFromPlaybackSpeed) {
@@ -677,6 +739,7 @@ TEST(FormatStatus, ADisconnectedPlayerStillReportsWhatItKnows) {
     snapshot.name = "living-room";
     snapshot.connected = false;
     snapshot.player_volume = 80;
+    snapshot.player_volume_from_server = true;
     snapshot.output = "null";
 
     const std::string block = format_status(snapshot);
@@ -699,8 +762,47 @@ TEST(FormatStatus, AnUnknownGroupVolumeIsNotPrintedAsZero) {
     EXPECT_EQ(field(format_status(snapshot), "group volume"), "unknown");
 }
 
-TEST(FormatStatus, ALiveStreamsPositionNamesItsUnknownDuration) {
+TEST(FormatStatus, APlayingPositionIsMarkedAsAnEstimate) {
+    // While the group plays, the library interpolates from the last progress the server sent, so
+    // a server that does not resend it after a seek leaves the figure drifting by however far the
+    // seek moved -- observed against a real server, where both seek forms moved the audio while
+    // this number carried on climbing. Paused, it is the server's own snapshot and needs no mark.
     StatusSnapshot snapshot = playing_snapshot();
+
+    snapshot.playback_speed = 1000;
+    EXPECT_NE(field(format_status(snapshot), "position").find("(estimated)"), std::string::npos);
+
+    snapshot.playback_speed = 0;
+    EXPECT_EQ(field(format_status(snapshot), "position").find("(estimated)"), std::string::npos);
+
+    // And an absent speed is already `unknown`, which is not a figure to qualify.
+    snapshot.playback_speed.reset();
+    snapshot.progress_ms.reset();
+    EXPECT_EQ(field(format_status(snapshot), "position"), "unknown");
+}
+
+TEST(FormatStatus, AConnectedPlayerSaysWhichFieldsAreTheServersWord) {
+    // The misreading this prevents cost real debugging time: `shuffle` and `repeat` read `off`
+    // against a server that acts on them and never reports them back, and the position kept
+    // climbing through seeks that audibly worked. A reader who has just changed something needs
+    // to know which figures can lag before concluding the command failed.
+    const std::string note = field(format_status(playing_snapshot()), "note");
+    EXPECT_FALSE(note.empty());
+    for (const char* field_name : {"position", "repeat", "shuffle"}) {
+        EXPECT_NE(note.find(field_name), std::string::npos) << field_name << " not named: " << note;
+    }
+
+    // Absent when there is no server, since then nothing above it is the server's word.
+    StatusSnapshot disconnected;
+    disconnected.name = "x";
+    EXPECT_EQ(field(format_status(disconnected), "note"), "");
+}
+
+TEST(FormatStatus, ALiveStreamsPositionNamesItsUnknownDuration) {
+    // Paused, so the reading is the server's own snapshot and carries no `(estimated)` marker --
+    // this test is about the clock, not about provenance.
+    StatusSnapshot snapshot = playing_snapshot();
+    snapshot.playback_speed = 0;
     snapshot.progress_ms = 65000;
     snapshot.duration_ms = 0;
     EXPECT_EQ(field(format_status(snapshot), "position"), "1:05 / unknown");
@@ -708,6 +810,7 @@ TEST(FormatStatus, ALiveStreamsPositionNamesItsUnknownDuration) {
 
 TEST(FormatStatus, PositionsPastAnHourCarryTheHour) {
     StatusSnapshot snapshot = playing_snapshot();
+    snapshot.playback_speed = 0;
     snapshot.progress_ms = 3725000;
     snapshot.duration_ms = 7200000;
     EXPECT_EQ(field(format_status(snapshot), "position"), "1:02:05 / 2:00:00");

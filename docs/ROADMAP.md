@@ -101,8 +101,8 @@ The default Linux and Docker backend. In a container this needs only
 - Device enumeration for `-l` through `snd_device_name_hint()`, and `-o <any PCM name>`
   — squeezelite's model, with `null` / `stdout` / `-` still reserved. `-o` defaults to
   `default` wherever the backend is compiled in.
-- Software volume: Q32 fixed-point sample scaling on a quadratic taper, matching
-  upstream's `PortAudioSink::apply_volume_()`. Item 3 moved it to `src/pcm_volume.{h,cpp}`
+- Software volume: Q32 fixed-point sample scaling. The taper started as upstream's quadratic
+  one and is now the spec's `(volume/100)^1.5` (item 7). Item 3 moved it to `src/pcm_volume.{h,cpp}`
   so the PortAudio backend shares one copy rather than carrying a second.
 - libasound's own stderr diagnostics routed through the CLI logger at `debug`.
 
@@ -554,21 +554,21 @@ So the role is now on, and the deliberate addition to the squeezelite model land
 
 **Shipped** in `src/control.h`, `src/control_common.cpp`, `src/control_socket.cpp`,
 `src/control_client.cpp`, `src/cli.{h,cpp}`, `src/main.cpp`, `src/player_listener.{h,cpp}`,
-`src/log.h`, `CMakeLists.txt`, `tests/control_test.cpp`, `tests/scoped_env.h` and
-`scripts/smoke_test.sh`:
+`src/audio_sink.h`, `src/daemon.{h,cpp}`, `src/log.h`, `CMakeLists.txt`,
+`tests/control_test.cpp`, `tests/scoped_env.h` and `scripts/smoke_test.sh`:
 
 - **The whole of `controller@v1`, one subcommand each**: `status`, `play`, `pause`, `stop`,
   `next`, `prev`, `vol`, `mute`, `seek`, `seek-rel`, `repeat`, `shuffle`, `switch`. `repeat`
   and `shuffle` are the two that are not pass-throughs — the mode *is* the command
   (`REPEAT_OFF`/`ONE`/`ALL`, `SHUFFLE`/`UNSHUFFLE`), so `shuffle off` is its own command
   rather than a false-valued parameter. A test walks the table against the library's enum, so
-  a protocol command with no subcommand behind it fails the build's own suite.
-- **`vol` is documented as *group* volume**, and `status` prints `group volume` and
-  `player volume` as two named lines rather than one `volume:`. The server spreads a group
-  volume across the group and clamps per player, so a squeezelite refugee's expectation that
-  `vol 50` moves *this* box is wrong — and one ambiguous line would leave them unable to see
-  that. `switch` is documented for what the spec's switch cycle actually does (re-home this
-  client between groups), not as the "switch playback source" its library comment suggests.
+  a protocol command with no subcommand behind it fails the suite.
+- **`vol` is *group* volume**, and `status` prints `group volume` and `player volume` as two
+  named lines rather than one `volume:`. The server spreads a group volume across the group and
+  clamps per player, so a squeezelite refugee's expectation that `vol 50` moves *this* box is
+  wrong, and one ambiguous line would leave them unable to see that. `switch` is documented for
+  what the spec's switch cycle does — re-home this client between groups — not as the "switch
+  playback source" its library comment suggests.
 - **No thread and no command queue.** `ControlSocket::poll(now_ms)` runs from the main loop
   beside `mdns.poll()`, carrying the same THREAD SAFETY note `src/mdns.h` carries. That is
   forced rather than chosen: `send_command()` reaches `SendspinClient::send_text()` and
@@ -579,93 +579,143 @@ So the role is now on, and the deliberate addition to the squeezelite model land
   `LOOP_INTERVAL_MS`; that is stated rather than fixed by shortening the tick.
 - **Three failure modes kept distinct**, with three exit statuses, because they need three
   different actions: nothing listening (3), the player up but with no server connection (4),
-  and a command absent from the server's `supported_commands` (5). The ordering is the load-
-  bearing part — `on_controller_state_clear()` *empties* `supported_commands` on a disconnect,
-  so a gate that consulted it first would answer "pause is not supported" when the truth is
-  that nothing is connected, sending the operator to read their server's capabilities instead
-  of its connection. `SendspinClient::send_text()` also no-ops silently with no connection, so
-  nothing may report success for a command that never left the process.
-- **A `0600` socket at `$XDG_RUNTIME_DIR/sendspin-cli-<port>.sock`**, the port in the leaf so
-  two players on one host each get their own. The mode is set by bracketing `bind()` with a
+  and a command absent from the server's `supported_commands` (5). The ordering is the
+  load-bearing part — `on_controller_state_clear()` *empties* `supported_commands` on a
+  disconnect, so a gate that consulted it first would answer "pause is not supported" when the
+  truth is that nothing is connected, sending the operator to read their server's capabilities
+  instead of its connection. `send_text()` also no-ops silently with no connection, so nothing
+  may report success for a command that never left the process.
+- **A `0600` socket at `<runtime dir>/sendspin-cli-<port>.sock`**, the port in the leaf so two
+  players on one host each get their own. The mode is set by bracketing `bind()` with a
   `umask()` rather than a later `chmod()`: `bind()` applies the umask, `daemonize()` sets
   `umask(0022)`, and a post-`bind()` `chmod()` leaves a window where any local account can
-  connect. Linux enforces socket-inode permissions on `connect()` and macOS/BSD historically
-  do not, which is the second reason the parent directory must be user-private.
-- **Two sources for the default directory, and no `/tmp` among them.** `$XDG_RUNTIME_DIR`
-  wherever it is set, on every platform, trusted because it is the user's own declaration. Then
-  the platform's own equivalent, which on macOS is `confstr(_CS_DARWIN_USER_TEMP_DIR)` — the
-  per-user `/var/folders` directory launchd already provides. That second source exists because
-  launchd sets no `$XDG_RUNTIME_DIR` *at all*, not even in an interactive shell, so without it
-  the default path never resolved on the one platform the PortAudio backend exists to serve.
+  connect.
+- **Two sources for the runtime directory, and no `/tmp` among them.** `$XDG_RUNTIME_DIR`
+  wherever it is set, on every platform, trusted because it is the user's own declaration — and
+  checked, so a group-writable one is used but warned about. Then the platform's own
+  equivalent, which on macOS is `confstr(_CS_DARWIN_USER_TEMP_DIR)`, the per-user
+  `/var/folders` directory launchd already provides. That second source exists because launchd
+  sets no `$XDG_RUNTIME_DIR` *at all*, not even in an interactive shell, so without it the
+  default path never resolved on the one platform the PortAudio backend exists to serve.
   Deliberately **not `$TMPDIR`**, which usually names the same directory: `confstr()` reads
   nothing from the environment, so unlike `$TMPDIR` it cannot be pointed at a directory someone
   else can write — which is precisely what stops it being the `/tmp` fallback this design
-  refuses. And verified rather than trusted, by `is_private_runtime_dir()`: a directory, owned by
-  the effective uid, with neither the group- nor the other-write bit set. That check is
-  load-bearing rather than decorative, since macOS and the BSDs do not enforce socket-inode
-  permissions on `connect()` at all — on those platforms the directory is the only thing between
-  another local account and this player's transport controls.
+  refuses. Verified rather than trusted by `is_private_runtime_dir()`: a directory, owned by the
+  effective uid, with neither the group- nor the other-write bit. That check is load-bearing
+  rather than decorative, since macOS and the BSDs do not enforce socket-inode permissions on
+  `connect()` at all — there the directory is the only thing between another local account and
+  this player's transport controls. Both sources are impermanent by design (macOS prunes
+  `/var/folders`, Linux clears `$XDG_RUNTIME_DIR` at logout), and `--control-socket` is the
+  answer where that matters.
 - **With neither source available it is still non-fatal.** One `warn` naming the reason and
   `--control-socket`, and the player carries on serving audio — the shape a failed mDNS
-  advertisement already has. In practice that is now the Linux systemd *system* unit case, which
-  wants `RuntimeDirectory=` paired with `--control-socket`; `README.md` says so. There is
-  deliberately no third source: a world-writable directory would let any local account pause
-  playback and `switch` this endpoint out of its group.
+  advertisement already has. In practice that is the Linux systemd *system* unit case, which
+  wants `RuntimeDirectory=` paired with `--control-socket`. There is deliberately no third
+  source: a world-writable directory would let any local account pause playback and `switch`
+  this endpoint out of its group.
 - **A sibling `<path>.lock` under `flock()`**, through the *same* helper `-P` uses. The
-  open/`flock`/classify sequence and its two messages moved out of `PidFile` into
-  `daemon.h`'s `lock_file()`, because there are now two callers and both `README.md` and this
-  file **assert** that the two "already running" refusals are worded alike — sharing the code
-  is what makes that true rather than a coincidence two files apart. Held for the process's
-  life, with `unlink()` + `bind()` underneath it, which is what makes "stale" and "in use"
-  different answers rather than a guess: `unlink()`-then-`bind()` alone races a *live* daemon's
-  socket away, and connect-to-probe is a TOCTOU. Its own lock rather than a second use of `-P`,
-  so `--control-socket` does not acquire a dependency on `-P`. A lock already held is the one
+  open/`flock`/classify sequence and its two messages live in `daemon.h`'s `lock_file()`,
+  because there are now two callers and both `README.md` and this file **assert** that the two
+  "already running" refusals are worded alike — sharing the code is what makes that true rather
+  than a coincidence two files apart. Held for the process's life, with `unlink()` + `bind()`
+  underneath it, which is what makes "stale" and "in use" different answers rather than a
+  guess: `unlink()`-then-`bind()` alone races a *live* daemon's socket away, and
+  connect-to-probe is a TOCTOU. Its own lock rather than a second use of `-P`, so
+  `--control-socket` does not acquire a dependency on `-P`. A lock already held is the one
   control-socket failure that is **fatal**; everything else warns and carries on. Taken above
   `make_audio_sink()`, for the reason the pidfile is: two instances racing should collide on a
-  lock, not on the sound card.
-- **And probed before the fork, so `-z` refuses a duplicate at the terminal.** The socket
-  itself must be bound *after* `daemonize()` — it is one of the resources that invariant exists
-  for — which leaves the refusal in a log the shell has stopped watching, and with no `-f`
-  nowhere at all. So `probe_control_socket()` mirrors `probe_pidfile()`: the parent takes and
-  drops the lock, the child acquires it for real, and only the lock is ever probed. Without it
-  the parity `README.md` claims with `-P` was true of the wording and false of the place.
+  lock, not on the sound card. And probed before the fork, mirroring `probe_pidfile()`, so a
+  duplicate under `-z` is refused at the terminal rather than in a log the shell has stopped
+  watching — the socket itself must be bound *after* `daemonize()`, being one of the resources
+  that invariant exists for.
 - **`argv[1]` split off before `getopt_long()`.** Not by reading getopt's leftovers: glibc
   permutes a positional argument out of the way and the BSDs stop at it, and `seek-rel -5000`
   is indistinguishable from a flag cluster to getopt regardless — so the subcommand and its
   arguments leave argv by *count*, from the table's own arity, before the scan. A subcommand
-  after the flags is told to move rather than called junk. Every argument is validated at
-  parse time, so `vol 500` fails at the terminal like a bad `--buffer-ms` rather than on the
-  wire.
-- **`stream` and the output format are two separate facts**, read separately, because a stream
-  whose format the device *refused* has no format and is still a stream — and that is the case
-  where knowing audio is arriving matters most, since it is arriving and being discarded.
-  Inferring one from the other reported it as `stream: idle` at exactly the moment
-  `PlayerListener` raises an ERROR about the opposite, answering "nothing is being sent to me"
-  to an operator diagnosing "nothing is coming out". So `PlayerListener` owns an explicit flag
-  set above every guard in `on_stream_start()`, and `streaming() && !stream_format()` is the
-  refused case rather than an inconsistency. `StreamFormat` lives in `src/audio_sink.h`, next to
-  the `configure()` argument list it mirrors, rather than in the control channel's header.
-- **A one-command-per-connection wire format**: a line in, `ok` or `error <kind>: <reason>`
-  and any payload out, then the daemon closes. The kind is one machine token so the client can
-  map a refusal onto an exit status without parsing the reason, and the line still reads as
-  English to `socat`. Nothing to version and nothing parsed twice.
-- **104 new tests** (147 to 251), none of which binds a socket: the argv split, every
+  after the flags is told to move rather than called junk. Every argument is validated at parse
+  time, so `vol 500` fails at the terminal like a bad `--buffer-ms` rather than on the wire.
+- **A one-command-per-connection wire format**: a line in, `ok` or `error <kind>: <reason>` and
+  any payload out, then the daemon closes. The kind is one machine token so the client can map
+  a refusal onto an exit status without parsing the reason, and the line still reads as English
+  to `socat`. Nothing to version and nothing parsed twice. The kernel's `listen()` backlog is
+  tied to `MAX_CONTROL_CONNECTIONS` rather than chosen independently, because whichever is
+  smaller is the real limit and only our own cap can explain itself in the log; a connection
+  refused by the cap is *answered* in the protocol's own shape rather than hung up on, and
+  `ECONNREFUSED` and `ENOENT` are reported differently — a socket with nothing behind it is a
+  different problem from no socket at all.
+- **`status` reports what is true locally, and marks what is not.** Four decisions, each one a
+  line that used to say something it had not earned:
+  - **The player's volume is the gain the sink is applying**, tracked in `PlayerListener` — the
+    only caller of `set_volume()`, so the only thing that knows what the sink was told — and
+    marked `(default; no server has set it)` until a server sends one. `PlayerRole::get_volume()`
+    is the wrong source: it stores 0 until a server speaks, while every sink starts at
+    `DEFAULT_SINK_VOLUME`, so an untouched player plays at full while the role reads zero.
+  - **`stream` and the output format are two separate facts.** A stream whose format the device
+    *refused* has no format and is still a stream, and that is when knowing audio is arriving
+    matters most, since it is arriving and being discarded. So `PlayerListener` owns an explicit
+    flag set above every guard in `on_stream_start()`, and `streaming() && !stream_format()` is
+    the refused case rather than an inconsistency. It is also the only thing that tells `pause`
+    from `stop` in the output: both leave `state: paused`, but `pause` keeps `stream: receiving`
+    where `stop` drops it to `idle`.
+  - **`repeat` and `shuffle` are reported at all**, beside the group volume they arrive with,
+    because this CLI can change them and their effect would otherwise be invisible.
+  - **`position` says `(estimated)` while playing**, and one `note:` line names `state`,
+    `position`, `repeat` and `shuffle` as the server's word. See the staleness note below.
+- **The software volume taper is the spec's**, `amplitude = (volume / 100)^1.5`, replacing the
+  `^2` inherited from upstream's `PortAudioSink::update_volume_multiplier_()`. Not a taste call:
+  the spec defines a volume as *perceived loudness* — "volume 50 should be perceived as half as
+  loud as volume 100" — and `^1.5` is the mapping that makes the number mean that. **This is
+  audible for every existing user**, and only in one direction: every volume below 100 gets
+  louder, by about 3 dB at 50, 6 dB at 25 and 10 dB at 10. Computed in floating point because it
+  runs once per volume change, not per sample; `apply_volume()` stays integer Q32. Pinned on the
+  two volumes where the curve is exact — `(1/4)^1.5` is `1/8`, `(1/25)^1.5` is `1/125` — plus a
+  test asserting the perceptual property directly, and one guarding the divergence from upstream
+  so it cannot be tidied back.
+- **`StreamFormat` lives in `src/audio_sink.h`**, next to the `configure()` argument list it
+  mirrors, so the audio adapter does not depend on the control channel's header.
+- **110 new tests** (147 to 257), none of which binds a socket: the argv split, every
   subcommand's argument parse and its protocol mapping, a request round-trip through the wire
-  form, the refusal predicate against hand-built snapshots (including the empty-
+  form, the refusal predicate against hand-built snapshots (including the empty
   `supported_commands` disconnected case), the `status` formatter, the reply status line, line
   framing — partial reads, no trailing newline, CRLF, an empty line, an over-long line, an
-  embedded NUL, and bytes after the first newline — and every rejection path of the directory
-  check, including both symlink directions and `/tmp`. They touch the filesystem, which this
-  suite's boundary allows: what it forbids is opening a device, a socket or the mDNS daemon.
+  embedded NUL, bytes after the first newline — and every rejection path of the directory check,
+  including both symlink directions and `/tmp`. They touch the filesystem, which this suite's
+  boundary allows: what it forbids is opening a device, a socket or the mDNS daemon.
   `tests/scoped_env.h` was lifted out of `last_server_test.cpp` rather than copied so both
   suites share one `$XDG` helper.
 
-**One bug this found, worth writing down**, because it was silent and
-platform-specific: rebuilding argv without POSIX's `argv[argc] == NULL` sentinel breaks BSD
-`getopt_long()`. Its long-option path does `optarg = nargv[optind++]` unconditionally and then
-tests `optarg == NULL`, so the sentinel is the *only* thing that tells it a required value is
-missing — without it, `--port` with no value read one past the end of the array and accepted
-whatever was in memory. It surfaced as a test that segfaulted in a different case on each run.
+**Three things worth writing down**, each one silent if got wrong:
+
+- **Rebuilding argv without POSIX's `argv[argc] == NULL` sentinel breaks BSD `getopt_long()`.**
+  Its long-option path does `optarg = nargv[optind++]` unconditionally and *then* tests
+  `optarg == NULL`, so the sentinel is the only thing that tells it a required value is missing.
+  Without it, `--port` with no value read one past the end of the array and accepted whatever
+  was in memory. It surfaced as a test that segfaulted in a different case on each run.
+- **A player must report the volume it is actually applying**, which is why `main.cpp` calls
+  `player.update_volume(DEFAULT_SINK_VOLUME)` before anything can connect. Four spec rules make
+  it necessary rather than tidy: `client/state`'s player `volume` **MUST** be included when the
+  `volume` command is advertised; *"group volume is the average of the volumes of players in the
+  group that support the `volume` command"*, so group volume is **derived from us** and a
+  misreport corrupts the group reading for every controller; setting group volume works off
+  *"delta = requested_volume - current_group_volume"*, so that misreport then mis-applies every
+  later group volume change by exactly the error — a player claiming 0 while playing at full
+  hears a request for 30 as a cut from full rather than a rise from silence; and *"a server MUST
+  NOT assume these values are unchanged after a reconnect"*. `update_volume()` rather than
+  reaching for the sink, because it does not invoke `on_volume_changed()` — that fires only for
+  server-initiated changes — so `status` still tells a default apart from a volume a server chose.
+- **Four `status` fields are the server's word and can lag what is true**, which is what the
+  `note:` line exists to say. `position` is interpolated forward from the last progress the
+  server sent whenever the group is playing, so a server that does not resend progress after a
+  seek leaves the anchor stale and the figure drifts by however far the seek moved; it is marked
+  `(estimated)` while playing and only while playing, since paused it is the server's own
+  snapshot. `state` comes from the same progress object and shares that staleness. `repeat` and
+  `shuffle` are reported when the server sends them and default to `off` when it does not,
+  because `ServerStateControllerObject` holds them as a plain enum and a plain bool and the
+  parser assigns them only when the field is present — `seek_max_ms` in the same object is an
+  `optional` and does not have the problem. The spec does not oblige a server to republish state
+  after acting, so **an unchanged figure is not evidence a command did nothing**; one `note:`
+  line rather than a qualifier per field, so the block stays scannable and every line stays
+  `key: value`.
 
 **Also fixed here**, because it stood between the smoke test and these checks:
 `check_default_mdns_boot` chose its expected outcome from whether the *host* had an mDNS
@@ -677,55 +727,64 @@ configuration item 12 really produces. It now reads the build's own ready log to
 
 - **The socket path in a config file** → item 8, which owns configuration. `--control-socket`
   is a flag, and `Options::was_given(Opt::ControlSocket)` is the hook a precedence layer needs.
+  Note the ordering constraint: the path's length is validated against `sockaddr_un::sun_path`
+  at parse time, so whatever supplies it has to be resolved before that check.
+- **Two remaining spec deviations in the volume path** → item 13, which owns advertised state
+  matching reality. Persisting `volume` and `muted` across restarts is the spec's RECOMMENDED and
+  needs item 8's store. And the spec says volume changes SHOULD be ramped to avoid clicks;
+  nothing here ramps. The third — the taper — is fixed here, see below.
 - **Hardware volume** → item 15. `vol` is a group command and does not touch the sink.
-- **A `player`-scoped volume subcommand.** The `player` role's own volume and mute are
-  reachable in the library and have no subcommand here, deliberately: every verb this item
-  ships moves the *group*, which is what a controller does. This is **not** item 15, which is
-  about driving a hardware mixer rather than about which scope a command addresses — so if a
-  local "set just this box's level" verb is wanted, it is new scope on this item rather than
-  something already tracked elsewhere.
-- **An interactive TUI over this socket** → item 11. The wire format is deliberately one
-  command per connection, so a long-lived subscribing client is a new shape rather than an
-  extension of this one.
-- **`--no-control` is kept but is not load-bearing.** Unlike `--no-mdns`, which the spec
-  requires of a dialling client, nothing forces it now that the socket is `0600` inside a
-  user-private directory. It stays because it silences the missing-`$XDG_RUNTIME_DIR` warning
-  for a systemd system unit that is only ever driven by its server.
+- **A `player`-scoped volume subcommand.** The `player` role's own volume and mute are reachable
+  in the library and have no subcommand here, deliberately: every verb this item ships moves the
+  *group*, which is what a controller does. This is **not** item 15, which is about driving a
+  hardware mixer rather than about which scope a command addresses — so a local "set just this
+  box's level" verb would be new scope on this item rather than something tracked elsewhere.
+- **An interactive TUI over this socket** → item 11. The wire format is deliberately one command
+  per connection, so a long-lived subscribing client is a new shape rather than an extension.
+- **`--no-control` is kept but is not load-bearing.** Unlike `--no-mdns`, which the spec requires
+  of a dialling client, nothing forces it now that the socket is `0600` inside a user-private
+  directory. It stays because it silences the missing-runtime-directory warning for a systemd
+  system unit that is only ever driven by its server.
 
-**What has and has not been exercised.** The socket was driven by hand on macOS against a real
-daemon: every subcommand dispatched; `status` against a disconnected player; the
-not-connected refusal for each transport verb; `--no-control`; the contradiction between
-`--no-control` and `--control-socket`; a second instance refused before it opened a device or
-a port; a `SIGKILL`ed daemon's stale socket taken over on restart; the socket gone after
-`SIGTERM`; the `0600` mode read off the inode; the connection cap and the 5 s idle deadline;
-the macOS fallback resolving with `$XDG_RUNTIME_DIR` unset and binding 0600
-under `/var/folders`; and, through a raw socket, an empty line, an unknown command, an
-out-of-range argument, an
-embedded NUL, an over-long line, two lines in one write, CRLF, extra whitespace and a request
-with no trailing newline. Clean under `-fsanitize=thread` while every subcommand was driven.
-`ctest` and `scripts/smoke_test.sh` both pass on macOS, in the default and the
-`-DSENDSPIN_CLI_WITH_MDNS=OFF` configurations.
+**What has and has not been exercised.** `ctest` and `scripts/smoke_test.sh` both pass on macOS
+in the default and `-DSENDSPIN_CLI_WITH_MDNS=OFF` configurations, and the whole smoke path is
+clean under `-fsanitize=thread`. The smoke test covers what needs two processes: the socket at
+its default path as `0600`, a `status` round trip, `--no-control`, stale-socket takeover after a
+`SIGKILL`, removal on `SIGTERM`, a second instance refused both in the foreground and — through
+the pre-fork probe — at the terminal under `-z`, and the missing-runtime-directory branch on
+whichever side of it the platform falls. By hand on macOS: the `0600` mode read off the inode,
+the connection cap, the 5 s idle deadline, and through a raw socket an empty line, an unknown
+command, an out-of-range argument, an embedded NUL, an over-long line, two lines in one write,
+CRLF, extra whitespace and a request with no trailing newline.
 
-**Two things this item does not claim.** Nothing here has been driven against a **real
-Sendspin server**, so the paths that need one are reasoned from the library's source and
-covered by unit tests rather than observed: a command actually reaching a server and moving
-playback, the `supported_commands` refusal against a real published set, `seek` against a real
-`seek_max_ms`, and every `status` field that only a connected server fills in (the track, the
-position, the transport state, the group volume). And the **kernel's `listen()` backlog is
-tied to `MAX_CONTROL_CONNECTIONS`** rather than the two being independent, because whichever is
-smaller is the real limit and only our own cap can explain itself in the log — with a backlog
-below the cap, a burst of concurrent subcommands got `ECONNREFUSED` from the kernel and
-arrived at the operator as "nothing is listening" on a healthy player. `ECONNREFUSED` and
-`ENOENT` are now reported differently for the same reason, and a connection refused by the cap
-is *answered* in the protocol's own shape rather than hung up on — the socket is 0600 inside a
-user-private directory, so the peer is this user, and one short write is the difference between
-a subcommand saying why it failed and reporting that the daemon dropped it.
+**Driven against a live `aiosendspin`/Music Assistant server on the LAN**, dialling out with
+`-s`, which is what moved the server-dependent paths from reasoned to observed. All thirteen
+subcommands act. `play`, `pause` and `stop` move real playback, and `stop` is distinguishable
+from `pause` only by the `stream` line. `next` and `prev` walk a real queue in both directions.
+`seek` moves the position, and `seek` past the server's published `seek_max_ms` (231000, exactly
+the track duration) is refused locally with its own exit status. `seek-rel`, `repeat one` and
+`shuffle` were confirmed **behaviourally rather than from reported state**, since this server
+acts on all three without republishing any of them: a relative jump to a track's opening was
+audibly indistinguishable from the absolute seek used as a control; `shuffle off` walked an album
+in order where `shuffle on` produced tracks from four different albums; and `repeat one` held a
+track across its end instead of advancing. `vol` and `mute` were confirmed by ear, alternating
+12/50 with a mute between. `switch` re-establishes the stream, visible as `Stream ended` followed
+by `Stream started` and a fresh codec header. The `status` block fills in from real metadata, and
+reads `unknown` in the window before the first arrives. Reporting the sink's real gain makes the
+server report `group volume: 100` for a single player at 100 where it reported 0 before, and a
+following `vol 30` lands at a real 30. The three failure statuses were exercised against real
+daemons rather than only unit-tested: all twelve transport commands return **4** against a daemon
+that is up and has never reached a server, each naming the connection rather than the command,
+while `status` on that same daemon returns **0** and prints what it knows locally; and **3**
+against a socket with no daemon behind it.
 
-**One caveat the macOS path carries.** The OS prunes `/var/folders` on a schedule, so a very
-long-lived player could in principle have its socket unlinked from under it, which shows up as
-subcommands reporting no daemon until it is restarted. `$XDG_RUNTIME_DIR` on Linux is tmpfs
-cleared at logout, so it is the same class of impermanence rather than a macOS quirk, and
-`--control-socket` is the answer to both.
+**Two limits worth knowing before reading a `status`.** The position is only meaningful behind a
+sink that paces itself: under `-o null` it saturates at the track duration within seconds, because
+the null sink consumes instantly and leaves `on_frames_played` unset, so nothing paces the stream
+and the server sends the whole track as fast as it can — `status` then faithfully reports a server
+that believes the track has finished. Behind `-o portaudio` it advances at 1x. And `switch` was
+only ever exercised with a single group available, where the cycle returns to where it began; the
+multi-group path is unproven.
 
 ### 8. Config file
 
@@ -870,6 +929,26 @@ change:
 - **`extra_startup_silence_ms` cannot be chosen until item 4's start-threshold fix has been
   measured on real hardware.** Under a full-ring start threshold you would have been
   measuring the bug rather than the pipeline.
+
+**Item 7 left two volume deviations to this item**, both found by reading `Sendspin/spec`
+against the code and both about the player role's state or its audio path rather than the
+control channel. (A third, the `(volume/100)^2` taper where the spec says `^1.5`, was fixed in
+item 7 itself.)
+
+- **Volume changes are not ramped.** The spec says clients SHOULD apply them over a short
+  ramp to avoid audible clicks; both sinks store an atomic and jump. The PortAudio backend
+  scales in its callback, so a ramp there also reaches audio already buffered.
+- **`volume` and `muted` are not persisted.** *"Persisting `volume` and `muted` across reboots
+  is RECOMMENDED for players. A server MUST NOT assume these values are unchanged after a
+  reconnect."* Item 7 made the *reported* value truthful at launch
+  (`player.update_volume(DEFAULT_SINK_VOLUME)`), which is the compliance floor; restoring a
+  remembered value instead needs a store, which item 8 owns. Note the same spec section
+  requires `static_delay_ms` to be persisted, which is this item's own subject — so both wants
+  arrive together.
+
+`src/audio_sink.h` names `DEFAULT_SINK_VOLUME` and records beside it that the library's
+`PlayerRole` stores 0 until a server speaks while every sink starts at full. That disagreement
+is now reported honestly rather than resolved; resolving it is this item's call.
 
 ### 14. PortAudio in-place device recovery
 

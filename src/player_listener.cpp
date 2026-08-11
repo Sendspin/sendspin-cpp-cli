@@ -103,10 +103,15 @@ void PlayerListener::on_stream_end() {
 
 void PlayerListener::on_volume_changed(uint8_t volume) {
     this->sink_.set_volume(volume);
+    // Recorded as well as forwarded, so `status` can report the gain the sink is applying rather
+    // than the one PlayerRole stores -- which is 0 until this callback has fired at least once.
+    this->applied_volume_ = volume;
+    this->volume_set_by_server_ = true;
 }
 
 void PlayerListener::on_mute_changed(bool muted) {
     this->sink_.set_muted(muted);
+    this->applied_muted_ = muted;
 }
 
 }  // namespace sendspin_cli

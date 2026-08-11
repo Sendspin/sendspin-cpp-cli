@@ -63,6 +63,33 @@ public:
         return this->streaming_;
     }
 
+    /// @brief The gain the sink is really applying, 0-100, and whether it is muted.
+    ///
+    /// **Not** `PlayerRole::get_volume()`, and the difference is the whole point. The role stores 0
+    /// until a server sends a volume command; the sink runs at DEFAULT_SINK_VOLUME until one
+    /// arrives. So on a player no server has ever set the volume on, the role says 0 and the
+    /// speaker is at full — and `status` reporting the role's number told users their player was
+    /// silent while it was audibly not.
+    ///
+    /// This listener is the only caller of `AudioSink::set_volume()`, which makes it the only
+    /// thing that knows what the sink was actually told. Read on the main loop, where the two
+    /// callbacks that write it also fire.
+    uint8_t applied_volume() const {
+        return this->applied_volume_;
+    }
+
+    bool applied_muted() const {
+        return this->applied_muted_;
+    }
+
+    /// @brief True once a server has set this player's volume, so `status` can say when it has not.
+    ///
+    /// Without this the two states are indistinguishable in the output: a server that deliberately
+    /// set the volume to full, and one that never said anything.
+    bool volume_set_by_server() const {
+        return this->volume_set_by_server_;
+    }
+
     /// @brief The format the sink was configured for, or nothing when it has none.
     ///
     /// Absent between streams, and absent *during* one the device refused or that arrived with
@@ -80,6 +107,12 @@ private:
     /// main loop, where the two stream callbacks that write it also fire -- so unlike the
     /// refusal counters below, neither this nor stream_format_ needs an atomic.
     bool streaming_{false};
+
+    /// What the sink was last told, mirroring the two setters below it. Seeded from the sink's own
+    /// default rather than from 0, because that is what an untouched sink is really applying.
+    uint8_t applied_volume_{DEFAULT_SINK_VOLUME};
+    bool applied_muted_{false};
+    bool volume_set_by_server_{false};
 
     /// Set at stream start only once the sink has accepted the format, cleared at stream end.
     std::optional<StreamFormat> stream_format_;

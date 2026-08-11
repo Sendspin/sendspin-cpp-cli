@@ -253,7 +253,7 @@ private:
     /// is stream_alive_()'s call, not this flag's. Cleared by a configure() that succeeds.
     std::atomic<bool> failed_{false};
 
-    std::atomic<uint8_t> volume_{100};
+    std::atomic<uint8_t> volume_{DEFAULT_SINK_VOLUME};
     std::atomic<bool> muted_{false};
     /// Q32 fixed-point gain: Q32_ONE is unity, 0 is silence. Read by the audio callback.
     std::atomic<uint64_t> volume_multiplier_{Q32_ONE};
