@@ -215,14 +215,16 @@ add_library(sendspin-cli-core STATIC
     src/control_client.cpp
     src/control_common.cpp
     src/control_socket.cpp
+    src/config_file.cpp
     src/daemon.cpp
-    src/last_server.cpp
+    src/key_value_file.cpp
     src/log.cpp
     src/mdns_common.cpp
     src/null_sink.cpp
     src/outbound.cpp
     src/pcm_volume.cpp
     src/player_listener.cpp
+    src/state_store.cpp
     src/supported_formats.cpp
 )
 
@@ -315,12 +317,13 @@ if(SENDSPIN_CLI_BUILD_TESTS)
 
     add_executable(sendspin-cli-tests
         tests/cli_test.cpp
+        tests/config_file_test.cpp
         tests/control_test.cpp
         tests/daemon_test.cpp
         tests/device_spec_test.cpp
         tests/discovery_test.cpp
-        tests/last_server_test.cpp
         tests/pcm_volume_test.cpp
+        tests/state_store_test.cpp
         tests/supported_formats_test.cpp
     )
     target_link_libraries(sendspin-cli-tests PRIVATE sendspin-cli-core GTest::gtest_main)

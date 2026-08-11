@@ -19,6 +19,7 @@
 
 #include "control.h"
 #include "log.h"
+#include "parse_harness.h"
 #include "scoped_env.h"
 
 #include <gtest/gtest.h>
@@ -32,64 +33,6 @@ namespace sendspin_cli {
 namespace {
 
 using sendspin::LogLevel;
-
-/// Runs parse_options() on a command line written as a plain list of words.
-///
-/// Two things this owns rather than the test: the argv array (getopt wants a mutable
-/// `char*[]` and permutes it in place, so nothing may point at a literal), and the
-/// diagnostics stream. Diagnostics go to a tmpfile() so a test can read back the exact
-/// wording -- nothing the parser says reaches the test runner's own stderr.
-class Parse {
-public:
-    explicit Parse(std::vector<std::string> args) : words_(std::move(args)) {
-        this->words_.insert(this->words_.begin(), "sendspin-cli");
-        this->argv_.reserve(this->words_.size() + 1);
-        for (std::string& word : this->words_) {
-            this->argv_.push_back(word.data());
-        }
-        this->argv_.push_back(nullptr);
-
-        this->err_ = std::tmpfile();
-        this->ok_ = parse_options(static_cast<int>(this->words_.size()), this->argv_.data(),
-                                  this->options_, this->err_);
-    }
-
-    ~Parse() {
-        if (this->err_ != nullptr) {
-            std::fclose(this->err_);
-        }
-    }
-
-    Parse(const Parse&) = delete;
-    Parse& operator=(const Parse&) = delete;
-
-    bool ok() const {
-        return this->ok_;
-    }
-
-    const Options& options() const {
-        return this->options_;
-    }
-
-    /// Everything the parser wrote to its diagnostics stream, as one string.
-    std::string diagnostics() {
-        std::rewind(this->err_);
-        std::string text;
-        char buffer[512];
-        size_t read = 0;
-        while ((read = std::fread(buffer, 1, sizeof(buffer), this->err_)) > 0) {
-            text.append(buffer, read);
-        }
-        return text;
-    }
-
-private:
-    std::vector<std::string> words_;
-    std::vector<char*> argv_;
-    Options options_;
-    std::FILE* err_{nullptr};
-    bool ok_{false};
-};
 
 // ---------------------------------------------------------------------------
 // Every flag reaches its field

@@ -24,8 +24,8 @@ using sendspin::LogLevel;
 
 static constexpr const char* LOG_TAG = LOG_TAG_PLAYER;
 
-PlayerListener::PlayerListener(sendspin::PlayerRole& player, AudioSink& sink)
-    : player_(player), sink_(sink) {
+PlayerListener::PlayerListener(sendspin::PlayerRole& player, AudioSink& sink, StateStore* store)
+    : player_(player), sink_(sink), store_(store) {
     // Capture the address by value: capturing the `player` reference parameter itself
     // would leave the callback holding a reference into this constructor's frame.
     this->sink_.on_frames_played = [target = &player](uint32_t frames, int64_t timestamp) {
@@ -106,12 +106,35 @@ void PlayerListener::on_volume_changed(uint8_t volume) {
     // Recorded as well as forwarded, so `status` can report the gain the sink is applying rather
     // than the one PlayerRole stores -- which is 0 until this callback has fired at least once.
     this->applied_volume_ = volume;
-    this->volume_set_by_server_ = true;
+    this->volume_source_ = VolumeSource::Server;
+    this->persist_volume();
 }
 
 void PlayerListener::on_mute_changed(bool muted) {
     this->sink_.set_muted(muted);
     this->applied_muted_ = muted;
+    // A mute is a volume decision a server made too, so it moves the source the same way. Without
+    // that, a player a server had only ever muted would report its gain as one nobody chose.
+    this->volume_source_ = VolumeSource::Server;
+    this->persist_volume();
+}
+
+void PlayerListener::restore_volume(uint8_t volume, bool muted) {
+    this->sink_.set_volume(volume);
+    this->sink_.set_muted(muted);
+    this->applied_volume_ = volume;
+    this->applied_muted_ = muted;
+    this->volume_source_ = VolumeSource::Restored;
+}
+
+void PlayerListener::persist_volume() const {
+    if (this->store_ == nullptr) {
+        return;
+    }
+    // One call, so the pair reaches the disk in one write. A server can send volume and mute in the
+    // same command, which fires both callbacks above inside one drain -- two writes would let a kill
+    // land between them and persist a pair that was never true.
+    this->store_->set_volume_and_muted(this->applied_volume_, this->applied_muted_);
 }
 
 }  // namespace sendspin_cli

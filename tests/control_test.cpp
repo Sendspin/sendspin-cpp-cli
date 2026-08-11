@@ -98,7 +98,7 @@ StatusSnapshot playing_snapshot() {
     snapshot.group_muted = false;
     snapshot.player_volume = 80;
     snapshot.player_muted = false;
-    snapshot.player_volume_from_server = true;
+    snapshot.player_volume_source = VolumeSource::Server;
     snapshot.output = "portaudio";
     return snapshot;
 }
@@ -650,7 +650,7 @@ TEST(FormatStatus, AVolumeNoServerHasSetIsMarkedAsADefault) {
     // It now reports the gain the sink is applying, and says nobody chose it.
     StatusSnapshot snapshot = playing_snapshot();
     snapshot.player_volume = DEFAULT_SINK_VOLUME;
-    snapshot.player_volume_from_server = false;
+    snapshot.player_volume_source = VolumeSource::SinkDefault;
 
     const std::string line = field(format_status(snapshot), "player volume");
     EXPECT_NE(line.find(std::to_string(static_cast<unsigned>(DEFAULT_SINK_VOLUME))),
@@ -667,10 +667,25 @@ TEST(FormatStatus, AVolumeAServerChoseIsNotMarkedAsADefault) {
     // default, or the qualifier stops meaning anything.
     StatusSnapshot snapshot = playing_snapshot();
     snapshot.player_volume = DEFAULT_SINK_VOLUME;
-    snapshot.player_volume_from_server = true;
+    snapshot.player_volume_source = VolumeSource::Server;
 
     const std::string line = field(format_status(snapshot), "player volume");
     EXPECT_EQ(line, std::to_string(static_cast<unsigned>(DEFAULT_SINK_VOLUME)));
+}
+
+TEST(FormatStatus, ARestoredVolumeIsNeitherADefaultNorAServersChoice) {
+    // The third case, and the reason the flag stopped being a bool: a volume read back from the
+    // state store is not DEFAULT_SINK_VOLUME, so calling it a default is false -- and no server
+    // on this connection chose it either, so leaving it unqualified would be a claim one had.
+    StatusSnapshot snapshot = playing_snapshot();
+    snapshot.player_volume = 42;
+    snapshot.player_volume_source = VolumeSource::Restored;
+
+    const std::string line = field(format_status(snapshot), "player volume");
+    EXPECT_NE(line.find("42"), std::string::npos) << line;
+    EXPECT_EQ(line.find("(default"), std::string::npos) << line;
+    EXPECT_NE(line.find("remembered"), std::string::npos) << line;
+    EXPECT_NE(line.find("no server has set it"), std::string::npos) << line;
 }
 
 TEST(FormatStatus, TheQueueModesAreReportedSoTheirCommandsAreVisible) {
@@ -739,7 +754,7 @@ TEST(FormatStatus, ADisconnectedPlayerStillReportsWhatItKnows) {
     snapshot.name = "living-room";
     snapshot.connected = false;
     snapshot.player_volume = 80;
-    snapshot.player_volume_from_server = true;
+    snapshot.player_volume_source = VolumeSource::Server;
     snapshot.output = "null";
 
     const std::string block = format_status(snapshot);

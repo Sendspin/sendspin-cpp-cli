@@ -15,6 +15,7 @@
 #include "cli.h"
 
 #include "audio_sink.h"
+#include "config_file.h"
 #include "control.h"
 #include "log.h"
 #include "mdns.h"
@@ -26,6 +27,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -57,7 +59,61 @@ enum LongOnly {
     OPT_MDNS_NAME,
     OPT_CONTROL_SOCKET,
     OPT_NO_CONTROL,
+    OPT_STATE_DIR,
+    OPT_CONFIG,
 };
+
+/// @brief An option a config file may set: its key, and how a diagnostic names it.
+///
+/// The key is the long flag name minus the dashes, which is what makes `--help` the config
+/// reference rather than a second document to keep in step.
+struct SettableOption {
+    Opt opt;
+    const char* key;
+
+    /// The spelling every message about this option uses. Still the *short* form for the six that
+    /// had one first, because those messages are written into parse_server_url() and the validators
+    /// below -- and because a reader who typed `-s` should not be answered about `--server`.
+    const char* flag;
+};
+
+/// The options a config file may set: the `Opt` enum minus the run shape.
+///
+/// `-l`, `-z`, `--config`, `--help` and `--version` are left out, and so is any subcommand.
+/// Excluding is reversible; debugging a `daemonize` that came out of a file under systemd is not.
+const std::vector<SettableOption>& settable_options() {
+    static const std::vector<SettableOption> table = {
+        {Opt::Device, "output", "-o"},
+        {Opt::Name, "name", "-n"},
+        {Opt::Server, "server", "-s"},
+        {Opt::Pidfile, "pidfile", "-P"},
+        {Opt::Logfile, "logfile", "-f"},
+        {Opt::LogLevel, "log-level", "-d"},
+        {Opt::Port, "port", "--port"},
+        {Opt::BufferMs, "buffer-ms", "--buffer-ms"},
+        {Opt::NoMdns, "no-mdns", "--no-mdns"},
+        {Opt::MdnsName, "mdns-name", "--mdns-name"},
+        {Opt::ControlSocket, "control-socket", "--control-socket"},
+        {Opt::NoControl, "no-control", "--no-control"},
+        {Opt::StateDir, "state-dir", "--state-dir"},
+    };
+    return table;
+}
+
+/// The entry for `opt`, or one apply_option() refuses when the table has none.
+///
+/// The fallback carries `Opt::Config`, which apply_option() answers with "cannot be set this way",
+/// so an option wired into the getopt switch and forgotten in the table fails at its first use
+/// instead of silently writing to whichever field happens to be first in the table.
+const SettableOption& settable_option(Opt opt) {
+    static const SettableOption unmapped{Opt::Config, "", "an option with no config key"};
+    for (const SettableOption& option : settable_options()) {
+        if (option.opt == opt) {
+            return option;
+        }
+    }
+    return unmapped;
+}
 
 bool is_all_digits(const std::string& value) {
     if (value.empty()) {
@@ -143,6 +199,8 @@ bool parse_log_level(const char* str, LogLevel& level) {
 /// the level for one of our categories would either flood the log with unrelated library
 /// debug or show nothing at all from the library. Every line carries a tag instead, which is
 /// per-category filtering after the fact -- and it works on the library's lines too.
+/// @param err Where the ignored-category warning goes, or nullptr to suppress it -- which is what a
+/// value being validated into a scratch `Options` wants, since nothing is going to act on it.
 bool parse_log_spec(const char* spec, LogLevel& level, std::FILE* err) {
     const char* eq = std::strchr(spec, '=');
     if (eq == nullptr) {
@@ -150,6 +208,9 @@ bool parse_log_spec(const char* spec, LogLevel& level, std::FILE* err) {
     }
     if (!parse_log_level(eq + 1, level)) {
         return false;
+    }
+    if (err == nullptr) {
+        return true;
     }
     std::string tags;
     for (const char* tag : LOG_TAGS) {
@@ -163,6 +224,220 @@ bool parse_log_spec(const char* spec, LogLevel& level, std::FILE* err) {
                  "Every line carries a tag (%s), so filter after the fact: "
                  "-d debug 2>&1 | grep ' %s:'\n",
                  static_cast<int>(eq - spec), spec, tags.c_str(), LOG_TAG_MDNS);
+    return true;
+}
+
+/// Parses a flag that is a switch on the command line and needs a word in a config file.
+///
+/// Generous about spelling on purpose. `--no-mdns` carries its answer in the flag's own name, so a
+/// file has to spell one out, and there is no honest way to guess which of `true`, `yes`, `on` and
+/// `1` an operator will reach for. All four are unambiguous, so all four are taken.
+bool parse_bool(const std::string& value, bool& result) {
+    if (value == "true" || value == "yes" || value == "on" || value == "1") {
+        result = true;
+        return true;
+    }
+    if (value == "false" || value == "no" || value == "off" || value == "0") {
+        result = false;
+        return true;
+    }
+    return false;
+}
+
+/// Applies one option's value, and is the *only* place that turns a value into an `Options` field.
+///
+/// That single door is the whole of what layering a config file under the command line means: a
+/// configured value is accepted, refused and normalized by exactly the code a typed one is, with
+/// the same message. Two copies of these rules would drift, and the drift would show up as a
+/// config file the flag surface disagreed with.
+///
+/// @param error Set to the diagnostic when false comes back, in the flag's own words and without
+/// any mention of where the value came from -- the caller prefixes the file and line, because only
+/// it knows whether there was one.
+/// @param err Where parse_log_spec()'s ignored-category warning goes; nothing else writes here.
+/// @return true when the value was accepted, in which case `opt` has also been marked as supplied.
+bool apply_option(const SettableOption& option, const std::string& value, Options& out,
+                  std::string& error, std::FILE* err) {
+    // Refuses an empty value for a flag whose empty case has no meaning: `-n ""` used to fall
+    // through to the hostname, which reads as the flag being ignored, and `-P ""` and `-f ""` would
+    // try to open a file with no name. From a config file the same shape is a truncated `name =`.
+    const auto empty_value = [&option, &error, &value]() {
+        if (!value.empty()) {
+            return false;
+        }
+        error = std::string(option.flag) + " needs a non-empty value";
+        return true;
+    };
+
+    switch (option.opt) {
+        case Opt::Device:
+            if (empty_value()) {
+                return false;
+            }
+            out.device = value;
+            break;
+        case Opt::Name:
+            if (empty_value()) {
+                return false;
+            }
+            out.name = value;
+            break;
+        case Opt::Server:
+            // Not checked for emptiness here: parse_server_url() answers `-s ""` with a line that
+            // says what a server looks like, which is more use than "needs a non-empty value".
+            out.server = value;
+            break;
+        case Opt::Pidfile:
+            if (empty_value()) {
+                return false;
+            }
+            out.pidfile = value;
+            break;
+        case Opt::Logfile:
+            if (empty_value()) {
+                return false;
+            }
+            out.logfile = value;
+            break;
+        case Opt::LogLevel:
+            if (!parse_log_spec(value.c_str(), out.log_level, err)) {
+                error = "unknown log level '" + value + "'";
+                return false;
+            }
+            break;
+        case Opt::Port:
+            if (!parse_port(value, out.port)) {
+                error = "invalid --port '" + value + "' -- expected 1-65535";
+                return false;
+            }
+            break;
+        case Opt::BufferMs:
+            if (!parse_buffer_ms(value, out.buffer_ms)) {
+                error = "invalid --buffer-ms '" + value + "' -- expected " +
+                        std::to_string(MIN_BUFFER_MS) + "-" + std::to_string(MAX_BUFFER_MS);
+                return false;
+            }
+            break;
+        case Opt::MdnsName:
+            if (empty_value()) {
+                return false;
+            }
+            out.mdns_name = value;
+            break;
+        case Opt::ControlSocket:
+            if (empty_value()) {
+                return false;
+            }
+            // Only stored here; the length check and the -z rewrite happen once the whole line and
+            // the config file have been read and --port is known.
+            out.control_socket = value;
+            break;
+        case Opt::StateDir:
+            if (empty_value()) {
+                return false;
+            }
+            out.state_dir = value;
+            break;
+        case Opt::NoMdns:
+            if (!parse_bool(value, out.no_mdns)) {
+                error = "invalid --no-mdns '" + value + "' -- expected true or false";
+                return false;
+            }
+            break;
+        case Opt::NoControl:
+            if (!parse_bool(value, out.no_control)) {
+                error = "invalid --no-control '" + value + "' -- expected true or false";
+                return false;
+            }
+            break;
+        case Opt::ListDevices:
+        case Opt::Daemonize:
+        case Opt::Config:
+            // Not in settable_options(), so no caller can reach these. Listed rather than
+            // defaulted, so adding an option to the enum fails to compile here until it is either
+            // handled or deliberately excluded.
+            error = "internal: " + std::string(option.flag) + " cannot be set this way";
+            return false;
+    }
+    out.mark_given(option.opt);
+    return true;
+}
+
+/// Fills anything the command line did not supply from `config`, and refuses what it cannot read.
+///
+/// **Marks each one as supplied as well as setting it**, and that is load-bearing rather than
+/// tidy: `Options::advertises()` is `!no_mdns && !was_given(Opt::Server)`, so a configured `server`
+/// left unmarked would have this player dial *and* advertise `_sendspin._tcp` -- which the spec
+/// forbids -- while the -s resolution never filled `server_url`, leaving the value inert as well
+/// as non-compliant. `control-socket`'s absolutization and `sun_path` check are gated the same way.
+///
+/// @param subcommand_run True for `sendspin-cli <subcommand>`, which applies only the two options
+/// it actually reads. A configured `output` is still *validated* on that path -- a broken config is
+/// broken whichever way the binary was invoked -- but applying it would only make the "a subcommand
+/// reads only --port and --control-socket" warning fire at every operator who has a config file.
+/// @param origin Filled with `<file>:<line>: ` per option supplied, so the two resolutions that
+/// run *after* this -- the -s URL parse and the socket path's length check -- can still say which
+/// line to go and fix. Only diagnostics read it; no behaviour does, which is why it is not a second
+/// `given_` bitmask.
+/// @param error Set to the first problem, prefixed with the file and the line it is on.
+/// @return false when there is an error to report.
+bool merge_config(const ConfigFile& config, bool subcommand_run, Options& out,
+                  std::map<Opt, std::string>& origin, std::string& error, std::FILE* err) {
+    // Last wins within one file, matching the state store's reader. Resolved up front rather than
+    // by letting the first occurrence mark the option as supplied, which would quietly make it
+    // *first* wins instead.
+    std::map<std::string, size_t> last_line;
+    for (const KeyValueEntry& entry : config.entries) {
+        last_line[entry.key] = entry.line;
+    }
+
+    for (const KeyValueEntry& entry : config.entries) {
+        const std::string where = config.path + ":" + std::to_string(entry.line) + ": ";
+
+        const SettableOption* option = nullptr;
+        for (const SettableOption& candidate : settable_options()) {
+            if (entry.key == candidate.key) {
+                option = &candidate;
+                break;
+            }
+        }
+        if (option == nullptr) {
+            // Fatal, and that includes a real flag that is deliberately not settable -- `daemonize`
+            // is an unknown *key*. A silently ignored typo is the same failure mode a bad -s is
+            // already refused for.
+            error = where + "unknown key '" + entry.key + "'";
+            return false;
+        }
+        if (entry.line != last_line[entry.key]) {
+            continue;
+        }
+        // The command line wins outright: this is the whole precedence rule, and it is one line
+        // because `was_given()` was built for it.
+        if (out.was_given(option->opt)) {
+            continue;
+        }
+        // A subcommand reads only these two, so only these two reach `out`. Everything else is
+        // still validated -- a broken config is broken whichever way the binary was invoked -- but
+        // into a scratch copy nothing reads, because *applying* it would make the "a subcommand
+        // reads only --port and --control-socket" warning below fire at every operator who has a
+        // config file at all.
+        const bool applies =
+            !subcommand_run || option->opt == Opt::Port || option->opt == Opt::ControlSocket;
+        Options scratch;
+        Options& target = applies ? out : scratch;
+
+        std::string message;
+        // No diagnostics stream for a value nothing will act on: `log-level = audio=debug` in a
+        // config would otherwise print its ignored-category warning on every subcommand run, about
+        // a flag nobody typed -- the very noise this whole branch exists to avoid.
+        if (!apply_option(*option, entry.value, target, message, applies ? err : nullptr)) {
+            error = where + message;
+            return false;
+        }
+        if (applies) {
+            origin[option->opt] = where;
+        }
+    }
     return true;
 }
 
@@ -238,12 +513,22 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
     static const struct option long_opts[] = {
         {"help", no_argument, nullptr, 'h'},
         {"version", no_argument, nullptr, OPT_VERSION},
+        // Long aliases for the six squeezelite letters, routed to the same handlers. They exist so
+        // every config key is a flag name: one vocabulary, and --help stays the config reference.
+        {"output", required_argument, nullptr, 'o'},
+        {"name", required_argument, nullptr, 'n'},
+        {"server", required_argument, nullptr, 's'},
+        {"pidfile", required_argument, nullptr, 'P'},
+        {"logfile", required_argument, nullptr, 'f'},
+        {"log-level", required_argument, nullptr, 'd'},
+        {"config", required_argument, nullptr, OPT_CONFIG},
         {"port", required_argument, nullptr, OPT_PORT},
         {"buffer-ms", required_argument, nullptr, OPT_BUFFER_MS},
         {"no-mdns", no_argument, nullptr, OPT_NO_MDNS},
         {"mdns-name", required_argument, nullptr, OPT_MDNS_NAME},
         {"control-socket", required_argument, nullptr, OPT_CONTROL_SOCKET},
         {"no-control", no_argument, nullptr, OPT_NO_CONTROL},
+        {"state-dir", required_argument, nullptr, OPT_STATE_DIR},
         {nullptr, 0, nullptr, 0},
     };
 
@@ -289,9 +574,18 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
             error = std::move(message);
         }
     };
-    // Rejects an empty value for a flag whose empty case has no meaning. `-n ""` used to
-    // fall through to the hostname, which reads as the flag being ignored; `-P ""` and
-    // `-f ""` would try to open a file with no name.
+    // Every settable option goes through apply_option(), so nothing here can validate a typed
+    // value differently from a configured one. This only adapts that function's plain error string
+    // to the deferred, first-wins convention above.
+    const auto apply = [&fail, &out, err](Opt opt, const char* value) {
+        std::string message;
+        if (!apply_option(settable_option(opt), value, out, message, err)) {
+            fail(std::move(message));
+        }
+    };
+    // Rejects an empty value for a flag whose empty case has no meaning. Only --config still needs
+    // this on its own: every other value-taking flag is settable, so its emptiness rule lives in
+    // apply_option() beside the rest of its validation.
     const auto require_value = [&fail](const char* flag, const char* value) {
         if (value[0] != '\0') {
             return true;
@@ -321,92 +615,70 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
            -1) {
         switch (opt) {
             case 'o':
-                if (require_value("-o", optarg)) {
-                    out.device = optarg;
-                    out.mark_given(Opt::Device);
-                }
+                apply(Opt::Device, optarg);
                 break;
             case 'l':
                 out.list_devices = true;
                 out.mark_given(Opt::ListDevices);
                 break;
             case 'n':
-                if (require_value("-n", optarg)) {
-                    out.name = optarg;
-                    out.mark_given(Opt::Name);
-                }
+                apply(Opt::Name, optarg);
                 break;
             case 's':
                 // Only stored here; resolved once below, after the whole line parses.
-                out.server = optarg;
-                out.mark_given(Opt::Server);
+                apply(Opt::Server, optarg);
                 break;
             case 'z':
                 out.daemonize = true;
                 out.mark_given(Opt::Daemonize);
                 break;
             case 'P':
-                if (require_value("-P", optarg)) {
-                    out.pidfile = optarg;
-                    out.mark_given(Opt::Pidfile);
-                }
+                apply(Opt::Pidfile, optarg);
                 break;
             case 'd':
-                if (parse_log_spec(optarg, out.log_level, err)) {
-                    out.mark_given(Opt::LogLevel);
-                } else {
-                    fail("unknown log level '" + std::string(optarg) + "'");
-                }
+                apply(Opt::LogLevel, optarg);
                 break;
             case 'f':
-                if (require_value("-f", optarg)) {
-                    out.logfile = optarg;
-                    out.mark_given(Opt::Logfile);
-                }
+                apply(Opt::Logfile, optarg);
                 break;
             case 'h':
-                // Nothing after --help can matter, so this is the one early return.
+                // Nothing after --help can matter, so this is the one early return -- and it is
+                // above the config file, so a broken config cannot stop --help explaining it.
                 out.show_help = true;
                 return true;
             case OPT_VERSION:
                 out.show_version = true;
                 return true;
-            case OPT_PORT:
-                if (parse_port(optarg, out.port)) {
-                    out.mark_given(Opt::Port);
-                } else {
-                    fail("invalid --port '" + std::string(optarg) + "' -- expected 1-65535");
+            case OPT_CONFIG:
+                if (require_value("--config", optarg)) {
+                    out.config_path = optarg;
+                    out.mark_given(Opt::Config);
                 }
+                break;
+            case OPT_PORT:
+                apply(Opt::Port, optarg);
                 break;
             case OPT_BUFFER_MS:
-                if (parse_buffer_ms(optarg, out.buffer_ms)) {
-                    out.mark_given(Opt::BufferMs);
-                } else {
-                    fail("invalid --buffer-ms '" + std::string(optarg) + "' -- expected " +
-                         std::to_string(MIN_BUFFER_MS) + "-" + std::to_string(MAX_BUFFER_MS));
-                }
+                apply(Opt::BufferMs, optarg);
                 break;
             case OPT_NO_MDNS:
-                out.no_mdns = true;
-                out.mark_given(Opt::NoMdns);
+                // A switch on the command line carries its answer in its own name, so it supplies
+                // the word a config file has to spell out.
+                apply(Opt::NoMdns, "true");
                 break;
             case OPT_MDNS_NAME:
-                if (require_value("--mdns-name", optarg)) {
-                    out.mdns_name = optarg;
-                    out.mark_given(Opt::MdnsName);
-                }
+                apply(Opt::MdnsName, optarg);
                 break;
             case OPT_CONTROL_SOCKET:
-                if (require_value("--control-socket", optarg)) {
-                    // Only stored here; the length check and the -z rewrite happen below, once
-                    // --port is known and the whole line has parsed.
-                    out.control_socket = optarg;
-                    out.mark_given(Opt::ControlSocket);
-                }
+                // Only stored here; the length check and the -z rewrite happen below, once --port
+                // is known and the whole line has parsed.
+                apply(Opt::ControlSocket, optarg);
                 break;
             case OPT_NO_CONTROL:
-                out.no_control = true;
-                out.mark_given(Opt::NoControl);
+                apply(Opt::NoControl, "true");
+                break;
+            case OPT_STATE_DIR:
+                apply(Opt::StateDir, optarg);
                 break;
             case ':':
                 fail("option '" + offending_option(flag_argv, optind) + "' needs a value");
@@ -431,6 +703,42 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
         }
     }
 
+    // The config file is layered in **here**, and the position is the whole design. Above it,
+    // `was_given()` still means exactly what the command line said, so the precedence rule is one
+    // test per option. Below it, everything -- the -s URL resolution, the -z-with-stdout
+    // contradiction, --no-control against --control-socket, and the socket path's absolutization
+    // and `sun_path` length check -- runs over the merged options without knowing a file was
+    // involved. That is the only ordering in which a configured value is validated identically to
+    // a typed one, and it satisfies the socket path's "resolved before the length check" constraint
+    // for free.
+    //
+    // Skipped once something has already failed, so the first complaint stays the useful one, and
+    // skipped for -l: a broken config must not stop the device list. (-h and --version returned
+    // above, so they never reach this.)
+    // Where each merged value came from, for the two refusals below that happen after the merge.
+    std::map<Opt, std::string> config_origin;
+    if (error.empty() && !out.list_devices) {
+        ConfigFile config;
+        std::string reason;
+        if (!load_config_file(out.was_given(Opt::Config) ? out.config_path : std::string(),
+                              config_search_paths(), config, reason)) {
+            fail(std::move(reason));
+        } else {
+            // Left here for the startup log to name, empty when nothing was found.
+            out.config_path = config.path;
+            if (!merge_config(config, !out.subcommand.empty(), out, config_origin, reason, err)) {
+                fail(std::move(reason));
+            }
+        }
+    }
+
+    // Adds the config file and line to a message about one option, when that option came from a
+    // file. A typed value keeps the bare message it always had, since there is nowhere to point at.
+    const auto fail_for = [&fail, &config_origin](Opt opt, std::string message) {
+        const auto found = config_origin.find(opt);
+        fail(found == config_origin.end() ? std::move(message) : found->second + message);
+    };
+
     // Skipped once something has already failed: the first complaint is the useful one,
     // and -s cannot be resolved from a line we are not going to act on anyway.
     if (error.empty() && out.was_given(Opt::Server)) {
@@ -441,15 +749,17 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
             // build lacks: a flag that parses and then quietly discovers nothing is worse
             // than one that says the build cannot do it.
             out.discover = false;
-            fail("-s '" + out.server +
-                 "': this build has no mDNS support, so it cannot discover a server. Rebuild "
-                 "with dns_sd.h available (libavahi-compat-libdnssd-dev on Debian/Ubuntu, "
-                 "avahi-compat-libdns_sd-devel on Fedora), or give -s an address.");
+            fail_for(Opt::Server,
+                     "-s '" + out.server +
+                         "': this build has no mDNS support, so it cannot discover a server. "
+                         "Rebuild with dns_sd.h available (libavahi-compat-libdnssd-dev on "
+                         "Debian/Ubuntu, avahi-compat-libdns_sd-devel on Fedora), or give -s an "
+                         "address.");
 #endif
         } else {
             std::string reason;
             if (!parse_server_url(out.server, out.server_url, reason)) {
-                fail(std::move(reason));
+                fail_for(Opt::Server, std::move(reason));
             }
         }
     }
@@ -493,10 +803,11 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
                 // Refused rather than truncated: a shortened path binds a socket nothing can
                 // find, and every subcommand would then report "no daemon" against a daemon
                 // that is running and healthy.
-                fail("--control-socket '" + out.control_socket + "' is " +
-                     std::to_string(out.control_socket.size()) +
-                     " bytes, and a Unix socket address holds at most " +
-                     std::to_string(control_socket_path_limit() - 1) + " on this platform");
+                fail_for(Opt::ControlSocket,
+                         "--control-socket '" + out.control_socket + "' is " +
+                             std::to_string(out.control_socket.size()) +
+                             " bytes, and a Unix socket address holds at most " +
+                             std::to_string(control_socket_path_limit() - 1) + " on this platform");
             }
         } else {
             const ControlRuntimeDir runtime = control_runtime_dir();
@@ -534,7 +845,7 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
         static constexpr Opt DAEMON_ONLY[] = {
             Opt::Device,   Opt::Name,     Opt::Server,   Opt::Daemonize, Opt::Pidfile,
             Opt::Logfile,  Opt::LogLevel, Opt::BufferMs, Opt::NoMdns,    Opt::MdnsName,
-            Opt::NoControl,
+            Opt::NoControl, Opt::StateDir,
         };
         for (Opt opt : DAEMON_ONLY) {
             if (out.was_given(opt)) {
@@ -572,6 +883,12 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
         }
         if (out.was_given(Opt::Logfile)) {
             out.logfile = absolute_path(out.logfile);
+        }
+        // Same hazard as those two, and the state file is written for the life of the daemon rather
+        // than once at startup: a relative --state-dir names the directory the operator typed it in
+        // to this process and one directly under / to the child that does the writing.
+        if (out.was_given(Opt::StateDir)) {
+            out.state_dir = absolute_path(out.state_dir);
         }
     }
 
@@ -614,7 +931,17 @@ void print_usage(std::FILE* out, const char* prog) {
     std::fprintf(out, "  no server connection, 5 the server does not offer that command,\n");
     std::fprintf(out, "  6 the exchange broke down.\n\n");
     std::fprintf(out, "Options:\n");
-    std::fprintf(out, "  -o <device>   Output device (default: %s). Either a reserved name\n",
+    std::fprintf(out, "  Every option below except -l, -z, --config, --help and --version can\n");
+    std::fprintf(out, "  also be set in a config file, one 'key = value' per line, where the\n");
+    std::fprintf(out, "  key is the long flag name without its dashes ('buffer-ms = 150').\n");
+    std::fprintf(out, "  '#' starts a comment at the start of a line. The command line wins.\n");
+    std::fprintf(out, "  The first of these that exists is read whole; none is fine:\n");
+    for (const std::string& path : config_search_paths()) {
+        std::fprintf(out, "    %s\n", path.c_str());
+    }
+    std::fprintf(out, "\n");
+    std::fprintf(out, "  -o, --output <device>\n");
+    std::fprintf(out, "                Output device (default: %s). Either a reserved name\n",
                  DEFAULT_OUTPUT_DEVICE);
     std::fprintf(out, "                (null, stdout, -), or a <backend>:<device> pair split on\n");
     std::fprintf(out, "                the first colon, where <backend> is one of: %s\n",
@@ -624,8 +951,10 @@ void print_usage(std::FILE* out, const char* prog) {
 #endif
     std::fprintf(out, "                -l lists this host's devices and what they accept\n");
     std::fprintf(out, "  -l            List output devices with their capabilities, and exit\n");
-    std::fprintf(out, "  -n <name>     Friendly name (default: this host's name)\n");
-    std::fprintf(out, "  -s <server>   Connect out to <host>[:<port>] or a ws:// URL\n");
+    std::fprintf(out, "  -n, --name <name>\n");
+    std::fprintf(out, "                Friendly name (default: this host's name)\n");
+    std::fprintf(out, "  -s, --server <server>\n");
+    std::fprintf(out, "                Connect out to <host>[:<port>] or a ws:// URL\n");
     std::fprintf(out, "                (the server's port defaults to %u), retrying until it\n",
                  DEFAULT_REMOTE_SERVER_PORT);
     std::fprintf(out, "                answers. Any -s turns off the mDNS advertisement: the\n");
@@ -647,17 +976,24 @@ void print_usage(std::FILE* out, const char* prog) {
     std::fprintf(out, "  -z            Fork into the background and detach from the terminal.\n");
     std::fprintf(out, "                Refuses -o stdout, whose output would go to /dev/null;\n");
     std::fprintf(out, "                warns without -f, which is where the log would go\n");
-    std::fprintf(out, "  -P <path>     Hold <path> as a locked pidfile, refusing to start if\n");
+    std::fprintf(out, "  -P, --pidfile <path>\n");
+    std::fprintf(out, "                Hold <path> as a locked pidfile, refusing to start if\n");
     std::fprintf(out, "                another instance already holds it. A file left by a\n");
     std::fprintf(out, "                crash needs no cleanup; keep it on a local filesystem\n");
-    std::fprintf(out, "  -d <level>    Log level: none, error, warn, info, debug, verbose\n");
+    std::fprintf(out, "  -d, --log-level <level>\n");
+    std::fprintf(out, "                Log level: none, error, warn, info, debug, verbose\n");
     std::fprintf(out, "                One level for this player and the sendspin library\n");
     std::fprintf(out, "                together. Accepts squeezelite's <category>=<level>\n");
     std::fprintf(out, "                shape, but the category is ignored: every line is\n");
     std::fprintf(out, "                '<L> <tag>: <message>', so filter it with grep\n");
-    std::fprintf(out, "  -f <path>     Write log output to <path> instead of stderr, with a\n");
+    std::fprintf(out, "  -f, --logfile <path>\n");
+    std::fprintf(out, "                Write log output to <path> instead of stderr, with a\n");
     std::fprintf(out, "                UTC timestamp on every line. SIGHUP reopens the path,\n");
     std::fprintf(out, "                so logrotate and newsyslog can rotate it\n");
+    std::fprintf(out, "  --config <path>\n");
+    std::fprintf(out, "                Read this config file instead of searching. Exits 1 if\n");
+    std::fprintf(out, "                it cannot be read, since you named it -- falling back\n");
+    std::fprintf(out, "                would start a player on options nobody chose\n");
     std::fprintf(out, "  --port <port> Port our own server listens on (default: %u)\n",
                  SendspinClientConfig::DEFAULT_SERVER_PORT);
     std::fprintf(out, "  --buffer-ms <ms>\n");
@@ -690,6 +1026,15 @@ void print_usage(std::FILE* out, const char* prog) {
     std::fprintf(out, "                this player\n");
 #endif
     std::fprintf(out, "  --no-control  Do not listen on a control socket at all\n");
+    std::fprintf(out, "  --state-dir <dir>\n");
+    std::fprintf(out, "                Where this player keeps what it remembers across\n");
+    std::fprintf(out, "                restarts -- the last server, the static delay a server\n");
+    std::fprintf(out, "                set, and its volume and mute. Defaults to\n");
+    std::fprintf(out, "                $XDG_STATE_HOME/sendspin-cli, or\n");
+    std::fprintf(out, "                $HOME/.local/state/sendspin-cli. A systemd *system*\n");
+    std::fprintf(out, "                unit has neither, so pair StateDirectory= with this\n");
+    std::fprintf(out, "                flag; with none of the three the player still runs and\n");
+    std::fprintf(out, "                simply remembers nothing\n");
     std::fprintf(out, "  -h, --help    Show this help\n");
     std::fprintf(out, "  --version     Show version information\n\n");
     std::fprintf(out,

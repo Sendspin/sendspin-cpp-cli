@@ -32,6 +32,9 @@ small flag set for identity, output, discovery, logging, and daemonization.
   polled from the main loop, and `sendspin-cli <subcommand>` on the same binary covering the
   whole of `controller@v1` — `status`, `play`/`pause`/`stop`/`next`/`prev`, `vol`, `mute`,
   `seek`, `seek-rel`, `repeat`, `shuffle`, `switch` (item 7).
+- Reads a config file whose keys are the long flag names, layered under the command line, and
+  remembers its own state across restarts — the last server, the static delay a server set, and
+  its volume and mute — in a separate file it writes atomically at `0600` (item 8).
 
 ## Child tasks
 
@@ -786,33 +789,105 @@ that believes the track has finished. Behind `-o portaudio` it advances at 1x. A
 only ever exercised with a single group available, where the cycle returns to where it began; the
 multi-group path is unproven.
 
-### 8. Config file
+### 8. Config file and state store — *shipped*
 
-Persist identity, output device, and server so a daemon does not need a long flag line.
-Also a `SendspinPersistenceProvider` implementation, which the library already supports
-for the last-played server and the static delay.
+A daemon needed its whole flag line every time, and it forgot everything when it stopped.
+Item 5's `src/last_server.{h,cpp}` held one server id in a file of its own, and the library's
+`SendspinPersistenceProvider` was never implemented — so `set_static_delay_adjustable(true)`
+advertised an adjustable delay with nothing behind it, leaving a spec requirement unmet:
+*"Clients must persist `static_delay_ms` locally across reboots and server reconnections."*
 
-Item 5 shipped a deliberately minimal `src/last_server.{h,cpp}` — one server id, one file
-under `$XDG_STATE_HOME` — because discovery needed a tie-break and could not use the
-provider. **The constraint it found belongs here:** `SendspinPersistenceProvider` stores an
-FNV1 *hash* of the server id, computed by `ConnectionManager::fnv1_hash()`, which lives in
-the library's `src/` and is **not installed**. So nothing outside the library can produce a
-matching key without reimplementing a private hash and staying bit-compatible with it
-across `SENDSPIN_GIT_TAG` bumps. Whatever this item does with the provider, the discovery
-tie-break needs the id itself; folding `last_server` into a general config/state layer, and
-making its path configurable, is this item's job.
+**Shipped** in `src/key_value_file.{h,cpp}`, `src/state_store.{h,cpp}`,
+`src/config_file.{h,cpp}`, `src/cli.{h,cpp}`, `src/main.cpp`, `src/player_listener.{h,cpp}`,
+`src/audio_sink.h`, `src/control.h`, `src/control_common.cpp`, `CMakeLists.txt`,
+`tests/state_store_test.cpp`, `tests/config_file_test.cpp`, `tests/parse_harness.h` and
+`scripts/smoke_test.sh`:
 
-The parser hook this needs is already in place (item 1): `Options::was_given()` reports
-which options the user actually typed, so config values can layer *under* the command line
-without the parser's own defaults clobbering them. Format, path search, and the precedence
-logic itself are all still open.
+- **Two files, and the split is the point.** The config file is the operator's and is only ever
+  read; the state file is the daemon's and is only ever written by it. A daemon that rewrote its
+  own config would destroy the comments and ordering someone put there, and a config the daemon
+  could not write would have nowhere to record a volume. One flat `key = value` reader
+  (`src/key_value_file.h`) serves both, so the two formats cannot drift; what differs is only
+  that the config *refuses* a line it cannot read and the state store skips it. Nothing but this
+  daemon writes the latter, so a bad line there means corruption rather than a typo.
+- **Keys are the long flag names minus the dashes**, which is why `-o -n -s -P -f -d` gained
+  `--output --name --server --pidfile --logfile --log-level`. One vocabulary, so `--help` is the
+  config reference rather than a second document to keep in step.
+- **Search order `--config` → `$XDG_CONFIG_HOME` → `$HOME/.config` → `/etc/sendspin-cli.conf`,
+  first found used whole.** No merging across layers, and no `$XDG_CONFIG_DIRS` traversal — that
+  is exactly where this item's scope would have inflated. There is deliberately no
+  `--no-config`: a named file that cannot be read is fatal while a missing layer is silent, so
+  `--config /dev/null` already says it. A file that exists and does not parse stops the run
+  rather than falling through, because an operator's config that is quietly skipped is the
+  failure mode this surface exists to avoid.
+- **The merge sits inside `parse_options()`, after the getopt loop and above every resolution.**
+  That position is load-bearing rather than tidy. Above it, `was_given()` still means what the
+  command line said, so precedence is one test per option. Below it, the `-s` URL parse, the
+  `-z`-with-`-o stdout` contradiction, `--no-control` against `--control-socket`, and the socket
+  path's absolutization and `sun_path` length check all run over merged options without knowing
+  a file was involved — which satisfies item 7's "resolved before the length check" constraint
+  for free. Two alternatives were rejected: seeding `Options` *before* getopt destroys
+  `was_given()`, the entire hook item 1 built, and a separate `load_config()` the caller composes
+  puts merge order in `main.cpp` on every subcommand path and has to re-run the resolution
+  `parse_options()` owns.
+- **The merge marks options as supplied, not merely set.** `Options::advertises()` is
+  `!no_mdns && !was_given(Opt::Server)`, so a configured `server` left unmarked would have this
+  player dial *and* advertise `_sendspin._tcp` — which the spec forbids — while `server_url` was
+  never filled, leaving the value inert as well as non-compliant. So the bit now means "this was
+  supplied" rather than "the user typed this", and there is no second bitmask: nothing downstream
+  needs to tell the two apart. The one exception is *diagnostics* — a small origin map lets the
+  two refusals that happen after the merge still name the file and line.
+- **One validator per option.** Every settable option goes through a single `apply_option()`,
+  which both the getopt switch and the merge call, so `buffer-ms = 5` is refused with exactly the
+  message `--buffer-ms 5` gets, prefixed with the file and line. An unknown key or a malformed
+  line is fatal the same way. `--help`, `--version` and `-l` short-circuit above the config
+  entirely: a broken config must not stop `--help` explaining how to fix it.
+- **Config-settable is the `Opt` enum minus run shape** — `-l`, `-z`, `--config`, `--help`,
+  `--version` and any subcommand are out, and a config naming one is refused as an unknown key.
+  Excluding is reversible; debugging a `daemonize` that came out of a file under systemd is not.
+- **A subcommand reads the config too**, or `sendspin-cli status` would look for a player on the
+  default port rather than the configured one. It applies only `port` and `control-socket` — the
+  two it actually reads — while still *validating* the rest, so the "a subcommand reads only
+  --port and --control-socket" warning stays a report of what was typed instead of firing at
+  every operator who has a config file at all.
+- **`src/last_server.{h,cpp}` folded away** into `StateStore`, which now holds `last-server`,
+  `last-server-hash`, `static-delay-ms`, `volume` and `muted`. Writes go through a temporary, an
+  `fsync` and a `rename` at mode `0600`: a player whose usual way of stopping is losing power
+  must not leave a half-file a later run has to reason about. `--state-dir` overrides the XDG
+  search outright, because a systemd **system** unit has neither variable and gets
+  `/var/lib/sendspin-cli` from `StateDirectory=` — item 10 will want it.
+- **`last-server` and `last-server-hash` stay two independent keys with nothing reconciling
+  them,** and the constraint item 5 found is why. The provider's key is an FNV1 hash computed by
+  `ConnectionManager::fnv1_hash()`, which lives in the library's uninstalled `src/` — so we store
+  the number we are handed and hand it back, and never compute it. Discovery's own tie-break
+  needs the raw id, which the hash cannot be turned back into.
+- **`CliPersistenceProvider` is installed before `add_player()` and `start_server()`**, and
+  neither is negotiable: the pointer is copied into `PlayerRole` at construction, and
+  `start_server()` is what loads the remembered hash. Installed after either, it is a provider
+  the library never asks.
+- **Volume and mute are the CLI's own half**, since the provider has no hook for either.
+  `PlayerListener` writes through on every server change, and startup seeds the sink, the
+  listener's applied pair and the role together. `status` grew a third case for it: a restored
+  volume is neither the sink default nor something this connection's server chose, so
+  `player_volume_from_server` became `VolumeSource`.
 
-Item 7 added a second path worth persisting and left it a flag: `--control-socket`, whose
-default is derived from `$XDG_RUNTIME_DIR` and `--port`. Its `Opt::ControlSocket` entry is
-already in the `was_given()` set, so it layers like the rest. Note the ordering constraint it
-carries: the path's length is validated against `sockaddr_un::sun_path` at parse time, so
-whatever supplies it from a config file has to be resolved before that check rather than
-after it.
+Deliberately **not** here, and each one names its owner rather than being left implied:
+
+- **Applying the static delay to the audio path** — item 13's, and the half this item does not
+  touch. The figure is remembered and reported honestly; nothing shifts playout by it yet.
+- **Ramping volume changes** — item 13's too.
+- **Debouncing the state write.** Every distinct volume a server sends costs one whole-file
+  rewrite plus an `fsync`, on the main loop. Two things blunt it: the library's command slot is
+  latest-wins within a drain, and `set_all()` short-circuits a value that has not changed — so a
+  slider drag costs at most one write per main-loop tick, not one per message, and audio is
+  untouched either way since it runs on the sync task's own thread. What it *can* delay is the
+  control socket and the mDNS poll beside it, on a slow enough card. Left as-is because writing on
+  change is what makes the file true at any instant a player might lose power, which is this
+  item's whole point; if the cost shows up in practice, a dirty flag flushed on a timer and at
+  shutdown is the fix, and it belongs beside item 13's volume work.
+- **Two players sharing one `$XDG_STATE_HOME`** still share one state file and overwrite each
+  other's keys. `--state-dir` is the answer; deriving the filename from `--port` was left out
+  rather than guessed at.
 
 ### 9. Docker
 
@@ -918,7 +993,14 @@ belong to item 10, which will replace the workflow's hand-rolled tar with a stag
 `fixed_delay_us` and `extra_startup_silence_ms` are still at library defaults in
 `src/main.cpp`, and `set_static_delay_adjustable(true)` is advertised with no
 `on_static_delay_changed()` override in `src/player_listener.cpp` — so a controller can
-offer the user a static delay this player then ignores. Split out of item 4.
+offer the user a static delay this player then **applies to nothing**. Split out of item 4.
+
+Item 8 closed the *persistence* half of that: the delay a server sets survives a restart and is
+reported back in the first `client/state`, through `CliPersistenceProvider` and
+`StateStore::static_delay_ms()`. What is still owed is the audio path — reading
+`PlayerRole::get_static_delay_ms()` and actually shifting playout by it. So the number is now
+honest about being remembered and still dishonest about being obeyed, which is a smaller lie
+than before but the same kind.
 
 Two constraints found while scoping that item, and the reason this is not a five-minute
 change:
@@ -938,17 +1020,17 @@ item 7 itself.)
 - **Volume changes are not ramped.** The spec says clients SHOULD apply them over a short
   ramp to avoid audible clicks; both sinks store an atomic and jump. The PortAudio backend
   scales in its callback, so a ramp there also reaches audio already buffered.
-- **`volume` and `muted` are not persisted.** *"Persisting `volume` and `muted` across reboots
-  is RECOMMENDED for players. A server MUST NOT assume these values are unchanged after a
-  reconnect."* Item 7 made the *reported* value truthful at launch
-  (`player.update_volume(DEFAULT_SINK_VOLUME)`), which is the compliance floor; restoring a
-  remembered value instead needs a store, which item 8 owns. Note the same spec section
-  requires `static_delay_ms` to be persisted, which is this item's own subject — so both wants
-  arrive together.
+- **`volume` and `muted` are persisted — item 8 did that half.** It had the store this needed:
+  `PlayerListener` writes both through on every server change, and startup restores them into the
+  sink, the listener's applied pair and `PlayerRole` together. *"Persisting `volume` and `muted`
+  across reboots is RECOMMENDED for players. A server MUST NOT assume these values are unchanged
+  after a reconnect."* What is left for this item is the ramp above, not the storage.
 
 `src/audio_sink.h` names `DEFAULT_SINK_VOLUME` and records beside it that the library's
-`PlayerRole` stores 0 until a server speaks while every sink starts at full. That disagreement
-is now reported honestly rather than resolved; resolving it is this item's call.
+`PlayerRole` stores 0 until a server speaks while every sink starts at full. Item 8 narrowed that
+disagreement rather than resolving it: launch now reports whatever the sink is really applying,
+restored or default, and `VolumeSource` beside it says which of the two — plus whether a server
+chose it. Resolving the underlying mismatch is still this item's call.
 
 ### 14. PortAudio in-place device recovery
 
