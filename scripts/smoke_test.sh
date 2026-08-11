@@ -62,6 +62,14 @@ readonly WORK_DIR
 CONTROL_DIR="$(mktemp -d /tmp/sscli-smoke.XXXXXX)"
 readonly CONTROL_DIR
 
+# Every player started below writes what it remembers -- its volume, its static delay, the server
+# it last handshook with -- so the state directory is pinned inside the scratch tree and exported
+# once, for every child. Without this the suite would read and rewrite the state of whoever is
+# running it, and one leg's remembered volume would then leak into the next.
+XDG_STATE_HOME="$WORK_DIR/state-home"
+export XDG_STATE_HOME
+mkdir -p "$XDG_STATE_HOME"
+
 # Every check stops what it started on the way through, but fail() exits from wherever it is
 # called -- so the pids are tracked and swept here as well, to leave no player holding a port
 # after a failure.

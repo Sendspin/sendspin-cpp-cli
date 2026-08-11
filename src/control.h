@@ -317,10 +317,11 @@ struct StatusSnapshot {
     uint8_t player_volume{DEFAULT_SINK_VOLUME};
     bool player_muted{false};
 
-    /// False until a server has set this player's volume, which makes the line say so. A server
-    /// that deliberately chose full output and one that never spoke are otherwise identical in
-    /// the output, and only one of them is a number anybody chose.
-    bool player_volume_from_server{false};
+    /// Who chose the pair above, which makes the line say so. A server that deliberately chose
+    /// full output, a player nothing has ever spoken to, and one that restored a remembered figure
+    /// are otherwise identical in the output, and only one of the three is a number a server
+    /// asserted.
+    VolumeSource player_volume_source{VolumeSource::SinkDefault};
 
     std::string output;  ///< the sink's `name()`
 };

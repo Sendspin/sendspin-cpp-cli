@@ -94,6 +94,7 @@ enum class Opt : unsigned {
     MdnsName,       ///< --mdns-name
     ControlSocket,  ///< --control-socket
     NoControl,      ///< --no-control
+    StateDir,       ///< --state-dir
 };
 
 /// @brief Everything the flag surface configures.
@@ -142,6 +143,13 @@ struct Options {
     /// who has decided this player is driven only by its server can say so and silence the
     /// warning rather than reading it on every start.
     bool no_control{false};
+
+    /// --state-dir <dir>: where the daemon keeps what it remembers across restarts.
+    ///
+    /// Empty means the XDG search in state_store_path() decides. It earns its place the way
+    /// --no-control does: a systemd *system* unit has neither `$XDG_STATE_HOME` nor `$HOME`, and
+    /// `StateDirectory=` hands it `/var/lib/sendspin-cli` to be pointed at.
+    std::string state_dir;
 
     bool show_help{false};     ///< -h, --help
     bool show_version{false};  ///< --version

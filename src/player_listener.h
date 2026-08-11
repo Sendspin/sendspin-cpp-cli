@@ -18,6 +18,7 @@
 #pragma once
 
 #include "audio_sink.h"
+#include "state_store.h"
 
 #include <sendspin/player_role.h>
 
@@ -42,7 +43,13 @@ public:
     /// Also wires sink.on_frames_played to player.notify_audio_played(), so a backend
     /// that can report real playout timing feeds the sync loop through the same seam.
     /// Both references must outlive this listener.
-    PlayerListener(sendspin::PlayerRole& player, AudioSink& sink);
+    ///
+    /// @param store Where a server-set volume and mute are written through, so the next run can
+    /// restore them -- persisting them is the spec's RECOMMENDED for players, and the library has
+    /// no provider hook for either. Null accepts that this run does not remember; the store
+    /// itself accepts having nowhere to write, so a caller only passes null to opt out entirely.
+    /// Must outlive this listener.
+    PlayerListener(sendspin::PlayerRole& player, AudioSink& sink, StateStore* store = nullptr);
 
     size_t on_audio_write(uint8_t* data, size_t length, uint32_t timeout_ms) override;
     void on_stream_start() override;
@@ -82,13 +89,22 @@ public:
         return this->applied_muted_;
     }
 
-    /// @brief True once a server has set this player's volume, so `status` can say when it has not.
+    /// @brief Where the pair above came from, so `status` can say who chose it.
     ///
-    /// Without this the two states are indistinguishable in the output: a server that deliberately
-    /// set the volume to full, and one that never said anything.
-    bool volume_set_by_server() const {
-        return this->volume_set_by_server_;
+    /// Without this a server that deliberately set the volume to full, a player nothing has ever
+    /// spoken to, and one that restored a remembered figure are all indistinguishable in the
+    /// output -- and only one of the three is a number a server asserted.
+    VolumeSource volume_source() const {
+        return this->volume_source_;
     }
+
+    /// @brief Seeds the sink and the pair above from the state store, without claiming a server
+    /// set them.
+    ///
+    /// Call once at startup, before anything can connect. Goes through here rather than straight
+    /// at the sink because this listener is the only thing that talks to `set_volume()`, so it is
+    /// the only thing that can keep `applied_volume()` honest about what the sink was told.
+    void restore_volume(uint8_t volume, bool muted);
 
     /// @brief The format the sink was configured for, or nothing when it has none.
     ///
@@ -100,8 +116,14 @@ public:
     }
 
 private:
+    /// Writes the applied pair through to the store, if there is one. Reports nothing: a store
+    /// that cannot be written has already said so at load, and a volume change is not the place
+    /// to start warning on every message.
+    void persist_volume() const;
+
     sendspin::PlayerRole& player_;
     AudioSink& sink_;
+    StateStore* store_;
 
     /// Set at stream start before anything can refuse it, cleared at stream end. Read on the
     /// main loop, where the two stream callbacks that write it also fire -- so unlike the
@@ -112,7 +134,7 @@ private:
     /// default rather than from 0, because that is what an untouched sink is really applying.
     uint8_t applied_volume_{DEFAULT_SINK_VOLUME};
     bool applied_muted_{false};
-    bool volume_set_by_server_{false};
+    VolumeSource volume_source_{VolumeSource::SinkDefault};
 
     /// Set at stream start only once the sink has accepted the format, cleared at stream end.
     std::optional<StreamFormat> stream_format_;

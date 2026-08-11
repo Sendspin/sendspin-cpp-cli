@@ -57,6 +57,7 @@ enum LongOnly {
     OPT_MDNS_NAME,
     OPT_CONTROL_SOCKET,
     OPT_NO_CONTROL,
+    OPT_STATE_DIR,
 };
 
 bool is_all_digits(const std::string& value) {
@@ -244,6 +245,7 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
         {"mdns-name", required_argument, nullptr, OPT_MDNS_NAME},
         {"control-socket", required_argument, nullptr, OPT_CONTROL_SOCKET},
         {"no-control", no_argument, nullptr, OPT_NO_CONTROL},
+        {"state-dir", required_argument, nullptr, OPT_STATE_DIR},
         {nullptr, 0, nullptr, 0},
     };
 
@@ -408,6 +410,12 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
                 out.no_control = true;
                 out.mark_given(Opt::NoControl);
                 break;
+            case OPT_STATE_DIR:
+                if (require_value("--state-dir", optarg)) {
+                    out.state_dir = optarg;
+                    out.mark_given(Opt::StateDir);
+                }
+                break;
             case ':':
                 fail("option '" + offending_option(flag_argv, optind) + "' needs a value");
                 break;
@@ -534,7 +542,7 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
         static constexpr Opt DAEMON_ONLY[] = {
             Opt::Device,   Opt::Name,     Opt::Server,   Opt::Daemonize, Opt::Pidfile,
             Opt::Logfile,  Opt::LogLevel, Opt::BufferMs, Opt::NoMdns,    Opt::MdnsName,
-            Opt::NoControl,
+            Opt::NoControl, Opt::StateDir,
         };
         for (Opt opt : DAEMON_ONLY) {
             if (out.was_given(opt)) {
@@ -572,6 +580,12 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
         }
         if (out.was_given(Opt::Logfile)) {
             out.logfile = absolute_path(out.logfile);
+        }
+        // Same hazard as those two, and the state file is written for the life of the daemon rather
+        // than once at startup: a relative --state-dir names the directory the operator typed it in
+        // to this process and one directly under / to the child that does the writing.
+        if (out.was_given(Opt::StateDir)) {
+            out.state_dir = absolute_path(out.state_dir);
         }
     }
 
@@ -690,6 +704,15 @@ void print_usage(std::FILE* out, const char* prog) {
     std::fprintf(out, "                this player\n");
 #endif
     std::fprintf(out, "  --no-control  Do not listen on a control socket at all\n");
+    std::fprintf(out, "  --state-dir <dir>\n");
+    std::fprintf(out, "                Where this player keeps what it remembers across\n");
+    std::fprintf(out, "                restarts -- the last server, the static delay a server\n");
+    std::fprintf(out, "                set, and its volume and mute. Defaults to\n");
+    std::fprintf(out, "                $XDG_STATE_HOME/sendspin-cli, or\n");
+    std::fprintf(out, "                $HOME/.local/state/sendspin-cli. A systemd *system*\n");
+    std::fprintf(out, "                unit has neither, so pair StateDirectory= with this\n");
+    std::fprintf(out, "                flag; with none of the three the player still runs and\n");
+    std::fprintf(out, "                simply remembers nothing\n");
     std::fprintf(out, "  -h, --help    Show this help\n");
     std::fprintf(out, "  --version     Show version information\n\n");
     std::fprintf(out,

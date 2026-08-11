@@ -183,6 +183,20 @@ std::string format_volume(bool known, uint8_t volume, bool muted) {
     return std::to_string(static_cast<unsigned>(volume)) + (muted ? " (muted)" : "");
 }
 
+/// What qualifies the player's own volume, naming who chose it. Empty for a server's own figure,
+/// which needs no explaining and is the only one of the three anybody asserted.
+const char* volume_source_note(VolumeSource source) {
+    switch (source) {
+        case VolumeSource::Restored:
+            return " (remembered from an earlier run; no server has set it)";
+        case VolumeSource::Server:
+            return "";
+        case VolumeSource::SinkDefault:
+            break;
+    }
+    return " (default; no server has set it)";
+}
+
 }  // namespace
 
 const std::vector<ControlSubcommand>& control_subcommands() {
@@ -585,7 +599,7 @@ std::string format_status(const StatusSnapshot& snapshot) {
     // presenting a default as a setting.
     append_line(out, "player volume",
                 format_volume(true, snapshot.player_volume, snapshot.player_muted) +
-                    (snapshot.player_volume_from_server ? "" : " (default; no server has set it)"));
+                    volume_source_note(snapshot.player_volume_source));
 
     // One line rather than a qualifier on each field, so the block stays scannable. It earns its
     // place: every field above it that comes from the server can silently lag, and a reader who

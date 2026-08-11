@@ -30,11 +30,11 @@
 #include "cli.h"
 #include "control.h"
 #include "daemon.h"
-#include "last_server.h"
 #include "log.h"
 #include "mdns.h"
 #include "outbound.h"
 #include "player_listener.h"
+#include "state_store.h"
 #include "supported_formats.h"
 
 #include <sendspin/client.h>
@@ -93,6 +93,43 @@ struct HostNetworkProvider : sendspin::SendspinNetworkProvider {
     bool is_network_ready() override {
         return true;
     }
+};
+
+/// The library's own persistence hook, answered out of the state store.
+///
+/// Both pairs are the library's to drive rather than ours. The last-server hash is produced by
+/// `ConnectionManager::fnv1_hash()`, which is not installed, so this stores the number it is
+/// handed and hands it straight back -- the library uses it to prefer the last-played server among
+/// *inbound* connections. The static delay it reads at `start_server()` and writes on every
+/// change, which is what closes the spec MUST that clients persist `static_delay_ms` across
+/// reboots and server reconnections. Applying that delay to the audio path is a separate want, and
+/// is docs/ROADMAP.md item 13's.
+///
+/// Volume and mute are deliberately absent: the provider has no hook for either, so that half is
+/// PlayerListener's.
+class CliPersistenceProvider final : public sendspin::SendspinPersistenceProvider {
+public:
+    /// `store` must outlive this provider, which must in turn outlive the client.
+    explicit CliPersistenceProvider(StateStore& store) : store_(store) {}
+
+    bool save_last_server_hash(uint32_t hash) override {
+        return this->store_.set_last_server_hash(hash);
+    }
+
+    std::optional<uint32_t> load_last_server_hash() override {
+        return this->store_.last_server_hash();
+    }
+
+    bool save_static_delay(uint16_t delay_ms) override {
+        return this->store_.set_static_delay_ms(delay_ms);
+    }
+
+    std::optional<uint16_t> load_static_delay() override {
+        return this->store_.static_delay_ms();
+    }
+
+private:
+    StateStore& store_;
 };
 
 /// Logs what the server says is playing, and keeps the last of it for `status` to read.
@@ -168,13 +205,10 @@ std::vector<sendspin::AudioSupportedFormatObject> advertised_formats(const Audio
 /// re-establishes the link: per the spec, "servers cannot reclaim clients by reconnecting".
 class OutboundMode {
 public:
-    OutboundMode(const Options& opts, MdnsService& mdns)
-        : opts_(opts), mdns_(mdns), state_path_(last_server_path()) {
-        if (this->state_path_.empty()) {
-            log_line(LogLevel::DEBUG, LOG_TAG_OUTBOUND,
-                     "Neither $XDG_STATE_HOME nor $HOME is set, so the server used will not be "
-                     "remembered across restarts");
-        } else if (load_last_server(this->state_path_, this->remembered_) && opts.discover) {
+    /// `store` must outlive this mode, and is where the chosen server is remembered.
+    OutboundMode(const Options& opts, MdnsService& mdns, StateStore& store)
+        : opts_(opts), mdns_(mdns), store_(store), remembered_(store.last_server()) {
+        if (!this->remembered_.empty() && opts.discover) {
             // Only worth saying when discovering: with an address there is nothing to
             // choose between, and the memory only exists to break that tie.
             log_line(LogLevel::INFO, LOG_TAG_OUTBOUND,
@@ -259,22 +293,23 @@ private:
         }
         this->remembered_this_connection_ = true;
         this->remembered_ = info->server_id;
-        if (this->state_path_.empty()) {
+        if (this->store_.path().empty()) {
+            // Already said once at startup, where it covers everything else the store holds.
             return;
         }
-        if (save_last_server(this->state_path_, this->remembered_)) {
+        if (this->store_.set_last_server(this->remembered_)) {
             log_line(LogLevel::DEBUG, LOG_TAG_OUTBOUND, "Remembered server \"%s\" in %s",
-                     this->remembered_.c_str(), this->state_path_.c_str());
+                     this->remembered_.c_str(), this->store_.path().c_str());
         } else {
             log_line(LogLevel::WARN, LOG_TAG_OUTBOUND,
                      "Could not write %s -- this server will not be preferred after a restart",
-                     this->state_path_.c_str());
+                     this->store_.path().c_str());
         }
     }
 
     const Options& opts_;
     MdnsService& mdns_;
-    std::string state_path_;
+    StateStore& store_;
     std::string remembered_;
     bool remembered_this_connection_{false};
     RetryPacer pacer_;
@@ -389,7 +424,7 @@ private:
         // sample. Reporting the role's number claimed a silent player that was audibly playing.
         snapshot.player_volume = this->player_listener_.applied_volume();
         snapshot.player_muted = this->player_listener_.applied_muted();
-        snapshot.player_volume_from_server = this->player_listener_.volume_set_by_server();
+        snapshot.player_volume_source = this->player_listener_.volume_source();
         snapshot.output = this->sink_.name();
         return snapshot;
     }
@@ -623,6 +658,20 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // What this daemon remembers about itself: the server it last handshook with, the static delay
+    // a server set, and the volume and mute it was last applying. Loaded before the client exists,
+    // because every one of those has to be in place before anything can be published or dialled.
+    StateStore state_store(state_store_path(opts.state_dir));
+    if (state_store.path().empty()) {
+        log_line(LogLevel::DEBUG, LOG_TAG,
+                 "Nothing set --state-dir, $XDG_STATE_HOME or $HOME, so this run remembers "
+                 "nothing across restarts");
+    } else {
+        state_store.load();
+        log_line(LogLevel::DEBUG, LOG_TAG, "State file: %s", state_store.path().c_str());
+    }
+    CliPersistenceProvider persistence(state_store);
+
     sendspin::SendspinClientConfig config;
     // client_id is left empty on purpose: the library then derives a stable id from the
     // network interface MAC, which is the right identity for a fixed endpoint.
@@ -634,13 +683,38 @@ int main(int argc, char* argv[]) {
 
     sendspin::SendspinClient client(std::move(config));
 
+    // Above both add_player() and start_server(), and neither is negotiable: the pointer is copied
+    // into PlayerRole at construction, and start_server() is what loads the remembered server hash.
+    // Installed after either, it is a provider the library never asks. `persistence` outlives
+    // `client` by being declared above it.
+    client.set_persistence_provider(&persistence);
+
     sendspin::PlayerRoleConfig player_config;
     player_config.audio_formats = advertised_formats(*sink);
     sendspin::PlayerRole& player = client.add_player(std::move(player_config));
     player.set_static_delay_adjustable(true);
-    // Report the gain the sink is really applying, before anything can connect.
+    sendspin::MetadataRole& metadata = client.add_metadata();
+    // Added unconditionally, so `client/hello` always carries `controller@v1` -- including under
+    // --no-control, and including on a host with no $XDG_RUNTIME_DIR to put a socket in. That is
+    // deliberate: which roles this client speaks is a property of the build, not of whether one
+    // particular way of reaching it happens to be available. A server that saw the role appear
+    // and disappear with an environment variable would have no way to plan around it.
+    sendspin::ControllerRole& controller = client.add_controller();
+
+    PlayerListener player_listener(player, *sink, &state_store);
+    MetadataLogger metadata_logger;
+    HostNetworkProvider network_provider;
+
+    player.set_listener(&player_listener);
+    metadata.set_listener(&metadata_logger);
+    client.set_network_provider(&network_provider);
+
+    // Put the remembered gain back, and report the gain the sink is really applying, before
+    // anything can connect. Persisting these is the spec's RECOMMENDED for players; with nothing
+    // remembered the pair falls back to what an untouched sink is already doing.
     //
-    // Not cosmetic, and not a preference -- three spec rules make it necessary. `client/state`'s
+    // Reporting it is not cosmetic and not a preference -- three spec rules make it necessary,
+    // and they apply to a restored figure exactly as they did to the default. `client/state`'s
     // `volume` MUST be included when a player advertises the `volume` command, which this one
     // does. Group volume is *derived* from us: "Group volume is the average of the volumes of
     // players in the group that support the `volume` command", so a player reporting a figure it
@@ -650,29 +724,26 @@ int main(int argc, char* argv[]) {
     // claiming 0 while playing at full hears a request for 30 as a cut from full, not a rise.
     //
     // The library's own default is 0 while every AudioSink starts at DEFAULT_SINK_VOLUME, so
-    // without this the two disagree from the first message. update_volume() is the right call
-    // rather than reaching for the sink: it does not invoke on_volume_changed(), which fires only
-    // for server-initiated changes, so `status` still distinguishes this from a volume a server
-    // chose.
-    //
-    // Persisting volume and mute across restarts is the spec's RECOMMENDED and is deliberately
-    // not done here -- that needs a store, which docs/ROADMAP.md item 8 owns.
-    player.update_volume(DEFAULT_SINK_VOLUME);
-    sendspin::MetadataRole& metadata = client.add_metadata();
-    // Added unconditionally, so `client/hello` always carries `controller@v1` -- including under
-    // --no-control, and including on a host with no $XDG_RUNTIME_DIR to put a socket in. That is
-    // deliberate: which roles this client speaks is a property of the build, not of whether one
-    // particular way of reaching it happens to be available. A server that saw the role appear
-    // and disappear with an environment variable would have no way to plan around it.
-    sendspin::ControllerRole& controller = client.add_controller();
-
-    PlayerListener player_listener(player, *sink);
-    MetadataLogger metadata_logger;
-    HostNetworkProvider network_provider;
-
-    player.set_listener(&player_listener);
-    metadata.set_listener(&metadata_logger);
-    client.set_network_provider(&network_provider);
+    // without this the two disagree from the first message. The pair goes to the sink through
+    // restore_volume() and to the role through update_volume()/update_muted(), which is what keeps
+    // all three in step; neither role call invokes the listener's callbacks, which fire only for
+    // server-initiated changes, so `status` still reports this as remembered rather than as
+    // something a server chose.
+    const std::optional<uint8_t> remembered_volume = state_store.volume();
+    const std::optional<bool> remembered_muted = state_store.muted();
+    const uint8_t volume = remembered_volume.value_or(DEFAULT_SINK_VOLUME);
+    const bool muted = remembered_muted.value_or(false);
+    // Only when something really was remembered: restore_volume() is also what marks the pair as
+    // restored, and a run that found nothing must still report its volume as the default nobody
+    // chose rather than claiming an earlier run picked it.
+    if (remembered_volume.has_value() || remembered_muted.has_value()) {
+        player_listener.restore_volume(volume, muted);
+        log_line(LogLevel::INFO, LOG_TAG_PLAYER, "Restored volume %u%s from %s",
+                 static_cast<unsigned>(volume), muted ? " (muted)" : "",
+                 state_store.path().c_str());
+    }
+    player.update_volume(volume);
+    player.update_muted(muted);
 
     if (!client.start_server()) {
         log_fatal(LOG_TAG, "could not start the Sendspin server on port %u", opts.port);
@@ -707,7 +778,7 @@ int main(int argc, char* argv[]) {
                      MDNS_SERVER_SERVICE, opts.discover_name.empty() ? "" : " named \"",
                      opts.discover_name.c_str(), opts.discover_name.empty() ? "" : "\"");
         }
-        outbound = std::make_unique<OutboundMode>(opts, mdns);
+        outbound = std::make_unique<OutboundMode>(opts, mdns, state_store);
     }
 
     while (g_running.load()) {

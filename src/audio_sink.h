@@ -81,6 +81,18 @@ struct SinkCapabilities {
 /// `status` has to report the gain that is actually applied rather than the one the role stores.
 inline constexpr uint8_t DEFAULT_SINK_VOLUME = 100;
 
+/// @brief Where the gain a sink is applying came from, which `status` has to be able to say.
+///
+/// Three cases rather than two, because a volume restored from the state store is neither of the
+/// originals: it is not DEFAULT_SINK_VOLUME above, so calling it a default would be false, and no
+/// server on this connection chose it either. A reader who cannot tell those apart cannot tell
+/// whether the number in front of them is one anybody picked.
+enum class VolumeSource {
+    SinkDefault,  ///< nothing has set it: DEFAULT_SINK_VOLUME, unmuted
+    Restored,     ///< read back from the state store at startup
+    Server,       ///< a server sent a volume or mute command this run
+};
+
 /// @brief The three parameters configure() takes, as one value.
 ///
 /// Here rather than with the code that reports it, because it is exactly
