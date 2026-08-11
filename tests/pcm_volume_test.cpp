@@ -22,6 +22,8 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
+
 #include <cstdint>
 #include <vector>
 
@@ -59,10 +61,33 @@ TEST(Q32GainFor, MuteAndZeroAreBothSilence) {
     EXPECT_EQ(q32_gain_for(50, true), 0U) << "mute has to win over the volume, not blend with it";
 }
 
-TEST(Q32GainFor, TheTaperIsQuadraticAndMonotonic) {
-    // (50/100)^2 == 0.25, so half the slider is a quarter of full scale.
-    EXPECT_EQ(q32_gain_for(50, false), Q32_ONE / 4);
+TEST(Q32GainFor, TheTaperIsTheSpecCurve) {
+    // The spec's `amplitude = (volume / 100)^1.5`, pinned on the two volumes where that has an
+    // exact answer rather than on a rounded decimal: (1/4)^1.5 is exactly 1/8, and (1/25)^1.5 is
+    // exactly 1/125. If either of these drifts, the curve has changed.
+    EXPECT_EQ(q32_gain_for(25, false), Q32_ONE / 8);
+    EXPECT_EQ(q32_gain_for(4, false), Q32_ONE / 125);
 
+    // And at half the slider, where the answer is irrational: 0.5^1.5 = 0.35355..., so within a
+    // count or two of rounding.
+    EXPECT_NEAR(static_cast<double>(q32_gain_for(50, false)),
+                0.3535533905932738 * static_cast<double>(Q32_ONE), 2.0);
+}
+
+TEST(Q32GainFor, TheTaperIsNotUpstreamsQuadraticOne) {
+    // Guarding a deliberate divergence, so it cannot be "tidied" back. Upstream's
+    // update_volume_multiplier_() uses (volume/100)^2, which the spec's own note rules out by
+    // defining volume as perceived loudness. Quadratic would put volume 50 at a quarter of full
+    // scale; the spec puts it at 0.354, about 3 dB louder.
+    EXPECT_NE(q32_gain_for(50, false), Q32_ONE / 4);
+    EXPECT_GT(q32_gain_for(50, false), Q32_ONE / 4);
+
+    // The divergence widens as the slider drops -- 6 dB at volume 25, where quadratic gives 1/16
+    // and the spec gives 1/8.
+    EXPECT_EQ(q32_gain_for(25, false), 2 * (Q32_ONE / 16));
+}
+
+TEST(Q32GainFor, TheTaperIsMonotonicAndNeverAmplifies) {
     uint64_t previous = 0;
     for (uint8_t volume = 1; volume <= 100; ++volume) {
         const uint64_t gain = q32_gain_for(volume, false);
@@ -70,6 +95,21 @@ TEST(Q32GainFor, TheTaperIsQuadraticAndMonotonic) {
         EXPECT_LE(gain, Q32_ONE) << "volume " << static_cast<int>(volume) << " exceeded unity";
         previous = gain;
     }
+}
+
+TEST(Q32GainFor, AVolumeIsPerceivedLoudnessRatherThanAmplitude) {
+    // The property the exponent exists to give, stated as the spec states it: "volume 50 should
+    // be perceived as half as loud as volume 100". Perceived loudness goes as amplitude^(1/1.5),
+    // so inverting the curve must recover the volume ratio -- which is what makes the number on a
+    // controller's slider mean something to a listener.
+    const auto perceived = [](uint8_t volume) {
+        return std::pow(static_cast<double>(q32_gain_for(volume, false)) /
+                            static_cast<double>(Q32_ONE),
+                        1.0 / 1.5);
+    };
+    EXPECT_NEAR(perceived(50) / perceived(100), 0.5, 0.001);
+    EXPECT_NEAR(perceived(25) / perceived(100), 0.25, 0.001);
+    EXPECT_NEAR(perceived(75) / perceived(100), 0.75, 0.001);
 }
 
 // ---------------------------------------------------------------------------

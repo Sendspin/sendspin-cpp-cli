@@ -298,6 +298,12 @@ is a follow-up. The one audible difference: PortAudio scales in its audio
 callback, so a volume change also reaches audio already buffered, where ALSA
 scales on the way in and so only affects what has not been written yet.
 
+The curve is the one the spec names, `amplitude = (volume / 100)^1.5`, because a
+Sendspin volume is **perceived loudness** rather than amplitude — volume 50 is
+meant to sound half as loud as 100, and that exponent is what makes the number on
+a controller's slider mean that. It is deliberately not upstream's `^2`, which is
+about 3 dB quieter at volume 50 and 6 dB at 25.
+
 ### Buffering, and what gets advertised
 
 `--buffer-ms <ms>` (10–2000, default 100) is how much audio the output backend

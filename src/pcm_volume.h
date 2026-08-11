@@ -28,11 +28,26 @@ inline constexpr uint64_t Q32_ONE = UINT64_C(1) << 32;
 /// @brief The Q32 gain a 0-100 volume and a mute flag come to.
 ///
 /// Muted, or a volume of 0, is 0 (silence); 100 or above is Q32_ONE (unity, so a caller can
-/// skip the scaling entirely). In between the taper is quadratic, `(volume/100)^2`, which is
-/// close enough to perceptually uniform to feel linear on a controller's slider.
+/// skip the scaling entirely). In between the curve is the one the Sendspin spec names:
 ///
-/// Shared by every backend that scales samples itself, so a stream sounds the same however
-/// it is played out. Lifted from upstream's `PortAudioSink::update_volume_multiplier_()`.
+///     amplitude = (volume / 100)^1.5
+///
+/// That exponent is not a taste call. The spec defines a volume as *perceived loudness* rather
+/// than amplitude -- "volume 50 should be perceived as half as loud as volume 100" -- and ^1.5
+/// is the mapping that makes the number mean that. Upstream's
+/// `PortAudioSink::update_volume_multiplier_()`, which the rest of this file is lifted from,
+/// uses `^2` instead; that is about 3 dB quiet at volume 50 and 6 dB at 25, so this is a
+/// deliberate divergence from it rather than an oversight.
+///
+/// Two exact anchors worth knowing when reading the tests: `(1/4)^1.5` is exactly `1/8`, and
+/// `(1/25)^1.5` is exactly `1/125`, so volume 25 and volume 4 land on round fractions of unity.
+///
+/// Shared by every backend that scales samples itself, so a stream sounds the same however it is
+/// played out.
+///
+/// `volume` and `muted` are deliberately separate parameters rather than one pre-combined gain:
+/// the spec makes them independent -- "a volume change MUST NOT clear the mute state" -- so each
+/// sink stores both and recomputes this, and a volume command arriving while muted stays muted.
 uint64_t q32_gain_for(uint8_t volume, bool muted);
 
 /// @brief Scales `len` bytes of signed little-endian PCM by a Q32 gain, in place.

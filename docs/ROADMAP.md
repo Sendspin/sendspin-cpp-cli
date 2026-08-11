@@ -101,8 +101,8 @@ The default Linux and Docker backend. In a container this needs only
 - Device enumeration for `-l` through `snd_device_name_hint()`, and `-o <any PCM name>`
   — squeezelite's model, with `null` / `stdout` / `-` still reserved. `-o` defaults to
   `default` wherever the backend is compiled in.
-- Software volume: Q32 fixed-point sample scaling on a quadratic taper, matching
-  upstream's `PortAudioSink::apply_volume_()`. Item 3 moved it to `src/pcm_volume.{h,cpp}`
+- Software volume: Q32 fixed-point sample scaling. The taper started as upstream's quadratic
+  one and is now the spec's `(volume/100)^1.5` (item 7). Item 3 moved it to `src/pcm_volume.{h,cpp}`
   so the PortAudio backend shares one copy rather than carrying a second.
 - libasound's own stderr diagnostics routed through the CLI logger at `debug`.
 
@@ -661,6 +661,16 @@ So the role is now on, and the deliberate addition to the squeezelite model land
     because this CLI can change them and their effect would otherwise be invisible.
   - **`position` says `(estimated)` while playing**, and one `note:` line names `state`,
     `position`, `repeat` and `shuffle` as the server's word. See the staleness note below.
+- **The software volume taper is the spec's**, `amplitude = (volume / 100)^1.5`, replacing the
+  `^2` inherited from upstream's `PortAudioSink::update_volume_multiplier_()`. Not a taste call:
+  the spec defines a volume as *perceived loudness* — "volume 50 should be perceived as half as
+  loud as volume 100" — and `^1.5` is the mapping that makes the number mean that. **This is
+  audible for every existing user**, and only in one direction: every volume below 100 gets
+  louder, by about 3 dB at 50, 6 dB at 25 and 10 dB at 10. Computed in floating point because it
+  runs once per volume change, not per sample; `apply_volume()` stays integer Q32. Pinned on the
+  two volumes where the curve is exact — `(1/4)^1.5` is `1/8`, `(1/25)^1.5` is `1/125` — plus a
+  test asserting the perceptual property directly, and one guarding the divergence from upstream
+  so it cannot be tidied back.
 - **`StreamFormat` lives in `src/audio_sink.h`**, next to the `configure()` argument list it
   mirrors, so the audio adapter does not depend on the control channel's header.
 - **110 new tests** (147 to 257), none of which binds a socket: the argv split, every
@@ -719,13 +729,10 @@ configuration item 12 really produces. It now reads the build's own ready log to
   is a flag, and `Options::was_given(Opt::ControlSocket)` is the hook a precedence layer needs.
   Note the ordering constraint: the path's length is validated against `sockaddr_un::sun_path`
   at parse time, so whatever supplies it has to be resolved before that check.
-- **Three spec deviations in the volume path** → item 13, which owns advertised state matching
-  reality. Persisting `volume` and `muted` across restarts is the spec's RECOMMENDED and needs
-  item 8's store. The software taper is `(volume/100)^2` where the spec says
-  *"`amplitude = (volume / 100)^1.5`"* — about 3 dB quiet at volume 50 and 6 dB at 25, inherited
-  from upstream's `PortAudioSink::apply_volume_()` and shared by both sinks through
-  `src/pcm_volume.cpp`. And the spec says volume changes SHOULD be ramped to avoid clicks;
-  nothing here ramps.
+- **Two remaining spec deviations in the volume path** → item 13, which owns advertised state
+  matching reality. Persisting `volume` and `muted` across restarts is the spec's RECOMMENDED and
+  needs item 8's store. And the spec says volume changes SHOULD be ramped to avoid clicks;
+  nothing here ramps. The third — the taper — is fixed here, see below.
 - **Hardware volume** → item 15. `vol` is a group command and does not touch the sink.
 - **A `player`-scoped volume subcommand.** The `player` role's own volume and mute are reachable
   in the library and have no subcommand here, deliberately: every verb this item ships moves the
@@ -923,16 +930,11 @@ change:
   measured on real hardware.** Under a full-ring start threshold you would have been
   measuring the bug rather than the pipeline.
 
-**Item 7 added three volume deviations to this item**, all found by reading `Sendspin/spec`
-against the code and all in `src/pcm_volume.cpp` or the player role's state, not the control
-channel:
+**Item 7 left two volume deviations to this item**, both found by reading `Sendspin/spec`
+against the code and both about the player role's state or its audio path rather than the
+control channel. (A third, the `(volume/100)^2` taper where the spec says `^1.5`, was fixed in
+item 7 itself.)
 
-- **The software taper is wrong.** `q32_gain_for()` computes `(volume/100)^2` where the spec
-  says *"`amplitude = (volume / 100)^1.5`"* — roughly 3 dB quiet at volume 50 and 6 dB at 25.
-  Inherited from upstream's `PortAudioSink::apply_volume_()` and shared by both sinks, so
-  fixing it changes audible behaviour for every existing user and wants saying out loud in a
-  release note. `tests/pcm_volume_test.cpp` pins the current curve and would need updating
-  with it.
 - **Volume changes are not ramped.** The spec says clients SHOULD apply them over a short
   ramp to avoid audible clicks; both sinks store an atomic and jump. The PortAudio backend
   scales in its callback, so a ramp there also reaches audio already buffered.
