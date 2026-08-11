@@ -47,6 +47,10 @@ void PlayerListener::on_stream_start() {
     // stream's refusal and report its audio as discarded.
     this->stream_refused_.store(false, std::memory_order_relaxed);
     this->refused_bytes_.store(0, std::memory_order_relaxed);
+    // Above every guard below, so a stream that arrives with incomplete parameters -- or one the
+    // device then refuses -- still reports as a stream. Audio is arriving either way, and that is
+    // the whole of what this flag says.
+    this->streaming_ = true;
     this->stream_format_.reset();
 
     const sendspin::ServerPlayerStreamObject& params = this->player_.get_current_stream_params();
@@ -84,6 +88,7 @@ void PlayerListener::on_stream_end() {
     // it first is what stops a write racing this from adding to a total already taken.
     const bool refused = this->stream_refused_.exchange(false, std::memory_order_relaxed);
     const uint64_t discarded = this->refused_bytes_.exchange(0, std::memory_order_relaxed);
+    this->streaming_ = false;
     this->stream_format_.reset();
     if (refused) {
         cli_log(LogLevel::ERROR,

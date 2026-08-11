@@ -419,6 +419,14 @@ Every transport verb the protocol has, one subcommand each — `status`, `play`,
 `pause`, `stop`, `next`, `prev`, `vol`, `mute`, `seek`, `seek-rel`, `repeat`,
 `shuffle`, `switch`. `--help` lists them with their arguments.
 
+Two `status` lines are worth reading together. `state` is the **group's** transport
+state, from the metadata `playback_speed`, and reads `unknown` rather than guessing
+when the server has sent no progress. `stream` is whether audio is arriving at
+**this** endpoint, which is a different fact — a player dropped from the group loses
+it while the group plays on. A `stream: receiving` line with no format after the
+device name is the case where the device *refused* the stream's format and its audio
+is being discarded; the log says so loudly at the same moment.
+
 **Three of them are easy to misread, so:**
 
 - **`vol` is the *group* volume**, not this box's output level. It goes out as a
@@ -479,13 +487,19 @@ E control: another sendspin-cli is already running -- it holds the lock on
 ```
 
 That comes from an exclusive `flock()` on a sibling `<path>.lock`, held for the
-process's life, with the socket unlinked and rebound underneath it. The lock is
-what makes "stale" and "in use" different answers: a player killed with `SIGKILL`
-has its descriptor closed by the kernel, so its leftover socket file has no lock
-and is simply taken over on the next start — no cleanup step. `unlink()`-then-
-`bind()` on its own would race a *live* player's socket away, and connecting to
-probe is a TOCTOU. (The lock file itself is left behind; it holds nothing, and
-removing it would reintroduce a race.)
+process's life, with the socket unlinked and rebound underneath it — the same
+`lock_file()` helper `-P` uses, which is what makes the two refusals identically
+worded rather than coincidentally so. The lock is what makes "stale" and "in use"
+different answers: a player killed with `SIGKILL` has its descriptor closed by the
+kernel, so its leftover socket file has no lock and is simply taken over on the
+next start — no cleanup step. `unlink()`-then-`bind()` on its own would race a
+*live* player's socket away, and connecting to probe is a TOCTOU. (The lock file
+itself is left behind; it holds nothing, and removing it would reintroduce a race.)
+
+Under `-z` the refusal still reaches the **terminal**, not just the log. The socket
+has to be bound after the fork — it is one of the resources that invariant exists
+for — so the parent probes the lock first and exits `1` at the shell, exactly as a
+locked `-P` does. The child's own acquire is still the authoritative one.
 
 **Exit status is the interface for scripts.** The three ways a command can fail to
 land are three different statuses, because they need three different actions:

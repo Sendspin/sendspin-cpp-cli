@@ -597,15 +597,24 @@ So the role is now on, and the deliberate addition to the squeezelite model land
   `--control-socket`, and the player carries on serving audio — the shape a failed mDNS
   advertisement already has. The cost is that a systemd *system* unit and macOS (launchd sets
   no such variable) both need an explicit `--control-socket`; `README.md` says so.
-- **A sibling `<path>.lock` under `flock()`**, reusing the idiom `src/daemon.cpp` already
-  argues for over an `O_EXCL` create and a pid-and-signal probe. Held for the process's life,
-  with `unlink()` + `bind()` underneath it — which is what makes "stale" and "in use"
-  different answers rather than a guess. `unlink()`-then-`bind()` alone races a *live*
-  daemon's socket away, and connect-to-probe is a TOCTOU. Its own lock rather than a second
-  use of `-P`, so `--control-socket` does not acquire a dependency on `-P`. A lock already
-  held is the one control-socket failure that is **fatal**, worded like the `-P` refusal;
-  everything else warns and carries on. The lock is taken above `make_audio_sink()`, for the
-  reason the pidfile is: two instances racing should collide on a lock, not on the sound card.
+- **A sibling `<path>.lock` under `flock()`**, through the *same* helper `-P` uses. The
+  open/`flock`/classify sequence and its two messages moved out of `PidFile` into
+  `daemon.h`'s `lock_file()`, because there are now two callers and both `README.md` and this
+  file **assert** that the two "already running" refusals are worded alike — sharing the code
+  is what makes that true rather than a coincidence two files apart. Held for the process's
+  life, with `unlink()` + `bind()` underneath it, which is what makes "stale" and "in use"
+  different answers rather than a guess: `unlink()`-then-`bind()` alone races a *live* daemon's
+  socket away, and connect-to-probe is a TOCTOU. Its own lock rather than a second use of `-P`,
+  so `--control-socket` does not acquire a dependency on `-P`. A lock already held is the one
+  control-socket failure that is **fatal**; everything else warns and carries on. Taken above
+  `make_audio_sink()`, for the reason the pidfile is: two instances racing should collide on a
+  lock, not on the sound card.
+- **And probed before the fork, so `-z` refuses a duplicate at the terminal.** The socket
+  itself must be bound *after* `daemonize()` — it is one of the resources that invariant exists
+  for — which leaves the refusal in a log the shell has stopped watching, and with no `-f`
+  nowhere at all. So `probe_control_socket()` mirrors `probe_pidfile()`: the parent takes and
+  drops the lock, the child acquires it for real, and only the lock is ever probed. Without it
+  the parity `README.md` claims with `-P` was true of the wording and false of the place.
 - **`argv[1]` split off before `getopt_long()`.** Not by reading getopt's leftovers: glibc
   permutes a positional argument out of the way and the BSDs stop at it, and `seek-rel -5000`
   is indistinguishable from a flag cluster to getopt regardless — so the subcommand and its
@@ -613,6 +622,15 @@ So the role is now on, and the deliberate addition to the squeezelite model land
   after the flags is told to move rather than called junk. Every argument is validated at
   parse time, so `vol 500` fails at the terminal like a bad `--buffer-ms` rather than on the
   wire.
+- **`stream` and the output format are two separate facts**, read separately, because a stream
+  whose format the device *refused* has no format and is still a stream — and that is the case
+  where knowing audio is arriving matters most, since it is arriving and being discarded.
+  Inferring one from the other reported it as `stream: idle` at exactly the moment
+  `PlayerListener` raises an ERROR about the opposite, answering "nothing is being sent to me"
+  to an operator diagnosing "nothing is coming out". So `PlayerListener` owns an explicit flag
+  set above every guard in `on_stream_start()`, and `streaming() && !stream_format()` is the
+  refused case rather than an inconsistency. `StreamFormat` lives in `src/audio_sink.h`, next to
+  the `configure()` argument list it mirrors, rather than in the control channel's header.
 - **A one-command-per-connection wire format**: a line in, `ok` or `error <kind>: <reason>`
   and any payload out, then the daemon closes. The kind is one machine token so the client can
   map a refusal onto an exit status without parsing the reason, and the line still reads as
@@ -643,6 +661,12 @@ configuration item 12 really produces. It now reads the build's own ready log to
 - **The socket path in a config file** → item 8, which owns configuration. `--control-socket`
   is a flag, and `Options::was_given(Opt::ControlSocket)` is the hook a precedence layer needs.
 - **Hardware volume** → item 15. `vol` is a group command and does not touch the sink.
+- **A `player`-scoped volume subcommand.** The `player` role's own volume and mute are
+  reachable in the library and have no subcommand here, deliberately: every verb this item
+  ships moves the *group*, which is what a controller does. This is **not** item 15, which is
+  about driving a hardware mixer rather than about which scope a command addresses — so if a
+  local "set just this box's level" verb is wanted, it is new scope on this item rather than
+  something already tracked elsewhere.
 - **An interactive TUI over this socket** → item 11. The wire format is deliberately one
   command per connection, so a long-lived subscribing client is a new shape rather than an
   extension of this one.
@@ -673,7 +697,22 @@ tied to `MAX_CONTROL_CONNECTIONS`** rather than the two being independent, becau
 smaller is the real limit and only our own cap can explain itself in the log — with a backlog
 below the cap, a burst of concurrent subcommands got `ECONNREFUSED` from the kernel and
 arrived at the operator as "nothing is listening" on a healthy player. `ECONNREFUSED` and
-`ENOENT` are now reported differently for the same reason.
+`ENOENT` are now reported differently for the same reason, and a connection refused by the cap
+is *answered* in the protocol's own shape rather than hung up on — the socket is 0600 inside a
+user-private directory, so the peer is this user, and one short write is the difference between
+a subcommand saying why it failed and reporting that the daemon dropped it.
+
+**The macOS default path is a real gap, left deliberately.** launchd sets no
+`$XDG_RUNTIME_DIR` — not for a system service and not in an interactive terminal — so on the
+platform the PortAudio backend exists to serve, the default socket path never resolves and every
+user needs an explicit `--control-socket`. The warn-and-carry-on behaviour is right and the
+refusal to fall back to `/tmp` is right, but the *conclusion* is broader than the security
+argument requires: `confstr(_CS_DARWIN_USER_TEMP_DIR)` names a per-user `0700` directory, reads
+nothing from the environment — so unlike `$TMPDIR` it cannot be pointed elsewhere — and has
+every property `$XDG_RUNTIME_DIR` was chosen for. Using it under `__APPLE__`, `stat()`-verified for
+owner and for group/other-writability before use, would make the feature work out of the box
+there. Not done here because it changes an acceptance criterion this item was scoped against, and
+because it deserves to be a decision rather than a drive-by.
 
 ### 8. Config file
 
@@ -782,8 +821,18 @@ an address, so it cannot succeed unless `libavahi-compat-libdnssd` really does i
 down the other half, that `find_path`/`find_library` pick the compat library up.
 
 **Still owed.** The sink contract remains untested: a `NullAudioSink`/`AlsaAudioSink`/
-`PortAudioSink` suite is what would cover it, and is the largest gap left in `tests/`. The
-matrix has no armv7 or 32-bit Pi leg, and no macOS x86_64 leg. Artifacts are per-commit
+`PortAudioSink` suite is what would cover it, and is the largest gap left in `tests/`.
+
+**And a ThreadSanitizer leg, which item 7 made more than a nicety.** Every no-background-thread
+argument in this repo is a threading argument — item 5's `poll()`-from-the-main-loop discovery
+and item 7's control socket both rest on library calls documented as main-loop-only — and the
+only verification either has on record is a developer running `-fsanitize=thread` by hand, on
+macOS. A leg that configures `-DCMAKE_CXX_FLAGS=-fsanitize=thread` and runs
+`scripts/smoke_test.sh` under it would turn the largest correctness claim in the tree from
+reasoning into a check. It is cheap: the smoke test already drives the whole boot, socket and
+shutdown path, and produced zero reports when run that way by hand.
+
+The matrix also has no armv7 or 32-bit Pi leg, and no macOS x86_64 leg. Artifacts are per-commit
 workflow artifacts only — tagged releases, `install()` rules and distribution packaging all
 belong to item 10, which will replace the workflow's hand-rolled tar with a staged
 `cmake --install` payload.

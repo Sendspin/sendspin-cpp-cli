@@ -32,8 +32,10 @@ set -euo pipefail
 BIN="${1:-build/sendspin-cli}"
 readonly BIN
 
-# High enough to be clear of anything a developer is plausibly running, and one per phase so a
-# socket still in TIME_WAIT from the phase before cannot fail the next one.
+# High enough to be clear of anything a developer is plausibly running. One per phase for the
+# checks that run concurrently with each other, so a socket still in TIME_WAIT from the phase
+# before cannot fail the next one; the control-socket checks share PORT_CONTROL because they run
+# strictly in sequence and each waits for its own player to exit.
 readonly PORT_FOREGROUND=39281
 readonly PORT_DAEMON=39282
 readonly PORT_DAEMON_SECOND=39283
@@ -208,7 +210,7 @@ check_version_and_help() {
 
 check_foreground_signal() {
     local log="$WORK_DIR/foreground.log"
-    "$BIN" --no-mdns -o null --port "$PORT_FOREGROUND" >"$log" 2>&1 &
+    "$BIN" --no-mdns --no-control -o null --port "$PORT_FOREGROUND" >"$log" 2>&1 &
     local pid=$!
     STARTED_PIDS+=("$pid")
 
@@ -230,7 +232,7 @@ check_daemon_pidfile() {
 
     # -z returns in the *parent* as soon as the child is forked, so this exit status says only
     # that the fork happened. What says the daemon is really up is the pidfile and the log.
-    "$BIN" -z -P "$pidfile" -f "$log" --no-mdns -o null --port "$PORT_DAEMON" ||
+    "$BIN" -z -P "$pidfile" -f "$log" --no-mdns --no-control -o null --port "$PORT_DAEMON" ||
         fail "-z exited $? instead of forking"
 
     wait_for_nonempty_file "$pidfile" "$BOOT_TIMEOUT_S" ||
@@ -249,7 +251,7 @@ check_daemon_pidfile() {
 
     # A different --port on purpose, so what refuses the second instance is provably the lock
     # on the pidfile and not the listening socket.
-    if "$BIN" -z -P "$pidfile" --no-mdns -o null --port "$PORT_DAEMON_SECOND" \
+    if "$BIN" -z -P "$pidfile" --no-mdns --no-control -o null --port "$PORT_DAEMON_SECOND" \
         >/dev/null 2>"$second_err"; then
         fail "a second instance on the same -P was allowed to start"
     fi
@@ -268,7 +270,7 @@ check_daemon_pidfile() {
 
 check_default_mdns_boot() {
     local log="$WORK_DIR/mdns.log"
-    "$BIN" -o null --port "$PORT_MDNS" --mdns-name "$MDNS_INSTANCE" >"$log" 2>&1 &
+    "$BIN" -o null --no-control --port "$PORT_MDNS" --mdns-name "$MDNS_INSTANCE" >"$log" 2>&1 &
     local pid=$!
     STARTED_PIDS+=("$pid")
 
@@ -377,6 +379,20 @@ check_control_socket() {
         fail "the second instance was refused without saying why: $(cat "$second_err")"
     pass "a second instance on the same control socket is refused"
 
+    # And refused at the *terminal* under -z, which is the case that needs the pre-fork probe:
+    # ControlSocket::open() runs in the child, so without one the refusal would land in a log the
+    # shell has stopped watching -- and with no -f, nowhere at all. -P is probed pre-fork for
+    # exactly this reason, and README.md claims parity with it.
+    local second_z_err="$WORK_DIR/control-second-z.err"
+    if XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" -z --no-mdns -o null \
+        --port "$PORT_CONTROL_SECOND" --control-socket "$socket" \
+        >/dev/null 2>"$second_z_err"; then
+        fail "a second instance under -z on the same control socket was allowed to fork"
+    fi
+    grep -q 'already running' "$second_z_err" ||
+        fail "the -z second instance said nothing at the terminal: $(cat "$second_z_err")"
+    pass "a second instance under -z is refused at the terminal, not only in the log"
+
     kill -TERM "$pid"
     local status=0
     await_child "$pid" "$EXIT_TIMEOUT_S" || status=$?
@@ -461,7 +477,9 @@ check_missing_runtime_dir() {
         fail "no warning about the missing runtime directory. Log: $(cat "$log")"
     # There is deliberately no /tmp fallback: it is world-writable, and a socket there would let
     # any local account pause playback and switch this endpoint out of its group.
-    grep -q '/tmp' "$log" && fail "the missing-runtime-dir path mentions /tmp. Log: $(cat "$log")"
+    if grep -q '/tmp' "$log"; then
+        fail "the missing-runtime-dir path mentions /tmp. Log: $(cat "$log")"
+    fi
     kill -0 "$pid" 2>/dev/null ||
         fail "the player exited rather than carrying on without a control socket"
     pass "a missing \$XDG_RUNTIME_DIR warns once and keeps serving audio"

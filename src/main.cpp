@@ -334,7 +334,8 @@ private:
     ControllerSnapshot controller_snapshot() const {
         ControllerSnapshot snapshot;
         snapshot.connected = this->client_.is_connected();
-        const sendspin::ServerStateControllerObject& state = this->controller_.get_controller_state();
+        const sendspin::ServerStateControllerObject& state =
+            this->controller_.get_controller_state();
         snapshot.supported_commands = state.supported_commands;
         snapshot.seek_max_ms = state.seek_max_ms;
         return snapshot;
@@ -366,8 +367,11 @@ private:
             }
         }
 
+        // Two separate facts, read separately. A stream whose format the device refused is
+        // streaming with no format, and inferring one from the other would report the case the
+        // player complains loudest about as `stream: idle`.
+        snapshot.streaming = this->player_listener_.streaming();
         snapshot.format = this->player_listener_.stream_format();
-        snapshot.streaming = snapshot.format.has_value();
 
         const sendspin::ServerStateControllerObject& controller =
             this->controller_.get_controller_state();
@@ -520,6 +524,19 @@ int main(int argc, char* argv[]) {
     if (opts.daemonize && !opts.pidfile.empty()) {
         std::string error;
         if (probe_pidfile(opts.pidfile, error) != PidFileStatus::Ok) {
+            std::fprintf(stderr, "error: %s\n", error.c_str());
+            return 1;
+        }
+    }
+
+    // Probed here for exactly the same reason, and only the *lock* is: the socket itself has to
+    // be bound after the fork, so its own "already running" refusal would land in a log the
+    // shell has already stopped watching. Refused only when the lock is held -- every other
+    // failure is one the run carries on past, so it is left to the child to report.
+    if (opts.daemonize && !opts.control_socket.empty()) {
+        std::string error;
+        if (probe_control_socket(opts.control_socket, error) ==
+            ControlSocketStatus::AlreadyRunning) {
             std::fprintf(stderr, "error: %s\n", error.c_str());
             return 1;
         }

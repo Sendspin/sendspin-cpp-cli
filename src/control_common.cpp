@@ -141,8 +141,9 @@ std::string command_name(ControlCommand command) {
             return subcommand.name;
         }
     }
-    // Unreachable while the table covers the enum, which control_subcommand_list()'s own test
-    // pins down. Named rather than asserted: a status reply is not worth aborting a daemon for.
+    // Unreachable while the table covers the enum, which ControlSubcommands.
+    // EveryCommandInTheEnumHasARow pins down by walking the enum's whole range. Named rather
+    // than asserted: a reply is not worth aborting a daemon for.
     return "?";
 }
 
@@ -566,7 +567,8 @@ std::string format_status(const StatusSnapshot& snapshot) {
     if (snapshot.format.has_value()) {
         append_line(out, "output",
                     snapshot.output + " (" + std::to_string(snapshot.format->sample_rate) +
-                        " Hz / " + std::to_string(static_cast<unsigned>(snapshot.format->channels)) +
+                        " Hz / " +
+                        std::to_string(static_cast<unsigned>(snapshot.format->channels)) +
                         " ch / " +
                         std::to_string(static_cast<unsigned>(snapshot.format->bit_depth)) +
                         "-bit)");
@@ -582,14 +584,25 @@ std::string encode_control_reply(ControlStatus status, const std::string& reason
     if (status == ControlStatus::Ok) {
         return "ok\n" + payload;
     }
+
+    // The first newline is the whole of this format's framing, so a reason carrying one would
+    // turn the rest of it into payload -- and the client would print a diagnostic as though it
+    // were part of a status. True by construction today, since every reason is one line and the
+    // only interpolated values come from a request line that by definition holds no newline; but
+    // that is an invariant held in another file, which is the argument that already earned
+    // connect_to_socket() its own bound check.
+    std::string one_line = reason;
+    std::replace(one_line.begin(), one_line.end(), '\n', ' ');
+    std::replace(one_line.begin(), one_line.end(), '\r', ' ');
+
     for (const ReplyKind& kind : REPLY_KINDS) {
         if (kind.status == status) {
-            return "error " + std::string(kind.token) + ": " + reason + "\n" + payload;
+            return "error " + std::string(kind.token) + ": " + one_line + "\n" + payload;
         }
     }
     // NoDaemon never crosses the wire -- there is nothing at the other end to send it -- so a
     // status with no token is a bug here rather than a reply worth shaping.
-    return "error failed: " + reason + "\n" + payload;
+    return "error failed: " + one_line + "\n" + payload;
 }
 
 bool decode_control_reply(const std::string& line, ControlStatus& status, std::string& reason) {

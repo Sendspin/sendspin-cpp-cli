@@ -17,6 +17,8 @@
 
 #pragma once
 
+#include "audio_sink.h"
+
 #include <sendspin/controller_role.h>
 
 #ifndef SENDSPIN_ENABLE_CONTROLLER
@@ -37,11 +39,14 @@
 
 namespace sendspin_cli {
 
-/// @brief The name of the control socket the daemon binds under `$XDG_RUNTIME_DIR`.
+/// @brief What goes before the port in the default socket name.
 ///
-/// The port is in the leaf rather than in a subdirectory, so two players on one host get
-/// their own socket without either having to create a directory the other might own.
+/// The port is in the leaf rather than in a subdirectory, so two players on one host get their
+/// own socket without either having to create a directory the other might own. Split into a
+/// prefix and a suffix only so `--help` can print the shape without duplicating it.
 inline constexpr const char* CONTROL_SOCKET_PREFIX = "sendspin-cli-";
+
+/// @brief What goes after the port in the default socket name.
 inline constexpr const char* CONTROL_SOCKET_SUFFIX = ".sock";
 
 /// @brief The longest request line the daemon will assemble, in bytes.
@@ -58,11 +63,17 @@ inline constexpr size_t MAX_CONTROL_LINE_BYTES = 256;
 /// for. Bounded anyway, so a local user cannot spend the daemon's descriptors.
 inline constexpr size_t MAX_CONTROL_CONNECTIONS = 8;
 
-/// @brief How long a control connection may stay silent before the daemon drops it.
+/// @brief How long a connection has, from being accepted, to deliver a whole request line.
 ///
-/// A connection is opened, one line is written and the reply is read: a peer that has sent
-/// nothing for this long is not going to. Generous enough that a hand-driven `socat` session
-/// is not cut off mid-type.
+/// Measured from `accept()` and never refreshed, so it bounds the *whole* handshake rather than
+/// the gap between reads: a connection that has not produced a complete line by then is dropped
+/// whether it has been silent throughout or is still dribbling bytes. That is the property worth
+/// having, since a peer trickling one byte at a time is the case a per-read deadline would never
+/// catch.
+///
+/// The cost is that driving the socket by hand from an interactive `socat` means typing the
+/// request within this window. A subcommand -- the only thing that talks to it in anger -- writes
+/// its line immediately after `connect()`, so it never comes close.
 inline constexpr int64_t CONTROL_IDLE_TIMEOUT_MS = 5000;
 
 /// @brief What `sendspin-cli <subcommand>` can ask for.
@@ -95,12 +106,15 @@ enum class ControlCommand : uint8_t {
 ///
 /// 1 is deliberately absent: that is what this binary already exits with when its command line
 /// does not parse, which includes a subcommand's own arguments -- `vol 500` is refused by
-/// parse_options() before a socket is opened, exactly as a bad `--buffer-ms` is. So `Usage`
-/// here is specifically the *daemon's* refusal of an argument that parsed locally, which today
-/// means a `seek` past the `seek_max_ms` only the daemon knows.
+/// parse_options() before a socket is opened, exactly as a bad `--buffer-ms` is.
 enum class ControlStatus : uint8_t {
-    Ok = 0,            ///< the command was sent, or `status` printed
-    Usage = 2,         ///< the daemon refused the argument, or the request line was malformed
+    Ok = 0,  ///< the command was sent, or `status` printed
+
+    /// The *daemon* refused what the client had already accepted: a `seek` past the
+    /// `seek_max_ms` only it knows, or a request line that did not parse -- which a subcommand
+    /// cannot produce, so in practice means something else is driving the socket.
+    Usage = 2,
+
     NoDaemon = 3,      ///< nothing is listening on the control socket
     NotConnected = 4,  ///< the daemon is up, but has no server connection
     Unsupported = 5,   ///< the server did not offer this command in `supported_commands`
@@ -235,13 +249,6 @@ struct ControllerSnapshot {
 /// @return true if the request must not be dispatched.
 bool control_refusal(const ControlRequest& request, const ControllerSnapshot& snapshot,
                      ControlStatus& status, std::string& reason);
-
-/// @brief The stream format the output device was last configured for.
-struct StreamFormat {
-    uint32_t sample_rate{0};
-    uint8_t channels{0};
-    uint8_t bit_depth{0};
-};
 
 /// @brief Everything `status` prints, gathered from the daemon's main-loop shadows.
 ///
@@ -406,6 +413,24 @@ enum class ControlSocketStatus {
     AlreadyRunning,
     Failed,
 };
+
+/// @brief Reports whether the control socket's lock could be taken, without keeping it.
+///
+/// Exists for the reason `probe_pidfile()` does, and it is the same problem:
+/// `ControlSocket::open()` has to run *after* the fork, so its "already running" refusal reaches
+/// the log in the child while the terminal has already been handed a 0 -- and without `-f` it
+/// reaches nowhere at all.
+/// So under -z the parent looks first, and a duplicate instance fails at the shell exactly as a
+/// locked `-P` does. The child's own acquire is still the authoritative one.
+///
+/// Only the lock is probed, never the socket: binding one here would break the fork invariant
+/// `daemonize()` names, and it is not needed -- the lock is what decides the question.
+///
+/// The probe's window is harmless in the direction that matters, again as `probe_pidfile()`'s is:
+/// an instance that starts between the probe and the child's acquire costs a *missed* terminal
+/// error, never a false success.
+/// @param error Set to a human-readable reason for AlreadyRunning and Failed alike.
+ControlSocketStatus probe_control_socket(const std::string& path, std::string& error);
 
 /// @brief Runs one control request on the main loop and returns the whole reply block.
 ///

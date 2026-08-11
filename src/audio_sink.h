@@ -68,6 +68,17 @@ struct SinkCapabilities {
     static SinkCapabilities permissive();
 };
 
+/// @brief The three parameters configure() takes, as one value.
+///
+/// Here rather than with the code that reports it, because it is exactly
+/// `AudioSink::configure()`'s argument list: what a device was opened for. Whoever asks "what is
+/// this sink playing" is asking about this file's vocabulary.
+struct StreamFormat {
+    uint32_t sample_rate{0};
+    uint8_t channels{0};
+    uint8_t bit_depth{0};
+};
+
 /// @brief Destination for decoded PCM frames coming out of the sendspin player role.
 ///
 /// One implementation per audio backend: NullAudioSink (the device-less null/stdout pair),

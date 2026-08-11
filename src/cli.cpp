@@ -317,7 +317,8 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
     // The leading ':' is what separates "you left the value off" from "no such flag":
     // getopt then returns ':' for a missing argument instead of folding it into '?'.
     int opt = 0;
-    while ((opt = getopt_long(flag_argc, flag_argv, ":o:ln:s:zP:d:f:h", long_opts, nullptr)) != -1) {
+    while ((opt = getopt_long(flag_argc, flag_argv, ":o:ln:s:zP:d:f:h", long_opts, nullptr)) !=
+           -1) {
         switch (opt) {
             case 'o':
                 if (require_value("-o", optarg)) {
@@ -479,7 +480,10 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
     // that can fail: --control-socket is made absolute *first*, since a relative path grows
     // when the working directory is prepended and it is the resolved one that has to fit.
     if (error.empty()) {
-        if (out.no_control) {
+        // --no-control only decides whether *this* process listens, so a subcommand run ignores
+        // it and resolves the path anyway: the player it is talking to made its own decision, and
+        // clearing the path here would have the subcommand blame a flag on the wrong command line.
+        if (out.no_control && out.subcommand.empty()) {
             out.control_socket.clear();
         } else if (out.was_given(Opt::ControlSocket)) {
             if (out.was_given(Opt::Daemonize)) {
@@ -517,9 +521,14 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
     // flags did nothing. Warned rather than refused, because the natural mistake is pasting a
     // daemon's whole flag line and appending a subcommand -- which should still work.
     if (!out.subcommand.empty()) {
+        // --no-control is in here rather than treated as a contradiction the way it is alongside
+        // --control-socket: it says nothing about *this* invocation, since a subcommand does not
+        // listen on anything. Left it out and it would silently produce a "this player was
+        // started with --no-control" message about the wrong process.
         static constexpr Opt DAEMON_ONLY[] = {
-            Opt::Device,  Opt::Name,     Opt::Server,   Opt::Daemonize, Opt::Pidfile,
-            Opt::Logfile, Opt::LogLevel, Opt::BufferMs, Opt::NoMdns,    Opt::MdnsName,
+            Opt::Device,   Opt::Name,     Opt::Server,   Opt::Daemonize, Opt::Pidfile,
+            Opt::Logfile,  Opt::LogLevel, Opt::BufferMs, Opt::NoMdns,    Opt::MdnsName,
+            Opt::NoControl,
         };
         for (Opt opt : DAEMON_ONLY) {
             if (out.was_given(opt)) {
@@ -576,7 +585,8 @@ void print_usage(std::FILE* out, const char* prog) {
     std::fprintf(out, "A headless Sendspin audio player. Listens for a Sendspin server to\n");
     std::fprintf(out, "connect to it, or dials one with -s.\n\n");
     std::fprintf(out, "With a subcommand, it instead talks to a player already running on this\n");
-    std::fprintf(out, "host over its control socket, and exits. The subcommand must come first.\n\n");
+    std::fprintf(out,
+                 "host over its control socket, and exits. The subcommand must come first.\n\n");
     std::fprintf(out, "Subcommands:\n");
     for (const ControlSubcommand& subcommand : control_subcommands()) {
         // The name and its argument in one column so the shape is copyable, and the

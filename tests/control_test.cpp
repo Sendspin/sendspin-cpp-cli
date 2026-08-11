@@ -177,11 +177,21 @@ TEST(ControlSubcommands, EveryProtocolCommandIsReachable) {
         }
     }
 
-    for (uint8_t value = 0; value <= static_cast<uint8_t>(SendspinControllerCommand::SEEK_RELATIVE);
-         ++value) {
+    // SEEK_RELATIVE is the library's last enumerator today, and this walk assumes it. A library
+    // that appends a command would silently reduce this test's coverage rather than fail it --
+    // there is no count to check against, since the enum is in a FetchContent'd header that
+    // `SENDSPIN_GIT_TAG` moves. So the count is pinned here, and a tag bump that changes it
+    // fails *this* line, which is where the reader will be told to extend the table.
+    constexpr int LAST_PROTOCOL_COMMAND =
+        static_cast<int>(SendspinControllerCommand::SEEK_RELATIVE);
+    EXPECT_EQ(LAST_PROTOCOL_COMMAND, 14)
+        << "the library's controller command set changed -- extend control_subcommands() to cover "
+           "the new command, then update this count";
+
+    for (int value = 0; value <= LAST_PROTOCOL_COMMAND; ++value) {
         const auto command = static_cast<SendspinControllerCommand>(value);
         EXPECT_NE(std::find(reached.begin(), reached.end(), command), reached.end())
-            << "no subcommand sends SendspinControllerCommand " << static_cast<int>(value);
+            << "no subcommand sends SendspinControllerCommand " << value;
     }
 }
 
@@ -200,7 +210,8 @@ TEST(SplitSubcommand, NoArgumentsIsADaemonRun) {
 TEST(SplitSubcommand, AFlagFirstIsADaemonRun) {
     ControlInvocation invocation;
     std::string error;
-    ASSERT_TRUE(split({"sendspin-cli", "-o", "null", "--port", "9000"}, invocation, error)) << error;
+    ASSERT_TRUE(split({"sendspin-cli", "-o", "null", "--port", "9000"}, invocation, error))
+        << error;
     EXPECT_TRUE(invocation.name.empty());
     EXPECT_EQ(invocation.consumed, 0);
 }
@@ -721,6 +732,20 @@ TEST(FormatStatus, AnIdleStreamHasNoFormat) {
     const std::string block = format_status(snapshot);
     EXPECT_EQ(field(block, "stream"), "idle");
     // The device is still named: it is what a stream would land on.
+    EXPECT_EQ(field(block, "output"), "portaudio");
+}
+
+TEST(FormatStatus, AStreamWhoseFormatWasRefusedStillReadsAsStreaming) {
+    // The combination `streaming && !format`, which is what PlayerListener reports when the
+    // device refused the stream's format -- audio is arriving and being discarded. Reporting it
+    // as idle would contradict the ERROR the player raises about exactly that, and would answer
+    // "nothing is being sent to me" to an operator diagnosing "nothing is coming out".
+    StatusSnapshot snapshot = playing_snapshot();
+    snapshot.streaming = true;
+    snapshot.format.reset();
+
+    const std::string block = format_status(snapshot);
+    EXPECT_EQ(field(block, "stream"), "receiving");
     EXPECT_EQ(field(block, "output"), "portaudio");
 }
 

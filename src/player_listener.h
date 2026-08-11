@@ -18,7 +18,6 @@
 #pragma once
 
 #include "audio_sink.h"
-#include "control.h"
 
 #include <sendspin/player_role.h>
 
@@ -51,12 +50,24 @@ public:
     void on_volume_changed(uint8_t volume) override;
     void on_mute_changed(bool muted) override;
 
-    /// @brief The format the sink is currently configured for, or nothing between streams.
+    /// @brief True between a stream start and its end, whatever the device made of it.
     ///
     /// What the control channel's `status` reports as this endpoint's stream state: audio
-    /// arriving *here*, which is a different fact from the group's transport state. Read on the
-    /// main loop, where the two stream callbacks that write it also fire -- so unlike the
-    /// refusal counters below this needs no atomic.
+    /// arriving *here*, which is a different fact from the group's transport state.
+    ///
+    /// Deliberately **not** derived from stream_format(): a stream whose format the device
+    /// refused has no format and is still a stream, and it is the case where knowing that audio
+    /// is arriving matters most -- it is arriving and being discarded. Reporting it as idle would
+    /// contradict the ERROR on_stream_start() raises about exactly that.
+    bool streaming() const {
+        return this->streaming_;
+    }
+
+    /// @brief The format the sink was configured for, or nothing when it has none.
+    ///
+    /// Absent between streams, and absent *during* one the device refused or that arrived with
+    /// incomplete parameters -- so `streaming() && !stream_format()` is the refused case rather
+    /// than an inconsistency.
     const std::optional<StreamFormat>& stream_format() const {
         return this->stream_format_;
     }
@@ -65,7 +76,12 @@ private:
     sendspin::PlayerRole& player_;
     AudioSink& sink_;
 
-    /// Set at stream start once the sink has accepted the format, cleared at stream end.
+    /// Set at stream start before anything can refuse it, cleared at stream end. Read on the
+    /// main loop, where the two stream callbacks that write it also fire -- so unlike the
+    /// refusal counters below, neither this nor stream_format_ needs an atomic.
+    bool streaming_{false};
+
+    /// Set at stream start only once the sink has accepted the format, cleared at stream end.
     std::optional<StreamFormat> stream_format_;
 
     /// Set when configure() refuses this stream's format, cleared at the next stream start.

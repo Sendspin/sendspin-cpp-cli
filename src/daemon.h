@@ -13,7 +13,7 @@
 // limitations under the License.
 
 /// @file daemon.h
-/// @brief Detaching from the terminal (-z) and holding the pidfile (-P) under a lock
+/// @brief Detaching from the terminal (-z), and the exclusive file lock -P and -z's siblings use
 
 #pragma once
 
@@ -21,7 +21,7 @@
 
 namespace sendspin_cli {
 
-/// @brief How an attempt on the -P pidfile ended.
+/// @brief How an attempt on a lock file ended.
 ///
 /// Three outcomes rather than a bool, because "someone else is running" is the answer a
 /// supervisor acts on and every other errno is one an operator has to read -- folding them
@@ -31,6 +31,36 @@ enum class PidFileStatus {
     AlreadyRunning,  ///< another process holds the lock
     Failed,          ///< something else went wrong; `error` says what
 };
+
+/// @brief Opens `path` and takes an exclusive, non-blocking `flock()` on it.
+///
+/// The whole of this repo's "is another instance running" mechanism, in one place because there
+/// is now more than one caller -- the -P pidfile and the control socket's sibling lock -- and
+/// `README.md` states that both refusals are worded the same. Sharing the code is what makes
+/// that true rather than a coincidence two files apart.
+///
+/// `flock()` rather than `fcntl()` record locks, for two reasons that both matter. A flock lock
+/// belongs to the open file description, so two `open()` calls conflict even inside one process
+/// -- which is what makes the conflict testable without forking, and a second instance's
+/// collision real rather than a silently granted re-lock. And the kernel drops it when the
+/// descriptor closes for any reason, including a crash, which is the whole of stale-file
+/// handling. The alternatives are worse: an `O_EXCL` create has no stale handling at all, and
+/// reading a pid and signalling it has a pid-reuse race that cannot be closed.
+///
+/// `O_TRUNC` is deliberately absent. Truncating on open would destroy a running instance's
+/// content on the way to *discovering* that the file belongs to it -- the file has to survive
+/// until the lock says whose it is.
+///
+/// @param path The file to lock. Created if it is not there yet.
+/// @param what What this lock is protecting, for the "has to be on a local filesystem" message:
+/// "pidfile", "control socket". Named rather than hardcoded because the two callers protect
+/// different things and the advice is about the thing, not the lock.
+/// @param mode The mode to create `path` with, before umask.
+/// @param fd Set to the held descriptor on Ok, and left alone otherwise. The caller owns it, and
+/// closing it is what releases the lock.
+/// @param error Set to a human-readable reason for AlreadyRunning and Failed alike.
+PidFileStatus lock_file(const std::string& path, const char* what, unsigned mode, int& fd,
+                        std::string& error);
 
 /// @brief Holds the -P pidfile under an exclusive lock for the process's whole life.
 ///

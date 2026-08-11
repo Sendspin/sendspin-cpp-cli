@@ -17,6 +17,7 @@
 
 #include "control.h"
 
+#include "daemon.h"
 #include "log.h"
 
 #include <fcntl.h>
@@ -64,14 +65,6 @@ constexpr int CONTROL_SOCKET_BACKLOG = static_cast<int>(MAX_CONTROL_CONNECTIONS)
 /// The suffix of the lock file held beside the socket for the process's lifetime.
 constexpr const char* CONTROL_LOCK_SUFFIX = ".lock";
 
-/// Whether `err` is flock() reporting that someone else holds the lock.
-///
-/// Both spellings compared for the reason `daemon.cpp` gives: POSIX permits EWOULDBLOCK and
-/// EAGAIN to differ, and this is the one distinction the whole scheme rests on.
-bool is_lock_contention(int err) {
-    return err == EWOULDBLOCK || err == EAGAIN;
-}
-
 /// Fills `address` with `path`, which the caller has already checked fits.
 void fill_address(sockaddr_un& address, const std::string& path) {
     address.sun_family = AF_UNIX;
@@ -103,6 +96,31 @@ ControlSocket::~ControlSocket() {
     this->close();
 }
 
+ControlSocketStatus probe_control_socket(const std::string& path, std::string& error) {
+    if (!control_socket_path_fits(path)) {
+        error = "control socket path '" + path + "' does not fit a Unix socket address (" +
+                std::to_string(control_socket_path_limit() - 1) + " bytes)";
+        return ControlSocketStatus::Failed;
+    }
+
+    int fd = -1;
+    const PidFileStatus locked =
+        lock_file(path + CONTROL_LOCK_SUFFIX, "control socket", CONTROL_SOCKET_MODE, fd, error);
+    switch (locked) {
+        case PidFileStatus::Ok:
+            // Released explicitly rather than by close() alone, so the intent is on the page:
+            // this is a look, and the child after the fork owns the real lock.
+            ::flock(fd, LOCK_UN);
+            ::close(fd);
+            return ControlSocketStatus::Ok;
+        case PidFileStatus::AlreadyRunning:
+            return ControlSocketStatus::AlreadyRunning;
+        case PidFileStatus::Failed:
+            break;
+    }
+    return ControlSocketStatus::Failed;
+}
+
 ControlSocketStatus ControlSocket::open(const std::string& path, std::string& error) {
     if (!control_socket_path_fits(path)) {
         // Normally unreachable: the parser refuses an over-long --control-socket. Kept because
@@ -117,26 +135,21 @@ ControlSocketStatus ControlSocket::open(const std::string& path, std::string& er
     // different: a crashed daemon's lock died with its descriptor, so its leftover socket file
     // is ours to unlink; a *running* daemon still holds it, and we stop here rather than
     // unlinking a socket it is listening on.
+    //
+    // Through daemon.h's lock_file() rather than a second copy of the same open/flock/classify
+    // sequence, which is what makes the "already running" refusal *identically* worded to -P's
+    // instead of coincidentally so -- README.md states that they match.
     const std::string lock_path = path + CONTROL_LOCK_SUFFIX;
-    const int lock_fd = ::open(lock_path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
-    if (lock_fd < 0) {
-        error = "cannot open control socket lock " + lock_path + ": " + std::strerror(errno);
-        return ControlSocketStatus::Failed;
-    }
-    if (::flock(lock_fd, LOCK_EX | LOCK_NB) != 0) {
-        const int reason = errno;
-        ::close(lock_fd);
-        if (is_lock_contention(reason)) {
-            // Worded like the -P refusal, because it is the same fact: another instance is
-            // already here. And reported as its own status, because it is the one control
-            // socket failure that must stop this run rather than being carried on past.
-            error = "another sendspin-cli is already running -- it holds the lock on " + lock_path;
+    int lock_fd = -1;
+    switch (lock_file(lock_path, "control socket", CONTROL_SOCKET_MODE, lock_fd, error)) {
+        case PidFileStatus::Ok:
+            break;
+        case PidFileStatus::AlreadyRunning:
+            // Its own status, because it is the one control socket failure that must stop this
+            // run rather than being carried on past.
             return ControlSocketStatus::AlreadyRunning;
-        }
-        error = "cannot lock " + lock_path + ": " + std::strerror(reason) +
-                ". A control socket has to be on a local filesystem: flock is emulated "
-                "over NFS and is not dependable over SMB";
-        return ControlSocketStatus::Failed;
+        case PidFileStatus::Failed:
+            return ControlSocketStatus::Failed;
     }
 
     const int listener = ::socket(AF_UNIX, SOCK_STREAM, 0);
@@ -221,11 +234,26 @@ void ControlSocket::poll(int64_t now_ms, ControlHandler& handler) {
             break;
         }
         if (this->impl_->connections.size() >= MAX_CONTROL_CONNECTIONS) {
-            // Dropped without a reply: the cap exists to stop a local peer spending our
-            // descriptors, and writing an explanation to it would be work on its terms.
-            cli_log(LogLevel::WARN,
+            // Answered rather than dropped silently, and in the protocol's own shape: the socket
+            // is 0600 inside a user-private directory, so the peer is this user, and one short
+            // write is not "work on its terms" -- it is the difference between a subcommand
+            // saying why it failed and reporting that the daemon hung up on it. Blocking-free:
+            // an unwritable reply is dropped by the loop below and logged at debug.
+            //
+            // At debug rather than warn, because a local connect() loop would otherwise flood an
+            // -f logfile with lines about its own behaviour.
+            cli_log(LogLevel::DEBUG,
                     "refusing a control connection: %zu are already open, which is the limit",
                     this->impl_->connections.size());
+            const std::string busy = encode_control_reply(
+                ControlStatus::Failed,
+                "this player already has " + std::to_string(MAX_CONTROL_CONNECTIONS) +
+                    " control connections open, which is as many as it will take -- try again",
+                "");
+            // Best-effort, and unchecked on purpose: the point is to say something to a peer that
+            // is about to be closed, not to guarantee delivery to one that may not be reading.
+            const ssize_t ignored = ::write(fd, busy.data(), busy.size());
+            static_cast<void>(ignored);
             ::close(fd);
             continue;
         }
@@ -242,8 +270,9 @@ void ControlSocket::poll(int64_t now_ms, ControlHandler& handler) {
         this->impl_->connections.push_back(std::move(connection));
     }
 
-    // Iterated by index and compacted at the end rather than erased in place, so a connection
-    // that finishes mid-loop cannot invalidate the iteration.
+    // Survivors are collected into a fresh vector and swapped in at the end rather than erased
+    // from the one being walked, so a connection that finishes mid-loop cannot invalidate the
+    // iteration -- and so the handler, which is free to do anything, cannot either.
     std::vector<Connection> surviving;
     surviving.reserve(this->impl_->connections.size());
 
@@ -315,8 +344,11 @@ void ControlSocket::poll(int64_t now_ms, ControlHandler& handler) {
             // EPIPE rather than as a signal -- which is the whole reason the write path has to
             // handle it. EAGAIN on a blocking-sized reply means the peer is not reading; either
             // way the connection is done and the log line says so once.
+            //
+            // errno is only meaningful on a negative return: a write() of 0 has not failed, so
+            // reporting strerror(errno) there would print whatever the last real error was.
             cli_log(LogLevel::DEBUG, "control reply write failed after %zu of %zu bytes: %s",
-                    written, reply.size(), std::strerror(errno));
+                    written, reply.size(), wrote < 0 ? std::strerror(errno) : "wrote nothing");
             break;
         }
         ::close(connection.fd);
