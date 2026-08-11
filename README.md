@@ -537,6 +537,29 @@ naming the runtime packages it needs. These are build outputs kept for 14 days
 rather than an installation — `install()` rules, a systemd unit and distribution
 packages are [`docs/ROADMAP.md`](docs/ROADMAP.md) item 10.
 
+### macOS, and Gatekeeper
+
+Unpack the tarball from a terminal rather than in Finder:
+
+```bash
+tar -xzf sendspin-cli-0.1.0-macos-arm64.tar.gz
+./sendspin-cli-0.1.0-macos-arm64/sendspin-cli --version
+```
+
+That is not fussiness. These binaries are **ad-hoc signed** — the minimum an
+arm64 Mach-O needs to execute at all, applied by the linker — so they carry no
+developer identity and `spctl` rejects them. What decides whether you notice is
+the quarantine flag, and `tar` does not propagate it where Finder's Archive
+Utility does. If you did unpack in Finder, or macOS refuses it anyway:
+
+```bash
+xattr -d com.apple.quarantine ./sendspin-cli
+```
+
+A Developer ID signature and notarization are item 10's, together with the
+`.pkg` that lets the notarization be *stapled* — `xcrun stapler` refuses a bare
+executable, so signing alone would still leave an offline Mac asking Apple.
+
 ## Roadmap
 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the epic breakdown and the child

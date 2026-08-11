@@ -580,6 +580,23 @@ Item 6 shipped what a unit file needs and stopped at documenting it: `-z` forks 
 `Type=simple`. `README.md` says which; no unit is in the tree. `sd_notify` is not wired up,
 which is what `Type=notify` would want instead.
 
+**macOS distribution is the other half, and it is more than layout.** The binaries item 12
+publishes are ad-hoc signed — `codesign` reports `adhoc, linker-signed`, which is the
+minimum an arm64 Mach-O needs to execute at all and carries no identity — so `spctl -a -t
+exec` rejects them and a user who unpacked in Finder is told the developer cannot be
+verified. `README.md` answers that today with `xattr -d com.apple.quarantine`, which is a
+workaround rather than a fix.
+
+Clearing it properly needs a Developer ID Application certificate (so, a paid Apple
+Developer Program enrolment) and notarization. The part that decides this belongs *here*
+rather than with the matrix: `xcrun stapler` takes `.app`, `.dmg` and `.pkg` and **refuses a
+bare Mach-O**, so notarizing the loose binary alone would still leave Gatekeeper asking
+Apple on first run — no good for an offline Pi or Mac. The `.pkg` this item owes is what
+makes the ticket stapleable, and therefore what makes the signing worth doing once.
+
+Note also that a public repo gets no secrets on pull requests from forks, so any signing
+step has to be conditional rather than assumed.
+
 ### 11. Interactive TUI mode
 
 Optional, later. Upstream's `examples/tui_client` shows the shape.

@@ -343,6 +343,24 @@ jobs:
           item 10, and are not part of this archive.
           INFO
 
+          # Appended only where it applies, and carried inside the archive rather than left in
+          # README alone: someone who unpacked this on a Mac and got told the developer cannot
+          # be verified is holding the tarball, not the repository.
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            cat >>"stage/$name/BUILD-INFO.txt" <<'MACOS'
+
+          This binary is ad-hoc signed -- the minimum arm64 needs to run at all -- so it
+          carries no developer identity and Gatekeeper has nothing to check it against.
+          Unpack with `tar -xzf` from a terminal, which does not propagate the quarantine
+          flag where Finder's Archive Utility does. If macOS refuses it anyway:
+
+            xattr -d com.apple.quarantine ./sendspin-cli
+
+          A Developer ID signature and notarization are roadmap item 10, along with the .pkg
+          that lets the notarization be stapled.
+          MACOS
+          fi
+
           tar -czf "$name.tar.gz" -C stage "$name"
           echo "name=$name" >>"$GITHUB_OUTPUT"
 
