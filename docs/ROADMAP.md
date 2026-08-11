@@ -195,9 +195,10 @@ through Core Audio at 48 kHz/16-bit, 44.1 kHz/32-bit and 44.1 kHz/24-bit, with e
 volume and mute, the same-format restart, a mid-stream format change, recovery from a refused
 format, and the shutdown latch. It has **not** yet been driven by a real Sendspin server, so
 the sync loop converging over a live stream, controller volume, and pause/resume/next-track
-are unproven in the field. The Linux dual-backend path (`null, stdout, alsa, portaudio`, both
-`-l` sections) is likewise unexercised — this was built and tested on macOS. Item 12's build
-matrix is where that gets closed.
+are unproven in the field. Item 12's matrix now builds the Linux dual-backend configuration
+on every push and asserts from the configure output that it really is `null, stdout, alsa,
+portaudio` — but building it is all that proves. Neither `-l` section nor a note out of
+`AlsaAudioSink` has been exercised on Linux: this was written and heard on macOS.
 
 One known rough edge, and only on Linux: `AlsaAudioSink` routes libasound's own stderr
 diagnostics through the CLI logger, but it installs that handler from its *own* `probe()`
@@ -382,11 +383,11 @@ refcount and the restart backoff are the riskiest code here and are exercised on
 on macOS. (`Impl` is factored so a fake dns_sd could drive it; that is item 12's job.) And
 the property that a per-tick redial would cancel the attempt in flight is reasoned from
 `ConnectionManager::connect_to()`'s source, not exercised — what the `RetryPacer` suite
-proves is the schedule. **The Linux path is unexercised** —
-`libavahi-compat-libdnssd` has not been run against, only read; that is item 12's build
-matrix to close, and the Avahi compat findings above are the specific thing it should
-check. A mid-session server disappearance and the reconnect-after-drop path were
-covered by unit tests rather than in the field.
+proves is the schedule. The Linux path is no longer only read: item 12's matrix advertises,
+browses and resolves through a real `avahi-daemon` on every push, which is what confirms the
+Avahi compat findings above — a `ws://` URL cannot be built without an address, so it cannot
+be logged unless `DNSServiceQueryRecord` answered. A mid-session server disappearance and the
+reconnect-after-drop path were covered by unit tests rather than in the field.
 
 ### 6. Daemonization and logging — *shipped*
 
@@ -527,10 +528,9 @@ precise about.** The code *in* this item builds warning-free and passes 148/149 
 bookworm against real `libasound`, `portaudio` and `libavahi-compat-libdnssd`; the one
 failure is `LastServer.AnUnwritableDirectoryFails`, which fails only because the container
 runs as root and root ignores directory permissions — it passes as a normal user in the same
-container. But **`main` itself does not compile on Linux**, for a reason that predates this
-task: see item 12. Getting far enough to run these tests needed that break patched out in a
-throwaway copy, so "green on Linux" is a statement about this item's code, not about the
-tree.
+container. The `src/mdns_dnssd.cpp` break that made `main` itself uncompilable on Linux, and
+that had to be patched out in a throwaway copy to get this far, is fixed under item 12 — the
+whole tree now builds and tests on Linux in CI.
 
 **Two things this item does not claim.** The library's own lines are **not timestamped**
 under `-f` and cannot be, for the same missing-sink-hook reason its category cannot be
@@ -580,46 +580,76 @@ Item 6 shipped what a unit file needs and stopped at documenting it: `-z` forks 
 `Type=simple`. `README.md` says which; no unit is in the tree. `sd_notify` is not wired up,
 which is what `Type=notify` would want instead.
 
+**macOS distribution is the other half, and it is more than layout.** The binaries item 12
+publishes are ad-hoc signed — `codesign` reports `adhoc, linker-signed`, which is the
+minimum an arm64 Mach-O needs to execute at all and carries no identity — so `spctl -a -t
+exec` rejects them and a user who unpacked in Finder is told the developer cannot be
+verified. `README.md` answers that today with `xattr -d com.apple.quarantine`, which is a
+workaround rather than a fix.
+
+Clearing it properly needs a Developer ID Application certificate (so, a paid Apple
+Developer Program enrolment) and notarization. The part that decides this belongs *here*
+rather than with the matrix: `xcrun stapler` takes `.app`, `.dmg` and `.pkg` and **refuses a
+bare Mach-O**, so notarizing the loose binary alone would still leave Gatekeeper asking
+Apple on first run — no good for an offline Pi or Mac. The `.pkg` this item owes is what
+makes the ticket stapleable, and therefore what makes the signing worth doing once.
+
+Note also that a public repo gets no secrets on pull requests from forks, so any signing
+step has to be conditional rather than assumed.
+
 ### 11. Interactive TUI mode
 
 Optional, later. Upstream's `examples/tui_client` shows the shape.
 
-### 12. CI and tests
+### 12. CI and tests — *shipped (matrix and smoke test; sink contract still owed)*
 
-A build matrix (Linux and macOS) and a smoke test that the binary boots, links, and exits
-cleanly on a signal.
+`.github/workflows/ci.yml` builds and tests every push and pull request on `ubuntu-24.04`,
+`ubuntu-24.04-arm` and `macos-14`, plus a fourth `ubuntu-24.04` leg configured
+`-DSENDSPIN_CLI_WITH_MDNS=OFF` — which compiles `src/mdns_null.cpp` instead of
+`src/mdns_dnssd.cpp`, so that translation unit is built rather than assumed. Every leg
+configures `-DSENDSPIN_CLI_WERROR=ON` and runs the CTest suite, the no-mDNS leg included:
+`discovery_test.cpp` links whichever `MdnsService` went in, and that configuration has no
+other coverage. Each leg also asserts against its own configure output that it found the
+backends it expects — a missing `-dev` package does not fail a configure, since every
+backend is optional and auto-detected, so without that assertion the matrix would go green
+on a null-sink-only, mDNS-less binary. The three platform legs additionally run the smoke
+test and upload the binary they built, kept 14 days.
 
-The harness this calls already exists (item 1): GoogleTest via `FetchContent` pinned to a
-tag, wired to CTest with `gtest_discover_tests()`, defaulting ON only when this is the
-top-level project. `cmake -B build && ctest --test-dir build` is the whole invocation. The
-parser suite lives in `tests/`, and item 3 added a `pcm_volume` suite for the Q32 scaling
-both backends share; item 4 added a `supported_formats` suite for the capability crossing;
-item 5 added `discovery` and `last_server` suites. **The sink contract itself is still
-untested** — that is what a `NullAudioSink`/`AlsaAudioSink`/`PortAudioSink` suite would
-add, alongside the matrix and the smoke test. Nothing in `tests/` opens an audio device, a
-socket, or the mDNS daemon, which is what keeps the suite runnable on a bare CI runner.
+The unit harness is item 1's and unchanged: GoogleTest via `FetchContent` pinned to a tag,
+wired to CTest with `gtest_discover_tests()`, defaulting ON only when this is the top-level
+project. Nothing in `tests/` opens an audio device, a socket, or the mDNS daemon, which is
+what keeps the suite runnable on a bare CI runner — and is why the smoke test is
+`scripts/smoke_test.sh` rather than another suite. It covers what a gtest process cannot:
+`--version`/`--help`, a foreground run reaching its ready log and exiting 0 on `SIGTERM`,
+`-z` forking with `-P` writing a live pidfile and refusing a second instance holding the
+same lock, and a default mDNS-on run surviving a daemon it cannot reach. It is runnable by
+hand against any build, which is what item 6's hand-driven `-z` checks became.
 
-Two things the matrix specifically owes item 5, since it was built and exercised on macOS
-only: that `libavahi-compat-libdnssd` really does implement `DNSServiceQueryRecord` for A
-and AAAA as read (it has no `DNSServiceGetAddrInfo` at all), and that the Linux build picks
-it up through `find_path`/`find_library`. The `-DSENDSPIN_CLI_WITH_MDNS=OFF` configuration
-should be one of the matrix legs, since it changes which translation unit is compiled.
+**Both breaks this entry used to predict are fixed.** `src/mdns_dnssd.cpp` no longer names
+`kDNSServiceErr_ServiceNotRunning` and `kDNSServiceErr_Timeout` unconditionally.
+`#ifdef` guards — what this entry previously recommended — would **not** have worked: both
+are enumerators of an anonymous `enum` rather than macros, so the test is false on every
+platform, and it would have dropped the two cases on macOS as well as Linux. CMake compiles
+a use of each against the header the build will really use and defines
+`SENDSPIN_CLI_HAVE_ERR_*` only where it is genuinely there. The dangling
+`this->name().c_str()` at `src/portaudio_sink.cpp:495` is gone as well, which is what lets
+`-Werror` hold at all.
 
-**Two known breaks a first matrix run will find immediately.** Both predate item 6, which
-found them by building on Linux for the first time and deliberately left them alone rather
-than widening its own diff:
+**Both runtime claims this owed item 5 are now made rather than read.** The linux-x86_64 leg
+starts a real `avahi-daemon`, browses our own `_sendspin._tcp` advertisement back to a
+resolved address, then publishes a `_sendspin-server._tcp` instance and has the player
+discover it. That second half is the one that matters: a `ws://` URL cannot be built without
+an address, so it cannot succeed unless `libavahi-compat-libdnssd` really does implement
+`DNSServiceQueryRecord` for A and AAAA — the call it provides in place of the
+`DNSServiceGetAddrInfo` it lacks entirely. The Linux legs' configure assertion is what pins
+down the other half, that `find_path`/`find_library` pick the compat library up.
 
-- **The Linux build does not compile at all.** `Impl::describe_error()` in
-  `src/mdns_dnssd.cpp` switches on `kDNSServiceErr_ServiceNotRunning` and
-  `kDNSServiceErr_Timeout`, and `libavahi-compat-libdnssd`'s `dns_sd.h` defines **neither**
-  — confirmed against Debian bookworm, not read. This is precisely the hazard item 5's own
-  entry predicted when it recorded that the Linux path was unexercised. `#ifdef` guards on
-  the two cases are enough; the compat layer's error set is what a matrix leg should pin
-  down.
-- **The tree does not build warning-free under clang**, because of the dangling
-  `this->name().c_str()` at `src/portaudio_sink.cpp:495` that **item 14 already records**.
-  Item 6 confirmed it still fires, and that it is still the only warning our own sources
-  produce.
+**Still owed.** The sink contract remains untested: a `NullAudioSink`/`AlsaAudioSink`/
+`PortAudioSink` suite is what would cover it, and is the largest gap left in `tests/`. The
+matrix has no armv7 or 32-bit Pi leg, and no macOS x86_64 leg. Artifacts are per-commit
+workflow artifacts only — tagged releases, `install()` rules and distribution packaging all
+belong to item 10, which will replace the workflow's hand-rolled tar with a staged
+`cmake --install` payload.
 
 ### 13. `PlayerRoleConfig` wiring
 
@@ -644,12 +674,6 @@ change:
 unplugged mid-track stays silent until the next stream re-resolves the device. ALSA already
 recovers `-EPIPE`/`-ESTRPIPE` inside `write()`; this is the same idea for the other backend,
 without waiting for a track boundary. Split out of item 4.
-
-A second, unrelated defect in the same file, found while building item 5 and left there
-alone to keep that diff to its own subject: `src/portaudio_sink.cpp:495` calls `.c_str()`
-on the temporary `std::string` returned by `this->name()`, so `device_name` can dangle
-before it is used. clang reports it as `-Wdangling-gsl`, and it is the only warning our own
-sources produce.
 
 Note that the device is *already* re-resolved at every `configure()`, so the gap is
 specifically mid-stream. The awkward part is that recovery has to reopen a stream from the

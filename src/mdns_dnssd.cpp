@@ -26,8 +26,9 @@
 /// resolve chain on the one thread -- where the POSIX getaddrinfo() upstream's
 /// `examples/tui_client` falls back to needs a thread per lookup.
 ///
-/// The Linux half of that is read from avahi's own `compat.c` and `unsupported.c`, not run:
-/// this has only been exercised against Bonjour. See docs/ROADMAP.md item 12.
+/// That the Linux half really behaves that way is checked rather than assumed: CI advertises,
+/// browses and resolves through a real `avahi-daemon` on every push, and a resolve cannot
+/// produce a URL without an address. See docs/ROADMAP.md item 12.
 
 #include "mdns.h"
 
@@ -704,6 +705,13 @@ struct MdnsService::Impl {
 
     /// dns_sd has no strerror of its own, so the few errors worth telling apart are named
     /// and the rest carry their number.
+    ///
+    /// Two of them are Bonjour's alone: libavahi-compat-libdnssd declares neither
+    /// kDNSServiceErr_ServiceNotRunning nor kDNSServiceErr_Timeout, and both are enumerators
+    /// rather than macros, so CMake compiles a use of each and defines the matching
+    /// SENDSPIN_CLI_HAVE_ERR_* only where the header really has it. Where a header does not
+    /// declare one, that code is not part of the error set that implementation documents, and
+    /// anything it does return falls to the default and carries its number.
     static std::string describe_error(DNSServiceErrorType err) {
         switch (err) {
             case kDNSServiceErr_NoError:
@@ -716,10 +724,14 @@ struct MdnsService::Impl {
                 return "no such name";
             case kDNSServiceErr_Unsupported:
                 return "unsupported by this mDNS implementation";
+#ifdef SENDSPIN_CLI_HAVE_ERR_SERVICE_NOT_RUNNING
             case kDNSServiceErr_ServiceNotRunning:
                 return "the mDNS daemon is not running";
+#endif
+#ifdef SENDSPIN_CLI_HAVE_ERR_TIMEOUT
             case kDNSServiceErr_Timeout:
                 return "timed out";
+#endif
             default:
                 return "dns_sd error " + std::to_string(err);
         }

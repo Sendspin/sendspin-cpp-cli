@@ -492,7 +492,11 @@ SinkCapabilities PortAudioSink::capabilities() const {
     }
 
     const PaDeviceInfo* info = Pa_GetDeviceInfo(device);
-    const char* device_name = (info != nullptr) ? info->name : this->name().c_str();
+    // The fallback is held in a named local rather than spelled inline: name() returns by
+    // value, so `this->name().c_str()` inside the conditional would leave device_name
+    // pointing at a string already destroyed by the time the logging below reads it.
+    const std::string fallback_name = this->name();
+    const char* device_name = (info != nullptr) ? info->name : fallback_name.c_str();
     ProbeResult result = probe_capabilities(device);
     if (result.status != ProbeStatus::Ok) {
         // Busy or gone. Advertising nothing would leave the player unable to play at all,

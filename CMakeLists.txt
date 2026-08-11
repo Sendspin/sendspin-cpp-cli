@@ -146,6 +146,53 @@ if(SENDSPIN_CLI_WITH_MDNS)
     endif()
 endif()
 
+# Two of the error codes describe_error() names are Bonjour's alone: libavahi-compat-libdnssd
+# declares neither kDNSServiceErr_ServiceNotRunning nor kDNSServiceErr_Timeout, so naming them
+# unconditionally is what stops the Linux build compiling at all.
+#
+# They have to be probed rather than tested with the preprocessor. Both are enumerators of an
+# anonymous enum rather than macros, so `#ifdef kDNSServiceErr_Timeout` is false even on macOS
+# -- it would silently drop the two cases on every platform, which is worse than the break it
+# was meant to fix. check_cxx_symbol_exists() cannot answer it either: it probes by taking the
+# symbol's address, and an enumerator has none. Compiling a use of each is the only test left.
+if(SENDSPIN_CLI_MDNS_ENABLED)
+    include(CheckCXXSourceCompiles)
+
+    # Empty on Apple, where dns_sd.h is in the SDK's default search path. Elsewhere it is the
+    # same directory the mDNS sources are compiled against, so the probe reads the header the
+    # build will really use rather than whichever one happens to be first on the system path.
+    set(CMAKE_REQUIRED_INCLUDES "${SENDSPIN_CLI_DNS_SD_INCLUDE_DIR}")
+
+    check_cxx_source_compiles(
+        "#include <dns_sd.h>
+         int main() { return kDNSServiceErr_ServiceNotRunning; }"
+        SENDSPIN_CLI_HAVE_ERR_SERVICE_NOT_RUNNING)
+    check_cxx_source_compiles(
+        "#include <dns_sd.h>
+         int main() { return kDNSServiceErr_Timeout; }"
+        SENDSPIN_CLI_HAVE_ERR_TIMEOUT)
+
+    unset(CMAKE_REQUIRED_INCLUDES)
+endif()
+
+# ==============================================================================
+# Warnings
+# ==============================================================================
+
+# Off by default so a contributor on a newer compiler -- which invents diagnostics every
+# release -- is not blocked by a warning that has nothing to do with the change they are
+# making. CI passes -DSENDSPIN_CLI_WERROR=ON, which is what actually holds the line.
+option(SENDSPIN_CLI_WERROR "Turn warnings from sendspin-cli's own sources into errors" OFF)
+
+# Carried in a variable and applied per-target rather than set as a directory or global
+# flag, because only our own three targets are ours to keep clean: the FetchContent'd
+# sendspin and googletest trees build with these appended to whatever they already use, and
+# ixwebsocket alone emits enough -Wunused-parameter to fail every build under -Werror.
+set(SENDSPIN_CLI_WARNING_FLAGS -Wall -Wextra -Wpedantic)
+if(SENDSPIN_CLI_WERROR)
+    list(APPEND SENDSPIN_CLI_WARNING_FLAGS -Werror)
+endif()
+
 # ==============================================================================
 # sendspin-cli
 # ==============================================================================
@@ -179,6 +226,15 @@ add_library(sendspin-cli-core STATIC
 if(SENDSPIN_CLI_MDNS_ENABLED)
     target_sources(sendspin-cli-core PRIVATE src/mdns_dnssd.cpp)
     target_compile_definitions(sendspin-cli-core PUBLIC SENDSPIN_CLI_HAVE_MDNS)
+    # PRIVATE where SENDSPIN_CLI_HAVE_MDNS is PUBLIC: these two only ever reach a switch inside
+    # mdns_dnssd.cpp, so nothing that links this archive has to be told about them.
+    if(SENDSPIN_CLI_HAVE_ERR_SERVICE_NOT_RUNNING)
+        target_compile_definitions(sendspin-cli-core PRIVATE
+            SENDSPIN_CLI_HAVE_ERR_SERVICE_NOT_RUNNING)
+    endif()
+    if(SENDSPIN_CLI_HAVE_ERR_TIMEOUT)
+        target_compile_definitions(sendspin-cli-core PRIVATE SENDSPIN_CLI_HAVE_ERR_TIMEOUT)
+    endif()
     if(NOT APPLE)
         target_include_directories(sendspin-cli-core PRIVATE ${SENDSPIN_CLI_DNS_SD_INCLUDE_DIR})
         target_link_libraries(sendspin-cli-core PUBLIC ${SENDSPIN_CLI_DNS_SD_LIBRARY})
@@ -201,7 +257,7 @@ endif()
 
 target_include_directories(sendspin-cli-core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(sendspin-cli-core PUBLIC sendspin)
-target_compile_options(sendspin-cli-core PRIVATE -Wall -Wextra -Wpedantic)
+target_compile_options(sendspin-cli-core PRIVATE ${SENDSPIN_CLI_WARNING_FLAGS})
 target_compile_definitions(sendspin-cli-core PUBLIC
     SENDSPIN_CLI_VERSION="${PROJECT_VERSION}"
     SENDSPIN_CLI_LIB_TAG="${SENDSPIN_GIT_TAG}"
@@ -209,7 +265,7 @@ target_compile_definitions(sendspin-cli-core PUBLIC
 
 add_executable(sendspin-cli src/main.cpp)
 target_link_libraries(sendspin-cli PRIVATE sendspin-cli-core)
-target_compile_options(sendspin-cli PRIVATE -Wall -Wextra -Wpedantic)
+target_compile_options(sendspin-cli PRIVATE ${SENDSPIN_CLI_WARNING_FLAGS})
 
 list(JOIN SENDSPIN_CLI_BACKENDS ", " SENDSPIN_CLI_BACKEND_LIST)
 message(STATUS "sendspin-cli ${PROJECT_VERSION} against sendspin-cpp ${SENDSPIN_GIT_TAG}")
@@ -260,6 +316,6 @@ if(SENDSPIN_CLI_BUILD_TESTS)
         tests/supported_formats_test.cpp
     )
     target_link_libraries(sendspin-cli-tests PRIVATE sendspin-cli-core GTest::gtest_main)
-    target_compile_options(sendspin-cli-tests PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(sendspin-cli-tests PRIVATE ${SENDSPIN_CLI_WARNING_FLAGS})
     gtest_discover_tests(sendspin-cli-tests)
 endif()
