@@ -25,13 +25,17 @@ set(SENDSPIN_GIT_TAG "v0.7.0" CACHE STRING
     "sendspin-cpp git tag to build against")
 
 # Roles are opt-out in the library and each one costs sources and dependencies.
-# A player endpoint needs `player` (audio) and `metadata` (what is playing, for
-# logging and a future `status` subcommand). `controller` is for driving *other*
-# clients, which this daemon does not do; the display-oriented roles have no
-# headless use. Declared without FORCE so `-DSENDSPIN_ENABLE_COLOR=ON` still wins.
+# A player endpoint needs `player` (audio), `metadata` (what is playing, for logging
+# and the `status` subcommand) and `controller`. That last one is not about driving
+# *other* clients: `controller@v1` carries the transport verbs for the group this
+# client is part of -- play, pause, seek, group volume -- which is exactly what a
+# local CLI on a player needs, and which the `player` role does not have at all (it
+# covers only this endpoint's own volume, mute and static delay). The
+# display-oriented roles have no headless use. Declared without FORCE so
+# `-DSENDSPIN_ENABLE_COLOR=ON` still wins.
 set(SENDSPIN_ENABLE_PLAYER ON CACHE BOOL "Enable sendspin player role")
 set(SENDSPIN_ENABLE_METADATA ON CACHE BOOL "Enable sendspin metadata role")
-set(SENDSPIN_ENABLE_CONTROLLER OFF CACHE BOOL "Enable sendspin controller role")
+set(SENDSPIN_ENABLE_CONTROLLER ON CACHE BOOL "Enable sendspin controller role")
 set(SENDSPIN_ENABLE_COLOR OFF CACHE BOOL "Enable sendspin color role")
 set(SENDSPIN_ENABLE_ARTWORK OFF CACHE BOOL "Enable sendspin artwork role")
 set(SENDSPIN_ENABLE_VISUALIZER OFF CACHE BOOL "Enable sendspin visualizer role")
@@ -208,6 +212,9 @@ endif()
 add_library(sendspin-cli-core STATIC
     src/cli.cpp
     src/audio_sink.cpp
+    src/control_client.cpp
+    src/control_common.cpp
+    src/control_socket.cpp
     src/daemon.cpp
     src/last_server.cpp
     src/log.cpp
@@ -308,6 +315,7 @@ if(SENDSPIN_CLI_BUILD_TESTS)
 
     add_executable(sendspin-cli-tests
         tests/cli_test.cpp
+        tests/control_test.cpp
         tests/daemon_test.cpp
         tests/device_spec_test.cpp
         tests/discovery_test.cpp

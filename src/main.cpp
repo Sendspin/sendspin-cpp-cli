@@ -22,9 +22,13 @@
 /// advertises `_sendspin._tcp` and waits to be dialled, and any -s instead makes it dial
 /// out -- to an address, or to a server it discovers over mDNS -- with the advertisement
 /// suppressed.
+///
+/// The same binary is also its own client: `sendspin-cli <subcommand>` talks to a running
+/// player over that player's control socket and exits, without opening a device or a port.
 
 #include "audio_sink.h"
 #include "cli.h"
+#include "control.h"
 #include "daemon.h"
 #include "last_server.h"
 #include "log.h"
@@ -35,6 +39,7 @@
 
 #include <sendspin/client.h>
 #include <sendspin/config.h>
+#include <sendspin/controller_role.h>
 #include <sendspin/metadata_role.h>
 #include <sendspin/player_role.h>
 #include <sendspin/types.h>
@@ -90,10 +95,19 @@ struct HostNetworkProvider : sendspin::SendspinNetworkProvider {
     }
 };
 
-/// Logs what the server says is playing. For a headless daemon this is the cheapest
-/// proof that the connection is live and carrying real state.
+/// Logs what the server says is playing, and keeps the last of it for `status` to read.
+///
+/// The object is cached rather than only logged because `status` needs the track and the
+/// transport speed, and the role itself keeps neither: `MetadataRole` exposes the interpolated
+/// progress and duration but not the artist, the title or the `playback_speed` they arrived
+/// with.
+///
+/// THREAD SAFETY: both callbacks fire on the main loop thread via `drain_events()`, and
+/// `state()` is read from the control socket's poll on that same thread, so the cache needs no
+/// synchronisation.
 struct MetadataLogger : sendspin::MetadataRoleListener {
     void on_metadata(const sendspin::ServerMetadataStateObject& metadata) override {
+        this->state_ = metadata;
         if (!metadata.title.has_value()) {
             return;
         }
@@ -102,8 +116,19 @@ struct MetadataLogger : sendspin::MetadataRoleListener {
     }
 
     void on_metadata_clear() override {
+        // Cleared rather than kept: the server has said this metadata no longer describes
+        // anything, so leaving it would have `status` reporting a track that has gone.
+        this->state_.reset();
         log_line(LogLevel::INFO, LOG_TAG_METADATA, "Metadata cleared");
     }
+
+    /// The last metadata the server sent, or nothing since the last clear.
+    const std::optional<sendspin::ServerMetadataStateObject>& state() const {
+        return this->state_;
+    }
+
+private:
+    std::optional<sendspin::ServerMetadataStateObject> state_;
 };
 
 /// The formats to advertise for `sink`, derived from what its device will actually take.
@@ -255,6 +280,165 @@ private:
     RetryPacer pacer_;
 };
 
+/// Answers one control request out of the daemon's own state.
+///
+/// THREAD SAFETY: every member below is reached only from handle_control_request(), which
+/// ControlSocket::poll() calls on the main loop. That is the whole reason the control channel
+/// has no thread of its own: `send_command()` reaches `SendspinClient::send_text()` and
+/// `ConnectionManager::current()`, documented main-thread-only, and `get_controller_state()`
+/// returns a reference to a vector `drain_events()` move-assigns from inside `client.loop()`.
+class ControlDispatcher final : public ControlHandler {
+public:
+    /// Every reference must outlive this dispatcher, which in main() they all do.
+    ControlDispatcher(const Options& opts, sendspin::SendspinClient& client,
+                      sendspin::ControllerRole& controller, sendspin::MetadataRole& metadata,
+                      sendspin::PlayerRole& player, const MetadataLogger& metadata_logger,
+                      const PlayerListener& player_listener, const AudioSink& sink)
+        : opts_(opts), client_(client), controller_(controller), metadata_(metadata),
+          player_(player), metadata_logger_(metadata_logger), player_listener_(player_listener),
+          sink_(sink) {}
+
+    std::string handle_control_request(const std::string& line) override {
+        std::string name;
+        std::vector<std::string> args;
+        if (!split_control_line(line, name, args)) {
+            return encode_control_reply(ControlStatus::Usage, "empty request", "");
+        }
+
+        ControlRequest request;
+        std::string error;
+        // Parsed again on this side rather than trusted: the peer is whatever can reach the
+        // socket, and the subcommand's own parse says nothing about what actually arrived.
+        if (!parse_control_request(name, args, request, error)) {
+            return encode_control_reply(ControlStatus::Usage, error, "");
+        }
+
+        ControlStatus refusal = ControlStatus::Failed;
+        std::string reason;
+        if (control_refusal(request, this->controller_snapshot(), refusal, reason)) {
+            return encode_control_reply(refusal, reason, "");
+        }
+
+        if (request.command == ControlCommand::Status) {
+            return encode_control_reply(ControlStatus::Ok, "", format_status(this->status()));
+        }
+
+        log_line(LogLevel::DEBUG, LOG_TAG_CONTROL, "Sending '%s'",
+                 encode_control_request(request).c_str());
+        this->controller_.send_command(to_client_command(request));
+        return encode_control_reply(ControlStatus::Ok, "", "");
+    }
+
+private:
+    /// The server's controller state, copied out of the role for the reason control.h gives.
+    ControllerSnapshot controller_snapshot() const {
+        ControllerSnapshot snapshot;
+        snapshot.connected = this->client_.is_connected();
+        const sendspin::ServerStateControllerObject& state = this->controller_.get_controller_state();
+        snapshot.supported_commands = state.supported_commands;
+        snapshot.seek_max_ms = state.seek_max_ms;
+        return snapshot;
+    }
+
+    StatusSnapshot status() const {
+        StatusSnapshot snapshot;
+        snapshot.name = this->opts_.name;
+        snapshot.connected = this->client_.is_connected();
+        const std::optional<sendspin::ServerInformationObject> info =
+            this->client_.get_server_information();
+        if (info.has_value()) {
+            snapshot.server_id = info->server_id;
+            snapshot.server_name = info->name;
+        }
+
+        const std::optional<sendspin::ServerMetadataStateObject>& metadata =
+            this->metadata_logger_.state();
+        if (metadata.has_value()) {
+            snapshot.artist = metadata->artist.value_or("");
+            snapshot.title = metadata->title.value_or("");
+            if (metadata->progress.has_value()) {
+                // The presence of a progress object is what makes the transport state and the
+                // position knowable at all; the role's own getters return 0 either way, which
+                // is indistinguishable from the start of a track.
+                snapshot.playback_speed = metadata->progress->playback_speed;
+                snapshot.progress_ms = this->metadata_.get_track_progress_ms();
+                snapshot.duration_ms = this->metadata_.get_track_duration_ms();
+            }
+        }
+
+        snapshot.format = this->player_listener_.stream_format();
+        snapshot.streaming = snapshot.format.has_value();
+
+        const sendspin::ServerStateControllerObject& controller =
+            this->controller_.get_controller_state();
+        // An empty supported_commands is how "no server/state has arrived" and "the connection
+        // dropped" both look, since on_controller_state_clear() empties it -- so it is the
+        // right test for whether the group figures below mean anything.
+        snapshot.group_state_known =
+            snapshot.connected && !controller.supported_commands.empty();
+        snapshot.group_volume = controller.volume;
+        snapshot.group_muted = controller.muted;
+
+        snapshot.player_volume = this->player_.get_volume();
+        snapshot.player_muted = this->player_.get_muted();
+        snapshot.output = this->sink_.name();
+        return snapshot;
+    }
+
+    const Options& opts_;
+    sendspin::SendspinClient& client_;
+    sendspin::ControllerRole& controller_;
+    sendspin::MetadataRole& metadata_;
+    sendspin::PlayerRole& player_;
+    const MetadataLogger& metadata_logger_;
+    const PlayerListener& player_listener_;
+    const AudioSink& sink_;
+};
+
+/// Binds the control socket, or explains why this run has none.
+///
+/// Mirrors start_advertising(), and for the same reason: a player with no control channel is
+/// still a player, so a socket that cannot be bound names its reason and the run carries on
+/// rather than leaving a silence that reads like a bug.
+///
+/// One failure is not like that. A lock already held means the operator started a *second*
+/// instance, which is what `-P` refuses outright -- so it is reported here and refused by the
+/// caller.
+/// @return false only when this run must stop.
+bool start_control_socket(ControlSocket& socket, const Options& opts) {
+    if (opts.no_control) {
+        log_line(LogLevel::INFO, LOG_TAG_CONTROL,
+                 "Not listening on a control socket: --no-control was given");
+        return true;
+    }
+    if (opts.control_socket.empty()) {
+        // The missing-$XDG_RUNTIME_DIR case, and the deliberate absence of a /tmp fallback: a
+        // world-writable directory would let any local account pause playback and switch this
+        // endpoint out of its group.
+        log_line(LogLevel::WARN, LOG_TAG_CONTROL, "No control socket: %s",
+                 opts.control_absent_reason.c_str());
+        return true;
+    }
+
+    std::string error;
+    switch (socket.open(opts.control_socket, error)) {
+        case ControlSocketStatus::Ok:
+            log_line(LogLevel::INFO, LOG_TAG_CONTROL, "Listening on %s",
+                     opts.control_socket.c_str());
+            return true;
+        case ControlSocketStatus::AlreadyRunning:
+            log_fatal(LOG_TAG_CONTROL, "%s", error.c_str());
+            return false;
+        case ControlSocketStatus::Failed:
+            break;
+    }
+    log_line(LogLevel::WARN, LOG_TAG_CONTROL,
+             "%s -- carrying on without a control socket; this player can still be driven by its "
+             "server",
+             error.c_str());
+    return true;
+}
+
 /// Starts the mDNS advertisement, or explains why this run has none.
 ///
 /// The suppression rule is the spec's: "Do not advertise `_sendspin._tcp` if the client
@@ -311,6 +495,23 @@ int main(int argc, char* argv[]) {
     if (opts.list_devices) {
         print_audio_devices(stdout);
         return 0;
+    }
+
+    // Above every line below, and that is the whole contract: a subcommand run must not open an
+    // audio device, take a pidfile, start a WebSocket server or touch mDNS. It talks to a player
+    // that has already done all of that.
+    if (!opts.subcommand.empty()) {
+        ControlRequest request;
+        std::string error;
+        // Cannot fail here in practice -- parse_options() already ran the same parse to validate
+        // the line -- but the request is built once, where it is used, rather than carried
+        // through Options as a second representation of the same words.
+        if (!parse_control_request(opts.subcommand, opts.subcommand_args, request, error)) {
+            std::fprintf(stderr, "error: %s\n", error.c_str());
+            return static_cast<int>(ControlStatus::Usage);
+        }
+        return static_cast<int>(run_control_subcommand(request, opts.control_socket,
+                                                       opts.control_absent_reason, stdout));
     }
 
     // Probed here, above -f, purely so "already running" reaches the terminal: -f replaces
@@ -382,6 +583,18 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    // Above make_audio_sink() for the reason the pidfile is: two instances racing should collide
+    // on a lock, not on the sound card or on the WebSocket port. Below daemonize() because a
+    // socket is exactly what that fork invariant forbids opening above it -- and because bind()
+    // has to apply the 0600 umask daemonize() would otherwise have replaced with 0022.
+    //
+    // Only the listener is opened here. Nothing is answered until the main loop polls it, which
+    // is after start_server(), so a `status` can never describe a player that is not up yet.
+    ControlSocket control_socket;
+    if (!start_control_socket(control_socket, opts)) {
+        return 1;
+    }
+
     std::string sink_error;
     std::unique_ptr<AudioSink> sink = make_audio_sink(opts.device, opts.buffer_ms, sink_error);
     if (!sink) {
@@ -405,6 +618,12 @@ int main(int argc, char* argv[]) {
     sendspin::PlayerRole& player = client.add_player(std::move(player_config));
     player.set_static_delay_adjustable(true);
     sendspin::MetadataRole& metadata = client.add_metadata();
+    // Added unconditionally, so `client/hello` always carries `controller@v1` -- including under
+    // --no-control, and including on a host with no $XDG_RUNTIME_DIR to put a socket in. That is
+    // deliberate: which roles this client speaks is a property of the build, not of whether one
+    // particular way of reaching it happens to be available. A server that saw the role appear
+    // and disappear with an environment variable would have no way to plan around it.
+    sendspin::ControllerRole& controller = client.add_controller();
 
     PlayerListener player_listener(player, *sink);
     MetadataLogger metadata_logger;
@@ -429,6 +648,11 @@ int main(int argc, char* argv[]) {
     MdnsService mdns;
     start_advertising(mdns, opts);
 
+    // What answers the socket opened above. Built here rather than there because it holds
+    // references to the client and its roles, all of which outlive it.
+    ControlDispatcher control_dispatcher(opts, client, controller, metadata, player,
+                                        metadata_logger, player_listener, *sink);
+
     // Already validated during parsing, so there is nothing left here that can be wrong --
     // and nothing to fail on after the server is up.
     std::unique_ptr<OutboundMode> outbound;
@@ -448,9 +672,13 @@ int main(int argc, char* argv[]) {
     while (g_running.load()) {
         const int64_t now_ms = monotonic_ms();
         client.loop();
-        // Both of these run dns_sd callbacks and connect_to() on this thread, which is what
-        // each of them requires.
+        // All three of these run their callbacks on this thread, which is what each of them
+        // requires: dns_sd's and connect_to()'s for the first two, and for the control socket
+        // every read of the roles plus send_command() itself. A round trip is therefore bounded
+        // by LOOP_INTERVAL_MS rather than by the socket -- the right trade, since the
+        // alternative is a thread touching ConnectionManager::current() off the main loop.
         mdns.poll(now_ms);
+        control_socket.poll(now_ms, control_dispatcher);
         if (outbound) {
             outbound->tick(client, now_ms);
         }
@@ -464,8 +692,11 @@ int main(int argc, char* argv[]) {
 
     cli_log(LogLevel::INFO, "Shutting down");
     // Withdrawn before the client goes, so a restart does not race a record still naming a
-    // port nothing is listening on.
+    // port nothing is listening on. The control socket goes for the same reason and in the same
+    // place: a request accepted after the client has disconnected would be answered out of a
+    // half-torn-down player, and its path must be gone before a restart tries to bind it.
     mdns.stop();
+    control_socket.close();
     client.disconnect(sendspin::SendspinGoodbyeReason::SHUTDOWN);
     sink->stop();
     return 0;

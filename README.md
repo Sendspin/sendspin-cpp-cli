@@ -15,12 +15,12 @@ Like squeezelite is a headless endpoint for Lyrion/Logitech Media Server,
 `sendspin-cli` is a headless endpoint for the **Sendspin** protocol: it
 advertises itself over mDNS (`_sendspin._tcp`), is discovered, and is driven by
 a remote sendspin *controller* — while a small, squeezelite-style flag set
-configures identity, audio output, discovery, logging, and daemonization. A
-local control channel (socket / subcommands) is planned so you can also drive it
-from the same host.
+configures identity, audio output, discovery, logging, and daemonization. It also
+listens on a **local control socket**, so `sendspin-cli pause` on the player's own
+host drives it too — the deliberate addition to the squeezelite model.
 
-- **Library:** sendspin-cpp (`player` role; FLAC / Opus / PCM), pulled via CMake
-  `FetchContent`.
+- **Library:** sendspin-cpp (`player`, `metadata` and `controller` roles; FLAC /
+  Opus / PCM), pulled via CMake `FetchContent`.
 - **Audio out:** an `AudioSink` seam — ALSA (the default Linux/Docker backend,
   with `snd_pcm_delay()`-based sync feedback), PortAudio (the cross-platform one,
   and the only way to make noise on macOS), and a null/stdout sink for
@@ -102,6 +102,11 @@ cmake -B build -DSENDSPIN_GIT_TAG=v0.7.0
 
 # As a daemon: detached, with a locked pidfile and a logfile
 ./build/sendspin-cli -z -P /run/sendspin-cli.pid -f /var/log/sendspin-cli.log
+
+# ...and drive that player from its own host
+./build/sendspin-cli status
+./build/sendspin-cli pause
+./build/sendspin-cli vol 40
 ```
 
 ### The two connection modes
@@ -389,6 +394,139 @@ same path as `-P`; the foreground default suits `Type=simple`, which is usually 
 better choice under a supervisor that already captures stderr. No unit file ships
 yet — that is [`docs/ROADMAP.md`](docs/ROADMAP.md) item 10.
 
+### The local control channel
+
+The player listens on a **Unix socket**, and the same binary is its own client:
+
+```console
+$ sendspin-cli status
+name: living-room
+server: Music Assistant (connected)
+state: playing
+stream: receiving
+track: Nils Frahm - Says
+position: 2:05 / 9:03
+group volume: 55
+player volume: 80
+output: default (48000 Hz / 2 ch / 16-bit)
+
+$ sendspin-cli pause
+$ sendspin-cli vol 40
+$ sendspin-cli seek-rel -30000
+```
+
+Every transport verb the protocol has, one subcommand each — `status`, `play`,
+`pause`, `stop`, `next`, `prev`, `vol`, `mute`, `seek`, `seek-rel`, `repeat`,
+`shuffle`, `switch`. `--help` lists them with their arguments.
+
+**Three of them are easy to misread, so:**
+
+- **`vol` is the *group* volume**, not this box's output level. It goes out as a
+  `controller@v1` command and the server spreads it across every player in the
+  group, clamping per player. That is why `status` prints `group volume` and
+  `player volume` as two named lines rather than one ambiguous `volume:` — a
+  squeezelite refugee will expect `vol 50` to move *this* box, and it does not.
+- **`switch` is not a source selector.** Per the spec's switch cycle it re-homes
+  this client through the groups available to it. It sits next to `play` and
+  `pause` and means something quite different.
+- **`seek-rel` takes a signed offset** and is bounded only by `int32_t`. `seek`
+  is absolute, non-negative, and refused past the `seek_max_ms` the server
+  publishes — which is absent for a live stream, where nothing bounds it.
+
+**Where the socket is.** `$XDG_RUNTIME_DIR/sendspin-cli-<port>.sock`, mode
+`0600`, where `<port>` is `--port`. The port is in the name so two players on one
+host each get their own — and it means a player on a non-default `--port` has its
+socket somewhere else, so **a subcommand needs the same `--port`**, or an explicit
+`--control-socket`:
+
+```bash
+sendspin-cli --port 9000 &            # this player's socket carries 9000
+sendspin-cli status --port 9000       # ...so its subcommands need it too
+sendspin-cli status --control-socket /run/user/1000/sendspin-cli-9000.sock  # or name it
+```
+
+**There is no `/tmp` fallback, and that is deliberate.** `$XDG_RUNTIME_DIR` is a
+per-user, `0700` directory, which is what makes the socket unreachable by other
+local accounts; `/tmp` is world-writable, and a socket there would let any local
+user pause your music and `switch` this endpoint out of its group. Linux enforces
+socket permissions on `connect()`, but macOS and the BSDs historically do not — so
+the private parent directory is doing real work, not just belt-and-braces.
+
+So a run with no `$XDG_RUNTIME_DIR` has no control socket. That is **not fatal** —
+a player without a control channel is still a player, exactly as one without an
+mDNS advertisement is — and it warns once, naming the fix:
+
+```console
+$ env -u XDG_RUNTIME_DIR sendspin-cli
+W control: No control socket: $XDG_RUNTIME_DIR is not set, so there is no user-private
+directory to put a control socket in. Give --control-socket <path> to choose one, or
+--no-control to stop asking
+I cli: sendspin-cli 0.1.0 listening on port 8928 as "living-room" (output: default, ...)
+```
+
+Two places that bites: a **systemd *system* unit** has no `$XDG_RUNTIME_DIR` (a
+user unit does), and so does **macOS**, where launchd sets no such variable at all.
+Both want an explicit `--control-socket`; `--no-control` turns the channel off and
+silences the warning if the player is only ever driven by its server.
+
+**A second instance is refused**, in the same words `-P` uses, and refused before
+it opens the sound card or its port:
+
+```console
+$ sendspin-cli --control-socket /run/user/1000/s.sock
+E control: another sendspin-cli is already running -- it holds the lock on
+/run/user/1000/s.sock.lock
+```
+
+That comes from an exclusive `flock()` on a sibling `<path>.lock`, held for the
+process's life, with the socket unlinked and rebound underneath it. The lock is
+what makes "stale" and "in use" different answers: a player killed with `SIGKILL`
+has its descriptor closed by the kernel, so its leftover socket file has no lock
+and is simply taken over on the next start — no cleanup step. `unlink()`-then-
+`bind()` on its own would race a *live* player's socket away, and connecting to
+probe is a TOCTOU. (The lock file itself is left behind; it holds nothing, and
+removing it would reintroduce a race.)
+
+**Exit status is the interface for scripts.** The three ways a command can fail to
+land are three different statuses, because they need three different actions:
+
+| Status | Means |
+|---|---|
+| `0` | sent, or `status` printed |
+| `1` | the command line did not parse (`vol 500`) |
+| `2` | the player refused the argument (a `seek` past `seek_max_ms`) |
+| `3` | nothing is listening on that socket — no player, or the wrong `--port` |
+| `4` | the player is up but has **no server connection** |
+| `5` | the server does not offer that command (`supported_commands`) |
+| `6` | the exchange broke down |
+
+`4` and `5` are kept apart on purpose. A dropped connection *empties*
+`supported_commands`, so the naive check answers "pause is not supported" when the
+truth is that nothing is connected — sending you to read your server's
+capabilities instead of its connection. `status` is never refused by any of them:
+it is answered out of the player's own state, which is exactly when a
+disconnected player is worth reading.
+
+**No thread, and one tick of latency.** The socket is polled from the main loop
+alongside mDNS, so a request round-trips in up to `LOOP_INTERVAL_MS` (10 ms). That
+is the trade, and it is the right way round: `send_command()` reaches
+`ConnectionManager::current()`, which is documented main-thread-only, and reading
+the controller state hands back a reference to a vector the main loop
+move-assigns from inside `client.loop()`. A reader thread would be a data race in
+both directions.
+
+**The wire format**, if you want to drive it without this binary: connect, send
+one line (`vol 50\n`), read until the player closes. The first line back is `ok`
+or `error <kind>: <reason>`; a `status` payload follows the `ok`. One command per
+connection.
+
+```console
+$ printf 'status\n' | socat - UNIX-CONNECT:/run/user/1000/sendspin-cli-8928.sock
+ok
+name: living-room
+...
+```
+
 ### Logging
 
 Every *log* line carries a level letter and a subsystem tag:
@@ -402,8 +540,8 @@ I sendspin.ws_server: Starting server on port: 8928 (max connections: 4)
 The third line is the library's. That is the point of the format: it is the shape
 sendspin-cpp's own `SS_LOG*` macros already emit, so `grep 'I mdns:'` and
 `grep 'I sendspin.ws_server:'` both work on the same file. Ours are `cli`, `audio`,
-`mdns`, `discovery`, `outbound`, `player` and `metadata`; the library's are all
-`sendspin.<subsystem>`. `audio` lines then name their own backend, since the tag
+`mdns`, `discovery`, `outbound`, `player`, `metadata` and `control`; the library's
+are all `sendspin.<subsystem>`. `audio` lines then name their own backend, since the tag
 says which subsystem but not which device is talking: `I audio: alsa: 'hw:1,0'
 closed`.
 
@@ -458,11 +596,19 @@ which is what a foreground run whose terminal has just closed should do.
 ### Flags, and what they refuse
 
 The flags follow squeezelite's: `-o` output device, `-l` list devices, `-n` name,
-`-s` server, `-z` daemonize, `-P` pidfile, `-d`/`-f` logging. Four are long-only
+`-s` server, `-z` daemonize, `-P` pidfile, `-d`/`-f` logging. Six are long-only
 because they are not squeezelite's: `--port`, the port this player serves on,
-`--buffer-ms`, and the two mDNS flags `--no-mdns` and `--mdns-name`. Run `--help`
-for the current state of each — a few still point at
+`--buffer-ms`, the two mDNS flags `--no-mdns` and `--mdns-name`, and the two
+control-socket flags `--control-socket` and `--no-control`. Run `--help` for the
+current state of each — a few still point at
 [`docs/ROADMAP.md`](docs/ROADMAP.md) for behaviour that is not built yet.
+
+A **subcommand comes first**, before any flag: `sendspin-cli vol 50 --port 9000`,
+not `sendspin-cli --port 9000 vol 50`. That is not getopt permutation showing
+through — argv[1] is split off *before* `getopt_long()` runs, because getopt's
+handling of a positional argument differs between glibc and the BSDs, and because
+`seek-rel -5000` is indistinguishable from a flag cluster to it. A subcommand in
+the wrong place says so rather than being called junk.
 
 Everything the flags can settle is validated before anything is opened, and a bad
 value exits `1` with a single line naming it rather than falling back to a default:
@@ -516,8 +662,12 @@ scripts/smoke_test.sh build/sendspin-cli
 
 It checks that the binary runs, comes up on its port, forks under `-z`, refuses a
 second instance holding the same `-P`, survives an mDNS daemon it cannot reach,
-and exits `0` on `SIGTERM`. CI runs it on every platform leg; run it yourself
-against any build.
+and exits `0` on `SIGTERM` — plus the whole of the control socket, which needs two
+processes by definition: that it appears at the default path as `0600`, that
+`status` round-trips, that `--no-control` binds nothing, that a stale socket is
+taken over after a `SIGKILL`, that it is gone after `SIGTERM`, and that a second
+instance on the same socket is refused. CI runs it on every platform leg; run it
+yourself against any build.
 
 ## CI
 
@@ -564,7 +714,7 @@ executable, so signing alone would still leave an offline Mac asking Apple.
 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the epic breakdown and the child
 tasks that build out audio backends, discovery, daemonization, the local control
-channel, Docker packaging, and more.
+channel, a config file, Docker packaging, and more.
 
 ## Upstream
 

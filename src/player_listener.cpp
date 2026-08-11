@@ -47,6 +47,7 @@ void PlayerListener::on_stream_start() {
     // stream's refusal and report its audio as discarded.
     this->stream_refused_.store(false, std::memory_order_relaxed);
     this->refused_bytes_.store(0, std::memory_order_relaxed);
+    this->stream_format_.reset();
 
     const sendspin::ServerPlayerStreamObject& params = this->player_.get_current_stream_params();
     if (!params.is_complete()) {
@@ -67,7 +68,12 @@ void PlayerListener::on_stream_start() {
                 this->sink_.name().c_str(), *params.sample_rate, *params.channels,
                 *params.bit_depth);
         this->stream_refused_.store(true, std::memory_order_relaxed);
+        return;
     }
+    // Recorded only on a format the device accepted, so `status` describes what is really
+    // being played rather than what was asked for and refused.
+    this->stream_format_ =
+        StreamFormat{*params.sample_rate, *params.channels, *params.bit_depth};
 }
 
 void PlayerListener::on_stream_end() {
@@ -78,6 +84,7 @@ void PlayerListener::on_stream_end() {
     // it first is what stops a write racing this from adding to a total already taken.
     const bool refused = this->stream_refused_.exchange(false, std::memory_order_relaxed);
     const uint64_t discarded = this->refused_bytes_.exchange(0, std::memory_order_relaxed);
+    this->stream_format_.reset();
     if (refused) {
         cli_log(LogLevel::ERROR,
                 "Stream ended having played nothing: %llu bytes discarded, because '%s' refused "

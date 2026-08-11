@@ -17,6 +17,8 @@
 
 #include "last_server.h"
 
+#include "scoped_env.h"
+
 #include <gtest/gtest.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -81,39 +83,6 @@ private:
 
     std::string path_;
     bool created_{false};
-};
-
-/// Sets an environment variable for the duration of a test, restoring it afterwards.
-class ScopedEnv {
-public:
-    ScopedEnv(const char* name, const char* value) : name_(name) {
-        const char* previous = std::getenv(name);
-        this->had_previous_ = previous != nullptr;
-        if (this->had_previous_) {
-            this->previous_ = previous;
-        }
-        if (value == nullptr) {
-            ::unsetenv(name);
-        } else {
-            ::setenv(name, value, 1);
-        }
-    }
-
-    ~ScopedEnv() {
-        if (this->had_previous_) {
-            ::setenv(this->name_, this->previous_.c_str(), 1);
-        } else {
-            ::unsetenv(this->name_);
-        }
-    }
-
-    ScopedEnv(const ScopedEnv&) = delete;
-    ScopedEnv& operator=(const ScopedEnv&) = delete;
-
-private:
-    const char* name_;
-    std::string previous_;
-    bool had_previous_{false};
 };
 
 // ---------------------------------------------------------------------------

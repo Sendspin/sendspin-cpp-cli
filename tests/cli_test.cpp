@@ -17,7 +17,9 @@
 
 #include "cli.h"
 
+#include "control.h"
 #include "log.h"
+#include "scoped_env.h"
 
 #include <gtest/gtest.h>
 
@@ -456,11 +458,35 @@ TEST(ParseOptions, UnknownLogLevelIsRejected) {
 // Malformed command lines
 // ---------------------------------------------------------------------------
 
-TEST(ParseOptions, PositionalArgumentIsRejected) {
+TEST(ParseOptions, AFirstWordThatIsNotASubcommandIsRejectedAsOne) {
+    // argv[1] is the subcommand position now, so a bare word there is diagnosed as a subcommand
+    // typo -- which is what it almost always is -- rather than as an unexpected argument.
     Parse parse({"extra"});
 
     EXPECT_FALSE(parse.ok());
-    EXPECT_NE(parse.diagnostics().find("error: unexpected argument 'extra'"), std::string::npos);
+    EXPECT_NE(parse.diagnostics().find("error: unknown subcommand 'extra'"), std::string::npos)
+        << parse.diagnostics();
+    // Naming the alternatives is what makes it actionable rather than merely correct.
+    EXPECT_NE(parse.diagnostics().find("pause"), std::string::npos) << parse.diagnostics();
+}
+
+TEST(ParseOptions, APositionalArgumentAfterFlagsIsRejected) {
+    // Past argv[1] there is no subcommand position, so this really is a stray word.
+    Parse parse({"-o", "null", "extra"});
+
+    EXPECT_FALSE(parse.ok());
+    EXPECT_NE(parse.diagnostics().find("error: unexpected argument 'extra'"), std::string::npos)
+        << parse.diagnostics();
+}
+
+TEST(ParseOptions, ASubcommandAfterFlagsSaysToMoveIt) {
+    // A real subcommand, just not where it can be read as one -- the fix is to move one word,
+    // so the message says that instead of calling it junk.
+    Parse parse({"--port", "9000", "status"});
+
+    EXPECT_FALSE(parse.ok());
+    EXPECT_NE(parse.diagnostics().find("has to come first"), std::string::npos)
+        << parse.diagnostics();
 }
 
 TEST(ParseOptions, UnknownOptionIsRejectedInOurOwnWords) {
@@ -747,6 +773,227 @@ TEST(ParseOptions, MdnsNameAloneDoesNotWarn) {
 
     ASSERT_TRUE(parse.ok()) << parse.diagnostics();
     EXPECT_EQ(parse.diagnostics().find("warning:"), std::string::npos) << parse.diagnostics();
+}
+
+// ---------------------------------------------------------------------------
+// The control socket, and subcommands, through the parser
+// ---------------------------------------------------------------------------
+
+TEST(ParseOptions, TheControlSocketDefaultsUnderTheRuntimeDirectory) {
+    ScopedEnv runtime_dir("XDG_RUNTIME_DIR", "/run/user/1000");
+    Parse parse({});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_EQ(parse.options().control_socket, "/run/user/1000/sendspin-cli-8928.sock");
+    EXPECT_TRUE(parse.options().control_absent_reason.empty());
+}
+
+TEST(ParseOptions, TheControlSocketDefaultFollowsThePort) {
+    // The whole reason the port is in the leaf: two players on one host, and a subcommand able
+    // to derive the same path from the same --port.
+    ScopedEnv runtime_dir("XDG_RUNTIME_DIR", "/run/user/1000");
+    Parse parse({"--port", "9000"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_EQ(parse.options().control_socket, "/run/user/1000/sendspin-cli-9000.sock");
+}
+
+TEST(ParseOptions, ThePortIsReadBeforeTheDefaultPathIsBuiltWhicheverOrderItComesIn) {
+    // The derivation happens after the whole line has parsed, so --port cannot arrive too late
+    // to move the socket.
+    ScopedEnv runtime_dir("XDG_RUNTIME_DIR", "/run/user/1000");
+    Parse before({"--port", "9000", "-o", "null"});
+    Parse after({"-o", "null", "--port", "9000"});
+
+    ASSERT_TRUE(before.ok()) << before.diagnostics();
+    ASSERT_TRUE(after.ok()) << after.diagnostics();
+    EXPECT_EQ(before.options().control_socket, after.options().control_socket);
+    EXPECT_EQ(after.options().control_socket, "/run/user/1000/sendspin-cli-9000.sock");
+}
+
+TEST(ParseOptions, NoRuntimeDirectoryLeavesNoSocketAndAReasonRatherThanFailing) {
+    // Non-fatal on purpose: a player with no control channel is still a player, and there is
+    // deliberately no /tmp fallback -- a world-writable directory would let any local account
+    // drive it.
+    ScopedEnv runtime_dir("XDG_RUNTIME_DIR", nullptr);
+    Parse parse({});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_TRUE(parse.options().control_socket.empty());
+    EXPECT_FALSE(parse.options().control_absent_reason.empty());
+    EXPECT_NE(parse.options().control_absent_reason.find("--control-socket"), std::string::npos);
+    EXPECT_EQ(parse.options().control_absent_reason.find("/tmp"), std::string::npos);
+}
+
+TEST(ParseOptions, AnEmptyRuntimeDirectoryCountsAsUnset) {
+    // The XDG rule, and what last_server_path() already does with $XDG_STATE_HOME: the
+    // alternative resolves to a path starting at the filesystem root.
+    ScopedEnv runtime_dir("XDG_RUNTIME_DIR", "");
+    Parse parse({});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_TRUE(parse.options().control_socket.empty());
+    EXPECT_FALSE(parse.options().control_absent_reason.empty());
+}
+
+TEST(ParseOptions, ControlSocketOverridesTheDefault) {
+    ScopedEnv runtime_dir("XDG_RUNTIME_DIR", "/run/user/1000");
+    Parse parse({"--control-socket", "/tmp/mine.sock"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_EQ(parse.options().control_socket, "/tmp/mine.sock");
+    EXPECT_TRUE(parse.options().was_given(Opt::ControlSocket));
+}
+
+TEST(ParseOptions, ControlSocketNeedsANonEmptyValue) {
+    Parse parse({"--control-socket", ""});
+
+    EXPECT_FALSE(parse.ok());
+    EXPECT_NE(parse.diagnostics().find("--control-socket needs a non-empty value"),
+              std::string::npos)
+        << parse.diagnostics();
+}
+
+TEST(ParseOptions, AnOverLongControlSocketIsRefusedRatherThanTruncated) {
+    // A truncated path binds a socket nothing can find, and every subcommand would then report
+    // "no daemon" against a daemon that is running.
+    const std::string too_long = "/" + std::string(control_socket_path_limit(), 'x');
+    Parse parse({"--control-socket", too_long});
+
+    EXPECT_FALSE(parse.ok());
+    EXPECT_NE(parse.diagnostics().find("--control-socket"), std::string::npos)
+        << parse.diagnostics();
+    EXPECT_NE(parse.diagnostics().find(std::to_string(control_socket_path_limit() - 1)),
+              std::string::npos)
+        << parse.diagnostics();
+}
+
+TEST(ParseOptions, AControlSocketAtTheLimitIsAccepted) {
+    const std::string exact = "/" + std::string(control_socket_path_limit() - 2, 'x');
+    Parse parse({"--control-socket", exact});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_EQ(parse.options().control_socket, exact);
+}
+
+TEST(ParseOptions, NoControlLeavesNoSocketAndNoReason) {
+    // --no-control needs no explaining, unlike a missing $XDG_RUNTIME_DIR: the flag is the
+    // reason, and main() logs it at info rather than warning about it.
+    ScopedEnv runtime_dir("XDG_RUNTIME_DIR", "/run/user/1000");
+    Parse parse({"--no-control"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_TRUE(parse.options().no_control);
+    EXPECT_TRUE(parse.options().control_socket.empty());
+    EXPECT_TRUE(parse.options().control_absent_reason.empty());
+}
+
+TEST(ParseOptions, NoControlWithAControlSocketIsRefused) {
+    // Contradictory rather than inert, like -z with -o stdout: one names where the socket goes
+    // and the other says there is not one.
+    Parse parse({"--no-control", "--control-socket", "/tmp/mine.sock"});
+
+    EXPECT_FALSE(parse.ok());
+    EXPECT_NE(parse.diagnostics().find("contradict"), std::string::npos) << parse.diagnostics();
+}
+
+TEST(ParseOptions, ARelativeControlSocketIsMadeAbsoluteUnderZ) {
+    // The same split -P and -f have: the daemon chdir()s to /, so a relative path would name
+    // one file before the fork and a different one after it.
+    Parse parse({"-z", "-f", "/tmp/log", "--control-socket", "mine.sock"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_EQ(parse.options().control_socket.front(), '/');
+    EXPECT_NE(parse.options().control_socket.find("/mine.sock"), std::string::npos)
+        << parse.options().control_socket;
+}
+
+TEST(ParseOptions, ARelativeControlSocketIsLeftAloneWithoutZ) {
+    Parse parse({"--control-socket", "mine.sock"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_EQ(parse.options().control_socket, "mine.sock");
+}
+
+TEST(ParseOptions, ASubcommandIsReportedThroughOptions) {
+    ScopedEnv runtime_dir("XDG_RUNTIME_DIR", "/run/user/1000");
+    Parse parse({"vol", "50"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_EQ(parse.options().subcommand, "vol");
+    ASSERT_EQ(parse.options().subcommand_args.size(), 1U);
+    EXPECT_EQ(parse.options().subcommand_args[0], "50");
+    // It resolves the same socket a daemon on the same --port would bind.
+    EXPECT_EQ(parse.options().control_socket, "/run/user/1000/sendspin-cli-8928.sock");
+}
+
+TEST(ParseOptions, FlagsAfterASubcommandAreStillParsed) {
+    // The portability trap the pre-getopt split exists to close: glibc permutes a positional
+    // argument out of the way and the BSDs stop at it, so relying on getopt's leftovers would
+    // read --port on Linux and drop it on macOS.
+    ScopedEnv runtime_dir("XDG_RUNTIME_DIR", "/run/user/1000");
+    Parse parse({"vol", "50", "--port", "9000"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_EQ(parse.options().subcommand, "vol");
+    EXPECT_EQ(parse.options().port, 9000);
+    EXPECT_EQ(parse.options().control_socket, "/run/user/1000/sendspin-cli-9000.sock");
+}
+
+TEST(ParseOptions, ANegativeSubcommandArgumentIsNotReadAsFlags) {
+    Parse parse({"seek-rel", "-5000", "--control-socket", "/tmp/mine.sock"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_EQ(parse.options().subcommand, "seek-rel");
+    ASSERT_EQ(parse.options().subcommand_args.size(), 1U);
+    EXPECT_EQ(parse.options().subcommand_args[0], "-5000");
+    EXPECT_EQ(parse.options().control_socket, "/tmp/mine.sock");
+}
+
+TEST(ParseOptions, ASubcommandArgumentIsValidatedAtParseTime) {
+    // So a bad `vol 500` reads exactly like a bad --buffer-ms: one error: line at the terminal,
+    // before a socket has been opened, rather than a failure out on the wire.
+    Parse parse({"vol", "500"});
+
+    EXPECT_FALSE(parse.ok());
+    EXPECT_NE(parse.diagnostics().find("0 to 100"), std::string::npos) << parse.diagnostics();
+}
+
+TEST(ParseOptions, HelpWinsOverABadSubcommandArgument) {
+    Parse parse({"vol", "500", "--help"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_TRUE(parse.options().show_help);
+}
+
+TEST(ParseOptions, DaemonFlagsAlongsideASubcommandWarnRatherThanFail) {
+    // The natural mistake is pasting a daemon's whole flag line and appending a subcommand,
+    // which should still work -- just without pretending the flags did anything.
+    ScopedEnv runtime_dir("XDG_RUNTIME_DIR", "/run/user/1000");
+    Parse parse({"pause", "-o", "null"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_NE(parse.diagnostics().find("only --port and --control-socket"), std::string::npos)
+        << parse.diagnostics();
+}
+
+TEST(ParseOptions, ASubcommandDoesNotDrawTheDaemonWarnings) {
+    // -z without -f warns about a daemon's discarded log. A subcommand starts no daemon, so
+    // that warning would be describing something that is not going to happen.
+    ScopedEnv runtime_dir("XDG_RUNTIME_DIR", "/run/user/1000");
+    Parse parse({"pause", "-z"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_EQ(parse.diagnostics().find("discards all log output"), std::string::npos)
+        << parse.diagnostics();
+}
+
+TEST(ParseOptions, ADaemonRunHasNoSubcommand) {
+    Parse parse({"-o", "null"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_TRUE(parse.options().subcommand.empty());
+    EXPECT_TRUE(parse.options().subcommand_args.empty());
 }
 
 // ---------------------------------------------------------------------------

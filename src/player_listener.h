@@ -18,12 +18,14 @@
 #pragma once
 
 #include "audio_sink.h"
+#include "control.h"
 
 #include <sendspin/player_role.h>
 
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 
 namespace sendspin_cli {
 
@@ -49,9 +51,22 @@ public:
     void on_volume_changed(uint8_t volume) override;
     void on_mute_changed(bool muted) override;
 
+    /// @brief The format the sink is currently configured for, or nothing between streams.
+    ///
+    /// What the control channel's `status` reports as this endpoint's stream state: audio
+    /// arriving *here*, which is a different fact from the group's transport state. Read on the
+    /// main loop, where the two stream callbacks that write it also fire -- so unlike the
+    /// refusal counters below this needs no atomic.
+    const std::optional<StreamFormat>& stream_format() const {
+        return this->stream_format_;
+    }
+
 private:
     sendspin::PlayerRole& player_;
     AudioSink& sink_;
+
+    /// Set at stream start once the sink has accepted the format, cleared at stream end.
+    std::optional<StreamFormat> stream_format_;
 
     /// Set when configure() refuses this stream's format, cleared at the next stream start.
     ///
