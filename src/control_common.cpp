@@ -702,6 +702,10 @@ const char* line_state_reason(LineState state) {
 
 bool is_private_runtime_dir(const std::string& path, std::string& reason) {
     struct stat info = {};
+    // stat() rather than lstat(), so a symlink is judged by what it *points at*. That is the
+    // safe direction here and the useful one: a link to a world-writable directory fails the
+    // mode test below and a link into someone else's tree fails the ownership test, while
+    // lstat() would instead refuse a legitimately symlinked $XDG_RUNTIME_DIR for being a link.
     if (::stat(path.c_str(), &info) != 0) {
         reason = "cannot stat " + path + ": " + std::strerror(errno);
         return false;

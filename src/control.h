@@ -406,6 +406,12 @@ std::string control_runtime_dir();
 /// still only a path until the filesystem agrees it is a directory this user owns and no one else
 /// can write to.
 ///
+/// There is a window between that check and the `bind()` that follows it, and it is left open
+/// knowingly rather than overlooked. Closing it would need the socket created through a
+/// descriptor opened on the verified directory, which `bind()` has no interface for -- and
+/// swapping the directory in between requires write access to its *parent*, which on both
+/// sources is itself user-owned. An attacker who already has that does not need this race.
+///
 /// Empty on every other platform, where `$XDG_RUNTIME_DIR` is the convention and its absence is
 /// a real absence rather than a platform difference.
 ///

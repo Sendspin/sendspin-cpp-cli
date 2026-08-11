@@ -1043,6 +1043,26 @@ TEST(PrivateRuntimeDir, ADirectoryOwnedBySomeoneElseIsRefused) {
     EXPECT_NE(reason.find("not by this user"), std::string::npos) << reason;
 }
 
+TEST(PrivateRuntimeDir, ASymlinkIsJudgedByWhatItPointsAt) {
+    // The documented direction, and the safe one: stat() follows, so a link into a world-writable
+    // directory is refused for the target's mode rather than accepted for the link's. lstat()
+    // would instead refuse a legitimately symlinked $XDG_RUNTIME_DIR for being a link at all.
+    const ScratchDir target(0700);
+    ASSERT_TRUE(target.created());
+
+    const std::string safe_link = target.path() + "-link";
+    const std::string unsafe_link = target.path() + "-tmplink";
+    ASSERT_EQ(::symlink(target.path().c_str(), safe_link.c_str()), 0);
+    ASSERT_EQ(::symlink("/tmp", unsafe_link.c_str()), 0);
+
+    std::string reason;
+    EXPECT_TRUE(is_private_runtime_dir(safe_link, reason)) << reason;
+    EXPECT_FALSE(is_private_runtime_dir(unsafe_link, reason));
+
+    ::unlink(safe_link.c_str());
+    ::unlink(unsafe_link.c_str());
+}
+
 TEST(PrivateRuntimeDir, TmpIsRefused) {
     // Named explicitly because it is the fallback this design refuses, and the reason it does:
     // /tmp is 1777 on every platform this builds on.
