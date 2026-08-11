@@ -23,6 +23,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 namespace sendspin_cli {
 
@@ -87,10 +88,12 @@ enum class Opt : unsigned {
     Pidfile,      ///< -P
     Logfile,      ///< -f
     LogLevel,     ///< -d
-    Port,         ///< --port
-    BufferMs,     ///< --buffer-ms
-    NoMdns,       ///< --no-mdns
-    MdnsName,     ///< --mdns-name
+    Port,           ///< --port
+    BufferMs,       ///< --buffer-ms
+    NoMdns,         ///< --no-mdns
+    MdnsName,       ///< --mdns-name
+    ControlSocket,  ///< --control-socket
+    NoControl,      ///< --no-control
 };
 
 /// @brief Everything the flag surface configures.
@@ -132,8 +135,34 @@ struct Options {
     /// Empty means "use -n", which itself defaults to the hostname.
     std::string mdns_name;
 
+    /// --no-control: do not bind a control socket at all.
+    ///
+    /// Not the mirror of --no-mdns, which the spec *requires* a dialling client to honour:
+    /// this one exists because a systemd system unit has no `$XDG_RUNTIME_DIR`, so an operator
+    /// who has decided this player is driven only by its server can say so and silence the
+    /// warning rather than reading it on every start.
+    bool no_control{false};
+
     bool show_help{false};     ///< -h, --help
     bool show_version{false};  ///< --version
+
+    /// The control socket path this run resolved to, empty when there is none.
+    ///
+    /// Resolved once during parsing -- from --control-socket, or from
+    /// `$XDG_RUNTIME_DIR/sendspin-cli-<port>.sock` -- so the daemon and a subcommand derive
+    /// the same path from the same flags, and so an over-long one is refused before anything
+    /// is bound. Made absolute under -z, exactly as -P and -f are.
+    std::string control_socket;
+
+    /// Why `control_socket` is empty, for the diagnostic that has to say so. Empty when
+    /// --no-control was the reason, which needs no explaining, or when there is a path.
+    std::string control_absent_reason;
+
+    /// The subcommand argv[1] named, empty for a daemon run. See split_subcommand().
+    std::string subcommand;
+
+    /// The words after the subcommand: exactly its arity, already checked to be present.
+    std::vector<std::string> subcommand_args;
 
     /// The WebSocket URL `server` resolved to, validated during parsing. Empty when -s
     /// was not given, and when -s asked for discovery -- there is no URL until a server has
@@ -181,11 +210,17 @@ private:
 ///
 /// Every value is validated here, so a caller that gets `true` back holds a set of
 /// options it can act on without re-checking. --help, --version and -l are reported
-/// through `out` for the caller to act on rather than being handled here.
+/// through `out` for the caller to act on rather than being handled here, and so is a
+/// subcommand: `out.subcommand` names it, and the caller runs it instead of a daemon.
 ///
-/// Two values are also normalized rather than merely checked: with -z, a relative -P or -f
-/// path is made absolute against the current directory, because the daemon chdir()s to / and
-/// a relative path would otherwise name a different file before and after the fork.
+/// A subcommand and its arguments are taken off the front of argv *before* getopt sees them
+/// (see split_subcommand()), so the flags after them are still parsed on every platform and
+/// `seek-rel -5000` is an offset rather than a flag cluster.
+///
+/// Three values are normalized rather than merely checked. With -z, a relative -P, -f or
+/// --control-socket path is made absolute against the current directory, because the daemon
+/// chdir()s to / and a relative path would otherwise name a different file before and after
+/// the fork.
 ///
 /// @param err Where diagnostics go. Injected rather than hardcoded to stderr so tests can
 /// capture and assert on the wording; the whole parse path writes only here.

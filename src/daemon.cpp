@@ -31,54 +31,37 @@ namespace {
 /// which process to signal, writable only by whoever started the daemon.
 constexpr mode_t PIDFILE_MODE = 0644;
 
-/// Whether `err` is flock() reporting that someone else holds the lock.
-///
-/// Both spellings are compared even though EWOULDBLOCK and EAGAIN are the same value on
-/// Linux and macOS alike: POSIX permits them to differ, and this is the one distinction the
-/// whole class rests on.
-bool is_lock_contention(int err) {
-    return err == EWOULDBLOCK || err == EAGAIN;
-}
+}  // namespace
 
-/// Opens `path` for locking, creating it if it is not there yet.
-///
-/// O_TRUNC is deliberately absent. Truncating on open would destroy a running instance's pid
-/// on the way to *discovering* that the file belongs to it -- the file has to survive until
-/// the lock says whose it is.
-int open_for_lock(const std::string& path, std::string& error) {
-    const int fd = ::open(path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, PIDFILE_MODE);
-    if (fd < 0) {
-        error = "cannot open pidfile " + path + ": " + std::strerror(errno);
+PidFileStatus lock_file(const std::string& path, const char* what, unsigned mode, int& fd,
+                        std::string& error) {
+    const int opened =
+        ::open(path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, static_cast<mode_t>(mode));
+    if (opened < 0) {
+        error = std::string("cannot open ") + what + " " + path + ": " + std::strerror(errno);
+        return PidFileStatus::Failed;
     }
-    return fd;
-}
 
-/// Takes the exclusive lock on `fd` without waiting, and names what stopped it.
-///
-/// flock() rather than fcntl() record locks, for two reasons that both matter here. A flock
-/// lock belongs to the open file description, so two open() calls conflict even inside one
-/// process -- which is what makes the conflict testable without forking, and what makes a
-/// second instance's collision real rather than a silently granted re-lock. And the kernel
-/// drops it when the descriptor closes for any reason, including a crash, which is the whole
-/// of stale-pidfile handling. The alternatives were considered and are worse: an O_EXCL
-/// create has no stale handling at all, and reading the pid and signalling it has a
-/// pid-reuse race that cannot be closed.
-PidFileStatus lock(int fd, const std::string& path, std::string& error) {
-    if (::flock(fd, LOCK_EX | LOCK_NB) == 0) {
+    if (::flock(opened, LOCK_EX | LOCK_NB) == 0) {
+        fd = opened;
         return PidFileStatus::Ok;
     }
+
     const int reason = errno;
-    if (is_lock_contention(reason)) {
+    ::close(opened);
+    // Both spellings are compared even though EWOULDBLOCK and EAGAIN are the same value on
+    // Linux and macOS alike: POSIX permits them to differ, and this is the one distinction the
+    // whole scheme rests on.
+    if (reason == EWOULDBLOCK || reason == EAGAIN) {
         error = "another sendspin-cli is already running -- it holds the lock on " + path;
         return PidFileStatus::AlreadyRunning;
     }
-    error = "cannot lock pidfile " + path + ": " + std::strerror(reason) +
-            ". A pidfile has to be on a local filesystem: flock is emulated over NFS and is "
-            "not dependable over SMB";
+    error = std::string("cannot lock ") + what + " " + path + ": " + std::strerror(reason) +
+            ". A " + what +
+            " has to be on a local filesystem: flock is emulated over NFS and is not dependable "
+            "over SMB";
     return PidFileStatus::Failed;
 }
-
-}  // namespace
 
 PidFile::~PidFile() {
     if (this->fd_ < 0) {
@@ -95,14 +78,9 @@ PidFile::~PidFile() {
 }
 
 PidFileStatus PidFile::acquire(const std::string& path, std::string& error) {
-    const int fd = open_for_lock(path, error);
-    if (fd < 0) {
-        return PidFileStatus::Failed;
-    }
-
-    const PidFileStatus locked = lock(fd, path, error);
+    int fd = -1;
+    const PidFileStatus locked = lock_file(path, "pidfile", PIDFILE_MODE, fd, error);
     if (locked != PidFileStatus::Ok) {
-        ::close(fd);
         return locked;
     }
 
@@ -145,18 +123,14 @@ PidFileStatus probe_pidfile(const std::string& path, std::string& error) {
     // an unopenable -f, a fork() that fails -- leaves an empty, unlocked file behind, which by
     // the lock's own rules reads correctly as "nothing is running" and is reused on the next
     // start.
-    const int fd = open_for_lock(path, error);
-    if (fd < 0) {
-        return PidFileStatus::Failed;
-    }
-
-    const PidFileStatus locked = lock(fd, path, error);
+    int fd = -1;
+    const PidFileStatus locked = lock_file(path, "pidfile", PIDFILE_MODE, fd, error);
     if (locked == PidFileStatus::Ok) {
         // Released explicitly rather than leaning on close(), so the intent is on the page:
         // this is a look, and the child after the fork owns the real lock.
         ::flock(fd, LOCK_UN);
+        ::close(fd);
     }
-    ::close(fd);
     return locked;
 }
 

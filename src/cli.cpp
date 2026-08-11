@@ -15,6 +15,7 @@
 #include "cli.h"
 
 #include "audio_sink.h"
+#include "control.h"
 #include "log.h"
 #include "mdns.h"
 
@@ -26,6 +27,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 
 namespace sendspin_cli {
 
@@ -53,6 +55,8 @@ enum LongOnly {
     OPT_BUFFER_MS,
     OPT_NO_MDNS,
     OPT_MDNS_NAME,
+    OPT_CONTROL_SOCKET,
+    OPT_NO_CONTROL,
 };
 
 bool is_all_digits(const std::string& value) {
@@ -181,6 +185,34 @@ std::string absolute_path(const std::string& path) {
     return std::string(cwd) + "/" + path;
 }
 
+/// The column --help wraps at, matching the width the hand-written flag lines already use.
+constexpr size_t USAGE_WIDTH = 79;
+
+/// Writes `text` word-wrapped, continuing at column `indent`, and ends the line.
+///
+/// The cursor is assumed to already be at `indent`, which is what the `%-20s` before each call
+/// site guarantees. Only the subcommand table needs this: the flag lines below are wrapped by
+/// hand, since each one's shape is part of how it reads.
+void print_wrapped(std::FILE* out, const char* text, size_t indent) {
+    size_t column = indent;
+    const char* word = text;
+    while (*word != '\0') {
+        const char* end = std::strchr(word, ' ');
+        const size_t length = end == nullptr ? std::strlen(word) : static_cast<size_t>(end - word);
+        if (column > indent && column + 1 + length > USAGE_WIDTH) {
+            std::fprintf(out, "\n%*s", static_cast<int>(indent), "");
+            column = indent;
+        } else if (column > indent) {
+            std::fputc(' ', out);
+            ++column;
+        }
+        std::fprintf(out, "%.*s", static_cast<int>(length), word);
+        column += length;
+        word = end == nullptr ? word + length : end + 1;
+    }
+    std::fputc('\n', out);
+}
+
 /// Rewinds getopt's process-global scan state so parse_options() can run more than once.
 ///
 /// glibc and musl treat `optind = 0` as "re-initialise everything"; `optind = 1` only
@@ -210,8 +242,37 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
         {"buffer-ms", required_argument, nullptr, OPT_BUFFER_MS},
         {"no-mdns", no_argument, nullptr, OPT_NO_MDNS},
         {"mdns-name", required_argument, nullptr, OPT_MDNS_NAME},
+        {"control-socket", required_argument, nullptr, OPT_CONTROL_SOCKET},
+        {"no-control", no_argument, nullptr, OPT_NO_CONTROL},
         {nullptr, 0, nullptr, 0},
     };
+
+    // Taken off the front before getopt runs, so a subcommand's argument can look like a flag
+    // (`seek-rel -5000`) and so the flags after it are seen on glibc and the BSDs alike.
+    // Reported through the same deferral as every flag error below rather than immediately, so
+    // that appending --help to a command line you got wrong still prints the flag list.
+    ControlInvocation invocation;
+    std::string subcommand_error;
+    const bool split_ok = split_subcommand(argc, argv, invocation, subcommand_error);
+    out.subcommand = invocation.name;
+    out.subcommand_args = invocation.args;
+
+    // getopt is handed a line with the subcommand words removed rather than being asked to skip
+    // them, since the number to skip is not something optind can be told. Everything below
+    // reads this line, so optind and offending_option() index the same array getopt scanned.
+    std::vector<char*> flags;
+    flags.push_back(argv[0]);
+    for (int index = invocation.consumed == 0 ? 1 : invocation.consumed; index < argc; ++index) {
+        flags.push_back(argv[index]);
+    }
+    // The array has to keep POSIX's `argv[argc] == NULL`, and not as a formality: the BSD
+    // getopt_long behind `--port` with no value does `optarg = nargv[optind++]` unconditionally
+    // and then tests `optarg == NULL`, so the sentinel is the *only* thing that tells it the
+    // value is missing. Without it the read runs one past the end and a missing value is
+    // accepted as whatever was next in memory.
+    const int flag_argc = static_cast<int>(flags.size());
+    flags.push_back(nullptr);
+    char** const flag_argv = flags.data();
 
     reset_getopt();
 
@@ -239,10 +300,25 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
         return false;
     };
 
+    // The subcommand's own two complaints, now that there is somewhere to defer them to: a name
+    // that is not a subcommand, and an argument that is not what that subcommand takes. Both are
+    // parse-time errors like any other, so a bad `vol 500` reads exactly like a bad --buffer-ms
+    // rather than failing later, on the wire.
+    if (!split_ok) {
+        fail(std::move(subcommand_error));
+    } else if (!out.subcommand.empty()) {
+        ControlRequest request;
+        std::string request_error;
+        if (!parse_control_request(out.subcommand, out.subcommand_args, request, request_error)) {
+            fail(std::move(request_error));
+        }
+    }
+
     // The leading ':' is what separates "you left the value off" from "no such flag":
     // getopt then returns ':' for a missing argument instead of folding it into '?'.
     int opt = 0;
-    while ((opt = getopt_long(argc, argv, ":o:ln:s:zP:d:f:h", long_opts, nullptr)) != -1) {
+    while ((opt = getopt_long(flag_argc, flag_argv, ":o:ln:s:zP:d:f:h", long_opts, nullptr)) !=
+           -1) {
         switch (opt) {
             case 'o':
                 if (require_value("-o", optarg)) {
@@ -320,19 +396,39 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
                     out.mark_given(Opt::MdnsName);
                 }
                 break;
+            case OPT_CONTROL_SOCKET:
+                if (require_value("--control-socket", optarg)) {
+                    // Only stored here; the length check and the -z rewrite happen below, once
+                    // --port is known and the whole line has parsed.
+                    out.control_socket = optarg;
+                    out.mark_given(Opt::ControlSocket);
+                }
+                break;
+            case OPT_NO_CONTROL:
+                out.no_control = true;
+                out.mark_given(Opt::NoControl);
+                break;
             case ':':
-                fail("option '" + offending_option(argv, optind) + "' needs a value");
+                fail("option '" + offending_option(flag_argv, optind) + "' needs a value");
                 break;
             case '?':
             default:
-                fail("unknown option '" + offending_option(argv, optind) + "'");
+                fail("unknown option '" + offending_option(flag_argv, optind) + "'");
                 break;
         }
     }
 
-    if (optind < argc) {
-        fail("unexpected argument '" + std::string(argv[optind]) +
-             "' -- this player takes flags only");
+    if (optind < flag_argc) {
+        const std::string word = flag_argv[optind];
+        if (find_control_subcommand(word) != nullptr) {
+            // A real subcommand, just not where it can be read as one. Said outright rather
+            // than as "unexpected argument", because the fix is to move one word.
+            fail("a subcommand has to come first: '" + std::string(argv[0]) + " " + word +
+                 " [flags]', not after the flags");
+        } else {
+            fail("unexpected argument '" + word + "' -- this player takes flags and one optional "
+                 "subcommand (" + control_subcommand_list() + ")");
+        }
     }
 
     // Skipped once something has already failed: the first complaint is the useful one,
@@ -372,26 +468,100 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
         }
     }
 
+    // Contradictory rather than inert, like -z with -o stdout: one flag names where the control
+    // socket goes and the other says there is not one, and guessing which the operator meant
+    // would leave a player either unreachable or listening where they said it should not.
+    if (error.empty() && out.was_given(Opt::NoControl) && out.was_given(Opt::ControlSocket)) {
+        fail("--no-control and --control-socket '" + out.control_socket +
+             "' contradict each other -- drop one");
+    }
+
+    // Resolved here, above the error report, because the path's own length is one of the things
+    // that can fail: --control-socket is made absolute *first*, since a relative path grows
+    // when the working directory is prepended and it is the resolved one that has to fit.
+    if (error.empty()) {
+        // --no-control only decides whether *this* process listens, so a subcommand run ignores
+        // it and resolves the path anyway: the player it is talking to made its own decision, and
+        // clearing the path here would have the subcommand blame a flag on the wrong command line.
+        if (out.no_control && out.subcommand.empty()) {
+            out.control_socket.clear();
+        } else if (out.was_given(Opt::ControlSocket)) {
+            if (out.was_given(Opt::Daemonize)) {
+                out.control_socket = absolute_path(out.control_socket);
+            }
+            if (!control_socket_path_fits(out.control_socket)) {
+                // Refused rather than truncated: a shortened path binds a socket nothing can
+                // find, and every subcommand would then report "no daemon" against a daemon
+                // that is running and healthy.
+                fail("--control-socket '" + out.control_socket + "' is " +
+                     std::to_string(out.control_socket.size()) +
+                     " bytes, and a Unix socket address holds at most " +
+                     std::to_string(control_socket_path_limit() - 1) + " on this platform");
+            }
+        } else {
+            const ControlRuntimeDir runtime = control_runtime_dir();
+            out.control_socket = control_socket_path(runtime.path, out.port);
+            out.control_absent_reason = control_socket_absent_reason(runtime, out.control_socket);
+            if (!out.control_absent_reason.empty()) {
+                // Non-fatal, and deliberately not a fallback to a shared directory: the player
+                // is still a player without a control channel. main() warns once and carries on.
+                out.control_socket.clear();
+            }
+            // A directory that is being *used* despite failing the privacy check. Said here
+            // rather than in main(), because it is a property of the flags and the environment
+            // rather than of the run -- and only for a daemon, which is the process that creates
+            // the socket and so the one making the decision.
+            if (!runtime.warning.empty() && out.subcommand.empty()) {
+                std::fprintf(err, "warning: %s\n", runtime.warning.c_str());
+            }
+        }
+    }
+
     if (!error.empty()) {
         std::fprintf(err, "error: %s\n", error.c_str());
         return false;
     }
 
-    // Not refused: a daemon with nowhere to log is still a working player, and -z is often
-    // paired with a supervisor that does not want a logfile. Warned about because the
-    // alternative is a silence that reads exactly like a crash.
-    if (out.was_given(Opt::Daemonize) && !out.was_given(Opt::Logfile)) {
-        std::fprintf(err, "warning: -z without -f discards all log output -- a detached daemon's "
-                          "stderr is /dev/null. Add -f <path> to keep it.\n");
-    }
+    // A subcommand run starts no player, so the warnings differ: the ones below describe a
+    // daemon that is not going to exist, and what is worth saying instead is that most of the
+    // flags did nothing. Warned rather than refused, because the natural mistake is pasting a
+    // daemon's whole flag line and appending a subcommand -- which should still work.
+    if (!out.subcommand.empty()) {
+        // --no-control is in here rather than treated as a contradiction the way it is alongside
+        // --control-socket: it says nothing about *this* invocation, since a subcommand does not
+        // listen on anything. Left it out and it would silently produce a "this player was
+        // started with --no-control" message about the wrong process.
+        static constexpr Opt DAEMON_ONLY[] = {
+            Opt::Device,   Opt::Name,     Opt::Server,   Opt::Daemonize, Opt::Pidfile,
+            Opt::Logfile,  Opt::LogLevel, Opt::BufferMs, Opt::NoMdns,    Opt::MdnsName,
+            Opt::NoControl,
+        };
+        for (Opt opt : DAEMON_ONLY) {
+            if (out.was_given(opt)) {
+                std::fprintf(err,
+                             "warning: a subcommand reads only --port and --control-socket -- the "
+                             "other flags configure a player and do nothing here\n");
+                break;
+            }
+        }
+    } else {
+        // Not refused: a daemon with nowhere to log is still a working player, and -z is often
+        // paired with a supervisor that does not want a logfile. Warned about because the
+        // alternative is a silence that reads exactly like a crash.
+        if (out.was_given(Opt::Daemonize) && !out.was_given(Opt::Logfile)) {
+            std::fprintf(err,
+                         "warning: -z without -f discards all log output -- a detached daemon's "
+                         "stderr is /dev/null. Add -f <path> to keep it.\n");
+        }
 
-    // Inert rather than contradictory, so it warns instead of failing: -s picks the outbound
-    // mode, which the spec forbids advertising alongside, so there is no instance to name.
-    if (out.was_given(Opt::MdnsName) && out.was_given(Opt::Server)) {
-        std::fprintf(err,
-                     "warning: --mdns-name is unused with -s -- a client that dials out must "
-                     "not advertise %s, so there is no instance to name\n",
-                     MDNS_CLIENT_SERVICE);
+        // Inert rather than contradictory, so it warns instead of failing: -s picks the outbound
+        // mode, which the spec forbids advertising alongside, so there is no instance to name.
+        if (out.was_given(Opt::MdnsName) && out.was_given(Opt::Server)) {
+            std::fprintf(err,
+                         "warning: --mdns-name is unused with -s -- a client that dials out must "
+                         "not advertise %s, so there is no instance to name\n",
+                         MDNS_CLIENT_SERVICE);
+        }
     }
 
     // Normalized here, and only under -z, so one value means one file everywhere downstream
@@ -415,9 +585,34 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
 }
 
 void print_usage(std::FILE* out, const char* prog) {
-    std::fprintf(out, "Usage: %s [options]\n\n", prog);
+    std::fprintf(out, "Usage: %s [options]\n", prog);
+    std::fprintf(out, "       %s <subcommand> [args] [--port <port>] [--control-socket <path>]\n\n",
+                 prog);
     std::fprintf(out, "A headless Sendspin audio player. Listens for a Sendspin server to\n");
     std::fprintf(out, "connect to it, or dials one with -s.\n\n");
+    std::fprintf(out, "With a subcommand, it instead talks to a player already running on this\n");
+    std::fprintf(out,
+                 "host over its control socket, and exits. The subcommand must come first.\n\n");
+    std::fprintf(out, "Subcommands:\n");
+    for (const ControlSubcommand& subcommand : control_subcommands()) {
+        // The name and its argument in one column so the shape is copyable, and the
+        // description wrapped under it -- the two long ones do not fit beside the name.
+        std::string invocation = subcommand.name;
+        if (subcommand.argument != nullptr) {
+            invocation += " ";
+            invocation += subcommand.argument;
+        }
+        std::fprintf(out, "  %-20s", invocation.c_str());
+        print_wrapped(out, subcommand.description, 22);
+    }
+    std::fprintf(out, "\n");
+    std::fprintf(out, "  A subcommand needs the same --port as the player, or an explicit\n");
+    std::fprintf(out, "  --control-socket: the default socket path carries the serve port, so\n");
+    std::fprintf(out, "  a player on a non-default --port has its socket somewhere else.\n\n");
+    std::fprintf(out, "  Exit status: 0 sent (or printed), 1 bad command line, 2 the player\n");
+    std::fprintf(out, "  refused the argument, 3 no player listening there, 4 the player has\n");
+    std::fprintf(out, "  no server connection, 5 the server does not offer that command,\n");
+    std::fprintf(out, "  6 the exchange broke down.\n\n");
     std::fprintf(out, "Options:\n");
     std::fprintf(out, "  -o <device>   Output device (default: %s). Either a reserved name\n",
                  DEFAULT_OUTPUT_DEVICE);
@@ -476,6 +671,25 @@ void print_usage(std::FILE* out, const char* prog) {
     std::fprintf(out, "                already suppresses it)\n");
     std::fprintf(out, "  --mdns-name <name>\n");
     std::fprintf(out, "                Instance name to advertise (default: -n). Unused with -s\n");
+    std::fprintf(out, "  --control-socket <path>\n");
+    std::fprintf(out, "                Unix socket the subcommands above talk to, mode 0600.\n");
+    std::fprintf(out, "                Defaults to %s<port>%s in\n", CONTROL_SOCKET_PREFIX,
+                 CONTROL_SOCKET_SUFFIX);
+    std::fprintf(out, "                $XDG_RUNTIME_DIR, where that is set. The <port> is\n");
+    std::fprintf(out, "                --port, so two players on one host each get their own --\n");
+    std::fprintf(out, "                and a subcommand needs the same --port or this flag\n");
+#ifdef __APPLE__
+    std::fprintf(out, "                Where it is not set, as on macOS, this host's own\n");
+    std::fprintf(out, "                per-user directory is used instead. Never /tmp, which\n");
+    std::fprintf(out, "                would let any local user drive this player\n");
+#else
+    std::fprintf(out, "                Where it is not set -- a systemd *system* unit has none,\n");
+    std::fprintf(out, "                so pair RuntimeDirectory= with this flag -- there is no\n");
+    std::fprintf(out, "                default and the player warns once. There is deliberately\n");
+    std::fprintf(out, "                no /tmp fallback, which would let any local user drive\n");
+    std::fprintf(out, "                this player\n");
+#endif
+    std::fprintf(out, "  --no-control  Do not listen on a control socket at all\n");
     std::fprintf(out, "  -h, --help    Show this help\n");
     std::fprintf(out, "  --version     Show version information\n\n");
     std::fprintf(out,

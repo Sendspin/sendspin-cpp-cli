@@ -11,8 +11,8 @@ small flag set for identity, output, discovery, logging, and daemonization.
 ## What the scaffold already does
 
 - Builds `sendspin-cli`, pulling `sendspin-cpp` via CMake `FetchContent` (pinned tag).
-- Boots a `SendspinClient` with the `player` and `metadata` roles, starts its WebSocket
-  server, pumps `client.loop()`, and shuts down cleanly on `SIGINT`/`SIGTERM`.
+- Boots a `SendspinClient` with the `player`, `metadata` and `controller` roles, starts its
+  WebSocket server, pumps `client.loop()`, and shuts down cleanly on `SIGINT`/`SIGTERM`.
 - Speaks both of the protocol's connection modes, and keeps them exclusive as the spec
   requires: it advertises `_sendspin._tcp` over mDNS by default, and any `-s` instead
   makes it dial out — to an address, or to a server discovered on
@@ -28,6 +28,10 @@ small flag set for identity, output, discovery, logging, and daemonization.
   a subsystem tag — timestamped and `SIGHUP`-reopenable under `-f` (item 6).
 - Advertises the formats the selected output device will actually take, derived by probing
   it and crossed with what each codec can carry (item 4).
+- Can be driven from its own host: a `0600` Unix control socket in a user-private directory,
+  polled from the main loop, and `sendspin-cli <subcommand>` on the same binary covering the
+  whole of `controller@v1` — `status`, `play`/`pause`/`stop`/`next`/`prev`, `vol`, `mute`,
+  `seek`, `seek-rel`, `repeat`, `shuffle`, `switch` (item 7).
 
 ## Child tasks
 
@@ -421,7 +425,7 @@ the five files that log, and `tests/daemon_test.cpp`:
   sync task's `std::thread`, and a `DNSServiceRef` is a per-process connection to
   `mDNSResponder`/`avahi-daemon`. Only the forking thread survives a fork, so an item 7
   control socket or an item 8 config file cannot quietly land above the line without
-  reading why it must not.
+  reading why it must not. Item 7's socket did land below it, for exactly that reason.
 - **Two conflicts `-z` introduces, both closed before the fork.** `-z` with `-o stdout` or
   `-o -` is refused at **parse** time: a daemon's stdout is `/dev/null`, so the PCM sink
   would silently become a second discard sink. `-z` without `-f` is *not* refused — a
@@ -539,11 +543,189 @@ And "the WebSocket port is already taken" turns out **not** to be a post-fork fa
 all: two instances on one `--port` both report listening, which is pre-existing
 sendspin-cpp/IXWebSocket behaviour and is not addressed here.
 
-### 7. Local control channel
+### 7. Local control channel — *shipped*
 
-A Unix control socket plus `sendspin-cli` subcommands — `pause`, `vol 50`, `status`,
-`next` — so the player can be driven from its own host, not only by a remote controller.
-This is the deliberate addition to the squeezelite model.
+The player could only be driven by a remote controller, and `CMakeLists.txt` pinned
+`SENDSPIN_ENABLE_CONTROLLER OFF` with a comment saying the role was "for driving *other*
+clients, which this daemon does not do". That was wrong, and it was the thing blocking this
+item: `controller@v1` carries the transport verbs for the group this client is *part of*, and
+the `player` role has none of them — only this endpoint's own volume, mute and static delay.
+So the role is now on, and the deliberate addition to the squeezelite model lands here.
+
+**Shipped** in `src/control.h`, `src/control_common.cpp`, `src/control_socket.cpp`,
+`src/control_client.cpp`, `src/cli.{h,cpp}`, `src/main.cpp`, `src/player_listener.{h,cpp}`,
+`src/log.h`, `CMakeLists.txt`, `tests/control_test.cpp`, `tests/scoped_env.h` and
+`scripts/smoke_test.sh`:
+
+- **The whole of `controller@v1`, one subcommand each**: `status`, `play`, `pause`, `stop`,
+  `next`, `prev`, `vol`, `mute`, `seek`, `seek-rel`, `repeat`, `shuffle`, `switch`. `repeat`
+  and `shuffle` are the two that are not pass-throughs — the mode *is* the command
+  (`REPEAT_OFF`/`ONE`/`ALL`, `SHUFFLE`/`UNSHUFFLE`), so `shuffle off` is its own command
+  rather than a false-valued parameter. A test walks the table against the library's enum, so
+  a protocol command with no subcommand behind it fails the build's own suite.
+- **`vol` is documented as *group* volume**, and `status` prints `group volume` and
+  `player volume` as two named lines rather than one `volume:`. The server spreads a group
+  volume across the group and clamps per player, so a squeezelite refugee's expectation that
+  `vol 50` moves *this* box is wrong — and one ambiguous line would leave them unable to see
+  that. `switch` is documented for what the spec's switch cycle actually does (re-home this
+  client between groups), not as the "switch playback source" its library comment suggests.
+- **No thread and no command queue.** `ControlSocket::poll(now_ms)` runs from the main loop
+  beside `mdns.poll()`, carrying the same THREAD SAFETY note `src/mdns.h` carries. That is
+  forced rather than chosen: `send_command()` reaches `SendspinClient::send_text()` and
+  `ConnectionManager::current()`, which is documented main-thread-only (`current_shared()`
+  exists for off-thread callers), and reading is no safer — `get_controller_state()` returns a
+  reference to a vector `drain_events()` move-assigns from inside `client.loop()`, so the
+  daemon copies it into a plain `ControllerSnapshot`. A round trip is therefore bounded by
+  `LOOP_INTERVAL_MS`; that is stated rather than fixed by shortening the tick.
+- **Three failure modes kept distinct**, with three exit statuses, because they need three
+  different actions: nothing listening (3), the player up but with no server connection (4),
+  and a command absent from the server's `supported_commands` (5). The ordering is the load-
+  bearing part — `on_controller_state_clear()` *empties* `supported_commands` on a disconnect,
+  so a gate that consulted it first would answer "pause is not supported" when the truth is
+  that nothing is connected, sending the operator to read their server's capabilities instead
+  of its connection. `SendspinClient::send_text()` also no-ops silently with no connection, so
+  nothing may report success for a command that never left the process.
+- **A `0600` socket at `$XDG_RUNTIME_DIR/sendspin-cli-<port>.sock`**, the port in the leaf so
+  two players on one host each get their own. The mode is set by bracketing `bind()` with a
+  `umask()` rather than a later `chmod()`: `bind()` applies the umask, `daemonize()` sets
+  `umask(0022)`, and a post-`bind()` `chmod()` leaves a window where any local account can
+  connect. Linux enforces socket-inode permissions on `connect()` and macOS/BSD historically
+  do not, which is the second reason the parent directory must be user-private.
+- **Two sources for the default directory, and no `/tmp` among them.** `$XDG_RUNTIME_DIR`
+  wherever it is set, on every platform, trusted because it is the user's own declaration. Then
+  the platform's own equivalent, which on macOS is `confstr(_CS_DARWIN_USER_TEMP_DIR)` — the
+  per-user `/var/folders` directory launchd already provides. That second source exists because
+  launchd sets no `$XDG_RUNTIME_DIR` *at all*, not even in an interactive shell, so without it
+  the default path never resolved on the one platform the PortAudio backend exists to serve.
+  Deliberately **not `$TMPDIR`**, which usually names the same directory: `confstr()` reads
+  nothing from the environment, so unlike `$TMPDIR` it cannot be pointed at a directory someone
+  else can write — which is precisely what stops it being the `/tmp` fallback this design
+  refuses. And verified rather than trusted, by `is_private_runtime_dir()`: a directory, owned by
+  the effective uid, with neither the group- nor the other-write bit set. That check is
+  load-bearing rather than decorative, since macOS and the BSDs do not enforce socket-inode
+  permissions on `connect()` at all — on those platforms the directory is the only thing between
+  another local account and this player's transport controls.
+- **With neither source available it is still non-fatal.** One `warn` naming the reason and
+  `--control-socket`, and the player carries on serving audio — the shape a failed mDNS
+  advertisement already has. In practice that is now the Linux systemd *system* unit case, which
+  wants `RuntimeDirectory=` paired with `--control-socket`; `README.md` says so. There is
+  deliberately no third source: a world-writable directory would let any local account pause
+  playback and `switch` this endpoint out of its group.
+- **A sibling `<path>.lock` under `flock()`**, through the *same* helper `-P` uses. The
+  open/`flock`/classify sequence and its two messages moved out of `PidFile` into
+  `daemon.h`'s `lock_file()`, because there are now two callers and both `README.md` and this
+  file **assert** that the two "already running" refusals are worded alike — sharing the code
+  is what makes that true rather than a coincidence two files apart. Held for the process's
+  life, with `unlink()` + `bind()` underneath it, which is what makes "stale" and "in use"
+  different answers rather than a guess: `unlink()`-then-`bind()` alone races a *live* daemon's
+  socket away, and connect-to-probe is a TOCTOU. Its own lock rather than a second use of `-P`,
+  so `--control-socket` does not acquire a dependency on `-P`. A lock already held is the one
+  control-socket failure that is **fatal**; everything else warns and carries on. Taken above
+  `make_audio_sink()`, for the reason the pidfile is: two instances racing should collide on a
+  lock, not on the sound card.
+- **And probed before the fork, so `-z` refuses a duplicate at the terminal.** The socket
+  itself must be bound *after* `daemonize()` — it is one of the resources that invariant exists
+  for — which leaves the refusal in a log the shell has stopped watching, and with no `-f`
+  nowhere at all. So `probe_control_socket()` mirrors `probe_pidfile()`: the parent takes and
+  drops the lock, the child acquires it for real, and only the lock is ever probed. Without it
+  the parity `README.md` claims with `-P` was true of the wording and false of the place.
+- **`argv[1]` split off before `getopt_long()`.** Not by reading getopt's leftovers: glibc
+  permutes a positional argument out of the way and the BSDs stop at it, and `seek-rel -5000`
+  is indistinguishable from a flag cluster to getopt regardless — so the subcommand and its
+  arguments leave argv by *count*, from the table's own arity, before the scan. A subcommand
+  after the flags is told to move rather than called junk. Every argument is validated at
+  parse time, so `vol 500` fails at the terminal like a bad `--buffer-ms` rather than on the
+  wire.
+- **`stream` and the output format are two separate facts**, read separately, because a stream
+  whose format the device *refused* has no format and is still a stream — and that is the case
+  where knowing audio is arriving matters most, since it is arriving and being discarded.
+  Inferring one from the other reported it as `stream: idle` at exactly the moment
+  `PlayerListener` raises an ERROR about the opposite, answering "nothing is being sent to me"
+  to an operator diagnosing "nothing is coming out". So `PlayerListener` owns an explicit flag
+  set above every guard in `on_stream_start()`, and `streaming() && !stream_format()` is the
+  refused case rather than an inconsistency. `StreamFormat` lives in `src/audio_sink.h`, next to
+  the `configure()` argument list it mirrors, rather than in the control channel's header.
+- **A one-command-per-connection wire format**: a line in, `ok` or `error <kind>: <reason>`
+  and any payload out, then the daemon closes. The kind is one machine token so the client can
+  map a refusal onto an exit status without parsing the reason, and the line still reads as
+  English to `socat`. Nothing to version and nothing parsed twice.
+- **104 new tests** (147 to 251), none of which binds a socket: the argv split, every
+  subcommand's argument parse and its protocol mapping, a request round-trip through the wire
+  form, the refusal predicate against hand-built snapshots (including the empty-
+  `supported_commands` disconnected case), the `status` formatter, the reply status line, line
+  framing — partial reads, no trailing newline, CRLF, an empty line, an over-long line, an
+  embedded NUL, and bytes after the first newline — and every rejection path of the directory
+  check, including both symlink directions and `/tmp`. They touch the filesystem, which this
+  suite's boundary allows: what it forbids is opening a device, a socket or the mDNS daemon.
+  `tests/scoped_env.h` was lifted out of `last_server_test.cpp` rather than copied so both
+  suites share one `$XDG` helper.
+
+**One bug this found, worth writing down**, because it was silent and
+platform-specific: rebuilding argv without POSIX's `argv[argc] == NULL` sentinel breaks BSD
+`getopt_long()`. Its long-option path does `optarg = nargv[optind++]` unconditionally and then
+tests `optarg == NULL`, so the sentinel is the *only* thing that tells it a required value is
+missing — without it, `--port` with no value read one past the end of the array and accepted
+whatever was in memory. It surfaced as a test that segfaulted in a different case on each run.
+
+**Also fixed here**, because it stood between the smoke test and these checks:
+`check_default_mdns_boot` chose its expected outcome from whether the *host* had an mDNS
+daemon, ignoring whether the *build* had mDNS at all — so the whole script failed partway
+through against a `-DSENDSPIN_CLI_WITH_MDNS=OFF` build on a host with a daemon, which is a
+configuration item 12 really produces. It now reads the build's own ready log too.
+
+**Not in this slice:**
+
+- **The socket path in a config file** → item 8, which owns configuration. `--control-socket`
+  is a flag, and `Options::was_given(Opt::ControlSocket)` is the hook a precedence layer needs.
+- **Hardware volume** → item 15. `vol` is a group command and does not touch the sink.
+- **A `player`-scoped volume subcommand.** The `player` role's own volume and mute are
+  reachable in the library and have no subcommand here, deliberately: every verb this item
+  ships moves the *group*, which is what a controller does. This is **not** item 15, which is
+  about driving a hardware mixer rather than about which scope a command addresses — so if a
+  local "set just this box's level" verb is wanted, it is new scope on this item rather than
+  something already tracked elsewhere.
+- **An interactive TUI over this socket** → item 11. The wire format is deliberately one
+  command per connection, so a long-lived subscribing client is a new shape rather than an
+  extension of this one.
+- **`--no-control` is kept but is not load-bearing.** Unlike `--no-mdns`, which the spec
+  requires of a dialling client, nothing forces it now that the socket is `0600` inside a
+  user-private directory. It stays because it silences the missing-`$XDG_RUNTIME_DIR` warning
+  for a systemd system unit that is only ever driven by its server.
+
+**What has and has not been exercised.** The socket was driven by hand on macOS against a real
+daemon: every subcommand dispatched; `status` against a disconnected player; the
+not-connected refusal for each transport verb; `--no-control`; the contradiction between
+`--no-control` and `--control-socket`; a second instance refused before it opened a device or
+a port; a `SIGKILL`ed daemon's stale socket taken over on restart; the socket gone after
+`SIGTERM`; the `0600` mode read off the inode; the connection cap and the 5 s idle deadline;
+the macOS fallback resolving with `$XDG_RUNTIME_DIR` unset and binding 0600
+under `/var/folders`; and, through a raw socket, an empty line, an unknown command, an
+out-of-range argument, an
+embedded NUL, an over-long line, two lines in one write, CRLF, extra whitespace and a request
+with no trailing newline. Clean under `-fsanitize=thread` while every subcommand was driven.
+`ctest` and `scripts/smoke_test.sh` both pass on macOS, in the default and the
+`-DSENDSPIN_CLI_WITH_MDNS=OFF` configurations.
+
+**Two things this item does not claim.** Nothing here has been driven against a **real
+Sendspin server**, so the paths that need one are reasoned from the library's source and
+covered by unit tests rather than observed: a command actually reaching a server and moving
+playback, the `supported_commands` refusal against a real published set, `seek` against a real
+`seek_max_ms`, and every `status` field that only a connected server fills in (the track, the
+position, the transport state, the group volume). And the **kernel's `listen()` backlog is
+tied to `MAX_CONTROL_CONNECTIONS`** rather than the two being independent, because whichever is
+smaller is the real limit and only our own cap can explain itself in the log — with a backlog
+below the cap, a burst of concurrent subcommands got `ECONNREFUSED` from the kernel and
+arrived at the operator as "nothing is listening" on a healthy player. `ECONNREFUSED` and
+`ENOENT` are now reported differently for the same reason, and a connection refused by the cap
+is *answered* in the protocol's own shape rather than hung up on — the socket is 0600 inside a
+user-private directory, so the peer is this user, and one short write is the difference between
+a subcommand saying why it failed and reporting that the daemon dropped it.
+
+**One caveat the macOS path carries.** The OS prunes `/var/folders` on a schedule, so a very
+long-lived player could in principle have its socket unlinked from under it, which shows up as
+subcommands reporting no daemon until it is restarted. `$XDG_RUNTIME_DIR` on Linux is tmpfs
+cleared at logout, so it is the same class of impermanence rather than a macOS quirk, and
+`--control-socket` is the answer to both.
 
 ### 8. Config file
 
@@ -565,6 +747,13 @@ The parser hook this needs is already in place (item 1): `Options::was_given()` 
 which options the user actually typed, so config values can layer *under* the command line
 without the parser's own defaults clobbering them. Format, path search, and the precedence
 logic itself are all still open.
+
+Item 7 added a second path worth persisting and left it a flag: `--control-socket`, whose
+default is derived from `$XDG_RUNTIME_DIR` and `--port`. Its `Opt::ControlSocket` entry is
+already in the `was_given()` set, so it layers like the rest. Note the ordering constraint it
+carries: the path's length is validated against `sockaddr_un::sun_path` at parse time, so
+whatever supplies it from a config file has to be resolved before that check rather than
+after it.
 
 ### 9. Docker
 
@@ -622,8 +811,12 @@ what keeps the suite runnable on a bare CI runner — and is why the smoke test 
 `scripts/smoke_test.sh` rather than another suite. It covers what a gtest process cannot:
 `--version`/`--help`, a foreground run reaching its ready log and exiting 0 on `SIGTERM`,
 `-z` forking with `-P` writing a live pidfile and refusing a second instance holding the
-same lock, and a default mDNS-on run surviving a daemon it cannot reach. It is runnable by
-hand against any build, which is what item 6's hand-driven `-z` checks became.
+same lock, a default mDNS-on run surviving a daemon it cannot reach, and — item 7's, since a
+listening socket and a `connect()` to it are two processes by definition — the control socket
+appearing at its default path as `0600`, a `status` round trip, `--no-control`, stale-socket
+takeover after a `SIGKILL`, removal on `SIGTERM`, and a second instance refused both in the
+foreground and, through the pre-fork probe, at the terminal under `-z`. It is runnable by hand
+against any build, which is what item 6's hand-driven `-z` checks became.
 
 **Both breaks this entry used to predict are fixed.** `src/mdns_dnssd.cpp` no longer names
 `kDNSServiceErr_ServiceNotRunning` and `kDNSServiceErr_Timeout` unconditionally.
@@ -645,8 +838,18 @@ an address, so it cannot succeed unless `libavahi-compat-libdnssd` really does i
 down the other half, that `find_path`/`find_library` pick the compat library up.
 
 **Still owed.** The sink contract remains untested: a `NullAudioSink`/`AlsaAudioSink`/
-`PortAudioSink` suite is what would cover it, and is the largest gap left in `tests/`. The
-matrix has no armv7 or 32-bit Pi leg, and no macOS x86_64 leg. Artifacts are per-commit
+`PortAudioSink` suite is what would cover it, and is the largest gap left in `tests/`.
+
+**And a ThreadSanitizer leg, which item 7 made more than a nicety.** Every no-background-thread
+argument in this repo is a threading argument — item 5's `poll()`-from-the-main-loop discovery
+and item 7's control socket both rest on library calls documented as main-loop-only — and the
+only verification either has on record is a developer running `-fsanitize=thread` by hand, on
+macOS. A leg that configures `-DCMAKE_CXX_FLAGS=-fsanitize=thread` and runs
+`scripts/smoke_test.sh` under it would turn the largest correctness claim in the tree from
+reasoning into a check. It is cheap: the smoke test already drives the whole boot, socket and
+shutdown path, and produced zero reports when run that way by hand.
+
+The matrix also has no armv7 or 32-bit Pi leg, and no macOS x86_64 leg. Artifacts are per-commit
 workflow artifacts only — tagged releases, `install()` rules and distribution packaging all
 belong to item 10, which will replace the workflow's hand-rolled tar with a staged
 `cmake --install` payload.
