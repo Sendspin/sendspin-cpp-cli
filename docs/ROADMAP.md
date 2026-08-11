@@ -1165,12 +1165,13 @@ inlined into `write()`: it invalidates every `PaDeviceIndex` in the process, and
 The costs are real and are documented at the call sites rather than only here. Re-enumerating
 every host API blocks the main loop — and so `SendspinClient::loop()` beside it — for hundreds of
 milliseconds to seconds, depending on the host; the figure is not pinned down, which is why the
-hardware pass below is asked to measure it. That is affordable because it happens at most once per
-stream and only on a stream that has already died (nothing but `reopen_in_place_()` can ask for a
-rescan, and it only runs on a dead stream). The transport itself runs on its own thread, so what
-is delayed is the dispatch of messages already received; the tightest deadline on that path is the
-time-sync burst response, which the library gives ten seconds. It also only *really* terminates because the
-sink's guard is the sole live one at runtime, PortAudio's init pair being reference-counted;
+hardware pass below is asked to measure it. That is affordable because it happens at most once
+per stream and only on a stream that has already died (nothing but `reopen_in_place_()` can ask
+for a rescan, and it only runs on a dead stream). The transport itself runs on its own thread, so
+what is delayed is the dispatch of messages already received; the tightest deadline on that path
+is the time-sync burst response, which the library gives ten seconds. It also only *really*
+terminates because the sink's guard is the sole live one at runtime, PortAudio's init pair being
+reference-counted;
 anything that later reached `probe()` from the running loop would turn the rescan into a silent
 no-op, which is now noted on `reinitialize()`.
 
@@ -1215,7 +1216,16 @@ comment on `capabilities()` has said since item 3. `NullAudioSink` and `AlsaAudi
 untouched — ALSA recovers inside its own `write()` and never gives up while the handle is open,
 so it has nothing to do with a main-loop tick.
 
-**What remains after this.** Once both attempts are spent, recovery waits for the next
+**What remains after this.** A device unplugged and replugged **between** tracks is still not
+found, and that is the price of the `stream_ != nullptr` gate above. The next `configure()`
+resolves against the stale cached list, gets the dead index, fails to open, and ends with no
+stream — which from the sink's side is indistinguishable from the device refusing the format, the
+case the gate exists to stop chasing. Telling them apart means reading *why* `Pa_OpenStream()`
+failed and deciding which `PaError`s mean "gone" on each host API, which is not worth guessing at
+without hardware to check it against. The mid-stream case, which is what this item was for, does
+reach the rescan.
+
+Once both attempts are spent, recovery waits for the next
 `configure()` — which is a *second* disappearance if the first reopen failed, and a third only in
 the luckier case where it worked. A rescan renumbers PortAudio's device list, so a numeric
 `-o portaudio:2` re-resolved after one may name a different card than it did before; the recovery
@@ -1225,7 +1235,7 @@ describes whichever device was default when the player started. And the rescan's
 is a real, if bounded, pause in protocol handling.
 
 **Hardware verification is still owed** and is what the *shipped* qualifier above refers to. The
-four cases to run, and to record here once run: a USB DAC unplugged and left out mid-track (logs
+five cases to run, and to record here once run: a USB DAC unplugged and left out mid-track (logs
 once, does not spin or wedge); the same DAC replugged mid-track (playback resumes without a track
 boundary); the host default output switched mid-track under a bare `-o portaudio`; normal
 playback, track changes and `stop()` unaffected when nothing goes wrong; and a measurement of how

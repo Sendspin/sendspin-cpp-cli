@@ -788,6 +788,13 @@ void PortAudioSink::poll(int64_t now_ms) {
     if (!this->open_stream_(device, format.sample_rate, format.channels, format.bit_depth)) {
         return;  // open_stream_() has already said why, once
     }
+    if (this->stopping_.load()) {
+        // stop() latches before it takes mutex_, so it can arrive while the cycle above is
+        // running -- which takes long enough to make that likely rather than theoretical. Same
+        // rule as reopen_in_place_(): no opener here leaves a shutdown a fresh device.
+        this->close_stream_();
+        return;
+    }
     // Names the device it landed on, not just the -o spec, because a rescan is exactly what
     // renumbers PortAudio's device list: `-o portaudio:2` after one may well be a different card
     // than it was before. The spec is resolved afresh either way -- so would the next configure()

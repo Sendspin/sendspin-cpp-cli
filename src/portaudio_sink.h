@@ -261,7 +261,9 @@ private:
     /// Makes the one in-place reopen attempt a dead stream gets, at last_format_ and against a
     /// freshly resolved device. Called from write(), so on the sync task's thread -- see the
     /// class docstring for why that is safe. Caller holds mutex_. Does nothing, and says so
-    /// cheaply, unless a format is remembered and the attempt is still in hand.
+    /// cheaply, unless there is a stream to recover at all (stream_ != nullptr, which is what
+    /// separates a stream that died from a device that refused the format), a format is
+    /// remembered, shutdown has not begun, and the attempt is still in hand.
     /// @return true if a stream is running again, so the caller can carry on filling the ring.
     bool reopen_in_place_();
     /// True while the open stream is still being driven by PortAudio. Caller holds mutex_.
