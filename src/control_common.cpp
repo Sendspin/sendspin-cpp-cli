@@ -563,9 +563,12 @@ std::string format_status(const StatusSnapshot& snapshot) {
     append_line(out, "group volume",
                 format_volume(snapshot.group_state_known, snapshot.group_volume,
                               snapshot.group_muted));
-    // Always known: it is this process's own state, whether or not a server is connected.
+    // Always known: it is this process's own state, whether or not a server is connected. What is
+    // *not* always known is whether anybody chose it, so an untouched player says so rather than
+    // presenting a default as a setting.
     append_line(out, "player volume",
-                format_volume(true, snapshot.player_volume, snapshot.player_muted));
+                format_volume(true, snapshot.player_volume, snapshot.player_muted) +
+                    (snapshot.player_volume_from_server ? "" : " (default; no server has set it)"));
 
     if (snapshot.format.has_value()) {
         append_line(out, "output",

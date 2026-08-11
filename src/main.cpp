@@ -292,11 +292,10 @@ public:
     /// Every reference must outlive this dispatcher, which in main() they all do.
     ControlDispatcher(const Options& opts, sendspin::SendspinClient& client,
                       sendspin::ControllerRole& controller, sendspin::MetadataRole& metadata,
-                      sendspin::PlayerRole& player, const MetadataLogger& metadata_logger,
+                      const MetadataLogger& metadata_logger,
                       const PlayerListener& player_listener, const AudioSink& sink)
         : opts_(opts), client_(client), controller_(controller), metadata_(metadata),
-          player_(player), metadata_logger_(metadata_logger), player_listener_(player_listener),
-          sink_(sink) {}
+          metadata_logger_(metadata_logger), player_listener_(player_listener), sink_(sink) {}
 
     std::string handle_control_request(const std::string& line) override {
         std::string name;
@@ -383,8 +382,12 @@ private:
         snapshot.group_volume = controller.volume;
         snapshot.group_muted = controller.muted;
 
-        snapshot.player_volume = this->player_.get_volume();
-        snapshot.player_muted = this->player_.get_muted();
+        // From the listener rather than from PlayerRole, deliberately: the role stores 0 until a
+        // server sends a volume command, while the sink is at DEFAULT_SINK_VOLUME from the first
+        // sample. Reporting the role's number claimed a silent player that was audibly playing.
+        snapshot.player_volume = this->player_listener_.applied_volume();
+        snapshot.player_muted = this->player_listener_.applied_muted();
+        snapshot.player_volume_from_server = this->player_listener_.volume_set_by_server();
         snapshot.output = this->sink_.name();
         return snapshot;
     }
@@ -393,7 +396,6 @@ private:
     sendspin::SendspinClient& client_;
     sendspin::ControllerRole& controller_;
     sendspin::MetadataRole& metadata_;
-    sendspin::PlayerRole& player_;
     const MetadataLogger& metadata_logger_;
     const PlayerListener& player_listener_;
     const AudioSink& sink_;
@@ -667,8 +669,8 @@ int main(int argc, char* argv[]) {
 
     // What answers the socket opened above. Built here rather than there because it holds
     // references to the client and its roles, all of which outlive it.
-    ControlDispatcher control_dispatcher(opts, client, controller, metadata, player,
-                                        metadata_logger, player_listener, *sink);
+    ControlDispatcher control_dispatcher(opts, client, controller, metadata, metadata_logger,
+                                        player_listener, *sink);
 
     // Already validated during parsing, so there is nothing left here that can be wrong --
     // and nothing to fail on after the server is up.

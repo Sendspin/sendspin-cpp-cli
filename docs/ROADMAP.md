@@ -725,6 +725,28 @@ that believes the track has finished. Behind `-o portaudio`, where the device su
 timing, the position advances at 1x (five samples, 3 s of wall clock per 3 s of position). Worth
 knowing before reading a position off a device-less run.
 
+**And one bug in this item, which only listening caught.** `status` reported `player volume: 0`
+at a player that was audibly playing at full output. The report was faithful to
+`PlayerRole::get_volume()` and `get_volume()` was the wrong source: the role stores 0 until a
+server sends a volume command and advertises that 0 in `client/state`, while `sink.set_volume()`
+is reached *only* from `on_volume_changed()` — so every sink sits at `DEFAULT_SINK_VOLUME` (full)
+until one arrives. An untouched player therefore plays at full while telling everyone it is at
+zero, and `status` repeated the claim to the one person who could hear otherwise.
+
+`status` now reports the gain the sink is really applying, tracked in `PlayerListener` — the only
+caller of `set_volume()`, so the only thing that knows what the sink was told — and marks it
+`(default; no server has set it)` so a server that deliberately chose full output is still
+distinguishable from one that never spoke. `DEFAULT_SINK_VOLUME` replaces the bare `{100}` the
+three sinks each spelled separately, with the disagreement written down beside it.
+
+**The underlying incoherence is left for item 13**, which already owns advertised state that does
+not match reality: we tell the server 0 while playing at full, so the first volume command a
+server sends is heard as a *cut* from full rather than a rise from silence. Fixing it means
+either seeding the role from the sink at startup (`update_volume(DEFAULT_SINK_VOLUME)`, which
+changes what we advertise) or seeding the sink from the role (which makes a fresh player silent
+until a server speaks). Both are behaviour changes wider than a control channel, and neither is
+this item's to make.
+
 **One server-side gap found, and it is worth reporting upstream.** `seek-rel` is accepted and does
 nothing. The evidence that this is not ours: the local gate refuses any command absent from
 `supported_commands`, and `seek-rel` exits 0, so the server *advertises* `seek_relative`;

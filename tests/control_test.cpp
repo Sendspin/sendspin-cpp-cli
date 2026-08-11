@@ -98,6 +98,7 @@ StatusSnapshot playing_snapshot() {
     snapshot.group_muted = false;
     snapshot.player_volume = 80;
     snapshot.player_muted = false;
+    snapshot.player_volume_from_server = true;
     snapshot.output = "portaudio";
     return snapshot;
 }
@@ -642,6 +643,36 @@ TEST(FormatStatus, GroupAndPlayerVolumeAreSeparateLines) {
     EXPECT_EQ(field(block, "volume"), "") << "there must be no unqualified volume line";
 }
 
+TEST(FormatStatus, AVolumeNoServerHasSetIsMarkedAsADefault) {
+    // The bug this exists to stop coming back. `PlayerRole::get_volume()` is 0 until a server
+    // sends a volume command, while every sink runs at DEFAULT_SINK_VOLUME from the first sample
+    // -- so `status` used to print `player volume: 0` at a player that was audibly at full output.
+    // It now reports the gain the sink is applying, and says nobody chose it.
+    StatusSnapshot snapshot = playing_snapshot();
+    snapshot.player_volume = DEFAULT_SINK_VOLUME;
+    snapshot.player_volume_from_server = false;
+
+    const std::string line = field(format_status(snapshot), "player volume");
+    EXPECT_NE(line.find(std::to_string(static_cast<unsigned>(DEFAULT_SINK_VOLUME))),
+              std::string::npos)
+        << line;
+    EXPECT_NE(line.find("no server has set it"), std::string::npos) << line;
+    // And the number itself must never be 0, which is the claim that sent people looking for a
+    // dead player. Taken as the leading token rather than searched for, since "100" contains a 0.
+    EXPECT_NE(line.substr(0, line.find(' ')), "0") << line;
+}
+
+TEST(FormatStatus, AVolumeAServerChoseIsNotMarkedAsADefault) {
+    // The other half: a server that deliberately set full output must not be described as a
+    // default, or the qualifier stops meaning anything.
+    StatusSnapshot snapshot = playing_snapshot();
+    snapshot.player_volume = DEFAULT_SINK_VOLUME;
+    snapshot.player_volume_from_server = true;
+
+    const std::string line = field(format_status(snapshot), "player volume");
+    EXPECT_EQ(line, std::to_string(static_cast<unsigned>(DEFAULT_SINK_VOLUME)));
+}
+
 TEST(FormatStatus, TheTransportStateComesFromPlaybackSpeed) {
     StatusSnapshot snapshot = playing_snapshot();
 
@@ -677,6 +708,7 @@ TEST(FormatStatus, ADisconnectedPlayerStillReportsWhatItKnows) {
     snapshot.name = "living-room";
     snapshot.connected = false;
     snapshot.player_volume = 80;
+    snapshot.player_volume_from_server = true;
     snapshot.output = "null";
 
     const std::string block = format_status(snapshot);

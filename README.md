@@ -419,6 +419,12 @@ Every transport verb the protocol has, one subcommand each — `status`, `play`,
 `pause`, `stop`, `next`, `prev`, `vol`, `mute`, `seek`, `seek-rel`, `repeat`,
 `shuffle`, `switch`. `--help` lists them with their arguments.
 
+`player volume` is the gain **this box's output** is applying, and it says
+`(default; no server has set it)` until a server sends a volume command — because
+until one does, the sink runs at full while the library's own stored volume reads
+0. Those disagree, and the qualifier is how you tell "nobody has set this" from a
+server that deliberately chose full output.
+
 Two `status` lines are worth reading together. `state` is the **group's** transport
 state, from the metadata `playback_speed`, and reads `unknown` rather than guessing
 when the server has sent no progress. `stream` is whether audio is arriving at

@@ -288,10 +288,21 @@ struct StatusSnapshot {
     uint8_t group_volume{0};
     bool group_muted{false};
 
-    /// `PlayerRole::get_volume()` and `get_muted()` -- this endpoint's own output, which is
-    /// known whether or not a server is connected.
-    uint8_t player_volume{0};
+    /// The gain this endpoint's sink is really applying, and whether it is muted -- from
+    /// `PlayerListener`, **not** from `PlayerRole::get_volume()`.
+    ///
+    /// The distinction is not pedantry. The role stores 0 until a server sends a volume command
+    /// and advertises that 0 in `client/state`, while the sink runs at DEFAULT_SINK_VOLUME until
+    /// one arrives. So on a player no server has set the volume on, the role says 0 and the
+    /// speaker is at full -- and reporting the role's number told users their player was silent
+    /// while they could hear it.
+    uint8_t player_volume{DEFAULT_SINK_VOLUME};
     bool player_muted{false};
+
+    /// False until a server has set this player's volume, which makes the line say so. A server
+    /// that deliberately chose full output and one that never spoke are otherwise identical in
+    /// the output, and only one of them is a number anybody chose.
+    bool player_volume_from_server{false};
 
     std::string output;  ///< the sink's `name()`
 };
