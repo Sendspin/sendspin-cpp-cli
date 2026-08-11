@@ -28,7 +28,7 @@ small flag set for identity, output, discovery, logging, and daemonization.
   a subsystem tag — timestamped and `SIGHUP`-reopenable under `-f` (item 6).
 - Advertises the formats the selected output device will actually take, derived by probing
   it and crossed with what each codec can carry (item 4).
-- Can be driven from its own host: a `0600` Unix control socket under `$XDG_RUNTIME_DIR`,
+- Can be driven from its own host: a `0600` Unix control socket in a user-private directory,
   polled from the main loop, and `sendspin-cli <subcommand>` on the same binary covering the
   whole of `controller@v1` — `status`, `play`/`pause`/`stop`/`next`/`prev`, `vol`, `mute`,
   `seek`, `seek-rel`, `repeat`, `shuffle`, `switch` (item 7).
@@ -591,12 +591,26 @@ So the role is now on, and the deliberate addition to the squeezelite model land
   `umask(0022)`, and a post-`bind()` `chmod()` leaves a window where any local account can
   connect. Linux enforces socket-inode permissions on `connect()` and macOS/BSD historically
   do not, which is the second reason the parent directory must be user-private.
-- **No `/tmp` fallback, and an absent `$XDG_RUNTIME_DIR` is non-fatal.** A world-writable
-  directory would let any local user pause playback and `switch` this endpoint out of its
-  group, so there is deliberately nowhere else to go. One `warn` naming the reason and
+- **Two sources for the default directory, and no `/tmp` among them.** `$XDG_RUNTIME_DIR`
+  wherever it is set, on every platform, trusted because it is the user's own declaration. Then
+  the platform's own equivalent, which on macOS is `confstr(_CS_DARWIN_USER_TEMP_DIR)` — the
+  per-user `/var/folders` directory launchd already provides. That second source exists because
+  launchd sets no `$XDG_RUNTIME_DIR` *at all*, not even in an interactive shell, so without it
+  the default path never resolved on the one platform the PortAudio backend exists to serve.
+  Deliberately **not `$TMPDIR`**, which usually names the same directory: `confstr()` reads
+  nothing from the environment, so unlike `$TMPDIR` it cannot be pointed at a directory someone
+  else can write — which is precisely what stops it being the `/tmp` fallback this design
+  refuses. And verified rather than trusted, by `is_private_runtime_dir()`: a directory, owned by
+  the effective uid, with neither the group- nor the other-write bit set. That check is
+  load-bearing rather than decorative, since macOS and the BSDs do not enforce socket-inode
+  permissions on `connect()` at all — on those platforms the directory is the only thing between
+  another local account and this player's transport controls.
+- **With neither source available it is still non-fatal.** One `warn` naming the reason and
   `--control-socket`, and the player carries on serving audio — the shape a failed mDNS
-  advertisement already has. The cost is that a systemd *system* unit and macOS (launchd sets
-  no such variable) both need an explicit `--control-socket`; `README.md` says so.
+  advertisement already has. In practice that is now the Linux systemd *system* unit case, which
+  wants `RuntimeDirectory=` paired with `--control-socket`; `README.md` says so. There is
+  deliberately no third source: a world-writable directory would let any local account pause
+  playback and `switch` this endpoint out of its group.
 - **A sibling `<path>.lock` under `flock()`**, through the *same* helper `-P` uses. The
   open/`flock`/classify sequence and its two messages moved out of `PidFile` into
   `daemon.h`'s `lock_file()`, because there are now two callers and both `README.md` and this
@@ -681,7 +695,8 @@ not-connected refusal for each transport verb; `--no-control`; the contradiction
 `--no-control` and `--control-socket`; a second instance refused before it opened a device or
 a port; a `SIGKILL`ed daemon's stale socket taken over on restart; the socket gone after
 `SIGTERM`; the `0600` mode read off the inode; the connection cap and the 5 s idle deadline;
-and, through a raw socket, an empty line, an unknown command, an out-of-range argument, an
+the macOS fallback resolving with `$XDG_RUNTIME_DIR` unset and binding 0600
+under `/var/folders`; and, through a raw socket, an empty line, an unknown command, an out-of-range argument, an
 embedded NUL, an over-long line, two lines in one write, CRLF, extra whitespace and a request
 with no trailing newline. Clean under `-fsanitize=thread` while every subcommand was driven.
 `ctest` and `scripts/smoke_test.sh` both pass on macOS, in the default and the
@@ -702,17 +717,11 @@ is *answered* in the protocol's own shape rather than hung up on — the socket 
 user-private directory, so the peer is this user, and one short write is the difference between
 a subcommand saying why it failed and reporting that the daemon dropped it.
 
-**The macOS default path is a real gap, left deliberately.** launchd sets no
-`$XDG_RUNTIME_DIR` — not for a system service and not in an interactive terminal — so on the
-platform the PortAudio backend exists to serve, the default socket path never resolves and every
-user needs an explicit `--control-socket`. The warn-and-carry-on behaviour is right and the
-refusal to fall back to `/tmp` is right, but the *conclusion* is broader than the security
-argument requires: `confstr(_CS_DARWIN_USER_TEMP_DIR)` names a per-user `0700` directory, reads
-nothing from the environment — so unlike `$TMPDIR` it cannot be pointed elsewhere — and has
-every property `$XDG_RUNTIME_DIR` was chosen for. Using it under `__APPLE__`, `stat()`-verified for
-owner and for group/other-writability before use, would make the feature work out of the box
-there. Not done here because it changes an acceptance criterion this item was scoped against, and
-because it deserves to be a decision rather than a drive-by.
+**One caveat the macOS path carries.** The OS prunes `/var/folders` on a schedule, so a very
+long-lived player could in principle have its socket unlinked from under it, which shows up as
+subcommands reporting no daemon until it is restarted. `$XDG_RUNTIME_DIR` on Linux is tmpfs
+cleared at logout, so it is the same class of impermanence rather than a macOS quirk, and
+`--control-socket` is the answer to both.
 
 ### 8. Config file
 

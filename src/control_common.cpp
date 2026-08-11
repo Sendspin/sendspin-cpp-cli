@@ -22,7 +22,10 @@
 
 #include "control.h"
 
+#include <limits.h>
+#include <sys/stat.h>
 #include <sys/un.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <cerrno>
@@ -697,9 +700,72 @@ const char* line_state_reason(LineState state) {
     return "";
 }
 
+bool is_private_runtime_dir(const std::string& path, std::string& reason) {
+    struct stat info = {};
+    if (::stat(path.c_str(), &info) != 0) {
+        reason = "cannot stat " + path + ": " + std::strerror(errno);
+        return false;
+    }
+    if (!S_ISDIR(info.st_mode)) {
+        reason = path + " is not a directory";
+        return false;
+    }
+    // The effective uid rather than the real one, because that is whose credentials the socket
+    // will be created with and whom the kernel will compare a peer against.
+    if (info.st_uid != ::geteuid()) {
+        reason = path + " is owned by uid " + std::to_string(info.st_uid) + ", not by this user";
+        return false;
+    }
+    if ((info.st_mode & (S_IWGRP | S_IWOTH)) != 0) {
+        // The whole point: a directory anyone else can write to is one where the socket can be
+        // replaced or unlinked, whatever mode the socket itself carries.
+        reason = path + " is writable by its group or by everyone";
+        return false;
+    }
+    return true;
+}
+
+std::string control_platform_runtime_dir() {
+#ifdef __APPLE__
+    // confstr() rather than getenv("TMPDIR"): the two normally name the same per-user directory,
+    // but only this one cannot be pointed somewhere else by the environment.
+    char buffer[PATH_MAX] = {};
+    const size_t length = ::confstr(_CS_DARWIN_USER_TEMP_DIR, buffer, sizeof(buffer));
+    // 0 is failure; a value above the buffer size means the answer was truncated, which is a
+    // path this cannot use rather than one to guess at.
+    if (length == 0 || length > sizeof(buffer)) {
+        return {};
+    }
+    std::string path(buffer);
+    // confstr() returns this one with a trailing slash, and every path built here joins with its
+    // own '/'. Left in, the socket path would carry a '//' that is harmless to bind but makes two
+    // spellings of one socket -- and the subcommand compares nothing, so it would simply look odd
+    // in a log and in a diagnostic.
+    while (path.size() > 1 && path.back() == '/') {
+        path.pop_back();
+    }
+
+    std::string reason;
+    if (path.empty() || !is_private_runtime_dir(path, reason)) {
+        return {};
+    }
+    return path;
+#else
+    // Elsewhere $XDG_RUNTIME_DIR is the convention, and its absence is a real absence rather
+    // than a platform difference to paper over.
+    return {};
+#endif
+}
+
 std::string control_runtime_dir() {
     const char* value = std::getenv("XDG_RUNTIME_DIR");
-    return value == nullptr ? std::string() : std::string(value);
+    // Trusted rather than verified: this is the user saying where their runtime files go, and
+    // second-guessing it would refuse legitimate setups. The platform fallback below is the one
+    // this code chose, so it is the one this code checks.
+    if (value != nullptr && value[0] != '\0') {
+        return value;
+    }
+    return control_platform_runtime_dir();
 }
 
 std::string control_socket_path(const std::string& runtime_dir, uint16_t port) {
@@ -712,9 +778,17 @@ std::string control_socket_path(const std::string& runtime_dir, uint16_t port) {
 
 std::string control_socket_absent_reason(const std::string& runtime_dir, const std::string& path) {
     if (runtime_dir.empty()) {
+        // Names both sources where there are two, so the reader is not sent to check an
+        // environment variable their platform never sets in the first place.
+#ifdef __APPLE__
+        return "$XDG_RUNTIME_DIR is not set and this host's own per-user temporary directory "
+               "could not be used, so there is nowhere user-private to put a control socket. "
+               "Give --control-socket <path> to choose one, or --no-control to stop asking";
+#else
         return "$XDG_RUNTIME_DIR is not set, so there is no user-private directory to put a "
                "control socket in. Give --control-socket <path> to choose one, or "
                "--no-control to stop asking";
+#endif
     }
     if (!control_socket_path_fits(path)) {
         return "the default control socket path '" + path + "' is longer than the " +

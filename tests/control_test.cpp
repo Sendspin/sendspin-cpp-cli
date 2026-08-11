@@ -26,6 +26,9 @@
 
 #include <gtest/gtest.h>
 
+#include <sys/stat.h>
+#include <unistd.h>
+
 #include <algorithm>
 #include <optional>
 #include <string>
@@ -936,6 +939,136 @@ TEST(ControlSocketPath, AnOverLongPathDoesNotFit) {
     EXPECT_FALSE(control_socket_path_fits(""));
     EXPECT_FALSE(control_socket_path_fits(std::string(control_socket_path_limit(), 'x')));
     EXPECT_TRUE(control_socket_path_fits(std::string(control_socket_path_limit() - 1, 'x')));
+}
+
+// ==============================================================================
+// Which directories are fit to hold the socket
+// ==============================================================================
+//
+// These touch the filesystem, which the suite's own boundary allows -- what it forbids is opening
+// an audio device, a socket or the mDNS daemon. `daemon_test.cpp` and `last_server_test.cpp`
+// already create scratch files for the same reason.
+
+/// A directory of its own per test, with a settable mode, removed again afterwards.
+///
+/// Under the test binary's working directory rather than /tmp, for the reason
+/// `last_server_test.cpp` gives: a suite that scatters files outside the build tree is one that
+/// leaves something behind when it fails.
+class ScratchDir {
+public:
+    explicit ScratchDir(mode_t mode) {
+        this->path_ = "control-test-" + std::to_string(::getpid()) + "-" +
+                      std::to_string(ScratchDir::next_id());
+        this->created_ = ::mkdir(this->path_.c_str(), mode) == 0;
+        // mkdir() applies the umask, which would clear exactly the group/other bits one of these
+        // tests is trying to set -- so the mode is applied again explicitly.
+        if (this->created_) {
+            this->created_ = ::chmod(this->path_.c_str(), mode) == 0;
+        }
+    }
+
+    ~ScratchDir() {
+        if (this->created_) {
+            ::rmdir(this->path_.c_str());
+        }
+    }
+
+    ScratchDir(const ScratchDir&) = delete;
+    ScratchDir& operator=(const ScratchDir&) = delete;
+
+    bool created() const {
+        return this->created_;
+    }
+
+    const std::string& path() const {
+        return this->path_;
+    }
+
+private:
+    static int next_id() {
+        static int id = 0;
+        return ++id;
+    }
+
+    std::string path_;
+    bool created_{false};
+};
+
+TEST(PrivateRuntimeDir, APrivateDirectoryThisUserOwnsIsAccepted) {
+    const ScratchDir dir(0700);
+    ASSERT_TRUE(dir.created());
+
+    std::string reason;
+    EXPECT_TRUE(is_private_runtime_dir(dir.path(), reason)) << reason;
+    EXPECT_TRUE(reason.empty());
+}
+
+TEST(PrivateRuntimeDir, AGroupOrWorldWritableDirectoryIsRefused) {
+    // The check that carries the security argument: a directory anyone else can write to is one
+    // where the socket can be replaced or unlinked, whatever mode the socket itself carries. And
+    // macOS and the BSDs do not enforce socket-inode permissions on connect() at all, so on those
+    // platforms the directory is the *only* thing standing between another local account and this
+    // player's transport controls.
+    for (mode_t mode : {static_cast<mode_t>(0770), static_cast<mode_t>(0707),
+                        static_cast<mode_t>(0777)}) {
+        const ScratchDir dir(mode);
+        ASSERT_TRUE(dir.created()) << "mode " << mode;
+
+        std::string reason;
+        EXPECT_FALSE(is_private_runtime_dir(dir.path(), reason)) << "mode " << mode;
+        EXPECT_NE(reason.find("writable"), std::string::npos) << reason;
+    }
+}
+
+TEST(PrivateRuntimeDir, SomethingThatIsNotADirectoryIsRefused) {
+    std::string reason;
+    EXPECT_FALSE(is_private_runtime_dir("/etc/hosts", reason));
+    EXPECT_NE(reason.find("not a directory"), std::string::npos) << reason;
+}
+
+TEST(PrivateRuntimeDir, AMissingPathIsRefused) {
+    std::string reason;
+    EXPECT_FALSE(is_private_runtime_dir("/no/such/directory/here", reason));
+    EXPECT_FALSE(reason.empty());
+}
+
+TEST(PrivateRuntimeDir, ADirectoryOwnedBySomeoneElseIsRefused) {
+    // Skipped for root, which owns / and would legitimately pass. The same accommodation
+    // `last_server_test.cpp` makes for its unwritable-directory case.
+    if (::geteuid() == 0) {
+        GTEST_SKIP() << "running as root, which owns /";
+    }
+    std::string reason;
+    EXPECT_FALSE(is_private_runtime_dir("/", reason));
+    EXPECT_NE(reason.find("not by this user"), std::string::npos) << reason;
+}
+
+TEST(PrivateRuntimeDir, TmpIsRefused) {
+    // Named explicitly because it is the fallback this design refuses, and the reason it does:
+    // /tmp is 1777 on every platform this builds on.
+    std::string reason;
+    EXPECT_FALSE(is_private_runtime_dir("/tmp", reason)) << "/tmp must never be usable";
+}
+
+TEST(PlatformRuntimeDir, WhateverItReturnsIsPrivate) {
+    // Empty where there is no platform convention to fall back on -- which is everywhere but
+    // macOS -- and a verified directory where there is. Either way it must never hand back a path
+    // that would fail the check the code applies before using it.
+    const std::string platform = control_platform_runtime_dir();
+    if (platform.empty()) {
+        return;
+    }
+
+    std::string reason;
+    EXPECT_TRUE(is_private_runtime_dir(platform, reason)) << platform << ": " << reason;
+    // Absolute, and not the one directory that is always wrong.
+    EXPECT_EQ(platform.front(), '/') << platform;
+    EXPECT_NE(platform, "/tmp");
+    // No trailing slash: confstr() supplies one, and a path built on it would carry a '//'.
+    EXPECT_NE(platform.back(), '/') << platform;
+    // And short enough to still leave room for the socket's own leaf.
+    EXPECT_TRUE(control_socket_path_fits(control_socket_path(platform, 8928)))
+        << control_socket_path(platform, 8928);
 }
 
 TEST(ControlSocketPath, AnOverLongDefaultIsAnAbsentReasonRatherThanATruncation) {

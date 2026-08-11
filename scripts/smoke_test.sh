@@ -462,8 +462,13 @@ check_no_control() {
         fail "SIGTERM did not stop the --no-control run. Log: $(cat "$log")"
 }
 
-# With no $XDG_RUNTIME_DIR and no --control-socket there is no default path -- and the player
-# still serves audio, which is the whole point of the warning rather than a refusal.
+# With no $XDG_RUNTIME_DIR, either the platform supplies a private directory of its own or there
+# is no default path at all -- and in the second case the player still serves audio, which is the
+# whole point of a warning rather than a refusal.
+#
+# Which outcome is correct is a property of the platform, so it is read off the run rather than
+# assumed: macOS's launchd sets no $XDG_RUNTIME_DIR ever, so the fallback is what makes the
+# default path work there at all.
 check_missing_runtime_dir() {
     local log="$WORK_DIR/no-runtime-dir.log"
 
@@ -473,22 +478,59 @@ check_missing_runtime_dir() {
 
     wait_for_line "$log" "listening on port $PORT_CONTROL" "$BOOT_TIMEOUT_S" ||
         fail "no ready log within ${BOOT_TIMEOUT_S}s. Log: $(cat "$log")"
-    wait_for_line "$log" '^W control: .*XDG_RUNTIME_DIR' "$BOOT_TIMEOUT_S" ||
-        fail "no warning about the missing runtime directory. Log: $(cat "$log")"
-    # There is deliberately no /tmp fallback: it is world-writable, and a socket there would let
-    # any local account pause playback and switch this endpoint out of its group.
-    if grep -q '/tmp' "$log"; then
-        fail "the missing-runtime-dir path mentions /tmp. Log: $(cat "$log")"
+
+    if grep -q '^I control: Listening on ' "$log"; then
+        # A platform fallback answered. The socket has to be real, private, and reachable by a
+        # subcommand that was given no path either -- which is the whole point of having one.
+        local socket
+        socket="$(sed -n 's/^I control: Listening on //p' "$log" | head -1)"
+        wait_for_socket "$socket" "$BOOT_TIMEOUT_S" ||
+            fail "the platform fallback logged $socket but bound nothing"
+
+        local mode owner
+        case "$(uname -s)" in
+            Darwin)
+                mode="$(stat -f '%Lp' "$socket")"
+                owner="$(stat -f '%u' "$(dirname "$socket")")"
+                ;;
+            *)
+                mode="$(stat -c '%a' "$socket")"
+                owner="$(stat -c '%u' "$(dirname "$socket")")"
+                ;;
+        esac
+        [ "$mode" = "600" ] || fail "the fallback socket is mode $mode, not 600"
+        # The directory is what stops another local account reaching the socket on a platform
+        # that does not enforce socket-inode permissions on connect().
+        [ "$owner" = "$(id -u)" ] ||
+            fail "the fallback directory $(dirname "$socket") is owned by uid $owner, not $(id -u)"
+        case "$socket" in
+            /tmp/*) fail "the platform fallback put the socket under /tmp: $socket" ;;
+        esac
+
+        env -u XDG_RUNTIME_DIR "$BIN" status --port "$PORT_CONTROL" >/dev/null 2>&1 ||
+            fail "a subcommand could not reach the fallback socket at $socket"
+        pass "with no \$XDG_RUNTIME_DIR the platform's own private directory is used, 0600"
+    else
+        wait_for_line "$log" '^W control: .*XDG_RUNTIME_DIR' "$BOOT_TIMEOUT_S" ||
+            fail "no control socket and no warning about why. Log: $(cat "$log")"
+        # There is deliberately no /tmp fallback anywhere: it is world-writable, and a socket
+        # there would let any local account pause playback and switch this endpoint out of its
+        # group.
+        if grep -q '/tmp' "$log"; then
+            fail "the missing-runtime-dir path mentions /tmp. Log: $(cat "$log")"
+        fi
+        pass "with no \$XDG_RUNTIME_DIR and no platform fallback, it warns instead of guessing"
     fi
+
     kill -0 "$pid" 2>/dev/null ||
-        fail "the player exited rather than carrying on without a control socket"
-    pass "a missing \$XDG_RUNTIME_DIR warns once and keeps serving audio"
+        fail "the player exited rather than carrying on. Log: $(cat "$log")"
 
     kill -TERM "$pid"
     local status=0
     await_child "$pid" "$EXIT_TIMEOUT_S" || status=$?
     [ "$status" -eq 0 ] ||
         fail "SIGTERM left exit status $status. Log: $(cat "$log")"
+    pass "it keeps serving audio either way and exits 0 on SIGTERM"
 }
 
 # A subcommand with no player to talk to fails distinctly, and without becoming one.

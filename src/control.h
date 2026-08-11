@@ -369,15 +369,63 @@ const char* line_state_reason(LineState state);
 /// control_socket_absent_reason().
 std::string control_socket_path(const std::string& runtime_dir, uint16_t port);
 
-/// @brief `$XDG_RUNTIME_DIR`, or empty when it is unset or set to nothing.
+/// @brief The user-private directory the default control socket goes in, or empty.
 ///
-/// A variable set to the empty string counts as unset, which is what the XDG spec says and
-/// what `last_server_path()` already does with `$XDG_STATE_HOME`: the alternative resolves to
-/// a path starting at the filesystem root.
+/// Two sources, in order:
 ///
-/// Split from control_socket_path() so that function stays pure and testable -- the
-/// environment is read here, once, and handed in.
+/// 1. **`$XDG_RUNTIME_DIR`**, wherever it is set, on every platform. A variable set to the empty
+///    string counts as unset, which is what the XDG spec says and what `last_server_path()`
+///    already does with `$XDG_STATE_HOME`: the alternative resolves to a path starting at the
+///    filesystem root. Trusted rather than verified, because it is the user's own declaration of
+///    where their runtime files go.
+/// 2. **This platform's own equivalent**, from control_platform_runtime_dir() -- which on macOS
+///    is the per-user directory launchd already provides, and nothing anywhere else.
+///
+/// There is deliberately no third source. `/tmp` is world-writable, and a control socket there
+/// would let any local account pause playback and `switch` this endpoint out of its group; an
+/// empty return and a warning is the better answer.
+///
+/// Split from control_socket_path() so that function stays pure and testable -- the environment
+/// and the filesystem are read here, once, and the result handed in.
 std::string control_runtime_dir();
+
+/// @brief This platform's own user-private runtime directory, verified, or empty.
+///
+/// On **macOS** that is `confstr(_CS_DARWIN_USER_TEMP_DIR)`: the per-user, 0700 directory under
+/// `/var/folders` that launchd hands every session. It exists because launchd sets no
+/// `$XDG_RUNTIME_DIR` at all -- not for a system service and not in an interactive shell -- so
+/// without this the default socket path never resolved on the one platform the PortAudio backend
+/// exists to serve, and every macOS user needed an explicit `--control-socket`.
+///
+/// Deliberately **not `$TMPDIR`**, which usually names the same directory: `confstr()` reads
+/// nothing from the environment, so unlike `$TMPDIR` it cannot be pointed at a directory someone
+/// else can write. That distinction is the whole reason this is not the `/tmp` fallback the
+/// design refuses.
+///
+/// Verified before use rather than trusted, by is_private_runtime_dir(): a platform answer is
+/// still only a path until the filesystem agrees it is a directory this user owns and no one else
+/// can write to.
+///
+/// Empty on every other platform, where `$XDG_RUNTIME_DIR` is the convention and its absence is
+/// a real absence rather than a platform difference.
+///
+/// One caveat worth knowing: macOS prunes `/var/folders` on a schedule, so a very long-lived
+/// player could in principle have its socket unlinked from under it, which shows up as
+/// subcommands reporting no daemon until it is restarted. `$XDG_RUNTIME_DIR` on Linux is tmpfs
+/// cleared at logout, so it is the same class of impermanence, and `--control-socket` is the
+/// answer in both cases.
+std::string control_platform_runtime_dir();
+
+/// @brief True if `path` is a directory this user owns and no one else can write to.
+///
+/// The three things that make a directory safe to put a control socket in, checked rather than
+/// assumed: it is a directory, its owner is the effective uid, and neither the group- nor the
+/// other-write bit is set. Linux enforces socket-inode permissions on `connect()` but macOS and
+/// the BSDs historically do not, so on those platforms the *directory* is what stops another
+/// local account reaching the socket -- which makes this check load-bearing rather than belt and
+/// braces.
+/// @param reason Set to a human-readable reason when the return value is false.
+bool is_private_runtime_dir(const std::string& path, std::string& reason);
 
 /// @brief Why there is no default control socket path, or empty when there is one.
 ///

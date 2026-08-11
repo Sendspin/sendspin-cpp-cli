@@ -441,11 +441,12 @@ is being discarded; the log says so loudly at the same moment.
   is absolute, non-negative, and refused past the `seek_max_ms` the server
   publishes — which is absent for a live stream, where nothing bounds it.
 
-**Where the socket is.** `$XDG_RUNTIME_DIR/sendspin-cli-<port>.sock`, mode
-`0600`, where `<port>` is `--port`. The port is in the name so two players on one
-host each get their own — and it means a player on a non-default `--port` has its
-socket somewhere else, so **a subcommand needs the same `--port`**, or an explicit
-`--control-socket`:
+**Where the socket is.** `$XDG_RUNTIME_DIR/sendspin-cli-<port>.sock`, mode `0600`,
+where `<port>` is `--port` — or, where that variable is unset and the platform has a
+private directory of its own, there instead (see below). The port is in the name so
+two players on one host each get their own — and it means a player on a non-default
+`--port` has its socket somewhere else, so **a subcommand needs the same `--port`**,
+or an explicit `--control-socket`:
 
 ```bash
 sendspin-cli --port 9000 &            # this player's socket carries 9000
@@ -453,29 +454,54 @@ sendspin-cli status --port 9000       # ...so its subcommands need it too
 sendspin-cli status --control-socket /run/user/1000/sendspin-cli-9000.sock  # or name it
 ```
 
-**There is no `/tmp` fallback, and that is deliberate.** `$XDG_RUNTIME_DIR` is a
-per-user, `0700` directory, which is what makes the socket unreachable by other
-local accounts; `/tmp` is world-writable, and a socket there would let any local
-user pause your music and `switch` this endpoint out of its group. Linux enforces
-socket permissions on `connect()`, but macOS and the BSDs historically do not — so
-the private parent directory is doing real work, not just belt-and-braces.
-
-So a run with no `$XDG_RUNTIME_DIR` has no control socket. That is **not fatal** —
-a player without a control channel is still a player, exactly as one without an
-mDNS advertisement is — and it warns once, naming the fix:
+**On macOS the default still works, because launchd sets no `$XDG_RUNTIME_DIR`.**
+There the path comes from `confstr(_CS_DARWIN_USER_TEMP_DIR)` — the per-user
+directory under `/var/folders` that launchd already gives every session:
 
 ```console
-$ env -u XDG_RUNTIME_DIR sendspin-cli
+$ sendspin-cli -n living-room &
+I control: Listening on /var/folders/y5/9jvkfq…/T/sendspin-cli-8928.sock
+$ sendspin-cli status
+name: living-room
+…
+```
+
+That is deliberately **not** `$TMPDIR`, which usually names the same directory:
+`confstr()` reads nothing from the environment, so unlike `$TMPDIR` it cannot be
+pointed at a directory someone else can write. And it is verified rather than
+trusted — it must be a directory, owned by this user, with no group- or other-write
+bit — so a platform that answered with something unsafe gets refused, not used.
+
+**There is no `/tmp` fallback anywhere, and that is the point.** `$XDG_RUNTIME_DIR`
+and the macOS directory are both per-user and `0700`, which is what makes the socket
+unreachable by other local accounts; `/tmp` is world-writable, and a socket there
+would let any local user pause your music and `switch` this endpoint out of its
+group. Linux enforces socket permissions on `connect()`, but macOS and the BSDs
+historically do not — so the private parent directory is doing real work, not just
+belt-and-braces. `$XDG_RUNTIME_DIR` wins wherever it is set, on every platform.
+
+With neither available — a **systemd *system* unit** on Linux, which gets no
+`$XDG_RUNTIME_DIR` (a user unit does) — there is no control socket. That is **not
+fatal**: a player without a control channel is still a player, exactly as one
+without an mDNS advertisement is, and it warns once, naming the fix:
+
+```console
+$ env -u XDG_RUNTIME_DIR sendspin-cli          # on Linux
 W control: No control socket: $XDG_RUNTIME_DIR is not set, so there is no user-private
 directory to put a control socket in. Give --control-socket <path> to choose one, or
 --no-control to stop asking
 I cli: sendspin-cli 0.1.0 listening on port 8928 as "living-room" (output: default, ...)
 ```
 
-Two places that bites: a **systemd *system* unit** has no `$XDG_RUNTIME_DIR` (a
-user unit does), and so does **macOS**, where launchd sets no such variable at all.
-Both want an explicit `--control-socket`; `--no-control` turns the channel off and
-silences the warning if the player is only ever driven by its server.
+For a system unit, pair systemd's own `RuntimeDirectory=` with `--control-socket`;
+`--no-control` turns the channel off and silences the warning if the player is only
+ever driven by its server.
+
+One caveat on the macOS path: the OS prunes `/var/folders` on a schedule, so a
+very long-lived player could in principle have its socket unlinked from under it,
+which looks like subcommands reporting no daemon until it restarts.
+`$XDG_RUNTIME_DIR` on Linux is tmpfs cleared at logout, so it is the same class of
+impermanence — `--control-socket` is the answer to both.
 
 **A second instance is refused**, in the same words `-P` uses, and refused before
 it opens the sound card or its port:

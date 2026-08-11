@@ -811,29 +811,61 @@ TEST(ParseOptions, ThePortIsReadBeforeTheDefaultPathIsBuiltWhicheverOrderItComes
     EXPECT_EQ(after.options().control_socket, "/run/user/1000/sendspin-cli-9000.sock");
 }
 
-TEST(ParseOptions, NoRuntimeDirectoryLeavesNoSocketAndAReasonRatherThanFailing) {
-    // Non-fatal on purpose: a player with no control channel is still a player, and there is
-    // deliberately no /tmp fallback -- a world-writable directory would let any local account
-    // drive it.
+TEST(ParseOptions, NoRuntimeDirectoryFallsBackToThePlatformDirectory) {
+    // Two correct outcomes, and which one applies is a property of the platform -- so it is read
+    // off the same function the parser uses rather than decided by an #ifdef here. On macOS,
+    // where launchd sets no $XDG_RUNTIME_DIR at all, the fallback is what makes the default path
+    // resolve; elsewhere an unset variable is a real absence.
     ScopedEnv runtime_dir("XDG_RUNTIME_DIR", nullptr);
     Parse parse({});
-
     ASSERT_TRUE(parse.ok()) << parse.diagnostics();
-    EXPECT_TRUE(parse.options().control_socket.empty());
-    EXPECT_FALSE(parse.options().control_absent_reason.empty());
-    EXPECT_NE(parse.options().control_absent_reason.find("--control-socket"), std::string::npos);
+
+    const std::string platform = control_platform_runtime_dir();
+    if (platform.empty()) {
+        // Non-fatal on purpose: a player with no control channel is still a player.
+        EXPECT_TRUE(parse.options().control_socket.empty());
+        EXPECT_FALSE(parse.options().control_absent_reason.empty());
+        EXPECT_NE(parse.options().control_absent_reason.find("--control-socket"),
+                  std::string::npos);
+    } else {
+        EXPECT_EQ(parse.options().control_socket, platform + "/sendspin-cli-8928.sock");
+        EXPECT_TRUE(parse.options().control_absent_reason.empty());
+    }
+
+    // Either way, and this is the part that must hold on every platform: never /tmp. A
+    // world-writable directory would let any local account drive the player.
+    EXPECT_NE(parse.options().control_socket.compare(0, 5, "/tmp/"), 0)
+        << parse.options().control_socket;
     EXPECT_EQ(parse.options().control_absent_reason.find("/tmp"), std::string::npos);
 }
 
 TEST(ParseOptions, AnEmptyRuntimeDirectoryCountsAsUnset) {
     // The XDG rule, and what last_server_path() already does with $XDG_STATE_HOME: the
-    // alternative resolves to a path starting at the filesystem root.
+    // alternative resolves to a path starting at the filesystem root. Asserted as equivalence to
+    // the unset case rather than against a fixed outcome, so it holds on a platform with a
+    // fallback and on one without.
+    std::string unset_path;
+    {
+        ScopedEnv runtime_dir("XDG_RUNTIME_DIR", nullptr);
+        Parse parse({});
+        ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+        unset_path = parse.options().control_socket;
+    }
+
     ScopedEnv runtime_dir("XDG_RUNTIME_DIR", "");
+    Parse parse({});
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_EQ(parse.options().control_socket, unset_path);
+}
+
+TEST(ParseOptions, AnExplicitRuntimeDirectoryWinsOverThePlatformFallback) {
+    // The order matters and is not incidental: $XDG_RUNTIME_DIR is the user saying where their
+    // runtime files go, so a platform default must never override it.
+    ScopedEnv runtime_dir("XDG_RUNTIME_DIR", "/run/user/1000");
     Parse parse({});
 
     ASSERT_TRUE(parse.ok()) << parse.diagnostics();
-    EXPECT_TRUE(parse.options().control_socket.empty());
-    EXPECT_FALSE(parse.options().control_absent_reason.empty());
+    EXPECT_EQ(parse.options().control_socket, "/run/user/1000/sendspin-cli-8928.sock");
 }
 
 TEST(ParseOptions, ControlSocketOverridesTheDefault) {
