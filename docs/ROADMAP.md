@@ -706,20 +706,42 @@ with no trailing newline. Clean under `-fsanitize=thread` while every subcommand
 `ctest` and `scripts/smoke_test.sh` both pass on macOS, in the default and the
 `-DSENDSPIN_CLI_WITH_MDNS=OFF` configurations.
 
-**Two things this item does not claim.** Nothing here has been driven against a **real
-Sendspin server**, so the paths that need one are reasoned from the library's source and
-covered by unit tests rather than observed: a command actually reaching a server and moving
-playback, the `supported_commands` refusal against a real published set, `seek` against a real
-`seek_max_ms`, and every `status` field that only a connected server fills in (the track, the
-position, the transport state, the group volume). And the **kernel's `listen()` backlog is
-tied to `MAX_CONTROL_CONNECTIONS`** rather than the two being independent, because whichever is
-smaller is the real limit and only our own cap can explain itself in the log — with a backlog
-below the cap, a burst of concurrent subcommands got `ECONNREFUSED` from the kernel and
-arrived at the operator as "nothing is listening" on a healthy player. `ECONNREFUSED` and
-`ENOENT` are now reported differently for the same reason, and a connection refused by the cap
-is *answered* in the protocol's own shape rather than hung up on — the socket is 0600 inside a
-user-private directory, so the peer is this user, and one short write is the difference between
-a subcommand saying why it failed and reporting that the daemon dropped it.
+**Driven against a real server.** A live `aiosendspin`/Music Assistant instance on the LAN, with
+this player dialling out via `-s`, so the paths that need a server are now observed rather than
+reasoned about: `play` and `pause` moving real playback; `mute on`/`off` round-tripping through the
+server and coming back as state on *both* the group and the player line; `seek 60000` moving the
+position; `seek` past the server's published `seek_max_ms` (231000, exactly the track duration)
+refused locally with its own exit status; the `status` block filled in from real metadata —
+`server: Music Assistant (connected)`, the track, the duration, the transport state from
+`playback_speed`; `status` correctly reading `unknown` in the window before the first metadata
+arrives; the socket bound at the macOS default path with **no flags at all**, gone after `SIGTERM`,
+and a subcommand afterwards exiting 3.
+
+**Position is only meaningful behind a sink that paces itself.** Under `-o null` the position
+saturates at the track duration within seconds, and this is not a `status` bug: the null sink
+consumes instantly and leaves `on_frames_played` unset, so nothing paces the stream and the server
+runs through the whole track as fast as it can send it — `status` then faithfully reports a server
+that believes the track has finished. Behind `-o portaudio`, where the device supplies real playout
+timing, the position advances at 1x (five samples, 3 s of wall clock per 3 s of position). Worth
+knowing before reading a position off a device-less run.
+
+**One server-side gap found, and it is worth reporting upstream.** `seek-rel` is accepted and does
+nothing. The evidence that this is not ours: the local gate refuses any command absent from
+`supported_commands`, and `seek-rel` exits 0, so the server *advertises* `seek_relative`;
+`format_client_command_message()` writes `offset_ms` for `SEEK_RELATIVE` symmetrically with the
+`position_ms` it writes for `SEEK`; and absolute `seek` through that same path demonstrably
+moves playback. Three offsets were tried, including a negative one, with no effect. Per
+`AI_POLICY.md` no issue was opened from here.
+
+**One thing still not claimed.** The **kernel's `listen()` backlog is tied to
+`MAX_CONTROL_CONNECTIONS`** rather than the two being independent, because whichever is smaller
+is the real limit and only our own cap can explain itself in the log — with a backlog below the
+cap, a burst of concurrent subcommands got `ECONNREFUSED` from the kernel and arrived at the
+operator as "nothing is listening" on a healthy player. `ECONNREFUSED` and `ENOENT` are now
+reported differently for the same reason, and a connection refused by the cap is *answered* in
+the protocol's own shape rather than hung up on — the socket is 0600 inside a user-private
+directory, so the peer is this user, and one short write is the difference between a subcommand
+saying why it failed and reporting that the daemon dropped it.
 
 **One caveat the macOS path carries.** The OS prunes `/var/folders` on a schedule, so a very
 long-lived player could in principle have its socket unlinked from under it, which shows up as
