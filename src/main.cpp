@@ -381,6 +381,8 @@ private:
             snapshot.connected && !controller.supported_commands.empty();
         snapshot.group_volume = controller.volume;
         snapshot.group_muted = controller.muted;
+        snapshot.group_repeat = controller.repeat;
+        snapshot.group_shuffle = controller.shuffle;
 
         // From the listener rather than from PlayerRole, deliberately: the role stores 0 until a
         // server sends a volume command, while the sink is at DEFAULT_SINK_VOLUME from the first

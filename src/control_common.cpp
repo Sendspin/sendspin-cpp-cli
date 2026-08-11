@@ -563,6 +563,14 @@ std::string format_status(const StatusSnapshot& snapshot) {
     append_line(out, "group volume",
                 format_volume(snapshot.group_state_known, snapshot.group_volume,
                               snapshot.group_muted));
+    // Alongside the volume because they come from the same object and are changed by the same
+    // kind of command -- and because `repeat`/`shuffle` would otherwise be the only subcommands
+    // whose effect `status` cannot show.
+    append_line(out, "repeat", snapshot.group_state_known
+                                   ? repeat_mode_name(snapshot.group_repeat)
+                                   : "unknown");
+    append_line(out, "shuffle", snapshot.group_state_known ? (snapshot.group_shuffle ? "on" : "off")
+                                                           : "unknown");
     // Always known: it is this process's own state, whether or not a server is connected. What is
     // *not* always known is whether anybody chose it, so an untouched player says so rather than
     // presenting a default as a setting.

@@ -419,6 +419,14 @@ Every transport verb the protocol has, one subcommand each — `status`, `play`,
 `pause`, `stop`, `next`, `prev`, `vol`, `mute`, `seek`, `seek-rel`, `repeat`,
 `shuffle`, `switch`. `--help` lists them with their arguments.
 
+`repeat` and `shuffle` are the group's queue modes as the server last published
+them — and they carry a caveat the rest of the block does not. The library holds
+them as a plain enum and bool and fills them in only when the server sends the
+field, so a server that omits `repeat` leaves `off` behind and nothing can tell
+that from a server that said `off`. Read them as "the last value published, or
+`off` if none was", not as an assertion. (`seek_max_ms` in the same object is an
+`optional` and does not have this problem.)
+
 `player volume` is the gain **this box's output** is applying, and it says
 `(default; no server has set it)` until a server sends a volume command — because
 until one does, the sink runs at full while the library's own stored volume reads

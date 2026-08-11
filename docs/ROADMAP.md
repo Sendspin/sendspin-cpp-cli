@@ -713,7 +713,7 @@ server and coming back as state on *both* the group and the player line; `seek 6
 position; `seek` past the server's published `seek_max_ms` (231000, exactly the track duration)
 refused locally with its own exit status; the `status` block filled in from real metadata —
 `server: Music Assistant (connected)`, the track, the duration, the transport state from
-`playback_speed`; `status` correctly reading `unknown` in the window before the first metadata
+`playback_speed`; `next` and `prev` walking a real queue in both directions; `status` correctly reading `unknown` in the window before the first metadata
 arrives; the socket bound at the macOS default path with **no flags at all**, gone after `SIGTERM`,
 and a subcommand afterwards exiting 3.
 
@@ -747,13 +747,29 @@ changes what we advertise) or seeding the sink from the role (which makes a fres
 until a server speaks). Both are behaviour changes wider than a control channel, and neither is
 this item's to make.
 
-**One server-side gap found, and it is worth reporting upstream.** `seek-rel` is accepted and does
-nothing. The evidence that this is not ours: the local gate refuses any command absent from
-`supported_commands`, and `seek-rel` exits 0, so the server *advertises* `seek_relative`;
-`format_client_command_message()` writes `offset_ms` for `SEEK_RELATIVE` symmetrically with the
-`position_ms` it writes for `SEEK`; and absolute `seek` through that same path demonstrably
-moves playback. Three offsets were tried, including a negative one, with no effect. Per
-`AI_POLICY.md` no issue was opened from here.
+**Three commands this server advertises and does not act on, which is worth reporting upstream.**
+`seek-rel`, `repeat` and `shuffle` are all accepted and all do nothing. The evidence that this is
+not our end: the local gate refuses any command absent from `supported_commands`, and all three
+exit 0, so the server *advertises* every one of them; `format_client_command_message()` writes
+each command's own field symmetrically; and `play`, `pause`, `next`, `prev`, `seek` and `mute`
+travel that identical path and demonstrably work -- `next`/`prev` walk the queue, `seek` moves the
+position, `mute` comes back as state. Three relative-seek offsets were tried including a negative
+one, and five queue-mode commands, with no observable effect and no change in the controller state
+the server publishes back. Per `AI_POLICY.md` no issue was opened from here.
+
+A caveat on how firmly that can be said of `repeat` and `shuffle` specifically: because the library
+cannot distinguish an unreported field from `off` (see below), "no effect" here means "neither acted
+on in a way `status` can see, nor reported back" -- a server that applied them silently and never
+published them would look the same from here.
+
+**`repeat` and `shuffle` are reported with less certainty than the rest of the block, and it is an
+upstream limitation.** `ServerStateControllerObject` holds them as a plain enum and a plain bool,
+and the parser assigns them only when the field is present -- so a server that omits `repeat` leaves
+the struct's own `OFF` behind and nothing downstream can tell that from a server that said `off`.
+`seek_max_ms` in the same object is an `optional` and does not have the problem. They are reported
+anyway, because against a server that does publish them they are right and they are the only way to
+watch those two commands land, but `status`'s own docs say what the value actually means rather than
+presenting it as a fact the server asserted.
 
 **One thing still not claimed.** The **kernel's `listen()` backlog is tied to
 `MAX_CONTROL_CONNECTIONS`** rather than the two being independent, because whichever is smaller

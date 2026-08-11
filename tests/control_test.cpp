@@ -673,6 +673,37 @@ TEST(FormatStatus, AVolumeAServerChoseIsNotMarkedAsADefault) {
     EXPECT_EQ(line, std::to_string(static_cast<unsigned>(DEFAULT_SINK_VOLUME)));
 }
 
+TEST(FormatStatus, TheQueueModesAreReportedSoTheirCommandsAreVisible) {
+    // `repeat` and `shuffle` are the only subcommands whose effect status could not show, which
+    // left a user unable to see what they had just changed -- or to put it back.
+    StatusSnapshot snapshot = playing_snapshot();
+    snapshot.group_state_known = true;
+
+    for (const auto& [mode, name] : std::vector<std::pair<SendspinRepeatMode, std::string>>{
+             {SendspinRepeatMode::OFF, "off"},
+             {SendspinRepeatMode::ONE, "one"},
+             {SendspinRepeatMode::ALL, "all"}}) {
+        snapshot.group_repeat = mode;
+        EXPECT_EQ(field(format_status(snapshot), "repeat"), name);
+    }
+
+    snapshot.group_shuffle = true;
+    EXPECT_EQ(field(format_status(snapshot), "shuffle"), "on");
+    snapshot.group_shuffle = false;
+    EXPECT_EQ(field(format_status(snapshot), "shuffle"), "off");
+}
+
+TEST(FormatStatus, UnknownQueueModesAreNotPrintedAsOff) {
+    // Same trap the group volume has: a default-constructed controller object is OFF and
+    // unshuffled, so printing it would be a claim about the group rather than an absence of one.
+    StatusSnapshot snapshot = playing_snapshot();
+    snapshot.group_state_known = false;
+
+    const std::string block = format_status(snapshot);
+    EXPECT_EQ(field(block, "repeat"), "unknown");
+    EXPECT_EQ(field(block, "shuffle"), "unknown");
+}
+
 TEST(FormatStatus, TheTransportStateComesFromPlaybackSpeed) {
     StatusSnapshot snapshot = playing_snapshot();
 
