@@ -19,6 +19,15 @@
 
 #include <sendspin/controller_role.h>
 
+#ifndef SENDSPIN_ENABLE_CONTROLLER
+// The control channel *is* the controller role: every transport verb it carries comes from
+// `controller@v1`, and `SendspinClient::add_controller()` does not exist without this. Said here
+// rather than left to fail somewhere inside main.cpp, because `CMakeLists.txt` sets the option
+// without FORCE -- so `-DSENDSPIN_ENABLE_CONTROLLER=OFF` is reachable, and deserves an answer
+// rather than a compile error about a missing member function.
+#error "sendspin-cli's control channel needs the sendspin controller role: do not configure with -DSENDSPIN_ENABLE_CONTROLLER=OFF"
+#endif
+
 #include <cstdint>
 #include <cstdio>
 #include <memory>

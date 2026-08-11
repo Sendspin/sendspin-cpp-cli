@@ -29,6 +29,7 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <csignal>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -62,6 +63,15 @@ void split_first_line(const std::string& reply, std::string& first, std::string&
 /// which is a player that died without unlinking *or* a listener whose queue is momentarily
 /// full; EACCES is a player that is there and will not talk to this user.
 int connect_to_socket(const std::string& path, std::string& error) {
+    // Checked here as well as at parse time, because what follows is a memcpy into a fixed
+    // array: the parser refusing an over-long --control-socket is an invariant held two files
+    // away, and the cost of not relying on it is one comparison.
+    if (!control_socket_path_fits(path)) {
+        error = "control socket path '" + path + "' does not fit a Unix socket address (" +
+                std::to_string(control_socket_path_limit() - 1) + " bytes)";
+        return -1;
+    }
+
     const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) {
         error = std::string("cannot create a socket: ") + std::strerror(errno);
@@ -112,10 +122,6 @@ bool write_all(int fd, const std::string& text, std::string& error) {
         if (wrote < 0 && errno == EINTR) {
             continue;
         }
-        // SIGPIPE is not ignored in this process -- there is no audio sink to protect from one
-        // -- so a daemon that goes away mid-write would kill us before EPIPE ever surfaced.
-        // Handled anyway: the daemon closes after replying, and a request short enough to fit
-        // one socket buffer is written before it has read anything.
         error = "cannot send the request: " +
                 std::string(wrote < 0 ? std::strerror(errno) : "short write");
         return false;
@@ -152,6 +158,14 @@ bool read_reply(int fd, std::string& reply, std::string& error) {
 
 ControlStatus run_control_subcommand(const ControlRequest& request, const std::string& path,
                                      const std::string& absent_reason, std::FILE* out) {
+    // A daemon that goes away between our connect() and our write() -- because it was at its
+    // connection cap, or is shutting down -- makes that write raise SIGPIPE, whose default
+    // disposition would kill this process with signal 13 instead of letting the EPIPE below
+    // report itself. Ignored here rather than for the whole binary, and rather than reached for
+    // per-call with MSG_NOSIGNAL/SO_NOSIGPIPE, which are spelled differently on Linux and macOS.
+    // This process does nothing else with a pipe or a socket.
+    std::signal(SIGPIPE, SIG_IGN);
+
     if (path.empty()) {
         // No socket to try, and the reason names the fix -- either the daemon was told
         // --no-control, or this host gave it nowhere to put one.
