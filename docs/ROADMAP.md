@@ -649,13 +649,16 @@ So the role is now on, and the deliberate addition to the squeezelite model land
   and any payload out, then the daemon closes. The kind is one machine token so the client can
   map a refusal onto an exit status without parsing the reason, and the line still reads as
   English to `socat`. Nothing to version and nothing parsed twice.
-- **90 new tests** (147 to 237), none of which binds a socket: the argv split, every
+- **104 new tests** (147 to 251), none of which binds a socket: the argv split, every
   subcommand's argument parse and its protocol mapping, a request round-trip through the wire
   form, the refusal predicate against hand-built snapshots (including the empty-
-  `supported_commands` disconnected case), the `status` formatter, the reply status line, and
-  line framing — partial reads, no trailing newline, CRLF, an empty line, an over-long line,
-  an embedded NUL, and bytes after the first newline. `tests/scoped_env.h` was lifted out of
-  `last_server_test.cpp` rather than copied so both suites share one `$XDG` helper.
+  `supported_commands` disconnected case), the `status` formatter, the reply status line, line
+  framing — partial reads, no trailing newline, CRLF, an empty line, an over-long line, an
+  embedded NUL, and bytes after the first newline — and every rejection path of the directory
+  check, including both symlink directions and `/tmp`. They touch the filesystem, which this
+  suite's boundary allows: what it forbids is opening a device, a socket or the mDNS daemon.
+  `tests/scoped_env.h` was lifted out of `last_server_test.cpp` rather than copied so both
+  suites share one `$XDG` helper.
 
 **One bug this found, worth writing down**, because it was silent and
 platform-specific: rebuilding argv without POSIX's `argv[argc] == NULL` sentinel breaks BSD
@@ -808,8 +811,12 @@ what keeps the suite runnable on a bare CI runner — and is why the smoke test 
 `scripts/smoke_test.sh` rather than another suite. It covers what a gtest process cannot:
 `--version`/`--help`, a foreground run reaching its ready log and exiting 0 on `SIGTERM`,
 `-z` forking with `-P` writing a live pidfile and refusing a second instance holding the
-same lock, and a default mDNS-on run surviving a daemon it cannot reach. It is runnable by
-hand against any build, which is what item 6's hand-driven `-z` checks became.
+same lock, a default mDNS-on run surviving a daemon it cannot reach, and — item 7's, since a
+listening socket and a `connect()` to it are two processes by definition — the control socket
+appearing at its default path as `0600`, a `status` round trip, `--no-control`, stale-socket
+takeover after a `SIGKILL`, removal on `SIGTERM`, and a second instance refused both in the
+foreground and, through the pre-fork probe, at the terminal under `-z`. It is runnable by hand
+against any build, which is what item 6's hand-driven `-z` checks became.
 
 **Both breaks this entry used to predict are fixed.** `src/mdns_dnssd.cpp` no longer names
 `kDNSServiceErr_ServiceNotRunning` and `kDNSServiceErr_Timeout` unconditionally.
