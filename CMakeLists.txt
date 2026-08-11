@@ -224,6 +224,7 @@ add_library(sendspin-cli-core STATIC
     src/outbound.cpp
     src/pcm_volume.cpp
     src/player_listener.cpp
+    src/sink_recovery.cpp
     src/state_store.cpp
     src/supported_formats.cpp
 )
@@ -323,6 +324,7 @@ if(SENDSPIN_CLI_BUILD_TESTS)
         tests/device_spec_test.cpp
         tests/discovery_test.cpp
         tests/pcm_volume_test.cpp
+        tests/sink_recovery_test.cpp
         tests/state_store_test.cpp
         tests/supported_formats_test.cpp
     )

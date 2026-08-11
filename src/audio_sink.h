@@ -156,6 +156,20 @@ public:
     /// @brief Silences output regardless of volume.
     virtual void set_muted(bool /*muted*/) {}
 
+    /// @brief Gives a sink a slice of the main loop, for work write()'s thread cannot do.
+    ///
+    /// There is exactly one such job today, and it is why this exists: PortAudioSink rebuilds
+    /// PortAudio's device list here after a device has gone away mid-stream. That invalidates
+    /// every device index in the process, so it may only run where nothing else holds one --
+    /// which is this thread, and no other.
+    ///
+    /// Main loop only, like every method here bar write(). Must also stay cheap on the ordinary
+    /// tick: the same thread drives the protocol client, mDNS and the control socket, so anything
+    /// slow here delays all three. A sink that has real work to do owes it a bound.
+    /// @param now_ms Monotonic milliseconds, as the main loop already reads them. Timing must be
+    /// derived from this rather than from counting calls -- the loop's pace is not a contract.
+    virtual void poll(int64_t /*now_ms*/) {}
+
     /// @brief Reports what this sink's device will take, for the advertised format list.
     ///
     /// Called once from the main loop, before SendspinClient::start_server(), and nowhere

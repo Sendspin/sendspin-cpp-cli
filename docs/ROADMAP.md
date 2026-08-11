@@ -1100,17 +1100,108 @@ grep of the whole library, headers and sources, matches neither name. Nothing in
 supply them: `ClientPlayerStateObject`, which `PlayerRole::Impl::build_state_fields()` fills, has
 no field for either. It needs a library change, not a change here.
 
-### 14. PortAudio in-place device recovery
+### 14. PortAudio in-place device recovery — *shipped (hardware pass still owed)*
 
-`PortAudioSink` latches into discarding once `Pa_IsStreamActive()` goes false, so a USB DAC
-unplugged mid-track stays silent until the next stream re-resolves the device. ALSA already
-recovers `-EPIPE`/`-ESTRPIPE` inside `write()`; this is the same idea for the other backend,
-without waiting for a track boundary. Split out of item 4.
+`PortAudioSink` no longer latches into discarding for the rest of a track when its device goes
+away: it gets the device back mid-stream, or exhausts a bounded set of attempts trying. ALSA
+already recovered `-EPIPE`/`-ESTRPIPE` inside its own `write()`; this is the same idea for the
+other backend. Split out of item 4.
 
-Note that the device is *already* re-resolved at every `configure()`, so the gap is
-specifically mid-stream. The awkward part is that recovery has to reopen a stream from the
-sync task's thread or defer to the main loop, and the sink's threading invariant is that
-everything the audio callback reads is mutated only while the callback cannot run.
+**The gap was narrower and deeper than the item claimed.** Narrower, because `configure()`
+already re-resolves the device at every stream, so only the *mid-stream* case was broken.
+Deeper, because reopening in place is not enough on its own: **PortAudio enumerates devices at
+`Pa_Initialize()` and never revisits that list**, and `resolve_pa_device()` walks that cached
+list. A DAC pulled out and pushed back in usually comes back as a device the list has never
+seen, with the old index left dead — so no amount of reopening reaches it, and a
+`Pa_Terminate()`/`Pa_Initialize()` cycle is the only thing that can. That single fact is what
+made this two tiers across two threads rather than one function.
+
+**Tier 1 — one in-place reopen, inline in `write()`, on the sync task's thread.** Where `write()`
+finds `!stream_alive_()`, `reopen_in_place_()` re-resolves the device and reopens at the
+remembered format before the discard path is reached; on success the same call carries on
+filling the ring, so playback resumes without waiting for a track boundary. This is all a host
+default-output switch needs. It is safe from that thread for a reason now written into the
+header, because the class previously read as though only the main loop ever opened a stream:
+
+- **The ordering invariant is about *when*, not which thread.** `Pa_AbortStream()`/
+  `Pa_CloseStream()` do not return while the callback is running, and `open_stream_()` writes
+  every callback-read field before `Pa_StartStream()` lets it run again. Neither depends on who
+  is calling.
+- **`mutex_` already serialises it.** `write()`, `configure()`, `clear()` and `stop()` all hold
+  it, so no two `Pa_OpenStream()`/`Pa_CloseStream()` calls can overlap; the only other `Pa_*`
+  callers — `probe()`, `list_devices()`, `capabilities()` — run on the main loop before the
+  server starts.
+- **A parked `write()` was already handled.** `close_stream_()` bumps `stream_generation_` and
+  notifies `space_available_`, which is the existing mechanism for exactly this.
+
+Two smaller things fell out of it. `stopping_` is re-checked *after* a successful open, because
+`stop()` deliberately latches before it takes the mutex and so can arrive while `Pa_OpenStream()`
+is running — leaving a live stream for the destructor is the hazard `configure()` already refuses
+to create. And the discard return stays frame-aligned after a failed reopen has zeroed
+`bytes_per_frame_`, by falling back to the remembered format.
+
+**Tier 2 — the device-list rescan, on the main loop.** `AudioSink` gains
+`virtual void poll(int64_t now_ms) {}`, a no-op by default, called from `main.cpp`'s loop beside
+`mdns.poll()` and `control_socket.poll()`. `PortAudioSink::poll()` closes the stream, cycles
+`PortAudioGuard::reinitialize()`, re-resolves against the fresh list and reopens. It cannot be
+inlined into `write()`: it invalidates every `PaDeviceIndex` in the process, and neither
+`Pa_Initialize()` nor `Pa_Terminate()` is thread-safe.
+
+The costs are real and are documented at the call sites rather than only here. The cycle blocks
+the main loop — and so the protocol client beside it — for up to about a second while every host
+API is re-enumerated; that is affordable only because it happens at most once per stream, only
+once playback has already stopped, and the tightest thing it delays is the time-sync burst
+response, which the library gives ten seconds. It also only *really* terminates because the
+sink's guard is the sole live one at runtime, PortAudio's init pair being reference-counted;
+anything that later reached `probe()` from the running loop would turn the rescan into a silent
+no-op, which is now noted on `reinitialize()`.
+
+**Both attempts are spent per configured stream, not per outage — and that bound is the design,
+not a detail.** A successful reopen does not refill the budget. Without that, a half-present
+device (a dock mid-handshake, a hub browning out) that opens and dies again would have `write()`
+calling `Pa_OpenStream()` on the sync task's thread fifty times a second, logging an INFO line
+each time, forever — the failure mode is worse than the silence being fixed. So a stream that
+dies a second time goes straight to the rescan, and once both are gone the sink discards until
+the next `configure()`, which re-resolves anyway and now does so against a list the rescan has
+already refreshed.
+
+The two-second gap before the rescan is for the same reason it is bounded: it is the last attempt
+there is, and a replugged DAC takes the host a moment to enumerate, so spending it the instant
+the reopen failed would usually spend it before the device is back.
+
+**The decision lives in `src/sink_recovery.{h,cpp}` and is unit-tested there**, for the reason
+`mdns_common.cpp` and `pcm_volume.cpp` exist: `src/portaudio_sink.cpp` is compiled only under
+`SENDSPIN_CLI_PORTAUDIO_ENABLED` where `sendspin-cli-tests` is built unconditionally, so a policy
+living in the sink would go untested precisely on the hosts that have no PortAudio. `SinkRecovery`
+takes `now_ms` and never reads a clock, holds no PortAudio type and logs nothing, which is what
+lets its tests be a plain table. The `Pa_*` calls themselves stay untested; the hardware pass
+below is what covers them.
+
+**`last_format_` is set from `configure()`'s arguments, not from a stream that opened.** It has to
+outlive `close_stream_()`, which zeroes `rate_`/`channels_`/`bits_` — but taking it from a
+successful open would be wrong in a way that matters: a `configure()` whose open failed is still
+the format the player is about to send audio in, and recovering to the *previous* one would play
+that audio at the wrong frame size. `stop()` zeroes it, which is what makes a write after shutdown
+attempt nothing.
+
+**Deliberately left out.** No retry loop, backoff curve or timer thread — the whole shape is two
+attempts and a stop. No re-advertising of formats mid-session: `capabilities()` is answered once
+before `start_server()`, so a rescan does not change what the server was told, and the refusal
+path that already names the device and the format it would not take stays the mitigation, as the
+comment on `capabilities()` has said since item 3. `NullAudioSink` and `AlsaAudioSink` are
+untouched — ALSA recovers inside its own `write()` and never gives up while the handle is open,
+so it has nothing to do with a main-loop tick.
+
+**What remains after this.** A device that goes away a third time within one stream is not chased;
+recovery waits for the next `configure()`. `capabilities()` still describes whichever device was
+default when the player started. And the rescan's main-loop stall is a real, if bounded, pause in
+protocol handling.
+
+**Hardware verification is still owed** and is what the *shipped* qualifier above refers to. The
+four cases to run, and to record here once run: a USB DAC unplugged and left out mid-track (logs
+once, does not spin or wedge); the same DAC replugged mid-track (playback resumes without a track
+boundary); the host default output switched mid-track under a bare `-o portaudio`; and normal
+playback, track changes and `stop()` unaffected when nothing goes wrong.
 
 ### 15. ALSA hardware mixer (`-V`)
 

@@ -877,6 +877,11 @@ int main(int argc, char* argv[]) {
         if (outbound) {
             outbound->tick(client, now_ms);
         }
+        // Here for the same reason the three above are: what a sink does with this tick is work
+        // that may not run on the sync task's thread. PortAudioSink rebuilds its device list in
+        // it after a device has gone away mid-stream, which is why the sink gets the loop's
+        // clock rather than reading one of its own.
+        sink->poll(now_ms);
         // Here rather than in the SIGHUP handler: the reopen flushes the old stream and then
         // logs the result, and neither fflush() nor fprintf() is async-signal-safe -- the
         // open/dup2 pair on its own would be. This is what hands rotation to logrotate and
