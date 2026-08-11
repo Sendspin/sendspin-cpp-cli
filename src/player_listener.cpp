@@ -119,6 +119,13 @@ void PlayerListener::on_mute_changed(bool muted) {
     this->persist_volume();
 }
 
+void PlayerListener::on_static_delay_changed(uint16_t delay_ms) {
+    // INFO rather than DEBUG: it changes when audio comes out of this speaker relative to every
+    // other player in the group, which is exactly the kind of thing someone chasing a sync problem
+    // needs to find in a log.
+    cli_log(LogLevel::INFO, "Static delay set to %u ms by the server", delay_ms);
+}
+
 void PlayerListener::restore_volume(uint8_t volume, bool muted) {
     this->sink_.set_volume(volume);
     this->sink_.set_muted(muted);

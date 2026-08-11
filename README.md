@@ -304,6 +304,17 @@ meant to sound half as loud as 100, and that exponent is what makes the number o
 a controller's slider mean that. It is deliberately not upstream's `^2`, which is
 about 3 dB quieter at volume 50 and 6 dB at 25.
 
+A change is applied over a **20 ms ramp** rather than as a jump, which the spec asks
+for: *"to avoid audible clicks, clients SHOULD apply volume changes over a short
+ramp."* Jumping the gain between one sample and the next is a step in the waveform,
+and a step is what a click is — most obvious on a mute, which is the largest jump
+there is. The gain moves at a fixed slew rate, so a full-scale change takes the whole
+20 ms and a small one is proportionally quicker, and it steps **per frame** so every
+channel of a frame is scaled by the same gain. A stream *starts* at its gain rather
+than fading into it, so a volume restored from the state file produces no fade at the
+top of the first track. `-o null` and `-o stdout` are unaffected: they record the
+volume without applying it, so there is nothing there to ramp.
+
 ### Buffering, and what gets advertised
 
 `--buffer-ms <ms>` (10–2000, default 100) is how much audio the output backend
@@ -414,16 +425,19 @@ track: Nils Frahm - Says
 position: 2:05 / 9:03
 group volume: 55
 player volume: 80
+static delay: 0 ms
 output: default (48000 Hz / 2 ch / 16-bit)
 
 $ sendspin-cli pause
 $ sendspin-cli vol 40
 $ sendspin-cli seek-rel -30000
+$ sendspin-cli delay 250
 ```
 
-Every transport verb the protocol has, one subcommand each — `status`, `play`,
-`pause`, `stop`, `next`, `prev`, `vol`, `mute`, `seek`, `seek-rel`, `repeat`,
-`shuffle`, `switch`. `--help` lists them with their arguments.
+Every transport verb the protocol has, one subcommand each — `play`, `pause`,
+`stop`, `next`, `prev`, `vol`, `mute`, `seek`, `seek-rel`, `repeat`, `shuffle`,
+`switch` — plus two that go nowhere near the server: `status`, and `delay`.
+`--help` lists them all with their arguments.
 
 **Four fields are the server's word, and can lag what is true** — which is why the
 block ends with a `note:` line saying so. `state`, `position`, `repeat` and
@@ -458,13 +472,47 @@ it while the group plays on. A `stream: receiving` line with no format after the
 device name is the case where the device *refused* the stream's format and its audio
 is being discarded; the log says so loudly at the same moment.
 
-**Three of them are easy to misread, so:**
+**`delay` is the one subcommand that changes *this* box.** It sets the player role's
+`static_delay_ms`, 0–5000: **how much latency this endpoint's hardware adds after the
+audio port** — an amplifier, an external speaker, a DSP.
+
+Note the direction, because it is the opposite of what the name suggests. This is not
+"play this speaker later"; it is "my gear is *already* this far behind". The sync task
+**subtracts** the figure from every chunk's timestamp, so the player hands audio to the
+device that much **earlier**, and the sound then lands on the timestamp the server meant.
+The spec puts it as: 0 "means audio exits the device's audio port at the timestamp", and
+the value "compensates for additional delay beyond the port". So if this speaker sounds
+250 ms *late* against the rest of the group, `delay 250` is the fix:
+
+```console
+$ sendspin-cli delay 250      # my amp adds 250 ms, so hand audio over 250 ms early
+$ sendspin-cli status | grep 'static delay'
+static delay: 250 ms
+$ sendspin-cli delay 0        # off again
+```
+
+Three things follow from it being local rather than a transport command. It works with
+**no server connected**, exactly as `status` does — nothing about it is sent, so there
+is nothing for a missing connection to stop. It is **remembered across restarts**, which
+the spec requires of a client, so you set it once per speaker. And the player still tells
+the server, because the library republishes `client/state` when the value changes — the
+server needs it to work out how far ahead to send audio.
+
+Out-of-range values are refused rather than clamped: `delay 5001` exits 1 and names the
+bound. The library would quietly take it down to 5000 and report success, which would
+mean a delay nobody asked for.
+
+One caveat: changing it mid-stream re-times chunk scheduling, so expect a brief resync.
+Set it while stopped where you can.
+
+**Three of the others are easy to misread, so:**
 
 - **`vol` is the *group* volume**, not this box's output level. It goes out as a
   `controller@v1` command and the server spreads it across every player in the
   group, clamping per player. That is why `status` prints `group volume` and
   `player volume` as two named lines rather than one ambiguous `volume:` — a
   squeezelite refugee will expect `vol 50` to move *this* box, and it does not.
+  `delay` above is the counter-example: that one really is this endpoint's own.
 - **`switch` is not a source selector.** Per the spec's switch cycle it re-homes
   this client through the groups available to it. It sits next to `play` and
   `pause` and means something quite different.
@@ -566,8 +614,8 @@ land are three different statuses, because they need three different actions:
 
 | Status | Means |
 |---|---|
-| `0` | sent, or `status` printed |
-| `1` | the command line did not parse (`vol 500`) |
+| `0` | sent, or answered locally (`status`, `delay`) |
+| `1` | the command line did not parse (`vol 500`, `delay 5001`) |
 | `2` | the player refused the argument (a `seek` past `seek_max_ms`) |
 | `3` | nothing is listening on that socket — no player, or the wrong `--port` |
 | `4` | the player is up but has **no server connection** |
@@ -577,9 +625,11 @@ land are three different statuses, because they need three different actions:
 `4` and `5` are kept apart on purpose. A dropped connection *empties*
 `supported_commands`, so the naive check answers "pause is not supported" when the
 truth is that nothing is connected — sending you to read your server's
-capabilities instead of its connection. `status` is never refused by any of them:
-it is answered out of the player's own state, which is exactly when a
-disconnected player is worth reading.
+capabilities instead of its connection. The two locally answered subcommands —
+`status` and `delay` — are never refused by any of them: nothing about either is
+sent, so a missing connection is no obstacle. A disconnected player is exactly when
+reading `status` is worth doing, and a speaker's own delay does not become unsettable
+because nothing is playing through it.
 
 **No thread, and one tick of latency.** The socket is polled from the main loop
 alongside mDNS, so a request round-trips in up to `LOOP_INTERVAL_MS` (10 ms). That
@@ -672,11 +722,11 @@ which is what a foreground run whose terminal has just closed should do.
 The flags follow squeezelite's: `-o` output device, `-l` list devices, `-n` name,
 `-s` server, `-z` daemonize, `-P` pidfile, `-d`/`-f` logging. All but `-l` and
 `-z` also have a long spelling — `--output --name --server --pidfile --logfile
---log-level` — so that every config key is a flag name. Eight more are long-only
+--log-level` — so that every config key is a flag name. Nine more are long-only
 because they are not squeezelite's: `--port`, the port this player serves on,
-`--buffer-ms`, the two mDNS flags `--no-mdns` and `--mdns-name`, the two
-control-socket flags `--control-socket` and `--no-control`, and `--config` and
-`--state-dir` for the two files above. Run `--help` for the current state of each
+`--buffer-ms`, `--static-delay`, the two mDNS flags `--no-mdns` and `--mdns-name`,
+the two control-socket flags `--control-socket` and `--no-control`, and `--config`
+and `--state-dir` for the two files above. Run `--help` for the current state of each
 — a few still point at [`docs/ROADMAP.md`](docs/ROADMAP.md) for behaviour that is
 not built yet.
 
@@ -696,7 +746,22 @@ error: -s 'music.local:abc': 'abc' is not a port number (expected 1-65535)
 
 $ sendspin-cli --buffer-ms 0
 error: invalid --buffer-ms '0' -- expected 10-2000
+
+$ sendspin-cli --static-delay 5001
+error: invalid --static-delay '5001' -- expected 0-5000
 ```
+
+**`--static-delay <ms>` is a first-run default, not an override.** It seeds the same
+0–5000 static delay the `delay` subcommand sets — the latency this endpoint's hardware
+adds *after* the audio port, which the player compensates for by handing audio over
+earlier; see the control-channel section above for the direction, which is the opposite
+of what the name suggests. The library prefers whatever the state store
+remembers and reads this flag only when there is nothing remembered — exactly as a
+restored volume beats the sink's default. So it is for declaring a speaker's physical
+offset up front (an Ansible-managed fleet, a container with an ephemeral
+`--state-dir`); once a server or `sendspin-cli delay` has set one, the remembered value
+wins every run after and this flag is inert. The startup log says which of the two it
+took.
 
 What a flag *cannot* settle on its own is whether the thing it names will open. That
 is a startup failure rather than a bad value, so it comes out in the log's format —
@@ -730,6 +795,7 @@ the flag would have been given:
 name = kitchen
 output = hw:1,0
 buffer-ms = 250
+static-delay = 40
 server = mdns:Living Room
 no-mdns = true
 ```
@@ -804,11 +870,13 @@ server id mDNS discovery uses to break a tie between candidates;
 prefer the last-played server among inbound connections. They mean different things
 and are deliberately not reconciled with each other.
 
-**A remembered `static-delay-ms` is reported, not yet applied.** The player hands
-the figure back to the server so the two agree across a restart, which is the part
-the spec asks for; actually shifting playout by it is
-[`docs/ROADMAP.md`](docs/ROADMAP.md) item 13's. Until then a delay you set is
-remembered faithfully and does nothing you can hear.
+**A remembered `static-delay-ms` is reported *and* applied.** The player hands the
+figure back to the server in its first `client/state`, so the two agree across a
+restart, and the library's sync task subtracts it from every chunk's timestamp before
+scheduling — which is the spec's own rule for how a client obeys it. `sendspin-cli
+status` prints the value in force, and `sendspin-cli delay <ms>` changes it. Three
+things can set it: a server's `set_static_delay`, that subcommand, and
+`--static-delay` on a first run with nothing yet remembered.
 
 It lives at `$XDG_STATE_HOME/sendspin-cli/state`, then
 `$HOME/.local/state/sendspin-cli/state`, and `--state-dir <dir>` overrides both —
@@ -847,7 +915,8 @@ It checks that the binary runs, comes up on its port, forks under `-z`, refuses 
 second instance holding the same `-P`, survives an mDNS daemon it cannot reach,
 and exits `0` on `SIGTERM` — plus the whole of the control socket, which needs two
 processes by definition: that it appears at the default path as `0600`, that
-`status` round-trips, that `--no-control` binds nothing, that a stale socket is
+`status` round-trips, that `delay` reaches the player role and survives a restart
+through the state store, that `--no-control` binds nothing, that a stale socket is
 taken over after a `SIGKILL`, that it is gone after `SIGTERM`, and that a second
 instance on the same socket is refused. The config file is in here for the same
 reason: a player configured entirely from a file has to be findable by a

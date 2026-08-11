@@ -57,6 +57,22 @@ public:
     void on_volume_changed(uint8_t volume) override;
     void on_mute_changed(bool muted) override;
 
+    /// @brief Logs a server-set static delay. There is deliberately nothing else here to do.
+    ///
+    /// Both halves of obeying the value are already the library's. `SyncTask::decode_chunk()`
+    /// subtracts `get_effective_static_delay_ms()` from every chunk's client timestamp, which is
+    /// what feeds the drift correction -- so the delay is applied to the audio path without this
+    /// override existing. And `CliPersistenceProvider` has already written it to the state store
+    /// by the time this fires, which is the spec's "clients must persist `static_delay_ms`".
+    ///
+    /// So this is observability, and saying so is the point: a reader who expects to find the
+    /// playout shift here should be told it is upstream rather than go looking for a bug.
+    ///
+    /// Fires only for a server's own `set_static_delay`. `PlayerRole::update_static_delay()` --
+    /// which is what `sendspin-cli delay` reaches -- does not invoke it, so this is not the place
+    /// to shadow the value for `status`; that reads the role directly.
+    void on_static_delay_changed(uint16_t delay_ms) override;
+
     /// @brief True between a stream start and its end, whatever the device made of it.
     ///
     /// What the control channel's `status` reports as this endpoint's stream state: audio
@@ -72,15 +88,13 @@ public:
 
     /// @brief The gain the sink is really applying, 0-100, and whether it is muted.
     ///
-    /// **Not** `PlayerRole::get_volume()`, and the difference is the whole point. The role stores 0
-    /// until a server sends a volume command; the sink runs at DEFAULT_SINK_VOLUME until one
-    /// arrives. So on a player no server has ever set the volume on, the role says 0 and the
-    /// speaker is at full — and `status` reporting the role's number told users their player was
-    /// silent while it was audibly not.
-    ///
     /// This listener is the only caller of `AudioSink::set_volume()`, which makes it the only
-    /// thing that knows what the sink was actually told. Read on the main loop, where the two
-    /// callbacks that write it also fire.
+    /// thing that knows what the sink was actually told — and is why `status` reports this rather
+    /// than `PlayerRole::get_volume()`. The role agrees with it from startup, but only because
+    /// `main()` pushes this pair into the role before anything can connect; the role is not the
+    /// authority on what the device is doing.
+    ///
+    /// Read on the main loop, where the two callbacks that write it also fire.
     uint8_t applied_volume() const {
         return this->applied_volume_;
     }

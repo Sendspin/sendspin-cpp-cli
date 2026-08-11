@@ -498,6 +498,12 @@ bool AlsaAudioSink::recover_(int err) {
 bool AlsaAudioSink::configure(uint32_t sample_rate, uint8_t channels, uint8_t bits_per_sample) {
     const std::lock_guard<std::mutex> lock(this->device_mutex_);
 
+    // A stream opens at the gain it is meant to be at, never ramping up to it. Without this a
+    // restored volume -- which reaches set_volume() before anything has played -- would leave the
+    // sink at unity with a remembered target, and the run's first track would open with a fade
+    // nobody asked for, from a gain that was never applied to a sample.
+    this->current_multiplier_ = this->target_multiplier_.load(std::memory_order_relaxed);
+
     if (this->pcm_ != nullptr && this->rate_ == sample_rate && this->channels_ == channels &&
         this->bits_ == bits_per_sample) {
         // Same format as the stream that just ended: keep the device and just start from a
@@ -565,18 +571,26 @@ size_t AlsaAudioSink::write(const uint8_t* data, size_t length, uint32_t timeout
             return 0;
         }
 
-        // Volume: scale into scratch so the caller's buffer stays untouched. Unity gain
-        // skips the copy entirely, which is the steady-state case.
+        // Volume: scale into scratch so the caller's buffer stays untouched.
+        //
+        // Both fast paths test `current == target` as well as the gain itself, and that is what
+        // makes them safe alongside the ramp: at unity they would otherwise skip a ramp *away*
+        // from unity, and the memset would flatten a ramp still on its way down to silence. A
+        // steady unity still costs nothing, which is the case that matters.
         const uint8_t* src = data;
-        const uint64_t gain = this->volume_multiplier_.load(std::memory_order_relaxed);
-        if (gain < Q32_ONE) {
+        const uint64_t target = this->target_multiplier_.load(std::memory_order_relaxed);
+        const uint64_t start = this->current_multiplier_;
+        const uint64_t step = volume_ramp_step(this->rate_);
+        const bool steady = start == target;
+        if (!steady || target != Q32_ONE) {
             this->scaled_.resize(usable);
-            if (gain == 0) {
+            if (steady && target == 0) {
                 // Silence. Zero bytes are silence for the signed PCM the player advertises.
                 std::memset(this->scaled_.data(), 0, usable);
             } else {
                 std::memcpy(this->scaled_.data(), data, usable);
-                apply_volume(this->scaled_.data(), usable, this->bits_ / 8U, gain);
+                apply_volume_ramp(this->scaled_.data(), usable, this->bits_ / 8U, this->channels_,
+                                  start, target, step);
             }
             src = this->scaled_.data();
         }
@@ -631,6 +645,14 @@ size_t AlsaAudioSink::write(const uint8_t* data, size_t length, uint32_t timeout
             frames_done += static_cast<size_t>(written);
         }
 
+        // Commit the ramp by what was really written, not by what was scaled. The loop above can
+        // break out with frames left over -- a deadline, stopping_, a recover_() that failed -- and
+        // the sync task re-presents that tail on the next call. Advancing by frames_total would put
+        // the gain ahead of the audio and leave a step across the seam. Recomputed through
+        // ramped_gain() rather than tracked by the scaler, so there is one definition of the
+        // arithmetic and the two cannot drift.
+        this->current_multiplier_ = ramped_gain(start, target, step, frames_done);
+
         // Sync feedback: snd_pcm_delay() is how many frames are still queued ahead of the
         // DAC, so the frames just written finish that far into the future. Sampled here,
         // under the lock, so the timestamp matches the query.
@@ -655,6 +677,17 @@ size_t AlsaAudioSink::write(const uint8_t* data, size_t length, uint32_t timeout
 
 void AlsaAudioSink::clear() {
     const std::lock_guard<std::mutex> lock(this->device_mutex_);
+
+    // Snapped before the early return, so a flush with no device open still leaves the gain where
+    // the next stream should start. Any ramp in progress was heading for audio that is about to be
+    // dropped, so there is nothing left for it to be heard across.
+    //
+    // Safe here only because clear() holds device_mutex_, which write() also holds -- this sink
+    // serialises everything through it. PortAudioSink::clear() deliberately does *not* do this: its
+    // callback keeps running through a flush, so the same write would be a data race there. The
+    // discriminator is the threading model, not the audio: do not harmonise the two.
+    this->current_multiplier_ = this->target_multiplier_.load(std::memory_order_relaxed);
+
     if (this->pcm_ == nullptr) {
         return;
     }
@@ -688,18 +721,20 @@ void AlsaAudioSink::stop() {
 
 void AlsaAudioSink::set_volume(uint8_t volume) {
     this->volume_.store(volume > 100 ? 100 : volume);
-    this->update_volume_multiplier_();
+    this->update_target_multiplier_();
     cli_log(LogLevel::DEBUG, "alsa: volume now %u", this->volume_.load());
 }
 
 void AlsaAudioSink::set_muted(bool muted) {
     this->muted_.store(muted);
-    this->update_volume_multiplier_();
+    this->update_target_multiplier_();
     cli_log(LogLevel::DEBUG, "alsa: %s", muted ? "muted" : "unmuted");
 }
 
-void AlsaAudioSink::update_volume_multiplier_() {
-    this->volume_multiplier_.store(q32_gain_for(this->volume_.load(), this->muted_.load()),
+void AlsaAudioSink::update_target_multiplier_() {
+    // Only the target moves. current_multiplier_ is left for write() to walk toward it, on the
+    // thread that owns it -- which is what keeps this setter lock-free.
+    this->target_multiplier_.store(q32_gain_for(this->volume_.load(), this->muted_.load()),
                                    std::memory_order_relaxed);
 }
 

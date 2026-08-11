@@ -43,6 +43,7 @@ readonly PORT_MDNS=39284
 readonly PORT_CONTROL=39285
 readonly PORT_CONTROL_SECOND=39286
 readonly PORT_CONFIG=39287
+readonly PORT_DELAY=39288
 
 readonly MDNS_INSTANCE="sendspin-cli-smoke"
 
@@ -374,7 +375,11 @@ check_control_socket() {
         fail "status printed no group volume line: $(cat "$status_out")"
     grep -q '^player volume: ' "$status_out" ||
         fail "status printed no player volume line: $(cat "$status_out")"
-    pass "status round-trips over the control socket and names both volumes"
+    # Always present, whether or not anybody has set it: the role holds a figure from startup, and
+    # `delay` can change it, so an invisible setting would leave a user unable to see what they did.
+    grep -q '^static delay: [0-9]* ms$' "$status_out" ||
+        fail "status printed no static delay line: $(cat "$status_out")"
+    pass "status round-trips over the control socket, naming both volumes and the static delay"
 
     # A transport command with no server behind it must say *that*, and not "unsupported":
     # a dropped connection empties supported_commands, so the naive answer is the wrong one.
@@ -645,6 +650,143 @@ EOF
     await_child "$pid" "$EXIT_TIMEOUT_S" >/dev/null 2>&1 || true
 }
 
+# `delay` reaches the player role, shows up in `status`, and survives a restart.
+#
+# The only end-to-end proof that the local knob gets all the way through: the subcommand's line,
+# the daemon's own re-parse, PlayerRole::update_static_delay(), CliPersistenceProvider, the state
+# file, and PlayerRole::get_static_delay_ms() on the way back out. Nothing in tests/ crosses more
+# than one of those.
+#
+# --state-dir is explicit rather than left to the XDG search, and that is what makes the restart
+# assertion mean anything: a CI leg with no $XDG_STATE_HOME and no $HOME has nowhere to write, and
+# the check would pass vacuously against a delay that was never persisted at all.
+check_static_delay() {
+    local log="$WORK_DIR/delay.log"
+    local relog="$WORK_DIR/delay-restart.log"
+    local state_dir="$WORK_DIR/delay-state"
+    local socket="$CONTROL_DIR/sendspin-cli-$PORT_DELAY.sock"
+    local out="$WORK_DIR/delay-status.out"
+
+    mkdir -p "$state_dir"
+
+    local -a player=(--no-mdns -o null --port "$PORT_DELAY" --state-dir "$state_dir")
+
+    # --static-delay on a genuinely first run, against a state directory nothing has written yet.
+    # This is the only check that proves the flag reaches PlayerRoleConfig at all -- the unit tests
+    # stop at Options, and the precedence check below would still pass if the assignment in main()
+    # were deleted. It also pins the ordering: the role loads initial_static_delay_ms during
+    # add_player(), so a flag applied after that would be read too late and silently do nothing.
+    local seeded_dir="$WORK_DIR/delay-seeded"
+    local seeded_out="$WORK_DIR/delay-seeded.out"
+    mkdir -p "$seeded_dir"
+    XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" --no-mdns -o null --port "$PORT_DELAY" \
+        --state-dir "$seeded_dir" --static-delay 65 "${NO_CONFIG[@]}" \
+        >"$WORK_DIR/delay-seeded.log" 2>&1 &
+    local seeded_pid=$!
+    STARTED_PIDS+=("$seeded_pid")
+    wait_for_line "$WORK_DIR/delay-seeded.log" "listening on port $PORT_DELAY" "$BOOT_TIMEOUT_S" ||
+        fail "the --static-delay player never came up. Log: $(cat "$WORK_DIR/delay-seeded.log")"
+    wait_for_socket "$socket" "$BOOT_TIMEOUT_S" ||
+        fail "the --static-delay player bound no control socket"
+    XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" status --port "$PORT_DELAY" "${NO_CONFIG[@]}" \
+        >"$seeded_out" 2>&1 || fail "status exited $?. Output: $(cat "$seeded_out")"
+    grep -q '^static delay: 65 ms$' "$seeded_out" ||
+        fail "--static-delay 65 did not reach the player role on a first run: $(cat "$seeded_out")"
+    pass "--static-delay seeds the delay on a first run, with nothing remembered"
+    kill -TERM "$seeded_pid" 2>/dev/null || true
+    await_child "$seeded_pid" "$EXIT_TIMEOUT_S" >/dev/null 2>&1 || true
+    wait_for_absent "$socket" "$EXIT_TIMEOUT_S" ||
+        fail "the --static-delay player exited but left $socket behind"
+
+    XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" "${player[@]}" "${NO_CONFIG[@]}" >"$log" 2>&1 &
+    local pid=$!
+    STARTED_PIDS+=("$pid")
+
+    wait_for_line "$log" "listening on port $PORT_DELAY" "$BOOT_TIMEOUT_S" ||
+        fail "no ready log within ${BOOT_TIMEOUT_S}s. Log: $(cat "$log")"
+    wait_for_socket "$socket" "$BOOT_TIMEOUT_S" ||
+        fail "no control socket at $socket within ${BOOT_TIMEOUT_S}s. Log: $(cat "$log")"
+
+    # Nothing remembered yet, so the delay starts off.
+    XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" status --port "$PORT_DELAY" "${NO_CONFIG[@]}" \
+        >"$out" 2>&1 || fail "status exited $?. Output: $(cat "$out")"
+    grep -q '^static delay: 0 ms$' "$out" ||
+        fail "a player with nothing remembered did not report a zero delay: $(cat "$out")"
+
+    # And it is settable with no server connected, exactly as `status` is readable -- which is the
+    # whole reason it is answered locally rather than sent as a controller command.
+    XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" delay 250 --port "$PORT_DELAY" "${NO_CONFIG[@]}" \
+        >/dev/null 2>&1 || fail "delay 250 exited $? against a player with no server"
+
+    XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" status --port "$PORT_DELAY" "${NO_CONFIG[@]}" \
+        >"$out" 2>&1 || fail "status exited $? after delay. Output: $(cat "$out")"
+    grep -q '^static delay: 250 ms$' "$out" ||
+        fail "delay 250 did not reach the player role: $(cat "$out")"
+    pass "delay reaches the player role with no server connected, and status shows it"
+
+    # Refused at the client, before a socket is opened: the library would clamp 5001 to 5000 and
+    # report success, so this is the check that the bound is really this player's.
+    local refusal="$WORK_DIR/delay-refusal.err"
+    if XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" delay 5001 --port "$PORT_DELAY" "${NO_CONFIG[@]}" \
+        >/dev/null 2>"$refusal"; then
+        fail "delay 5001 was accepted rather than refused"
+    fi
+    grep -q '0 to 5000' "$refusal" ||
+        fail "the refusal did not name the bound: $(cat "$refusal")"
+    XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" status --port "$PORT_DELAY" "${NO_CONFIG[@]}" \
+        >"$out" 2>&1 || fail "status exited $? after a refused delay. Output: $(cat "$out")"
+    grep -q '^static delay: 250 ms$' "$out" ||
+        fail "a refused delay changed the player anyway: $(cat "$out")"
+    pass "delay 5001 is refused naming the bound, and leaves the player's delay alone"
+
+    kill -TERM "$pid"
+    local status=0
+    await_child "$pid" "$EXIT_TIMEOUT_S" || status=$?
+    [ "$status" -eq 0 ] ||
+        fail "SIGTERM left exit status $status (124 means it never exited). Log: $(cat "$log")"
+
+    # The spec requires a client to persist this across restarts, so the same player started again
+    # against the same state directory has to come back with it.
+    XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" "${player[@]}" "${NO_CONFIG[@]}" >"$relog" 2>&1 &
+    pid=$!
+    STARTED_PIDS+=("$pid")
+
+    wait_for_line "$relog" "listening on port $PORT_DELAY" "$BOOT_TIMEOUT_S" ||
+        fail "the restarted player never came up. Log: $(cat "$relog")"
+    wait_for_socket "$socket" "$BOOT_TIMEOUT_S" ||
+        fail "the restarted player bound no control socket. Log: $(cat "$relog")"
+
+    XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" status --port "$PORT_DELAY" "${NO_CONFIG[@]}" \
+        >"$out" 2>&1 || fail "status exited $? after a restart. Output: $(cat "$out")"
+    grep -q '^static delay: 250 ms$' "$out" ||
+        fail "the delay did not survive a restart: $(cat "$out")"
+    pass "a locally set delay survives a restart through the state store"
+
+    # And --static-delay loses to it, which is the precedence --help promises: the flag is a
+    # first-run default, and this run is not the first.
+    local flagged="$WORK_DIR/delay-flag-status.out"
+    kill -TERM "$pid"
+    await_child "$pid" "$EXIT_TIMEOUT_S" >/dev/null 2>&1 || true
+
+    XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" "${player[@]}" --static-delay 40 "${NO_CONFIG[@]}" \
+        >"$WORK_DIR/delay-flag.log" 2>&1 &
+    pid=$!
+    STARTED_PIDS+=("$pid")
+    wait_for_line "$WORK_DIR/delay-flag.log" "listening on port $PORT_DELAY" "$BOOT_TIMEOUT_S" ||
+        fail "the --static-delay player never came up. Log: $(cat "$WORK_DIR/delay-flag.log")"
+    wait_for_socket "$socket" "$BOOT_TIMEOUT_S" ||
+        fail "the --static-delay player bound no control socket"
+
+    XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" status --port "$PORT_DELAY" "${NO_CONFIG[@]}" \
+        >"$flagged" 2>&1 || fail "status exited $?. Output: $(cat "$flagged")"
+    grep -q '^static delay: 250 ms$' "$flagged" ||
+        fail "--static-delay overrode a remembered delay, which it must not: $(cat "$flagged")"
+    pass "--static-delay loses to a remembered delay, as a first-run default should"
+
+    kill -TERM "$pid" 2>/dev/null || true
+    await_child "$pid" "$EXIT_TIMEOUT_S" >/dev/null 2>&1 || true
+}
+
 main() {
     [ -x "$BIN" ] ||
         fail "no executable at '$BIN' -- pass the path to sendspin-cli as the first argument"
@@ -659,6 +801,7 @@ main() {
     check_stale_control_socket
     check_no_control
     check_missing_runtime_dir
+    check_static_delay
     check_config_file
     printf 'smoke: every check passed\n'
 }

@@ -260,6 +260,90 @@ TEST(ParseOptions, BufferMsNeedsAValue) {
         << parse.diagnostics();
 }
 
+// ---------------------------------------------------------------------------
+// --static-delay
+// ---------------------------------------------------------------------------
+
+TEST(ParseOptions, StaticDelayIsAccepted) {
+    Parse parse({"--static-delay", "250"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_EQ(parse.options().static_delay_ms, 250U);
+    EXPECT_TRUE(parse.options().was_given(Opt::StaticDelay));
+}
+
+TEST(ParseOptions, StaticDelayDefaultsToNoDelay) {
+    Parse parse({});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_EQ(parse.options().static_delay_ms, 0U);
+    EXPECT_FALSE(parse.options().was_given(Opt::StaticDelay));
+}
+
+TEST(ParseOptions, StaticDelayEdgesAreAccepted) {
+    // Zero is legal and meaningful here, unlike --buffer-ms: it is the value that turns the delay
+    // off, so there is no floor to refuse it against.
+    Parse low({"--static-delay", "0"});
+    Parse high({"--static-delay", std::to_string(MAX_STATIC_DELAY_MS)});
+
+    ASSERT_TRUE(low.ok()) << low.diagnostics();
+    ASSERT_TRUE(high.ok()) << high.diagnostics();
+    EXPECT_EQ(low.options().static_delay_ms, 0U);
+    EXPECT_EQ(high.options().static_delay_ms, MAX_STATIC_DELAY_MS);
+}
+
+TEST(ParseOptions, StaticDelayBounds) {
+    // Refused rather than clamped, which is the point: PlayerRole::update_static_delay() would take
+    // 5001 quietly down to 5000, so a value the library would accept has to fail here instead.
+    for (const char* value :
+         {"5001", "9000", "65536", "abc", "12x", "", "-1", " 250", "+250", "250.5"}) {
+        Parse parse({"--static-delay", value});
+
+        EXPECT_FALSE(parse.ok()) << "--static-delay accepted '" << value << "'";
+        const std::string diagnostics = parse.diagnostics();
+        EXPECT_NE(diagnostics.find("error: invalid --static-delay"), std::string::npos) << value;
+        EXPECT_NE(diagnostics.find(std::string("'") + value + "'"), std::string::npos) << value;
+        // The bound is in the message, so a refusal teaches the range.
+        EXPECT_NE(diagnostics.find("0-" + std::to_string(MAX_STATIC_DELAY_MS)), std::string::npos)
+            << value;
+    }
+}
+
+TEST(ParseOptions, StaticDelayNeedsAValue) {
+    Parse parse({"--static-delay"});
+
+    ASSERT_FALSE(parse.ok());
+    EXPECT_NE(parse.diagnostics().find("option '--static-delay' needs a value"), std::string::npos)
+        << parse.diagnostics();
+}
+
+TEST(ParseOptions, StaticDelayIsListedByHelpAsAFirstRunDefault) {
+    // The half-precedence is the part that needs saying: the flag loses to a remembered delay
+    // forever after the first run, and a reader who does not know that will think it is broken.
+    std::FILE* out = std::tmpfile();
+    ASSERT_NE(out, nullptr);
+    print_usage(out, "sendspin-cli");
+    std::rewind(out);
+    std::string text;
+    char buffer[512];
+    size_t read = 0;
+    while ((read = std::fread(buffer, 1, sizeof(buffer), out)) > 0) {
+        text.append(buffer, read);
+    }
+    std::fclose(out);
+
+    EXPECT_NE(text.find("--static-delay"), std::string::npos);
+    EXPECT_NE(text.find("FIRST-RUN DEFAULT"), std::string::npos)
+        << "the precedence is not in --help";
+    // The bound comes from the constant rather than a literal, so moving MAX_STATIC_DELAY_MS
+    // without updating --help fails here instead of passing against a stale number.
+    EXPECT_NE(text.find("0-" + std::to_string(MAX_STATIC_DELAY_MS)), std::string::npos) << text;
+    // And the direction, which is the opposite of what the flag's name suggests: the value is
+    // latency the hardware adds, which the player compensates for by handing audio over earlier.
+    EXPECT_NE(text.find("EARLIER"), std::string::npos)
+        << "--help does not say which way the delay goes";
+}
+
 TEST(ParseOptions, BufferMsDoesNotClaimDashA) {
     // squeezelite's -a is deliberately left unclaimed: its <b>:<p>:<f>:<m> grammar is
     // ALSA-only, and two of its four subfields are already fixed here.

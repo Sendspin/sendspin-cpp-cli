@@ -52,6 +52,14 @@ namespace sendspin_cli {
 /// the device, so a volume change reaches only audio not yet written -- unlike PortAudioSink,
 /// which scales in its callback and so also affects what is already buffered.
 ///
+/// A change is applied over a ramp rather than as a jump, per the spec's SHOULD. The ramp is
+/// committed by the frames write() really *wrote*, not the ones it scaled: the loop can break out
+/// early on a deadline, on stopping_ or on a failed recover_(), and the sync task then re-presents
+/// the unconsumed tail -- so advancing by the whole buffer would leave a gain discontinuity across
+/// that seam, which is the click the ramp exists to remove. Scaling a tail that is then discarded
+/// costs nothing: it is scratch. This is the opposite of PortAudioSink's rule, whose callback
+/// consumes everything it scales.
+///
 /// The ALSA hardware mixer is deliberately not used: the default device here is usually
 /// PipeWire's ALSA plugin, where a hardware mixer element is either absent or controls
 /// something other than this stream.
@@ -98,8 +106,8 @@ private:
     /// Handles -EPIPE/-ESTRPIPE/-EINTR from a PCM call. Caller holds device_mutex_.
     /// @return true if the stream was recovered and the operation can be retried.
     bool recover_(int err);
-    /// Recomputes volume_multiplier_ from volume_ and muted_.
-    void update_volume_multiplier_();
+    /// Recomputes target_multiplier_ from volume_ and muted_.
+    void update_target_multiplier_();
 
     std::string device_;
     /// Ring size to ask ALSA for, in milliseconds; the period is this over PERIODS_PER_BUFFER.
@@ -125,8 +133,16 @@ private:
 
     std::atomic<uint8_t> volume_{DEFAULT_SINK_VOLUME};
     std::atomic<bool> muted_{false};
-    /// Q32 fixed-point gain: Q32_ONE is unity, 0 is silence. Read on the audio thread.
-    std::atomic<uint64_t> volume_multiplier_{Q32_ONE};
+    /// The Q32 gain the ramp is heading for: Q32_ONE is unity, 0 is silence. Atomic because
+    /// set_volume()/set_muted() write it from the main loop without taking device_mutex_, and
+    /// write() reads it on the sync task's thread.
+    std::atomic<uint64_t> target_multiplier_{Q32_ONE};
+    /// The Q32 gain actually being applied, which write() walks toward target_multiplier_ over
+    /// VOLUME_RAMP_MS.
+    ///
+    /// Not atomic, and it does not need to be: every function that touches it -- write(),
+    /// configure() and clear() -- holds device_mutex_, which is this sink's whole threading model.
+    std::uint64_t current_multiplier_{Q32_ONE};
 };
 
 }  // namespace sendspin_cli

@@ -680,6 +680,13 @@ void PortAudioSink::clear() {
     // still holds is audio the player has just asked us to drop.
     ++this->stream_generation_;
 
+    // current_multiplier_ is deliberately *not* snapped here, unlike in AlsaAudioSink::clear().
+    // Two reasons, and they agree. The callback keeps running through a flush -- nothing here stops
+    // it -- so writing the gain from this thread would break the class's ordering invariant. And it
+    // would be wrong anyway: a mid-stream flush is followed by more audio through the same open
+    // stream, so a ramp in progress should carry on being heard rather than jump. At a stream *end*
+    // the next configure() snaps it before a sample is played, which is where that matters.
+
     if (this->stream_alive_()) {
         // The consumer owns read_pos_, so the drain has to happen on its side; it takes
         // effect on the callback's next read.
@@ -707,13 +714,13 @@ void PortAudioSink::stop() {
 
 void PortAudioSink::set_volume(uint8_t volume) {
     this->volume_.store(volume > 100 ? 100 : volume);
-    this->update_volume_multiplier_();
+    this->update_target_multiplier_();
     cli_log(LogLevel::DEBUG, "portaudio: volume now %u", this->volume_.load());
 }
 
 void PortAudioSink::set_muted(bool muted) {
     this->muted_.store(muted);
-    this->update_volume_multiplier_();
+    this->update_target_multiplier_();
     cli_log(LogLevel::DEBUG, "portaudio: %s", muted ? "muted" : "unmuted");
 }
 
@@ -753,6 +760,12 @@ bool PortAudioSink::open_stream_(PaDeviceIndex device, uint32_t sample_rate, uin
     this->bytes_per_frame_ =
         static_cast<size_t>(channels) * (static_cast<size_t>(bits_per_sample) / 8U);
     this->stream_rate_ = static_cast<double>(sample_rate);
+    this->ramp_step_ = volume_ramp_step(sample_rate);
+    // A stream opens at the gain it is meant to be at, never ramping up to it: a restored volume
+    // reaches set_volume() before anything has played, so without this the run's first track would
+    // open with a fade from a gain that was never applied to a sample. Here rather than in
+    // configure() because here is where the callback provably cannot be running.
+    this->current_multiplier_ = this->target_multiplier_.load(std::memory_order_relaxed);
 
     PaStreamParameters output_params = {};
     output_params.device = device;
@@ -825,6 +838,7 @@ void PortAudioSink::close_stream_() {
     this->bits_ = 0;
     this->bytes_per_frame_ = 0;
     this->stream_rate_ = 0.0;
+    this->ramp_step_ = 0;
     this->ring_.reset(0);
     // A write() parked on the old stream would otherwise wait out its whole timeout; its
     // predicate reads stream_, so waking it here lets it return promptly instead.
@@ -846,6 +860,10 @@ bool PortAudioSink::restart_stream_() {
 
     // The callback has stopped, so dropping the ring from this side is safe here.
     this->ring_.drop();
+    // And so is snapping the gain, for open_stream_()'s reason: the next stream must start at the
+    // gain it is meant to be at rather than fade into it. This is the reuse path, which is what a
+    // track boundary at an unchanged format takes.
+    this->current_multiplier_ = this->target_multiplier_.load(std::memory_order_relaxed);
 
     err = Pa_StartStream(this->stream_);
     if (err != paNoError) {
@@ -888,8 +906,10 @@ size_t PortAudioSink::ring_capacity_(double device_latency_s) const {
     return (frames * this->bytes_per_frame_) + 1;
 }
 
-void PortAudioSink::update_volume_multiplier_() {
-    this->volume_multiplier_.store(q32_gain_for(this->volume_.load(), this->muted_.load()),
+void PortAudioSink::update_target_multiplier_() {
+    // Only the target moves. current_multiplier_ is the callback's to advance, which is what keeps
+    // this setter lock-free and the callback free of any synchronisation with it.
+    this->target_multiplier_.store(q32_gain_for(this->volume_.load(), this->muted_.load()),
                                    std::memory_order_relaxed);
 }
 
@@ -906,9 +926,19 @@ int PortAudioSink::pa_callback(const void* /*input*/, void* output, unsigned lon
 
     // Volume is applied here, on PortAudio's own buffer, rather than on the way into the ring:
     // the callback already owns writable memory, so no scratch copy is needed.
-    const uint64_t gain = self->volume_multiplier_.load(std::memory_order_relaxed);
-    if (gain < Q32_ONE) {
-        apply_volume(out, bytes_requested, self->bits_ / 8U, gain);
+    //
+    // The unity fast path tests `current == target` as well, or it would skip a ramp heading *away*
+    // from unity -- the one case where the gain is unity and the buffer still needs scaling. A
+    // steady unity, which is the common case, costs the same comparison it always did.
+    const uint64_t target = self->target_multiplier_.load(std::memory_order_relaxed);
+    const uint64_t current = self->current_multiplier_;
+    if (current != target || target != Q32_ONE) {
+        // Advanced by frame_count -- every frame handed to PortAudio, including any zero-filled
+        // tail a short ring read left. See the class docstring: that silence is played, so it
+        // consumes ramp time as legitimately as audio does.
+        self->current_multiplier_ =
+            apply_volume_ramp(out, bytes_requested, self->bits_ / 8U, self->channels_, current,
+                              target, self->ramp_step_);
     }
 
     // Space has just come free; wake whoever is blocked in write(). Notifying without the

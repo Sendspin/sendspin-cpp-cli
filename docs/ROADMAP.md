@@ -733,9 +733,10 @@ configuration item 12 really produces. It now reads the build's own ready log to
   Note the ordering constraint: the path's length is validated against `sockaddr_un::sun_path`
   at parse time, so whatever supplies it has to be resolved before that check.
 - **Two remaining spec deviations in the volume path** → item 13, which owns advertised state
-  matching reality. Persisting `volume` and `muted` across restarts is the spec's RECOMMENDED and
-  needs item 8's store. And the spec says volume changes SHOULD be ramped to avoid clicks;
-  nothing here ramps. The third — the taper — is fixed here, see below.
+  matching reality, and where both shipped. Persisting `volume` and `muted` across restarts is the
+  spec's RECOMMENDED and needed item 8's store. And the spec says volume changes SHOULD be ramped
+  to avoid clicks; nothing in *this* slice ramped, which item 13 closed with the shared ramp in
+  `src/pcm_volume.{h,cpp}`. The third — the taper — is fixed here, see below.
 - **Hardware volume** → item 15. `vol` is a group command and does not touch the sink.
 - **A `player`-scoped volume subcommand.** The `player` role's own volume and mute are reachable
   in the library and have no subcommand here, deliberately: every verb this item ships moves the
@@ -873,9 +874,12 @@ advertised an adjustable delay with nothing behind it, leaving a spec requiremen
 
 Deliberately **not** here, and each one names its owner rather than being left implied:
 
-- **Applying the static delay to the audio path** — item 13's, and the half this item does not
-  touch. The figure is remembered and reported honestly; nothing shifts playout by it yet.
-- **Ramping volume changes** — item 13's too.
+- **Observing and locally setting the static delay** — item 13's, and the half this item does not
+  touch. It remembers and reports the figure honestly; reading it back out in `status` and setting
+  it with `sendspin-cli delay` shipped there. (This item originally recorded the remaining half as
+  "applying it to the audio path". That was a misreading: the library's sync task had been
+  subtracting the delay all along — see item 13, which corrects it.)
+- **Ramping volume changes** — item 13's too, where it shipped.
 - **Debouncing the state write.** Every distinct volume a server sends costs one whole-file
   rewrite plus an `fsync`, on the main loop. Two things blunt it: the library's command slot is
   latest-wins within a drain, and `set_all()` short-circuits a value that has not changed — so a
@@ -884,7 +888,7 @@ Deliberately **not** here, and each one names its owner rather than being left i
   control socket and the mDNS poll beside it, on a slow enough card. Left as-is because writing on
   change is what makes the file true at any instant a player might lose power, which is this
   item's whole point; if the cost shows up in practice, a dirty flag flushed on a timer and at
-  shutdown is the fix, and it belongs beside item 13's volume work.
+  shutdown is the fix. Still owed: item 13 shipped its volume work without needing it.
 - **Two players sharing one `$XDG_STATE_HOME`** still share one state file and overwrite each
   other's keys. `--state-dir` is the answer; deriving the filename from `--port` was left out
   rather than guessed at.
@@ -988,49 +992,113 @@ workflow artifacts only — tagged releases, `install()` rules and distribution 
 belong to item 10, which will replace the workflow's hand-rolled tar with a staged
 `cmake --install` payload.
 
-### 13. `PlayerRoleConfig` wiring
+### 13. `PlayerRoleConfig` wiring — *shipped*
 
-`fixed_delay_us` and `extra_startup_silence_ms` are still at library defaults in
-`src/main.cpp`, and `set_static_delay_adjustable(true)` is advertised with no
-`on_static_delay_changed()` override in `src/player_listener.cpp` — so a controller can
-offer the user a static delay this player then **applies to nothing**. Split out of item 4.
+Every `PlayerRoleConfig` field is now set deliberately, the static delay is observable and
+locally settable, and volume changes are ramped. Split out of item 4.
 
-Item 8 closed the *persistence* half of that: the delay a server sets survives a restart and is
-reported back in the first `client/state`, through `CliPersistenceProvider` and
-`StateStore::static_delay_ms()`. What is still owed is the audio path — reading
-`PlayerRole::get_static_delay_ms()` and actually shifting playout by it. So the number is now
-honest about being remembered and still dishonest about being obeyed, which is a smaller lie
-than before but the same kind.
+**This item's opening premise was wrong, and correcting it is part of what shipped.** It claimed
+`set_static_delay_adjustable(true)` was advertised with no `on_static_delay_changed()` override,
+so "a controller can offer the user a static delay this player then applies to nothing". Against
+sendspin-cpp v0.7.0 that is not true, and it never was: `SyncTask::decode_chunk()` subtracts
+`get_effective_static_delay_ms()` from every chunk's client timestamp
+(`_deps/sendspin-src/src/sync_task.cpp:593`), and that value becomes `decoded_timestamp`, which
+is what `raw_error` is measured against — the drift correction itself. `get_effective_static_delay_ms()`
+returns the stored delay precisely *because* adjustability is on. So the delay was already being
+obeyed; the override was never the thing standing between the value and the audio path. A future
+reader tempted to look for a playout shift in `PlayerListener` should stop here: there is none,
+and there should not be.
 
-Two constraints found while scoping that item, and the reason this is not a five-minute
-change:
+What was genuinely missing was that nothing in this repo *observed or set* it. That is what
+landed:
 
-- **`fixed_delay_us` must stay 0.** Both sinks already report *future* finish timestamps
-  that include their own buffering — `snd_pcm_delay()` on ALSA, `outputBufferDacTime` on
-  PortAudio — so folding device latency in here would count it twice.
-- **`extra_startup_silence_ms` cannot be chosen until item 4's start-threshold fix has been
-  measured on real hardware.** Under a full-ring start threshold you would have been
-  measuring the bug rather than the pipeline.
+- **`PlayerListener::on_static_delay_changed()`** logs a server-set delay at INFO, and its doc
+  comment says outright that both applying and persisting it are already the library's — so the
+  override is observability and nothing else.
+- **`status` reports it**, as `static delay: <n> ms`, read from `PlayerRole::get_static_delay_ms()`
+  rather than from a listener-held shadow. That is not a style choice: `update_static_delay()` does
+  not invoke the listener (only a server's `set_static_delay` does,
+  `_deps/sendspin-src/src/player_role.cpp:396-400`), so a shadow would be stale the moment the
+  local knob below was used.
+- **`sendspin-cli delay <0-5000>`** sets it locally. The first *mutating* request answered without
+  a server — `status` was previously the only locally answered one at all — which the spec
+  explicitly provides for: the delay compensates for hardware past the audio port, the client is
+  required to persist it, and "clients may update `static_delay_ms` ... when audio output changes".
+  It is spec-clean because `PlayerRole::update_static_delay()` calls `publish_state()` itself, so
+  the server still learns the value without a controller command carrying it.
+- **`--static-delay <ms>` / `static-delay =`** seeds `initial_static_delay_ms`. A *first-run
+  default only*, and documented as one everywhere it appears: `load_static_delay()` prefers a
+  persisted value and reads the config field only when there is none
+  (`player_role.cpp:565-590`), exactly as a restored volume beats `DEFAULT_SINK_VOLUME`.
+- **The bound is this repo's own**, `MAX_STATIC_DELAY_MS` in `src/control.h`, and it tracks
+  `Sendspin/spec` `roles/player/v1.md` rather than the library — the same relationship
+  `q32_gain_for()`'s `^1.5` has to upstream's `^2`. The library's own limit is a file-local
+  constant and `update_static_delay()` **silently clamps** to it, so `delay 5001` would have been
+  reported as a success that applied 5000. It is refused at parse time instead.
 
-**Item 7 left two volume deviations to this item**, both found by reading `Sendspin/spec`
-against the code and both about the player role's state or its audio path rather than the
-control channel. (A third, the `(volume/100)^2` taper where the spec says `^1.5`, was fixed in
-item 7 itself.)
+**The volume ramp shipped**, closing the last of the two deviations item 7 left here. (The other,
+`volume`/`muted` persistence, was item 8's; the `^2` taper was fixed in item 7 itself.) The
+arithmetic is in `src/pcm_volume.{h,cpp}` — `volume_ramp_step()`, `ramped_gain()` and
+`apply_volume_ramp()` — so it is shared by both scaling backends and testable with no device, the
+same reason `apply_volume()` lives there. Four decisions in it are load-bearing:
 
-- **Volume changes are not ramped.** The spec says clients SHOULD apply them over a short
-  ramp to avoid audible clicks; both sinks store an atomic and jump. The PortAudio backend
-  scales in its callback, so a ramp there also reaches audio already buffered.
-- **`volume` and `muted` are persisted — item 8 did that half.** It had the store this needed:
-  `PlayerListener` writes both through on every server change, and startup restores them into the
-  sink, the listener's applied pair and `PlayerRole` together. *"Persisting `volume` and `muted`
-  across reboots is RECOMMENDED for players. A server MUST NOT assume these values are unchanged
-  after a reconnect."* What is left for this item is the ramp above, not the storage.
+- **A fixed slew rate, not a fixed duration.** `VOLUME_RAMP_MS` (20 ms) is what a *full-scale*
+  change takes, and a smaller change is proportionally quicker. A constant-duration ramp would
+  have to divide by the distance still to travel, which means reading the current gain from the
+  main loop — and only the sinks' own audio paths may advance the current gain. The step is derived
+  from the stream's rate alone, so each sink's setter writes only its atomic target and takes no
+  lock. (ALSA's snap points do write the current gain from the main loop, under the `device_mutex_`
+  that already serialises everything it touches; PortAudio has no such lock and so snaps only where
+  its callback provably cannot run.)
+- **Per frame, not per sample**, or the ramp would scale a frame's channels by different gains:
+  an inter-channel amplitude skew, which is worse than the click it removes.
+- **The advance is committed differently in each sink, and both are right.**
+  `AlsaAudioSink::write()` commits by the frames it *wrote*, because its loop can break out early
+  and the sync task re-presents the unconsumed tail — advancing by the frames scaled would leave a
+  gain step across that seam. `PortAudioSink::pa_callback()` advances by every frame it scales,
+  because it consumes every frame it scales, including the zero-filled tail of a short ring read:
+  that silence is played, so it spends ramp time as legitimately as audio. Both sites carry the
+  comment, so neither gets "fixed" to match the other.
+- **A stream starts at its gain rather than fading into it.** ALSA snaps in `configure()` and
+  `clear()`, both under `device_mutex_`. PortAudio snaps in `open_stream_()` and
+  `restart_stream_()` — before `Pa_StartStream()`, which is the only place its ordering invariant
+  allows the main loop to touch a field the callback reads — and deliberately *not* in `clear()`,
+  where the callback keeps running and where a mid-stream flush is followed by more audio through
+  the same stream, so a ramp in progress should carry on rather than jump. The audible result is
+  the same either way: snapped before the next stream's first sample.
 
-`src/audio_sink.h` names `DEFAULT_SINK_VOLUME` and records beside it that the library's
-`PlayerRole` stores 0 until a server speaks while every sink starts at full. Item 8 narrowed that
-disagreement rather than resolving it: launch now reports whatever the sink is really applying,
-restored or default, and `VolumeSource` beside it says which of the two — plus whether a server
-chose it. Resolving the underlying mismatch is still this item's call.
+**`NullAudioSink` is excluded deliberately.** It records volume without applying it
+(`src/null_sink.cpp`), so there is no sample scaling to ramp; its mute-to-silence path for the
+stdout sink stays a jump. Not an oversight.
+
+**The `DEFAULT_SINK_VOLUME` mismatch was already closed, so it was re-documented rather than
+fixed.** Item 8 made startup call `player.update_volume()`/`update_muted()` unconditionally, with
+the volume falling back to `DEFAULT_SINK_VOLUME`, before `start_server()` — so the role and the
+sink agree from before the first `client/state`, and the disagreement four comments still
+described was no longer observable. Those four (`src/audio_sink.h`, `src/player_listener.h`,
+`src/control.h`, `src/main.cpp`'s `status()`) now describe the current arrangement, keeping the
+reasons those members exist: `PlayerListener` is still the only thing that knows what the sink was
+*told*, and `VolumeSource` still has no equivalent in the role.
+
+**The two remaining `PlayerRoleConfig` fields, and why they are where they are:**
+
+- **`fixed_delay_us` is now set explicitly to 0, and must stay there.** Both sinks already report
+  *future* finish timestamps that include their own buffering — `snd_pcm_delay()` on ALSA,
+  `outputBufferDacTime` on PortAudio — so folding device latency in here would count it twice. The
+  value matches the library's default; writing it out puts the constraint beside the field instead
+  of only in this document.
+- **`extra_startup_silence_ms` stays at the library's 50 ms default.** Item 4's ALSA
+  start-threshold fix has shipped, so the original blocker is gone — but choosing a different
+  figure needs underflow measurements on real hardware across both backends, which is not
+  something to guess at. A comment at the config site says so.
+
+**One gap found while scoping this belongs upstream, not here.** `required_lead_time_ms` and
+`min_buffer_ms` are **REQUIRED** in `client/state` per `roles/player/v1.md` — the server uses them
+to decide how far ahead to send audio, scheduling the first chunk at least
+`min_buffer_ms + static_delay_ms` out — and sendspin-cpp v0.7.0 implements neither anywhere. A
+grep of the whole library, headers and sources, matches neither name. Nothing in this repo can
+supply them: `ClientPlayerStateObject`, which `PlayerRole::Impl::build_state_fields()` fills, has
+no field for either. It needs a library change, not a change here.
 
 ### 14. PortAudio in-place device recovery
 

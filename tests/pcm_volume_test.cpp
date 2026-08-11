@@ -194,5 +194,225 @@ TEST(ApplyVolume, AnUnsupportedDepthChangesNothing) {
     EXPECT_EQ(data, before);
 }
 
+// ---------------------------------------------------------------------------
+// volume_ramp_step(): the slew rate
+// ---------------------------------------------------------------------------
+
+TEST(VolumeRampStep, AFullScaleChangeTakesTheRampDuration) {
+    // The property the constant names: stepping from silence to unity at this rate must take
+    // VOLUME_RAMP_MS, so the step is what carries the whole scale across that many frames.
+    for (const uint32_t rate : {22050U, 44100U, 48000U, 96000U, 192000U}) {
+        const uint64_t step = volume_ramp_step(rate);
+        ASSERT_GT(step, 0U) << rate;
+        const size_t ramp_frames = (static_cast<size_t>(rate) * VOLUME_RAMP_MS) / 1000U;
+        EXPECT_EQ(ramped_gain(0, Q32_ONE, step, ramp_frames), Q32_ONE) << rate;
+        // And not appreciably sooner: one frame short must still be below unity, or the ramp is
+        // finishing early and the constant means nothing.
+        EXPECT_LT(ramped_gain(0, Q32_ONE, step, ramp_frames - 1), Q32_ONE) << rate;
+    }
+}
+
+TEST(VolumeRampStep, ASmallerChangeIsProportionallyQuicker) {
+    // It is a slew *rate*, not a duration. Quarter of the distance, quarter of the frames --
+    // which is what lets the step be derived from the format alone, without reading the gain the
+    // ramp is currently at.
+    const uint64_t step = volume_ramp_step(48000);
+    const size_t ramp_frames = (48000U * VOLUME_RAMP_MS) / 1000U;
+    EXPECT_EQ(ramped_gain(Q32_ONE - (Q32_ONE / 4), Q32_ONE, step, ramp_frames / 4), Q32_ONE);
+}
+
+TEST(VolumeRampStep, ARateTooLowToRampAcrossSnapsInstead) {
+    // 0 means "do not ramp", which both consumers read as "snap". A sink with no format has no
+    // rate, and that must not become a division by zero or a ramp that never terminates.
+    EXPECT_EQ(volume_ramp_step(0), 0U);
+    EXPECT_EQ(ramped_gain(0, Q32_ONE, volume_ramp_step(0), 1), Q32_ONE);
+}
+
+// ---------------------------------------------------------------------------
+// ramped_gain(): the ramp's single arithmetic definition
+// ---------------------------------------------------------------------------
+
+TEST(RampedGain, SteppingNFramesAtOnceMatchesNSingleSteps) {
+    // The property AlsaAudioSink::write() depends on: it scales a whole buffer but commits the
+    // advance for the frames it really wrote, so the closed form has to agree with the per-frame
+    // walk the scaler took. If these diverge, a partial write leaves a gain discontinuity.
+    const uint64_t step = volume_ramp_step(44100);
+    for (const std::pair<uint64_t, uint64_t> ends : std::vector<std::pair<uint64_t, uint64_t>>{
+             {0, Q32_ONE}, {Q32_ONE, 0}, {Q32_ONE / 8, Q32_ONE / 2}, {Q32_ONE / 2, Q32_ONE / 8}}) {
+        uint64_t walked = ends.first;
+        for (size_t frames = 0; frames <= 2000; ++frames) {
+            EXPECT_EQ(ramped_gain(ends.first, ends.second, step, frames), walked)
+                << "after " << frames << " frames from " << ends.first << " to " << ends.second;
+            walked = ramped_gain(walked, ends.second, step, 1);
+        }
+    }
+}
+
+TEST(RampedGain, NeverOvershootsInEitherDirection) {
+    const uint64_t step = volume_ramp_step(44100);
+    // Far more frames than the ramp needs, both ways. Saturating rather than passing the target
+    // is what stops a fall from wrapping through zero into a very loud gain.
+    EXPECT_EQ(ramped_gain(0, Q32_ONE, step, 1000000), Q32_ONE);
+    EXPECT_EQ(ramped_gain(Q32_ONE, 0, step, 1000000), 0U);
+    // A step larger than the whole distance, which is the case an unclamped subtraction would
+    // underflow on.
+    EXPECT_EQ(ramped_gain(10, 0, Q32_ONE, 1), 0U);
+    EXPECT_EQ(ramped_gain(Q32_ONE - 10, Q32_ONE, Q32_ONE, 1), Q32_ONE);
+}
+
+TEST(RampedGain, IsMonotoneTowardTheTarget) {
+    const uint64_t step = volume_ramp_step(48000);
+    uint64_t previous = Q32_ONE;
+    for (size_t frames = 1; frames <= 1000; ++frames) {
+        const uint64_t gain = ramped_gain(Q32_ONE, 0, step, frames);
+        EXPECT_LE(gain, previous) << "rose while falling, at " << frames;
+        previous = gain;
+    }
+}
+
+TEST(RampedGain, AlreadyAtTheTargetStaysThere) {
+    const uint64_t step = volume_ramp_step(44100);
+    EXPECT_EQ(ramped_gain(Q32_ONE, Q32_ONE, step, 5000), Q32_ONE);
+    EXPECT_EQ(ramped_gain(0, 0, step, 5000), 0U);
+    // Zero frames moves nothing, which is what a write that consumed nothing must commit.
+    EXPECT_EQ(ramped_gain(Q32_ONE / 3, 0, step, 0), Q32_ONE / 3);
+}
+
+// ---------------------------------------------------------------------------
+// apply_volume_ramp(): scaling while the gain moves
+// ---------------------------------------------------------------------------
+
+TEST(ApplyVolumeRamp, EveryChannelOfOneFrameGetsTheSameGain) {
+    // The reason the step is per frame rather than per sample. A ramp that advanced per sample
+    // would scale a stereo frame's left and right by different gains, which is an amplitude skew
+    // between channels -- a moving image shift, and worse than the click being removed.
+    constexpr uint8_t CHANNELS = 4;
+    constexpr size_t FRAMES = 64;
+    std::vector<int16_t> samples(FRAMES * CHANNELS, 20000);
+    // A slow ramp, so the gain really is different from one frame to the next.
+    apply_volume_ramp(reinterpret_cast<uint8_t*>(samples.data()), samples.size() * sizeof(int16_t),
+                      2, CHANNELS, 0, Q32_ONE, Q32_ONE / 512);
+
+    for (size_t frame = 0; frame < FRAMES; ++frame) {
+        for (uint8_t channel = 1; channel < CHANNELS; ++channel) {
+            EXPECT_EQ(samples[(frame * CHANNELS) + channel], samples[frame * CHANNELS])
+                << "channel skew in frame " << frame;
+        }
+    }
+    // And it really did move, or the test above would pass on a buffer nothing happened to.
+    EXPECT_LT(samples[0], samples[(FRAMES - 1) * CHANNELS]);
+}
+
+TEST(ApplyVolumeRamp, TheReturnedGainIsWhereTheRampReached) {
+    constexpr size_t FRAMES = 100;
+    const uint64_t step = Q32_ONE / 1000;
+    std::vector<int16_t> samples(FRAMES, 1000);
+    const uint64_t reached =
+        apply_volume_ramp(reinterpret_cast<uint8_t*>(samples.data()),
+                          samples.size() * sizeof(int16_t), 2, 1, 0, Q32_ONE, step);
+    // Exactly what the closed form says, which is what makes a caller free to commit either.
+    EXPECT_EQ(reached, ramped_gain(0, Q32_ONE, step, FRAMES));
+}
+
+TEST(ApplyVolumeRamp, AStartEqualToTheEndAgreesWithApplyVolume) {
+    // The steady state has to be bit-identical to the unramped path, or every volume would sound
+    // slightly different depending on which function scaled it.
+    for (const uint64_t gain : {uint64_t{0}, Q32_ONE / 8, Q32_ONE / 3, Q32_ONE}) {
+        for (const uint8_t bytes_per_sample : {1, 2, 3, 4}) {
+            std::vector<uint8_t> ramped = {0x01, 0x80, 0xFF, 0x7F, 0x00, 0x23,
+                                           0xAB, 0xCD, 0x12, 0x34, 0x56, 0x78};
+            std::vector<uint8_t> plain = ramped;
+
+            apply_volume_ramp(ramped.data(), ramped.size(), bytes_per_sample, 1, gain, gain,
+                              volume_ramp_step(44100));
+            apply_volume(plain.data(), plain.size(), bytes_per_sample, gain);
+
+            EXPECT_EQ(ramped, plain)
+                << "gain " << gain << ", bytes_per_sample " << static_cast<int>(bytes_per_sample);
+        }
+    }
+}
+
+TEST(ApplyVolumeRamp, ReachingTheTargetMidBufferScalesTheRestAtTheTarget) {
+    // The tail is handed to apply_volume() in one pass rather than walked frame by frame, so this
+    // is what pins that the switch happens at the right sample and not one early or late.
+    constexpr size_t FRAMES = 200;
+    std::vector<int16_t> ramped(FRAMES, 8000);
+    std::vector<int16_t> expected = ramped;
+
+    const uint64_t step = Q32_ONE / 50;  // reaches unity from silence in 50 frames
+    apply_volume_ramp(reinterpret_cast<uint8_t*>(ramped.data()), ramped.size() * sizeof(int16_t), 2,
+                      1, 0, Q32_ONE, step);
+
+    // Frames 50 onwards are at unity, which for signed PCM is the identity.
+    for (size_t frame = 50; frame < FRAMES; ++frame) {
+        EXPECT_EQ(ramped[frame], expected[frame]) << "frame " << frame << " was not left at unity";
+    }
+    EXPECT_LT(ramped[0], expected[0]) << "the ramp's first frame should be quieter than unity";
+}
+
+TEST(ApplyVolumeRamp, RampsEveryBitDepthIncludingPacked24) {
+    // Packed 24-bit is the depth with a hand-rolled unpack/repack, so the ramp has to be shown to
+    // move through it rather than only through the widths a plain pointer cast reaches.
+    constexpr size_t FRAMES = 32;
+    for (const uint8_t bytes_per_sample : {1, 2, 3, 4}) {
+        std::vector<uint8_t> data(FRAMES * bytes_per_sample, 0);
+        for (size_t frame = 0; frame < FRAMES; ++frame) {
+            // The largest positive value at this depth, so scaling has room to be visible.
+            uint8_t* sample = data.data() + (frame * bytes_per_sample);
+            for (uint8_t byte = 0; byte < bytes_per_sample; ++byte) {
+                sample[byte] = (byte + 1 == bytes_per_sample) ? 0x7F : 0xFF;
+            }
+        }
+
+        apply_volume_ramp(data.data(), data.size(), bytes_per_sample, 1, 0, Q32_ONE,
+                          Q32_ONE / (FRAMES * 2));
+
+        // Rising through the buffer: the last frame must be louder than the first. Compared on the
+        // most significant byte, which is where the magnitude lives at every depth.
+        const uint8_t first = data[bytes_per_sample - 1];
+        const uint8_t last = data[((FRAMES - 1) * bytes_per_sample) + bytes_per_sample - 1];
+        EXPECT_LT(first, last) << "no ramp at bytes_per_sample "
+                               << static_cast<int>(bytes_per_sample);
+    }
+}
+
+TEST(ApplyVolumeRamp, ATrailingPartialFrameIsLeftAlone) {
+    // Same rule apply_volume() follows for a partial sample: the rest of the frame arrives in the
+    // next buffer, and scaling half of it now would corrupt it.
+    std::vector<uint8_t> data = {0x00, 0x40, 0x00, 0x40, 0x11, 0x22};
+    // 16-bit stereo is 4 bytes a frame, so six bytes is one whole frame and half of another.
+    apply_volume_ramp(data.data(), data.size(), 2, 2, 0, Q32_ONE, Q32_ONE / 100);
+    EXPECT_EQ(data[4], 0x11);
+    EXPECT_EQ(data[5], 0x22);
+}
+
+TEST(ApplyVolumeRamp, NoFrameWidthLeavesTheDataAndTheGainAlone) {
+    // A sink that has lost its format must not have its ramp silently marked as finished: the gain
+    // comes back unchanged, so whatever it still owed is still owed.
+    std::vector<uint8_t> data = {0x11, 0x22, 0x33, 0x44};
+    const std::vector<uint8_t> before = data;
+    EXPECT_EQ(apply_volume_ramp(data.data(), data.size(), 0, 2, Q32_ONE / 4, Q32_ONE, 1),
+              Q32_ONE / 4);
+    EXPECT_EQ(apply_volume_ramp(data.data(), data.size(), 2, 0, Q32_ONE / 4, Q32_ONE, 1),
+              Q32_ONE / 4);
+    EXPECT_EQ(data, before);
+}
+
+TEST(ApplyVolumeRamp, ASnapStepAppliesTheTargetFromTheFirstFrame) {
+    // step 0 is "no ramp", which volume_ramp_step() returns for a sink with no rate. Every frame
+    // must then be at the target rather than at the old gain.
+    std::vector<int16_t> samples(8, 4000);
+    std::vector<int16_t> expected = samples;
+    apply_volume(reinterpret_cast<uint8_t*>(expected.data()), expected.size() * sizeof(int16_t), 2,
+                 Q32_ONE / 4);
+
+    const uint64_t reached =
+        apply_volume_ramp(reinterpret_cast<uint8_t*>(samples.data()),
+                          samples.size() * sizeof(int16_t), 2, 1, Q32_ONE, Q32_ONE / 4, 0);
+    EXPECT_EQ(reached, Q32_ONE / 4);
+    EXPECT_EQ(samples, expected);
+}
+
 }  // namespace
 }  // namespace sendspin_cli
