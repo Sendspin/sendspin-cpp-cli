@@ -237,7 +237,7 @@ TEST(RampedGain, SteppingNFramesAtOnceMatchesNSingleSteps) {
     // advance for the frames it really wrote, so the closed form has to agree with the per-frame
     // walk the scaler took. If these diverge, a partial write leaves a gain discontinuity.
     const uint64_t step = volume_ramp_step(44100);
-    for (const std::pair<uint64_t, uint64_t> ends : std::vector<std::pair<uint64_t, uint64_t>>{
+    for (const std::pair<uint64_t, uint64_t>& ends : std::vector<std::pair<uint64_t, uint64_t>>{
              {0, Q32_ONE}, {Q32_ONE, 0}, {Q32_ONE / 8, Q32_ONE / 2}, {Q32_ONE / 2, Q32_ONE / 8}}) {
         uint64_t walked = ends.first;
         for (size_t frames = 0; frames <= 2000; ++frames) {
