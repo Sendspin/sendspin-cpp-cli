@@ -336,6 +336,16 @@ const char* PortAudioGuard::error() const {
     return Pa_GetErrorText(this->err_);
 }
 
+bool PortAudioGuard::reinitialize() {
+    if (this->err_ == paNoError) {
+        Pa_Terminate();
+    }
+    // Overwritten rather than left alone, so ok() keeps describing the live state -- and so the
+    // destructor terminates exactly when it should if this half failed.
+    this->err_ = Pa_Initialize();
+    return this->err_ == paNoError;
+}
+
 // ============================================================================
 // PortAudioRingBuffer
 // ============================================================================
@@ -567,6 +577,11 @@ bool PortAudioSink::configure(uint32_t sample_rate, uint8_t channels, uint8_t bi
         return false;
     }
 
+    // Remembered before anything can fail, because this is the format the player is about to
+    // send audio in whether or not a device takes it -- so it is also the only format recovery
+    // may reopen at from here on. See last_format_.
+    this->last_format_ = {sample_rate, channels, bits_per_sample};
+
     // Resolved per stream, not once at construction: a bare -o portaudio then follows the
     // host's default output as the user changes it, and a device that was absent at startup
     // is picked up whenever the next stream starts.
@@ -584,6 +599,7 @@ bool PortAudioSink::configure(uint32_t sample_rate, uint8_t channels, uint8_t bi
         // is far cheaper than a close/open round trip, and it spares a CoreAudio device the
         // reopen -- and the gap that comes with it -- at every track boundary.
         if (this->restart_stream_()) {
+            this->recovery_.reset();
             cli_log(LogLevel::DEBUG, "portaudio: reusing the open stream at %u Hz, %u ch, %u-bit",
                     sample_rate, channels, bits_per_sample);
             return true;
@@ -596,6 +612,10 @@ bool PortAudioSink::configure(uint32_t sample_rate, uint8_t channels, uint8_t bi
         this->failed_.store(true);
         return false;
     }
+    // Both recovery attempts go back in hand, and only here: a stream that is really running is
+    // what a budget spent on the last one was waiting for. A configure() that failed deliberately
+    // does not refill, or a device refusing every stream would buy a fresh rescan per track.
+    this->recovery_.reset();
     return true;
 }
 
@@ -607,19 +627,25 @@ size_t PortAudioSink::write(const uint8_t* data, size_t length, uint32_t timeout
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
     std::unique_lock<std::mutex> lock(this->mutex_);
 
-    if (!this->stream_alive_() || this->bytes_per_frame_ == 0) {
-        // No stream to feed: swallow the audio rather than return 0 forever, which would spin
-        // the sync task on a buffer it can never hand off.
+    if ((!this->stream_alive_() || this->bytes_per_frame_ == 0) && !this->reopen_in_place_()) {
+        // No stream to feed, and none to be had: swallow the audio rather than return 0 forever,
+        // which would spin the sync task on a buffer it can never hand off.
         if (!this->failed_.exchange(true)) {
             cli_log(LogLevel::ERROR,
                     "portaudio: '%s' is not playing -- discarding audio until a stream "
                     "reconfigures it",
                     this->name().c_str());
         }
-        // Frame-aligned per the write() contract wherever the frame size is still known. Once
-        // it is not, the sink cannot align and the caller's own framing is what protects it --
-        // which holds here, since the player hands over whole frames.
-        return (this->bytes_per_frame_ == 0) ? length : length - (length % this->bytes_per_frame_);
+        // Frame-aligned per the write() contract wherever the frame size is still known -- from
+        // the remembered format when a failed reopen has just closed the stream out from under
+        // bytes_per_frame_, which is the same figure it held. Once neither is known the sink
+        // cannot align and the caller's own framing is what protects it -- which holds here,
+        // since the player hands over whole frames.
+        const size_t frame = (this->bytes_per_frame_ != 0)
+                                 ? this->bytes_per_frame_
+                                 : static_cast<size_t>(this->last_format_.channels) *
+                                       (static_cast<size_t>(this->last_format_.bit_depth) / 8U);
+        return (frame == 0) ? length : length - (length % frame);
     }
 
     const size_t bytes_per_frame = this->bytes_per_frame_;
@@ -705,11 +731,77 @@ void PortAudioSink::stop() {
     this->space_available_.notify_all();
 
     const std::lock_guard<std::mutex> lock(this->mutex_);
+    // Forgotten before the early return below, not after the close: with no format remembered
+    // there is nothing recovery can reopen at, so a write() arriving after shutdown behaves
+    // exactly as it did before any of this existed. The stopping_ latch says the same thing, and
+    // both are cheap.
+    this->last_format_ = {};
     if (this->stream_ == nullptr) {
         return;
     }
     this->close_stream_();
     cli_log(LogLevel::INFO, "portaudio: '%s' closed", this->name().c_str());
+}
+
+void PortAudioSink::poll(int64_t now_ms) {
+    // Both read without the lock, and first, because on all but a handful of ticks in a run there
+    // is nothing to do and no reason to contend with a write() for the mutex. See
+    // SinkRecovery::pending(). Shutting down is checked here rather than under the lock so that
+    // case is lock-free too, and it is checked before rescan_due() so a shutdown never burns the
+    // one rescan there is.
+    if (!this->recovery_.pending() || this->stopping_.load()) {
+        return;
+    }
+
+    const std::lock_guard<std::mutex> lock(this->mutex_);
+    if (this->last_format_.sample_rate == 0) {
+        return;  // nothing was ever configured, so there is nothing to reopen at
+    }
+    if (!this->recovery_.rescan_due(now_ms)) {
+        return;
+    }
+
+    const StreamFormat format = this->last_format_;
+    // The stream goes first whatever happens next: Pa_Terminate() with one open is undefined,
+    // and every PaDeviceIndex -- device_index_ among them, which this clears -- dies with it.
+    // Nothing playing is torn down by this, because only reopen_in_place_() can ask for a rescan
+    // and it only runs on a stream that has already died.
+    this->close_stream_();
+
+    if (!this->pa_.reinitialize()) {
+        // The sink is now inert -- with PortAudio down, even the next configure() cannot resolve
+        // a device. Reported rather than fatal, for the reason the constructor gives.
+        cli_log(LogLevel::ERROR, "portaudio: could not restart PortAudio to look for '%s': %s",
+                this->name().c_str(), this->pa_.error());
+        return;
+    }
+
+    PaDeviceIndex device = paNoDevice;
+    std::string error;
+    if (!resolve_pa_device(this->device_, device, error)) {
+        cli_log(LogLevel::WARN,
+                "portaudio: '%s' is still gone after a device rescan -- discarding until the "
+                "next stream (%s)",
+                this->name().c_str(), error.c_str());
+        return;
+    }
+    if (!this->open_stream_(device, format.sample_rate, format.channels, format.bit_depth)) {
+        return;  // open_stream_() has already said why, once
+    }
+    if (this->stopping_.load()) {
+        // stop() latches before it takes mutex_, so it can arrive while the cycle above is
+        // running -- which takes long enough to make that likely rather than theoretical. Same
+        // rule as reopen_in_place_(): no opener here leaves a shutdown a fresh device.
+        this->close_stream_();
+        return;
+    }
+    // Names the device it landed on, not just the -o spec, because a rescan is exactly what
+    // renumbers PortAudio's device list: `-o portaudio:2` after one may well be a different card
+    // than it was before. The spec is resolved afresh either way -- so would the next configure()
+    // be -- but an operator reading this line should not have to assume which.
+    const PaDeviceInfo* info = Pa_GetDeviceInfo(device);
+    cli_log(LogLevel::INFO, "portaudio: '%s' is back after a device rescan, on '%s'",
+            this->name().c_str(), (info != nullptr) ? info->name : "(unknown device)");
 }
 
 void PortAudioSink::set_volume(uint8_t volume) {
@@ -875,6 +967,58 @@ bool PortAudioSink::restart_stream_() {
     return true;
 }
 
+bool PortAudioSink::reopen_in_place_() {
+    if (this->stream_ == nullptr || this->stopping_.load() || this->last_format_.sample_rate == 0) {
+        // Recovery is for a stream that was running and has died, and stream_ is what tells that
+        // apart from never having had one: PortAudio does not null the handle when a device goes
+        // away, but open_stream_() does when it fails. Without this test a device that merely
+        // *refused* a format would be chased -- a second identical failed open here, and then a
+        // whole device-list rescan on the main loop -- for a stream no rescan can help, since the
+        // device is present and simply will not take it.
+        //
+        // The other two say there is nothing to recover to, or nothing worth recovering: no
+        // format has ever been configured, or shutdown has already begun and must not be handed a
+        // fresh device. All three are read before the attempt is spent, so none costs the outage
+        // anything.
+        return false;
+    }
+    if (!this->recovery_.reopen_due()) {
+        return false;
+    }
+
+    // Resolved before the stream is closed rather than after, so a host that cannot name the
+    // device at all leaves write() with the frame size it already had.
+    PaDeviceIndex device = paNoDevice;
+    std::string error;
+    if (!resolve_pa_device(this->device_, device, error)) {
+        cli_log(LogLevel::WARN, "portaudio: cannot reopen '%s': %s", this->name().c_str(),
+                error.c_str());
+        this->recovery_.reopen_done(false);
+        return false;
+    }
+
+    const StreamFormat format = this->last_format_;
+    this->close_stream_();
+    if (!this->open_stream_(device, format.sample_rate, format.channels, format.bit_depth)) {
+        this->recovery_.reopen_done(false);  // open_stream_() has already said why, once
+        return false;
+    }
+    this->recovery_.reopen_done(true);
+
+    if (this->stopping_.load()) {
+        // stop() latches before it takes mutex_, precisely so a parked write() gives up rather
+        // than making shutdown wait -- so the latch can arrive while Pa_OpenStream() is running
+        // here. Hand the device straight back rather than leave a live stream for the destructor,
+        // which is the hazard configure() refuses to create.
+        this->close_stream_();
+        return false;
+    }
+
+    cli_log(LogLevel::INFO, "portaudio: '%s' recovered without waiting for the next stream",
+            this->name().c_str());
+    return true;
+}
+
 bool PortAudioSink::stream_alive_() const {
     if (this->stream_ == nullptr) {
         return false;
@@ -882,6 +1026,10 @@ bool PortAudioSink::stream_alive_() const {
     // Pa_IsStreamActive() goes false without us asking when the device goes away -- a USB DAC
     // unplugged, the host switching outputs. The callback then never runs again, so without
     // this test write() would block for its whole timeout on every single call.
+    //
+    // That "inactive means the device is gone" reading is only sound because pa_callback() never
+    // returns anything but paContinue, so a stream of ours never completes on its own. Anything
+    // that taught it paComplete would turn every stream end into an attempted recovery.
     return Pa_IsStreamActive(this->stream_) == 1;
 }
 

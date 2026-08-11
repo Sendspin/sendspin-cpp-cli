@@ -19,6 +19,7 @@
 
 #include "audio_sink.h"
 #include "pcm_volume.h"
+#include "sink_recovery.h"
 
 #include <portaudio.h>
 
@@ -53,6 +54,24 @@ public:
 
     /// @brief True if PortAudio came up. When false, no other Pa_* call will work.
     bool ok() const;
+
+    /// @brief Terminates PortAudio and initializes it again, so its device list is taken afresh.
+    ///
+    /// PortAudio enumerates devices at Pa_Initialize() and never revisits that list, so a device
+    /// plugged in since is unreachable until this runs. The cost is that **every PaDeviceIndex in
+    /// the process is invalidated**, and that any open stream must be closed first -- calling
+    /// Pa_Terminate() with one live is undefined. It is also slow: rebuilding the list walks every
+    /// host API, which can block the caller for the better part of a second.
+    ///
+    /// The refcounting the class docstring describes cuts both ways here: this only really
+    /// terminates because the sink's guard is the sole live one once the player is running --
+    /// probe() and list_devices() hold theirs only on the startup path. Anything that later
+    /// reaches those at runtime would turn this into a silent no-op, and the rescan with it.
+    ///
+    /// Main loop only, like the constructor and for the same reason: neither call is thread-safe.
+    /// @return true if PortAudio came back up. ok() and error() answer for the new state either
+    /// way, so a failure leaves the guard honest and the destructor correct.
+    bool reinitialize();
 
     /// @brief Why initialization failed. Only meaningful when ok() is false.
     const char* error() const;
@@ -142,6 +161,23 @@ private:
 /// clear() can run to completion while a write() is parked. stream_generation_ is what makes
 /// that safe -- see its declaration.
 ///
+/// **write() may itself open and close a stream**, which is the one place this class lets the
+/// sync task's thread do so, and it is safe for a reason worth stating outright: the ordering
+/// invariant above is about *when*, not about which thread. Pa_AbortStream()/Pa_CloseStream() do
+/// not return while the callback is running, and open_stream_() writes every field the callback
+/// reads before Pa_StartStream() lets it run again -- neither depends on the caller's identity.
+/// What keeps two openers apart is mutex_, which write(), configure(), clear() and stop() all
+/// hold; the only other Pa_* callers, probe(), list_devices() and capabilities(), run on the main
+/// loop before the server starts and so cannot overlap anything. See reopen_in_place_().
+///
+/// It does mean mutex_ is now held across a Pa_OpenStream(), which can take a few hundred
+/// milliseconds -- so a configure(), clear() or stop() on the main loop can block behind a
+/// recovering write() for that long. Bounded by the same budget everything else here is: at most
+/// one such open per configured stream, against the one configure() already performs anyway.
+///
+/// The one recovery step that is *not* allowed there is rebuilding PortAudio's device list, which
+/// invalidates every device index in the process: that stays on the main loop, in poll().
+///
 /// Volume is applied in the callback, on PortAudio's own output buffer, mirroring upstream.
 /// That needs no scratch copy -- unlike AlsaAudioSink, which scales on the way in -- at the
 /// cost of a volume change also reaching audio that is already buffered. Both are correct;
@@ -168,6 +204,19 @@ public:
     void stop() override;
     void set_volume(uint8_t volume) override;
     void set_muted(bool muted) override;
+
+    /// @brief Spends this sink's one device rescan, when a dead stream has escalated to it.
+    ///
+    /// Does nothing at all on an ordinary tick, and takes no lock to establish that. When there
+    /// is something to do it is expensive: a Pa_Terminate()/Pa_Initialize() cycle re-enumerates
+    /// every host API, which blocks this thread -- and so SendspinClient::loop() beside it -- for
+    /// hundreds of milliseconds to seconds, depending on the host. That is affordable only
+    /// because it happens at most once per stream, only on a stream that has already died, and
+    /// never sooner than SINK_RESCAN_DELAY_MS after the last one. The transport itself runs on
+    /// its own thread, so what is delayed is the dispatch of messages already received; the
+    /// tightest deadline on that path is the time-sync burst response, which the library gives
+    /// ten seconds.
+    void poll(int64_t now_ms) override;
 
     /// @brief What the resolved device will take, probed through the same ladder -l reports.
     ///
@@ -209,6 +258,14 @@ private:
     /// Caller holds mutex_ and stream_ is not null.
     /// @return true if the stream is running again.
     bool restart_stream_();
+    /// Makes the one in-place reopen attempt a dead stream gets, at last_format_ and against a
+    /// freshly resolved device. Called from write(), so on the sync task's thread -- see the
+    /// class docstring for why that is safe. Caller holds mutex_. Does nothing, and says so
+    /// cheaply, unless there is a stream to recover at all (stream_ != nullptr, which is what
+    /// separates a stream that died from a device that refused the format), a format is
+    /// remembered, shutdown has not begun, and the attempt is still in hand.
+    /// @return true if a stream is running again, so the caller can carry on filling the ring.
+    bool reopen_in_place_();
     /// True while the open stream is still being driven by PortAudio. Caller holds mutex_.
     bool stream_alive_() const;
     /// Ring size in bytes for the open stream's format. Caller holds mutex_, and the format
@@ -267,6 +324,19 @@ private:
     /// than on every buffer -- writes arrive around fifty times a second. Whether to discard
     /// is stream_alive_()'s call, not this flag's. Cleared by a configure() that succeeds.
     std::atomic<bool> failed_{false};
+
+    /// The format the sink was last *asked* to play, which outlives the stream playing it.
+    ///
+    /// close_stream_() zeroes rate_/channels_/bits_, so recovery would have nothing to reopen at
+    /// without this. It is set from configure()'s arguments rather than from a stream that opened
+    /// successfully, deliberately: a configure() whose open failed is still the format the player
+    /// is about to send audio in, and recovering to the *previous* one would play that audio at
+    /// the wrong frame size. Guarded by mutex_. Zeroed by stop(), which is what makes a write()
+    /// after shutdown attempt nothing.
+    StreamFormat last_format_{};
+    /// What is left to try about a stream that has died, and when. Guarded by mutex_, bar
+    /// SinkRecovery::pending() -- see it.
+    SinkRecovery recovery_;
 
     std::atomic<uint8_t> volume_{DEFAULT_SINK_VOLUME};
     std::atomic<bool> muted_{false};
