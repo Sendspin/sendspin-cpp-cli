@@ -90,8 +90,9 @@ jobs:
     needs: [preflight, build]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    # Scoped to this job alone, the workflow default above staying read-only. This is the only
-    # job in either workflow that can write to the repository.
+    # Scoped to this job alone, the workflow default above staying read-only. The only other
+    # job anywhere here that can write is wiki.yml's, and it writes to the wiki repository
+    # rather than to this one.
     permissions:
       contents: write
     env:
