@@ -1,0 +1,299 @@
+name: Release
+
+# A human tags; this publishes what that tag builds. Nothing here creates a tag, and there is
+# no second trigger -- no branch push, no pull request, no schedule, no `workflow_dispatch` --
+# so the only way to reach `gh release create` is to have pushed a `v*` tag. `ci.yml` ignores
+# tags for the same reason, leaving one workflow to answer for one tag.
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Deliberately no `concurrency` block, where ci.yml has one. Its `cancel-in-progress: true`
+# would be free to cancel this run midway through uploading assets, which is the exact partial
+# state the release below is arranged to make impossible. A superseded tag push is not a thing
+# that happens anyway: a tag is pushed once.
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # Ahead of the matrix, and its whole value is that it costs seconds: a mistyped tag must not
+  # burn three runners for half an hour before anyone finds out. What it checks is cheap to
+  # check without building -- the tag's shape, and the version the source says it will report.
+  #
+  # This duplicates part of what `Assert the release is complete` re-checks later against the
+  # built archives, and the duplication is deliberate in the way ci.yml's payload assertions are:
+  # the later check is the authoritative one, because it reads names the *binary* produced, and
+  # this one is an early mirror of the single likeliest human error. If they ever disagree,
+  # the later one is right.
+  preflight:
+    name: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Check the tag names the version this source reports
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          # The `v*` trigger also matches v0.2.0-rc1, which would be published as `latest` with
+          # no --prerelease and no one having decided that. Refused here rather than handled:
+          # whoever first wants a prerelease can decide what it means then.
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "::error::tag $TAG is not vMAJOR.MINOR.PATCH; this workflow publishes releases only"
+            exit 1
+          }
+
+          # CMakeLists.txt's project(VERSION) is what becomes SENDSPIN_CLI_VERSION and so what
+          # `--version` prints, and it is a hand-edited line bumped in a PR before the tag is
+          # pushed -- not derived from git. Deriving it would tie the version to the presence of
+          # a .git directory and put the tag into the deps cache key; checking beats deriving.
+          #
+          # Counted rather than read first-match-wins, which is what catches a second VERSION
+          # line appearing somewhere in the file: taking the first would silently pick between
+          # them. `|| true` because `grep -c` exits 1 when the count is zero, and this shell runs
+          # under `-e` -- without it the step dies on the assignment and the message below, the
+          # one that says what is actually wrong, never prints.
+          pattern='^[[:space:]]*VERSION [0-9]+\.[0-9]+\.[0-9]+$'
+          matches="$(grep -cE "$pattern" CMakeLists.txt || true)"
+          [ "$matches" = 1 ] || {
+            echo "::error::expected exactly one VERSION line in CMakeLists.txt, found $matches"
+            exit 1
+          }
+          version="$(grep -E "$pattern" CMakeLists.txt | awk '{print $2}')"
+
+          echo "tag $TAG, CMakeLists.txt VERSION $version"
+          [ "$TAG" = "v$version" ] || {
+            echo "::error::tag $TAG does not match CMakeLists.txt VERSION $version -- bump one to match the other"
+            exit 1
+          }
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+
+  # The same build ci.yml runs, matrix and assertions and all. `needs: preflight` is what keeps
+  # a bad tag from starting it.
+  build:
+    needs: preflight
+    uses: ./.github/workflows/build.yml
+
+  release:
+    name: release
+    needs: [preflight, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # Scoped to this job alone, the workflow default above staying read-only. This is the only
+    # job in either workflow that can write to the repository.
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.ref_name }}
+      VERSION: ${{ needs.preflight.outputs.version }}
+      # What `gh` operates on, in place of a checkout: nothing in this job reads the tree, and a
+      # checkout would be one more action running under the write scope for no reason.
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      # `merge-multiple`, or each artifact arrives in a directory named after itself and every
+      # path below gains a redundant level. No `name:` or `pattern:`, so this asks for whatever
+      # the build produced -- which is the point: the assertion that follows is what says
+      # whether that was the right set, and a pattern here would pre-filter the evidence.
+      - name: Download the archives the build produced
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          path: dist
+          merge-multiple: true
+
+      # The check that makes the release atomic on the way in. `needs: build` already covers a
+      # leg that went red; what it does not cover is a leg that went *green while publishing
+      # nothing* -- `Upload` is `if: matrix.publish`, and a leg that lost that key would skip
+      # the upload and still succeed. `if-no-files-found: error` catches an empty upload, not an
+      # absent one, and download-artifact matching nothing is not an error either: it is an
+      # empty directory. So the set is named here and diffed, in the shape build.yml already
+      # uses on the payload.
+      #
+      # Only the set, not the contents: every archive had its own file list diffed twice inside
+      # the build, and re-opening them here would be the duplication this split exists to avoid.
+      - name: Assert the release is complete before creating anything
+        run: |
+          expected=$(mktemp)
+          for leg in linux-x86_64 linux-arm64 macos-arm64; do
+            echo "sendspin-cli-$VERSION-$leg.tar.gz"
+          done | sort >"$expected"
+
+          actual=$(mktemp)
+          (cd dist && find . ! -type d | sed 's|^\./||') | sort >"$actual"
+
+          echo 'What the build handed over:'
+          cat "$actual"
+          diff -u "$expected" "$actual" || {
+            echo "::error::the archives downloaded are not the set $TAG is supposed to publish"
+            exit 1
+          }
+
+      # Bare filenames, which is why this runs from inside dist/: `sha256sum -c` resolves the
+      # paths it reads relative to the working directory, so a checksum file naming `dist/...`
+      # is one a downloader cannot use without knowing that.
+      - name: Checksum the archives
+        run: |
+          cd dist
+          # `--` rather than a `./` prefix, so the names stay bare without a substitution to
+          # undo it afterwards.
+          sha256sum -- *.tar.gz >SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Write the release notes
+        run: |
+          # Heredoc quoted, so the only interpolation is the one done explicitly below: this
+          # text is full of backticks and $ that belong to the reader, not to the shell.
+          cat >notes.md <<'NOTES'
+          Binaries for Linux (x86-64 and arm64) and macOS (Apple silicon), built and published
+          by `.github/workflows/release.yml` from the tag alone.
+
+          ## Install
+
+          Each archive is a staged `cmake --install` payload, so every path under its `usr/` is
+          the path the file installs to:
+
+          ```bash
+          sudo tar -xzf sendspin-cli-@VERSION@-linux-x86_64.tar.gz --strip-components=1 -C / \
+            sendspin-cli-@VERSION@-linux-x86_64/usr
+          sudo systemctl daemon-reload
+          ```
+
+          Naming the `usr` member is what leaves `BUILD-INFO.txt` in the archive rather than
+          unpacking it at `/`. Each archive carries its own `BUILD-INFO.txt` at the root with
+          that command already filled in for its platform, the runtime packages it needs, and
+          what the systemd unit does. Or run it where you unpacked it, at
+          `./<name>/usr/local/bin/sendspin-cli`.
+
+          ## macOS binaries are unsigned
+
+          The macOS archive is **ad-hoc signed** — the minimum an arm64 Mach-O needs to execute
+          at all, applied by the linker. It carries no developer identity, `spctl` rejects it,
+          and Gatekeeper will refuse it if the file is quarantined. Unpack it from a terminal
+          rather than in Finder, whose Archive Utility sets the quarantine flag where `tar`
+          does not; if macOS refuses it anyway:
+
+          ```bash
+          xattr -d com.apple.quarantine \
+            ./sendspin-cli-@VERSION@-macos-arm64/usr/local/bin/sendspin-cli
+          ```
+
+          This is a workaround, not a fix. A Developer ID signature and notarization need a paid
+          Apple enrolment and a `.pkg` for the notarization to be stapled to — `xcrun stapler`
+          refuses a bare executable — and both are still owed. Said plainly here because it is
+          worth knowing before you download: these are unsigned binaries from a public CI
+          runner. The full account is under **macOS, and Gatekeeper** in the README linked
+          below.
+
+          ## Checksums
+
+          `SHA256SUMS` covers the three archives above. It does not cover the `Source code`
+          archives GitHub attaches on its own, which are generated by GitHub rather than built
+          here.
+
+          ```bash
+          sha256sum --ignore-missing -c SHA256SUMS      # Linux
+          shasum -a 256 --ignore-missing -c SHA256SUMS  # macOS
+          ```
+
+          Run that from the directory you downloaded into. `--ignore-missing` is there because
+          `SHA256SUMS` lists all three archives and you have almost certainly taken one: without
+          it, the two you did not download are reported as failures and the command exits
+          non-zero on a perfectly good file.
+
+          ## What this build is
+
+          sendspin-cli @VERSION@. The version of the sendspin-cpp library it is linked against
+          is pinned at build time and printed on the second line of `sendspin-cli --version`,
+          alongside this one on the first.
+
+          - [README](https://github.com/@REPO@/blob/@TAG@/README.md) — build, install, run, and
+            [macOS, and Gatekeeper](https://github.com/@REPO@/blob/@TAG@/README.md#macos-and-gatekeeper)
+          - [Roadmap](https://github.com/@REPO@/blob/@TAG@/docs/ROADMAP.md) — what shipped and
+            what is owed, item by item
+          NOTES
+
+          # One quoted heredoc and one substitution pass, rather than a second unquoted heredoc
+          # for the parts that need a value: nothing in this text is then subject to shell
+          # expansion, so a backtick added to it later cannot become a command substitution in a
+          # published release body. `|` as the delimiter because the repository name holds a `/`,
+          # and every value substituted here is one the preflight already matched against a
+          # pattern with no delimiter in it.
+          #
+          # The README and roadmap links are pinned to the tag: a relative link in a release body
+          # resolves against the default branch, where the text it points at is free to move
+          # after the release is cut.
+          sed -i -e "s|@VERSION@|$VERSION|g" -e "s|@REPO@|$GH_REPO|g" -e "s|@TAG@|$TAG|g" notes.md
+          echo '--- notes.md ---'
+          cat notes.md
+
+      # Created as a draft and published only once its assets are confirmed, which is what makes
+      # the release atomic on the way out. `gh release create` does draft-upload-publish
+      # internally already, so this is not the only thing standing between a failed upload and a
+      # published release -- it is the only *pinned* thing. `gh` is the one tool here that cannot
+      # be pinned to a version, so its internal sequencing is not pinned either, and this job
+      # exists to guarantee exactly the property that sequencing provides. Splitting it moves the
+      # guarantee into this file, versioned with everything else.
+      #
+      # The read-back below also catches what an uploader structurally cannot report: an asset
+      # GitHub accepted under a name it sanitized, which is a successful upload and a release
+      # SHA256SUMS no longer describes. It asks the API what the release holds rather than
+      # trusting what was sent to it.
+      #
+      # A draft left behind by a failed run makes the next attempt fail here rather than
+      # overwrite anything: --clobber on a step that may be facing an already-published release
+      # is the opposite of what this is for. Delete the draft by hand and re-run the *failed
+      # jobs* -- re-running all of them repeats the build, and upload-artifact refuses an
+      # artifact name the run already has.
+      #
+      # --verify-tag is what turns "this workflow never creates tags" into a gate: without it,
+      # gh creates a missing tag from the default branch rather than refusing.
+      - name: Create the release as a draft
+        run: |
+          # Printed because it is the one tool version this workflow cannot pin: the runner
+          # provides it, so the log is the only place a future behaviour change is diagnosable.
+          gh --version
+          echo "Publishing $TAG (version $VERSION) with:"
+          ls -l dist
+
+          gh release create "$TAG" \
+            --verify-tag \
+            --title "sendspin-cli $VERSION" \
+            --notes-file notes.md \
+            --draft \
+            dist/*.tar.gz dist/SHA256SUMS
+
+      - name: Assert every asset arrived, then publish
+        run: |
+          expected=$(mktemp)
+          {
+            echo SHA256SUMS
+            for leg in linux-x86_64 linux-arm64 macos-arm64; do
+              echo "sendspin-cli-$VERSION-$leg.tar.gz"
+            done
+          } | sort >"$expected"
+
+          # Read back from the API rather than from what was uploaded, so this reports what the
+          # release actually holds.
+          actual=$(mktemp)
+          gh release view "$TAG" --json assets --jq '.assets[].name' | sort >"$actual"
+
+          echo 'What the draft release holds:'
+          cat "$actual"
+          diff -u "$expected" "$actual" || {
+            echo "::error::the draft $TAG is missing assets and will not be published; delete it and re-run"
+            exit 1
+          }
+
+          gh release edit "$TAG" --draft=false
+          echo "Published: $(gh release view "$TAG" --json url --jq .url)"

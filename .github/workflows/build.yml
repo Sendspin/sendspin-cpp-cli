@@ -1,0 +1,473 @@
+name: Build
+
+# The one definition of how this project builds, called by `ci.yml` on a push or a pull request
+# and by `release.yml` on a tag. It is a reusable workflow rather than a composite action
+# because what must not be duplicated is the *matrix* below, not the steps: a composite action
+# cannot own `strategy.matrix`, so a second caller would have to restate the very block whose
+# per-leg `publish`/`avahi` keys the comment there warns about getting wrong.
+#
+# No inputs, deliberately. A release is gated on exactly what a push is gated on -- the no-mDNS
+# leg included, since a break in src/mdns_null.cpp is a real break -- and an input is the seam
+# along which the two would start to differ.
+on:
+  workflow_call:
+
+# Restated here rather than inherited: a called workflow gets none of the caller's
+# workflow-level `permissions`, `defaults` or `env`. The one that matters is the shell. The
+# default is `bash -e` with no pipefail, which would let the `| tee` in the configure step
+# below swallow a configure failure -- leaving the assertion after it grepping a truncated log
+# and both callers green on a build that never configured.
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  # Both hosted runner sizes used here have at least three cores.
+  CMAKE_BUILD_PARALLEL_LEVEL: 3
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    # Well clear of a cold cache on the slowest leg, and far under the six-hour default: the
+    # point is that a player which ignores SIGTERM fails rather than holds a runner all day.
+    timeout-minutes: 30
+    strategy:
+      # Every leg's result is wanted rather than only the first failure's: a break that shows
+      # on one architecture and not another is precisely what the matrix is here to tell apart.
+      fail-fast: false
+      # `publish` and `avahi` are spelled out on every leg, false included: an `if:` reads a
+      # missing key as false, so a leg that simply omitted one would quietly stop publishing
+      # and still go green. A new leg owes both -- and a `publish: true` leg owes a third thing
+      # in another file: an entry in the archive set release.yml asserts before it publishes,
+      # which otherwise fails the release with a diff rather than a reason.
+      matrix:
+        include:
+          - name: linux-x86_64
+            runner: ubuntu-24.04
+            with_mdns: 'ON'
+            expect_probe: 'Failed'
+            expect_backends: '^-- sendspin-cli audio backends: null, stdout, alsa, portaudio$'
+            expect_mdns: '^-- sendspin-cli mDNS: dns_sd \(.*libdns_sd\.so.*\)$'
+            runtime_packages: 'libasound2t64 libportaudio2 libavahi-compat-libdnssd1'
+            publish: true
+            avahi: true
+
+          - name: linux-arm64
+            runner: ubuntu-24.04-arm
+            with_mdns: 'ON'
+            expect_probe: 'Failed'
+            expect_backends: '^-- sendspin-cli audio backends: null, stdout, alsa, portaudio$'
+            expect_mdns: '^-- sendspin-cli mDNS: dns_sd \(.*libdns_sd\.so.*\)$'
+            runtime_packages: 'libasound2t64 libportaudio2 libavahi-compat-libdnssd1'
+            publish: true
+            avahi: false
+
+          - name: macos-arm64
+            runner: macos-14
+            with_mdns: 'ON'
+            expect_probe: 'Success'
+            expect_backends: '^-- sendspin-cli audio backends: null, stdout, portaudio$'
+            expect_mdns: '^-- sendspin-cli mDNS: dns_sd \(Bonjour, built in\)$'
+            runtime_packages: 'portaudio (brew). Bonjour is part of macOS.'
+            publish: true
+            avahi: false
+
+          # Compile coverage only, and the reason it is a leg of its own: turning mDNS off
+          # swaps which translation unit is built -- src/mdns_null.cpp instead of
+          # src/mdns_dnssd.cpp -- so nothing else in the matrix compiles it. It publishes
+          # nothing; a binary that cannot be discovered is not one to hand anybody.
+          - name: linux-x86_64-nomdns
+            runner: ubuntu-24.04
+            with_mdns: 'OFF'
+            expect_backends: '^-- sendspin-cli audio backends: null, stdout, alsa, portaudio$'
+            expect_mdns: '^-- sendspin-cli mDNS: none$'
+            publish: false
+            avahi: false
+
+    steps:
+      # Every third-party action here is pinned to a commit rather than a tag, because a tag
+      # can be repointed at any time and these run with write access to the workspace. The
+      # trailing comment is the version that commit was, for a reader bumping it.
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Install build dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          # pkg-config is named even though the image already has it: it is what finds
+          # PortAudio, so a change in the image should fail here rather than silently produce
+          # a player with no audio backend.
+          sudo apt-get install --no-install-recommends -y \
+            pkg-config \
+            libasound2-dev \
+            portaudio19-dev \
+            libavahi-compat-libdnssd-dev
+
+      - name: Install build dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install portaudio pkgconf
+
+      # The fetched sources and the populate stamps that record they were fetched -- the
+      # stamps live in `-subbuild`, which is a generated CMake tree rather than a download, and
+      # without them every run refetches. What is deliberately *not* in here is anything
+      # compiled: `-build` is excluded and `build/` is outside this path entirely, so no object
+      # file ever survives a compiler upgrade on the runner image. Restoring the downloads is
+      # where the time goes anyway -- sendspin-cpp pulls its own dependencies (ixwebsocket,
+      # opus, FLAC) through FetchContent in turn.
+      #
+      # Keyed per leg, and by CMakeLists.txt's hash because it holds both pinned tags. A
+      # subbuild left stale by a cmake upgrade on the image is the residual risk, and dropping
+      # the cache is its remedy.
+      - name: Cache the fetched sources
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: |
+            .deps/*-src
+            .deps/*-subbuild
+          key: deps-${{ matrix.name }}-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Configure
+        env:
+          WITH_MDNS: ${{ matrix.with_mdns }}
+          DEPS_DIR: ${{ github.workspace }}/.deps
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSENDSPIN_CLI_WERROR=ON \
+            -DSENDSPIN_CLI_WITH_MDNS="$WITH_MDNS" \
+            -DFETCHCONTENT_BASE_DIR="$DEPS_DIR" \
+            2>&1 | tee configure.log
+
+      # The check that stops a leg passing while quietly building something else. A missing
+      # -dev package does not fail the configure -- every backend here is optional and
+      # auto-detected by design -- so without this the matrix would happily ship a
+      # null-sink-only, mDNS-less binary and call it green.
+      #
+      # Whole-line matches, anchored: `audio backends:` on its own is also satisfied by the
+      # degraded `null, stdout` line, which is the exact failure being guarded against.
+      - name: Assert the configure output found what this leg expects
+        env:
+          EXPECT_BACKENDS: ${{ matrix.expect_backends }}
+          EXPECT_MDNS: ${{ matrix.expect_mdns }}
+          EXPECT_PROBE: ${{ matrix.expect_probe }}
+        run: |
+          patterns=("$EXPECT_BACKENDS" "$EXPECT_MDNS")
+
+          # The dns_sd probes are pinned to the answer this host owes, because they fail open:
+          # one that reported Failed for an unrelated reason would silently cost two case
+          # labels in describe_error(), and nothing else would complain. Empty on the no-mDNS
+          # leg, where the probes do not run at all -- and skipped rather than matched, since
+          # an empty ERE matches any non-empty file and would fail open in turn.
+          if [ -n "$EXPECT_PROBE" ]; then
+            for symbol in SERVICE_NOT_RUNNING TIMEOUT; do
+              patterns+=("^-- Performing Test SENDSPIN_CLI_HAVE_ERR_$symbol - $EXPECT_PROBE\$")
+            done
+          fi
+
+          status=0
+          for expected in "${patterns[@]}"; do
+            if ! grep -Eq -e "$expected" configure.log; then
+              echo "::error::configure output has no line matching: $expected"
+              status=1
+            fi
+          done
+          echo 'What configure actually reported:'
+          grep -E -- '^-- (sendspin-cli|Performing Test SENDSPIN_CLI)' configure.log ||
+            echo '(configure.log has no sendspin-cli lines at all)'
+          exit "$status"
+
+      - name: Build
+        run: cmake --build build
+
+      # Run on every leg, the no-mDNS one included: the suite links sendspin-cli-core, so
+      # discovery_test.cpp is compiled against whichever MdnsService went in. That
+      # configuration has no other coverage in this matrix.
+      #
+      # Serial deliberately: daemon_test.cpp exercises flock paths and last_server_test writes
+      # real files, neither of which is obviously safe to run against itself in parallel.
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      # Deliberately before avahi-daemon is installed below. With no daemon to register with,
+      # this is what exercises the non-fatal advertise-failure path in src/main.cpp -- the
+      # player has to come up and warn rather than exit.
+      - name: Smoke test
+        if: matrix.publish
+        run: scripts/smoke_test.sh build/sendspin-cli
+
+      # The one *runtime* claim this matrix owes roadmap item 5, which was built and exercised
+      # against Bonjour only: that libavahi-compat-libdnssd really implements the calls
+      # src/mdns_dnssd.cpp makes of it. Reading its sources said so; this runs it.
+      #
+      # Two halves, because they cover different calls. Browsing our own advertisement back
+      # proves DNSServiceRegister reached the daemon. Discovering a server proves the rest of
+      # the chain -- Browse, Resolve, and above all DNSServiceQueryRecord for A and AAAA, which
+      # the compat layer implements in place of the DNSServiceGetAddrInfo it lacks entirely: a
+      # ws:// URL cannot be built at all without an address that query returned.
+      - name: Advertise and discover through a real Avahi daemon
+        if: matrix.avahi
+        run: |
+          sudo apt-get install --no-install-recommends -y avahi-daemon avahi-utils
+          sudo systemctl start avahi-daemon
+
+          # Waited for rather than assumed: the socket is what the compat layer connects to,
+          # and starting the player before it exists would leave the whole check riding on the
+          # player's own retry ramp landing inside the polls below.
+          for _ in $(seq 1 200); do
+            if [ -S /run/avahi-daemon/socket ]; then break; fi
+            sleep 0.1
+          done
+          [ -S /run/avahi-daemon/socket ] || {
+            echo '::error::avahi-daemon was started but its socket never appeared'
+            systemctl status avahi-daemon --no-pager || true
+            exit 1
+          }
+
+          instance="sendspin-ci-$GITHUB_RUN_ID"
+
+          # Half one: our advertisement, browsed back and resolved to an address.
+          ./build/sendspin-cli -o null --port 39301 --mdns-name "$instance" >advertise.log 2>&1 &
+          player=$!
+          trap 'kill -TERM "$player" 2>/dev/null || true' EXIT
+
+          for _ in $(seq 1 200); do
+            if grep -q 'advertising _sendspin\._tcp' advertise.log; then break; fi
+            sleep 0.1
+          done
+          grep -q 'advertising _sendspin\._tcp' advertise.log || {
+            echo '::error::the player never registered its advertisement'
+            cat advertise.log
+            exit 1
+          }
+
+          # -p is the parseable form: resolved records come back as `=;iface;proto;instance;...`
+          # with the address in field 8 and the port in field 9.
+          avahi-browse -rpt _sendspin._tcp >browse.txt
+          echo 'What avahi-browse resolved:'
+          cat browse.txt
+          awk -F';' -v want="$instance" '
+            $1 == "=" && $4 == want && $8 != "" && $9 == "39301" { found = 1 }
+            END { exit found ? 0 : 1 }
+          ' browse.txt || {
+            echo "::error::$instance was not browsable with a resolved address on port 39301"
+            exit 1
+          }
+
+          # Guarded like the traps are: everything this half set out to prove is already
+          # proven, so a player that has since exited on its own must not turn the leg red
+          # here with nothing said about why.
+          kill -TERM "$player" 2>/dev/null || true
+          wait "$player" 2>/dev/null || true
+          trap - EXIT
+
+          # Half two: a server published into the same daemon, discovered and resolved by our
+          # own dns_sd code. Nothing is listening on 8927 and no dial is asserted -- what is
+          # asserted is that a ws:// URL was built at all, which takes an address, which takes
+          # a QueryRecord that answered.
+          #
+          # TXT `name` as well as the REQUIRED `path`, because -s mdns:<name> filters on the
+          # former: without it the instance resolves but matches nothing, and the filter goes
+          # untested.
+          avahi-publish -s "$instance-server" _sendspin-server._tcp 8927 \
+            'path=/sendspin' "name=$instance-server" &
+          publisher=$!
+          trap 'kill -TERM "$publisher" 2>/dev/null || true' EXIT
+
+          ./build/sendspin-cli -o null --port 39302 -s "mdns:$instance-server" \
+            >discover.log 2>&1 &
+          client=$!
+          trap 'kill -TERM "$client" "$publisher" 2>/dev/null || true' EXIT
+
+          resolved="found server \"$instance-server\" .* at ws://"
+          for _ in $(seq 1 300); do
+            if grep -q "$resolved" discover.log; then break; fi
+            sleep 0.1
+          done
+          echo 'What the discovering client logged:'
+          cat discover.log
+          grep -q "$resolved" discover.log || {
+            echo '::error::the server was published but never resolved to a ws:// URL'
+            exit 1
+          }
+
+          kill -TERM "$client" "$publisher" 2>/dev/null || true
+
+      # A build output for trying a commit on real hardware, staged by the same `install()`
+      # rules an operator would use. DESTDIR rather than `--prefix`, so every path in the
+      # archive is the path the file installs to: the unit's ExecStart is absolute and names the
+      # configure-time prefix, and `--prefix` would relocate the payload around it without
+      # changing what it says -- leaving a unit pointing at a binary the archive does not hold.
+      #
+      # `--component sendspin-cli` is what keeps the payload ours. Fetched dependencies declare
+      # install() rules of their own that no option turns off, and CMakeLists.txt says which.
+      #
+      # Tarred rather than handed to upload-artifact loose because the artifact is served as a
+      # zip, and zip does not carry the executable bit -- an untarred binary would arrive
+      # chmod-less.
+      - name: Package
+        if: matrix.publish
+        id: package
+        env:
+          RUNTIME_PACKAGES: ${{ matrix.runtime_packages }}
+          LEG: ${{ matrix.name }}
+        run: |
+          reported="$(./build/sendspin-cli --version)"
+          version="$(printf '%s\n' "$reported" | awk 'NR == 1 { print $2 }')"
+          lib_tag="$(printf '%s\n' "$reported" | awk 'NR == 2 { print $2 }')"
+          name="sendspin-cli-$version-$LEG"
+
+          mkdir -p "stage/$name"
+          DESTDIR="$PWD/stage/$name" cmake --install build --component sendspin-cli
+
+          cat >"stage/$name/BUILD-INFO.txt" <<INFO
+          sendspin-cli $version for $LEG
+          Built from commit $GITHUB_SHA on $RUNNER_OS/$RUNNER_ARCH
+          Linked against sendspin-cpp $lib_tag
+
+          Runtime packages this binary needs:
+            $RUNTIME_PACKAGES
+
+          Every path under usr/ here is where the file installs to, so it goes in with one
+          command from the directory holding the tarball:
+
+            sudo tar -xzf $name.tar.gz --strip-components=1 -C / $name/usr
+
+          Naming $name/usr is what leaves this file behind rather than unpacking it at /.
+
+          Or run it where you unpacked it: ./$name/usr/local/bin/sendspin-cli --help
+
+          This build is configured for the /usr/local prefix, which is why those paths are
+          what they are.
+          INFO
+
+          # Appended only where it applies, and carried inside the archive rather than left in
+          # README alone: someone who unpacked this on a Mac and got told the developer cannot
+          # be verified is holding the tarball, not the repository.
+          if [ "$RUNNER_OS" = 'macOS' ]; then
+            cat >>"stage/$name/BUILD-INFO.txt" <<MACOS
+
+          This binary is ad-hoc signed -- the minimum arm64 needs to run at all -- so it
+          carries no developer identity and Gatekeeper has nothing to check it against.
+          Unpack with \`tar -xzf\` from a terminal, which does not propagate the quarantine
+          flag where Finder's Archive Utility does. If macOS refuses it anyway:
+
+            xattr -d com.apple.quarantine ./$name/usr/local/bin/sendspin-cli
+
+          A Developer ID signature and notarization belong to the macOS installer .pkg task,
+          along with the .pkg that lets the notarization be stapled.
+          MACOS
+          else
+            cat >>"stage/$name/BUILD-INFO.txt" <<'LINUX'
+
+          The systemd unit is at usr/local/lib/systemd/system/sendspin-cli.service, which is
+          on systemd's own search path, so installing as above needs no copying:
+
+            sudo systemctl daemon-reload
+            sudo systemctl enable --now sendspin-cli
+
+          It runs the player as root, in the foreground, with its state in
+          /var/lib/sendspin-cli and its control socket in /run/sendspin-cli. Configure it in
+          /etc/sendspin-cli.conf; there is an annotated example beside the installed README,
+          under usr/local/share/doc/sendspin-cli. Its ExecStart names /usr/local/bin/sendspin-cli
+          absolutely, so a binary put anywhere else needs the unit changed to match.
+          LINUX
+          fi
+
+          tar -czf "$name.tar.gz" -C stage "$name"
+          echo "name=$name" >>"$GITHUB_OUTPUT"
+
+      # What the payload holds, asserted rather than assumed -- the same check the configure
+      # output gets above, and for the same reason. Two things go wrong silently otherwise: a
+      # dependency that starts declaring install() rules on a SENDSPIN_GIT_TAG bump adds a
+      # static library and a tree of headers to a tarball nobody reads the manifest of, and a
+      # file dropped from our own install() rules leaves an archive that is merely smaller.
+      - name: Assert the payload holds exactly what it should
+        if: matrix.publish
+        env:
+          NAME: ${{ steps.package.outputs.name }}
+        run: |
+          expected=$(mktemp)
+          {
+            echo BUILD-INFO.txt
+            echo usr/local/bin/sendspin-cli
+            echo usr/local/share/doc/sendspin-cli/LICENSE
+            echo usr/local/share/doc/sendspin-cli/README.md
+            echo usr/local/share/doc/sendspin-cli/sendspin-cli.conf.example
+            # Installed on Linux alone: a systemd unit on a Mac is a file that can never run.
+            if [ "$RUNNER_OS" = 'Linux' ]; then
+              echo usr/local/lib/systemd/system/sendspin-cli.service
+            fi
+          } | sort >"$expected"
+
+          # `! -type d` rather than `-type f`, so a symlink into the payload is a difference
+          # rather than an invisible one.
+          actual=$(mktemp)
+          (cd "stage/$NAME" && find . ! -type d | sed 's|^\./||') | sort >"$actual"
+
+          echo 'What the payload holds:'
+          cat "$actual"
+          diff -u "$expected" "$actual" || {
+            echo '::error::the staged payload is not the file list this workflow expects'
+            exit 1
+          }
+
+          # And again from inside the archive that actually ships, since that is one `tar` away
+          # from the directory checked above and it is the artifact anybody downloads. The
+          # executable bit is asserted here too: it is the reason this is a tarball at all, the
+          # artifact being served as a zip that does not carry one.
+          # Directory entries dropped before the prefix is stripped, since both tars list them
+          # with a trailing slash -- including the archive's own top-level one, which would
+          # otherwise strip down to an empty line and read as a difference.
+          tar -tzf "$NAME.tar.gz" | grep -v '/$' | sed -n "s|^$NAME/||p" | sort >"$actual"
+          diff -u "$expected" "$actual" || {
+            echo '::error::the tarball does not hold what the staged payload does'
+            exit 1
+          }
+          [ -x "stage/$NAME/usr/local/bin/sendspin-cli" ] || {
+            echo '::error::the staged sendspin-cli is not executable'
+            exit 1
+          }
+
+      # The unit file is the one thing in the payload this matrix can check and no developer on
+      # macOS can, so it is checked here rather than read. Installed at the real prefix first,
+      # because `systemd-analyze verify` resolves ExecStart and reports a binary that is not
+      # there -- so this exercises the install rules at the prefix the unit names as well, which
+      # the staged payload above deliberately does not.
+      #
+      # Last, and after Package, because that is what keeps the ordering safe: a component
+      # install writes its manifest into the *build* directory, so a root-owned
+      # build/install_manifest_sendspin-cli.txt left here would make the unprivileged staging
+      # install above fail on EACCES. Unprivileged first, root over the top.
+      #
+      # No daemon is started and nothing is enabled: verify is a parse, and a runner has no
+      # sound card to play through anyway.
+      - name: Install at the real prefix and verify the systemd unit
+        if: runner.os == 'Linux'
+        run: |
+          sudo cmake --install build --component sendspin-cli
+          unit=/usr/local/lib/systemd/system/sendspin-cli.service
+          [ -f "$unit" ] || {
+            echo "::error::the install put no unit at $unit"
+            exit 1
+          }
+          echo "What was installed as $unit:"
+          cat "$unit"
+          systemd-analyze verify "$unit"
+
+      - name: Upload
+        if: matrix.publish
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: ${{ steps.package.outputs.name }}.tar.gz
+          # Long enough to bisect a regression against, short enough that per-commit builds of
+          # every branch do not accumulate. This artifact is never itself a release: on a tag
+          # it is how the tarball reaches release.yml's release job, which attaches it to a
+          # release of its own and leaves this copy to expire on the same clock.
+          retention-days: 14
+          if-no-files-found: error
