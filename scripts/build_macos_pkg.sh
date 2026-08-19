@@ -151,7 +151,9 @@ readonly WELCOME='welcome.txt'
 # nothing checking it -- CI asserts the receipt, not the pane. `! -type d` and not `-type f` so
 # a symlink into the payload shows up rather than going quietly missing, which is the same
 # choice build.yml's payload assertion makes.
-INSTALLED_PATHS="$(cd "$PAYLOAD_PREFIX" && find . ! -type d | sed 's|^\./|    /usr/local/|' | sort)"
+# CDPATH is cleared for the cd, not out of superstition: `cd` on a relative path resolved through
+# a non-empty CDPATH prints where it landed on stdout, and stdout here is the pane.
+INSTALLED_PATHS="$(CDPATH='' cd "$PAYLOAD_PREFIX" && find . ! -type d | sed 's|^\./|    /usr/local/|' | sort)"
 readonly INSTALLED_PATHS
 
 # Everything here has to be true for somebody reading it *in Installer*, which is the one thing

@@ -491,14 +491,14 @@ jobs:
       #
       # `pkgutil --files` prints paths relative to the receipt's install location -- /usr/local,
       # not `/` -- so this expected list is shorter than the tarball's above rather than a copy
-      # of it. `._`-prefixed siblings are dropped, and the filter is written to be right whether
-      # or not they are there: macOS stamps every payload file with a com.apple.provenance
-      # extended attribute that cannot be removed (`xattr -c` is undone before the next stat) and
-      # pkgbuild carries extended attributes as AppleDouble members, so they are expected today
-      # -- but a pkgbuild that stops emitting them leaves this a no-op rather than a red leg,
-      # where an expected list naming them would break. installer folds them back into attributes
-      # either way, so none of it reaches disk. The macOS tarball assertion above needs no such
-      # filter, which is the corroboration that this is pkgbuild's doing and not the payload's.
+      # of it. The `._` filter is kept even though this listing does not currently need one, and
+      # the asymmetry is the point. macOS stamps every payload file with a com.apple.provenance
+      # extended attribute that cannot be removed (`xattr -c` is undone before the next stat), and
+      # pkgbuild carries extended attributes as AppleDouble members -- so the .pkg's *own* BOM
+      # does list `._` siblings, which is what `lsbom` shows when the archive is expanded. The
+      # receipt's does not, because installer folds those members back into attributes rather than
+      # writing files. Filtering rather than naming them keeps this right in both directions: if a
+      # future installer stops folding them, the assertion still passes.
       #
       # Last among the macOS steps for the sibling of the reason the Linux install above is: the
       # payload assertion reads `stage/`, and this writes the same four files to the paths they
@@ -549,8 +549,9 @@ jobs:
           } | sort >"$expected"
 
           # Echoed raw before anything filters or sorts it, the way the configure and payload
-          # assertions above print what they are about to judge: if the flag or the identifier is
-          # wrong, the pipeline below dies on pipefail and this is the only thing that says why.
+          # assertions above print what they are about to judge. A wrong identifier has already
+          # failed at the --pkg-info above; what this covers is the filter, which would otherwise
+          # report a difference having quietly eaten the lines that explain it.
           echo 'What the receipt lists, unfiltered:'
           pkgutil --files "$IDENTIFIER"
 

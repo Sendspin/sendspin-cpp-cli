@@ -1197,10 +1197,13 @@ operator to choose between `Type=simple` and `Type=forking` and write the unit t
   runs are sequential rather than parallel: the suite binds fixed ports 39281-39288.
   `pkgutil --files` prints paths relative to the receipt's install location, so that expected
   list is `bin/sendspin-cli` and friends rather than a copy of the tarball's absolute one.
-  `._`-prefixed siblings are filtered, with the reason at the filter: macOS stamps every payload
-  file with a `com.apple.provenance` extended attribute that cannot be removed — `xattr -c` is
-  undone before the next `stat` — `pkgbuild` carries extended attributes as AppleDouble members,
-  and `installer` folds them back into attributes rather than leaving files on disk.
+  `._`-prefixed siblings are filtered even though that listing turns out not to need it, and the
+  asymmetry is worth recording: macOS stamps every payload file with a `com.apple.provenance`
+  extended attribute that cannot be removed — `xattr -c` is undone before the next `stat` — and
+  `pkgbuild` carries extended attributes as AppleDouble members, so the `.pkg`'s **own** BOM does
+  list them, as `lsbom` over the expanded archive shows. The receipt's does not, because
+  `installer` folds those members back into attributes rather than writing files. Filtering rather
+  than naming them is what keeps the assertion right in both directions.
 - **The installer is a second artifact, not a second path on the tarball's upload.**
   `if-no-files-found: error` is wanted on both, and a `.pkg` path on the existing step would
   fail every Linux leg; `upload-artifact` also refuses two artifacts under one name, so the
@@ -1320,7 +1323,8 @@ Locally on macOS 26.6 (arm64), against this branch's own build: the payload stag
 `scripts/build_macos_pkg.sh` writing an installer whose BOM holds exactly the four expected files
 — `com.apple.provenance` proving unstrippable on the way, which is where the `._` filter and its
 comment come from — whose `Distribution` carries `hostArchitectures="arm64"` read off the binary,
-and whose welcome pane reads back as written. `shellcheck` and `actionlint` clean. The guard
+and whose welcome pane reads back as written, its install list read out of the payload rather
+than kept by hand. `shellcheck` and `actionlint` clean. The guard
 paths were tried rather than assumed: a wrong argument count, an empty version and a payload root
 with no binary each fail with the message that names the fix. The universal case was tried rather
 than reasoned about too — a real fat binary (`clang -arch arm64 -arch x86_64`) staged as the
@@ -1334,7 +1338,13 @@ precisely what the shared build now does on every push **and every tag** —
 `installer -pkg` at `/`, the receipt's file list, version and location asserted, then `--version`
 and the full smoke suite against `/usr/local/bin/sendspin-cli`. The one thing an arm64 runner
 cannot demonstrate is the *refusal* on an Intel Mac, so the architecture **declaration** is what
-is asserted instead.
+is asserted instead. That pass has happened, against these step bodies before the move that gave
+them their present home: `installer` reports success, the receipt reads `location: usr/local` with
+no leading slash and the version it was given, `pkgutil --files` lists the four paths relative to
+that location, and the full smoke suite passes against `/usr/local/bin/sendspin-cli` rather than a
+build-tree binary. It is also where the `._` comment above comes from — the receipt lists no
+AppleDouble members even though the `.pkg`'s own BOM does, which `lsbom` over an expanded archive
+confirms locally.
 
 The `release.yml` half was driven the way the release slice drove its own, against the real `.pkg`
 and a stubbed `gh`: the completeness assertion passes on the four-file set and fails on a macOS
