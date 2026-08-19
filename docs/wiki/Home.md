@@ -20,7 +20,7 @@ muscle memory carries over.
 | [Installation](Installation) | Every way in: release archive, macOS `.pkg`, source |
 | [Configuration](Configuration) | The config file, and what the player remembers by itself |
 | [Controlling the Player](Controlling-the-Player) | `sendspin-cli pause` and the other thirteen subcommands |
-| [Running as a Service](Running-as-a-Service) | The systemd unit, drop-ins, and reading the log |
+| [Running as a Service](Running-as-a-Service) | The systemd unit, the account it runs as, drop-ins, and reading the log |
 | [Troubleshooting](Troubleshooting) | It starts and makes no sound, and the rest |
 
 ## What it does, in one screen

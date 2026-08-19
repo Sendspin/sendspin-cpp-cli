@@ -95,35 +95,31 @@ receiver, a USB DAC, or an I²S HAT.
 
 ## 4. `/dev/snd` belongs to root and the `audio` group
 
-The systemd unit runs as root, which already has the sound card, so a service install needs
-nothing here. Two cases do:
+`/dev/snd/*` is `root:audio` mode `0660`, so `audio` membership is what decides whether a
+player can open a card at all. Whoever runs it needs it.
 
-**Running it from your own shell.** Put yourself in the `audio` group once, then log out and
-back in — group membership is only picked up at login:
+**As a service, this is already arranged.** The unit runs as an unprivileged `sendspin-cli`
+account, and the declaration the payload installs puts that account in `audio` in the same
+file that creates it — the two are owed together, and arrive together. What you do have to do
+once is turn the declaration into an account:
+
+```bash
+sudo systemd-sysusers
+```
+
+The getting-started script does that for you. Skipping it is a unit that does not start and a
+`systemctl status` reading `217/USER`; it is not a player that starts and stays silent. See
+[Running as a Service](Running-as-a-Service#it-runs-as-its-own-account).
+
+**From your own shell, it is on you.** Put yourself in the `audio` group once, then log out
+and back in — group membership is only picked up at login:
 
 ```bash
 sudo usermod -aG audio "$USER"
 ```
 
-Without it the player starts and opens nothing, because `/dev/snd/*` is `root:audio` mode
-`0660`.
-
-**Running the service as a non-root user.** Both lines together, never one alone:
-
-```bash
-sudo systemctl edit sendspin-cli
-```
-
-```ini
-[Service]
-User=sendspin
-SupplementaryGroups=audio
-```
-
-A user with no `audio` membership is a player that starts and cannot open a device. Create
-the user first (`sudo useradd --system --no-create-home sendspin`) and chown any existing
-`/var/lib/sendspin-cli` to it. See
-[Running as a Service](Running-as-a-Service).
+Without it the player starts and opens nothing. The `sendspin-cli` account's membership does
+nothing for a player running as you.
 
 ## 5. Things a Pi does that a server does not
 

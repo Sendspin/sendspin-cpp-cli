@@ -29,6 +29,7 @@ sendspin-cli-0.1.0-linux-arm64/
 └── usr/local/
     ├── bin/sendspin-cli
     ├── lib/systemd/system/sendspin-cli.service             # Linux only
+    ├── lib/sysusers.d/sendspin-cli.conf                    # Linux only
     └── share/doc/sendspin-cli/
         ├── README.md
         ├── LICENSE
@@ -55,8 +56,15 @@ sha256sum --ignore-missing -c SHA256SUMS
 # 3. Install
 sudo tar -xzf "sendspin-cli-$VERSION-$LEG.tar.gz" --strip-components=1 -C / \
   "sendspin-cli-$VERSION-$LEG/usr"
+sudo systemd-sysusers
 sudo systemctl daemon-reload
 ```
+
+**`systemd-sysusers` is the one thing unpacking cannot do for itself.** The unit runs as an
+unprivileged `sendspin-cli` account, the archive carries the declaration for it at
+`usr/local/lib/sysusers.d/sendspin-cli.conf`, and a tarball has no `postinst` to turn one into
+the other. It is idempotent, and without it the unit reports `217/USER` rather than starting.
+See [Running as a Service](Running-as-a-Service#it-runs-as-its-own-account).
 
 `--ignore-missing` because `SHA256SUMS` covers every archive the release carries and you
 have taken one of them; without it the other three are reported as failures. It is not a

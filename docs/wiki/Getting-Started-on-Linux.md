@@ -24,6 +24,7 @@ commands first and waiting for you to say yes:
 
   sudo tar -xzf /tmp/tmp.XXXX/sendspin-cli-0.1.0-linux-arm64.tar.gz --strip-components=1 -C / sendspin-cli-0.1.0-linux-arm64/usr
   sudo cp /usr/local/share/doc/sendspin-cli/sendspin-cli.conf.example /etc/sendspin-cli.conf
+  sudo systemd-sysusers
   sudo systemctl daemon-reload
   sudo systemctl enable sendspin-cli
   sudo /usr/local/bin/sendspin-cli -l
@@ -45,12 +46,17 @@ instead of the newest.
    the archive.
 5. **Copies the annotated example config** to `/etc/sendspin-cli.conf` if you have none.
    Every line in it is commented out, so it chooses nothing.
-6. **Enables the unit — and starts it only if an output is already configured.** More on
+6. **Runs `systemd-sysusers`**, which creates the unprivileged `sendspin-cli` account the
+   unit runs as out of the declaration the payload just installed. This is the one step a
+   tarball cannot do for itself, and without it the unit does not start at all — see
+   [Running as a Service](Running-as-a-Service#it-runs-as-its-own-account).
+7. **Enables the unit — and starts it only if an output is already configured.** More on
    that below; it is the one surprising thing the script does.
-7. **Lists this host's sound devices** and prints the two commands that finish the job.
+8. **Lists this host's sound devices** and prints the two commands that finish the job.
 
 Re-running it is how you upgrade: it overwrites the same paths, and restarts the service if
-step 6 finds an `output` configured — which after a first run it will.
+step 7 finds an `output` configured — which after a first run it will. Both step 6 and step 7
+are idempotent, so nothing there minds being run twice.
 
 ### Why it does not start the player
 
@@ -80,10 +86,15 @@ sendspin-cli -l
 sudo cp /usr/local/share/doc/sendspin-cli/sendspin-cli.conf.example /etc/sendspin-cli.conf
 sudo nano /etc/sendspin-cli.conf            # output = hw:1,0
 
-# 4. Start it
+# 4. Create the account the unit runs as, then start it
+sudo systemd-sysusers
 sudo systemctl daemon-reload
 sudo systemctl enable --now sendspin-cli
 ```
+
+`systemd-sysusers` is not optional and is not a `useradd` you have to compose — the payload
+installs the declaration, and this reads it. Leave it out and `systemctl status` reports
+`217/USER`.
 
 ## Choosing an output
 
@@ -139,7 +150,8 @@ sudo sendspin-cli status --control-socket /run/sendspin-cli/control.sock
 ```
 
 `sudo`, and the flag, are both needed under the system unit: the socket is mode `0600` and
-owned by root, and root has no `$XDG_RUNTIME_DIR` for the default path to come from. Adding
+belongs to the `sendspin-cli` account, and root has no `$XDG_RUNTIME_DIR` for the default path
+to come from. Root can read the socket regardless, not being subject to the mode. Adding
 `control-socket = /run/sendspin-cli/control.sock` to the config saves repeating the flag —
 see [Controlling the Player](Controlling-the-Player).
 
@@ -164,5 +176,6 @@ preference here, and the two modes are mutually exclusive by design — see
 
 - [Configuration](Configuration) — every key, and what the player remembers by itself
 - [Controlling the Player](Controlling-the-Player) — `pause`, `vol`, `delay` and the rest
-- [Running as a Service](Running-as-a-Service) — drop-ins, and running as a non-root user
+- [Running as a Service](Running-as-a-Service) — the account it runs as, drop-ins, and what
+  the hardening block takes away
 - [Troubleshooting](Troubleshooting) — when it starts and stays silent

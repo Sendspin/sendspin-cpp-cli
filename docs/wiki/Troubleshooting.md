@@ -91,7 +91,25 @@ $ systemctl status sendspin-cli
 ```
 
 `Restart=on-failure` with `RestartSec=5` retries indefinitely, so the journal has the reason
-repeated once every five seconds. The two usual ones:
+repeated once every five seconds. The usual ones:
+
+**`status=217/USER` — the account the unit runs as does not exist.** The first thing to check
+on a fresh install, and the only failure here where the player never runs at all:
+
+```
+sendspin-cli.service: Main process exited, code=exited, status=217/USER
+```
+
+The unit names `User=sendspin-cli`, and creating that account is the one step unpacking a
+tarball cannot do for itself. One idempotent command fixes it:
+
+```bash
+sudo systemd-sysusers
+sudo systemctl restart sendspin-cli
+```
+
+The getting-started script runs it for you; a by-hand install has to. See
+[Running as a Service](Running-as-a-Service#it-runs-as-its-own-account).
 
 **A config file that does not parse.** It names the file and the line, every attempt:
 
@@ -101,6 +119,18 @@ error: /etc/sendspin-cli.conf:4: invalid --buffer-ms '5' -- expected 10-2000
 
 Fix the line and the player comes back on its own — there is no `systemctl reset-failed` to
 do, which is deliberate.
+
+**`Read-only file system` on a `logfile` or `pidfile`.** The unit runs under
+`ProtectSystem=strict`, so a path outside `/run/sendspin-cli` and `/var/lib/sendspin-cli` is
+refused rather than silently unwritten:
+
+```
+error: cannot open logfile /var/log/sendspin-cli.log: Read-only file system
+```
+
+Neither key is the shape for this unit — journald already has stderr, and `-z`/`-f` are for a
+supervisor without one — so removing the key is usually the answer. If you want a logfile
+regardless, a drop-in with `ReadWritePaths=/var/log` is the way back.
 
 **A device that will not open.** See above.
 
@@ -184,7 +214,9 @@ needs the same one:
 sendspin-cli status --port 9000
 ```
 
-**It is the systemd system unit**, whose socket is somewhere else and is root's:
+**It is the systemd system unit**, whose socket is somewhere else and belongs to the
+`sendspin-cli` account at mode `0600` — so root, which is not subject to the mode, is what
+reads it:
 
 ```bash
 sudo sendspin-cli status --control-socket /run/sendspin-cli/control.sock

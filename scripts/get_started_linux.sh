@@ -27,6 +27,14 @@
 # the member-selected `tar` form README documents -- naming `<name>/usr` is what leaves
 # BUILD-INFO.txt in the archive instead of writing it to `/`.
 #
+# The unit runs the player as an unprivileged `sendspin-cli` account, which the payload
+# *declares* in usr/local/lib/sysusers.d/sendspin-cli.conf and cannot *create* -- a tarball has
+# no postinst. So `systemd-sysusers` is run here, which is the one command README, BUILD-INFO.txt
+# and the release notes all tell an operator to run once, reading the fragment this script has
+# just installed. It is idempotent, so a re-run costs nothing. Skipping it would leave a unit
+# that does not start at all: `systemctl status` reports 217/USER, and a get-started script that
+# enables a unit it has made unstartable is not one.
+#
 # WHAT IT DELIBERATELY DOES NOT DO IS START A PLAYER THAT CANNOT PLAY. A systemd *system*
 # unit has no user session, so there is no PipeWire or PulseAudio for ALSA's `default` PCM
 # to follow, and the device that opens fine from your shell usually will not open under
@@ -72,6 +80,8 @@ readonly REPO='chrisuthe/sendspin-cpp-cli'
 
 readonly UNIT='sendspin-cli'
 readonly UNIT_FILE='/usr/local/lib/systemd/system/sendspin-cli.service'
+readonly SYSUSERS_FILE='/usr/local/lib/sysusers.d/sendspin-cli.conf'
+readonly SERVICE_USER='sendspin-cli'
 readonly BINARY='/usr/local/bin/sendspin-cli'
 readonly CONFIG='/etc/sendspin-cli.conf'
 readonly CONFIG_EXAMPLE='/usr/local/share/doc/sendspin-cli/sendspin-cli.conf.example'
@@ -371,6 +381,24 @@ grep -Fqx "$PAYLOAD_ROOT/usr/local/bin/sendspin-cli" <<<"$ARCHIVE_LIST" ||
     with DESTDIR from a build configured for the /usr/local prefix:
     DESTDIR=/tmp/stage cmake --install build --component sendspin-cli"
 
+# Read off the archive rather than assumed present, so the plan printed below is the plan that
+# runs. Every Linux payload the CI publishes carries the fragment beside the unit, but a payload
+# staged from an older tree does not, and a `systemd-sysusers` announced and then not needed
+# would be the one command in that list an operator could not account for.
+PAYLOAD_HAS_SYSUSERS='no'
+if grep -Fqx "$PAYLOAD_ROOT/usr/local/lib/sysusers.d/sendspin-cli.conf" <<<"$ARCHIVE_LIST"; then
+    PAYLOAD_HAS_SYSUSERS='yes'
+fi
+readonly PAYLOAD_HAS_SYSUSERS
+
+# Only where there is a systemd to have an account for. The account is the unit's requirement
+# and nothing else here needs it, so a container without systemd gets the binary and no user.
+CREATE_USER='no'
+if [ "$HAVE_SYSTEMD" = 'yes' ] && [ "$PAYLOAD_HAS_SYSUSERS" = 'yes' ]; then
+    CREATE_USER='yes'
+fi
+readonly CREATE_USER
+
 # An `output` already chosen is what decides whether the player is started at the end, so it
 # is settled here -- before anything is installed -- and reported in the plan below.
 #
@@ -401,6 +429,9 @@ say "  ${SUDO_P}tar -xzf $TARBALL --strip-components=1 -C / $PAYLOAD_ROOT/usr"
 if [ "$SEED_CONFIG" = 'yes' ]; then
     say "  ${SUDO_P}cp $CONFIG_EXAMPLE $CONFIG"
 fi
+if [ "$CREATE_USER" = 'yes' ]; then
+    say "  ${SUDO_P}systemd-sysusers"
+fi
 if [ "$HAVE_SYSTEMD" = 'yes' ]; then
     say "  ${SUDO_P}systemctl daemon-reload"
     say "  ${SUDO_P}systemctl enable $UNIT"
@@ -412,6 +443,11 @@ if [ "$HAVE_SYSTEMD" = 'yes' ]; then
 fi
 say ''
 say "Naming '$PAYLOAD_ROOT/usr' is what keeps the archive's BUILD-INFO.txt out of /."
+if [ "$CREATE_USER" = 'yes' ]; then
+    say "'systemd-sysusers' creates the unprivileged '$SERVICE_USER' account the unit runs as,"
+    say "reading the declaration the line above it installs at $SYSUSERS_FILE."
+    say 'It adds nothing else and is idempotent. Without it the unit does not start at all.'
+fi
 if [ "$SEED_CONFIG" = 'yes' ]; then
     say "There is no $CONFIG yet, so the installed example is copied there for you to edit."
     say 'Every line in it is commented out, so it chooses nothing on its own.'
@@ -474,6 +510,42 @@ if [ "$HAVE_SYSTEMD" != 'yes' ]; then
 fi
 
 step 'Setting the service up'
+
+# Before daemon-reload and enable, because this is what makes the unit startable at all: it
+# names User=sendspin-cli, and 217/USER is what an operator gets instead of a player if the
+# account is missing. `systemd-sysusers` with no argument reads every fragment on the search
+# path, /usr/local/lib/sysusers.d included, so it needs no path to the file just installed.
+if [ "$CREATE_USER" = 'yes' ]; then
+    command -v systemd-sysusers >/dev/null 2>&1 ||
+        fail "the unit runs as '$SERVICE_USER' and 'systemd-sysusers' is not on \$PATH to
+    create the account from $SYSUSERS_FILE. Create it with your own tooling instead --
+    '${SUDO_P}useradd --system --no-create-home -G audio $SERVICE_USER' is the equivalent
+    README documents -- then re-run this script"
+
+    as_root systemd-sysusers
+
+    # Asserted rather than assumed: sysusers exits 0 with nothing done if it read no fragment,
+    # and the failure that follows would be 217/USER at the end of an install that said it
+    # worked. `getent passwd` and not `id`, which on some hosts answers out of a cache.
+    getent passwd "$SERVICE_USER" >/dev/null ||
+        fail "'systemd-sysusers' ran and there is still no '$SERVICE_USER' account, so the unit
+    would report 217/USER rather than starting. $SYSUSERS_FILE is what it should have read"
+
+    say "  user:    $SERVICE_USER (unprivileged; the unit's User=)"
+else
+    # The payload carried no fragment, which is an older tree -- and an older tree's unit runs
+    # as root and names no User=. Read the installed unit rather than trusting that pairing: a
+    # unit naming an account nothing here can create is 217/USER after an install that said it
+    # worked, and this is the one place left to catch it.
+    unit_user="$(sed -n 's/^[[:space:]]*User=[[:space:]]*//p' "$UNIT_FILE" | tail -n 1)"
+    if [ -n "$unit_user" ] && ! getent passwd "$unit_user" >/dev/null; then
+        fail "$UNIT_FILE runs as '$unit_user' and no such account exists, while this payload
+    carried no sysusers declaration to create one from. Create it -- '${SUDO_P}useradd --system
+    --no-create-home -G audio $unit_user' is the equivalent README documents -- then re-run
+    this script"
+    fi
+fi
+
 as_root systemctl daemon-reload
 as_root systemctl enable "$UNIT"
 say "  enabled: $UNIT starts on boot"
@@ -551,9 +623,10 @@ say '     Ask it what it is doing:'
 say ''
 say "       ${SUDO_P}$BINARY status --control-socket $CONTROL_SOCKET"
 say ''
-say "     The socket is mode 0600 and the service is root's, so reading it needs to be"
-say "     root too. Put 'control-socket = $CONTROL_SOCKET' in the config to"
-say '     stop repeating the flag.'
+say "     The socket is mode 0600 and belongs to the '$SERVICE_USER' account the service"
+say '     runs as, so reading it means being root -- which is not subject to the mode.'
+say "     Put 'control-socket = $CONTROL_SOCKET' in the config to stop"
+say '     repeating the flag.'
 say ''
 say '     Nothing else. The player advertises itself over mDNS and waits for a Sendspin'
 say '     server to find it, so it should appear in your controller once it is playing'
@@ -567,10 +640,9 @@ if [ -n "$PI_MODEL" ]; then
     say "    names them; 'output = hw:X,Y' picks one, with X and Y the numbers it printed."
     say "  - 'output = default' is what usually leaves a system unit silent, because there"
     say '    is no user session for it to follow. Name a card.'
-    say '  - The service runs as root, which already has /dev/snd. If you change that with a'
-    say "    'systemctl edit $UNIT' drop-in, the new user needs the audio group in the same"
-    say "    drop-in ('SupplementaryGroups=audio') -- without it the player starts and opens"
-    say '    nothing.'
+    say "  - The service runs as the unprivileged '$SERVICE_USER' account, which the"
+    say '    declaration that created it also put in the audio group -- so it reaches /dev/snd'
+    say '    (root:audio 0660) with nothing for you to arrange.'
     say '  - To run it from your own shell rather than as a service, put yourself in that'
     say "    group once and log back in:  ${SUDO_P}usermod -aG audio \"\$USER\""
 fi

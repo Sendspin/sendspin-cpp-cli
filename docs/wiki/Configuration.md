@@ -107,6 +107,12 @@ Under systemd that means a bad config is a unit that fails and is retried every 
 seconds, naming the file and the line in the journal each time. See
 [Troubleshooting](Troubleshooting).
 
+**Two keys parse and then fail under the shipped unit.** `logfile` and `pidfile` pointing
+anywhere but `/run/sendspin-cli` or `/var/lib/sendspin-cli` are refused by
+`ProtectSystem=strict` — `Read-only file system`, loudly, on every restart. Neither is the
+shape for a unit whose stderr journald already has. See
+[Running as a Service](Running-as-a-Service#what-is-hardened).
+
 The full argument, including why the search does not merge layers, is in
 [The config file, and what the player remembers](https://github.com/chrisuthe/sendspin-cpp-cli/blob/main/README.md#the-config-file-and-what-the-player-remembers).
 
@@ -139,6 +145,12 @@ It lives at `$XDG_STATE_HOME/sendspin-cli/state`, then
 systemd *system* unit has neither variable and is handed `/var/lib/sendspin-cli` by
 `StateDirectory=`. With none of the three the player still runs and simply remembers
 nothing.
+
+Under the unit the directory and the file belong to the unprivileged `sendspin-cli` account,
+and a `/var/lib/sendspin-cli` left root-owned by an earlier root-run version needs nothing
+done to it — `StateDirectory=` chowns a directory it finds as well as one it creates, so what
+was remembered carries over. See
+[Running as a Service](Running-as-a-Service#upgrading-from-a-version-that-ran-as-root).
 
 Writes go through a temporary, an `fsync` and a `rename` at mode `0600`, so a player that
 loses power mid-write leaves either the old file or the new one and never half of either.

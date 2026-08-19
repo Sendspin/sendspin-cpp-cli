@@ -120,9 +120,10 @@ sendspin-cli status --port 9000                            # ...so its subcomman
 sendspin-cli status --control-socket /run/user/1000/sendspin-cli-9000.sock   # or name it
 ```
 
-**Under the systemd system unit**, both change. There is no `$XDG_RUNTIME_DIR` for root, so
-the unit passes `--control-socket /run/sendspin-cli/control.sock`, and the socket is root's
-at mode `0600`:
+**Under the systemd system unit**, both change. A system unit has no `$XDG_RUNTIME_DIR`, so
+the unit passes `--control-socket /run/sendspin-cli/control.sock`, and the socket belongs to
+the unprivileged `sendspin-cli` account the unit runs as, at mode `0600`. Root is what
+connects to it, not being subject to the mode:
 
 ```bash
 sudo sendspin-cli status --control-socket /run/sendspin-cli/control.sock
