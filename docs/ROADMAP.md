@@ -1046,7 +1046,8 @@ operator to choose between `Type=simple` and `Type=forking` and write the unit t
   tee` returns 0 on a failed configure, and the assertion after it greps a truncated log —
   both callers green on a build that never configured. A fail-open gate is worse than no gate,
   which is the argument the shellcheck job at the top of `ci.yml` already makes.
-- **`ci.yml` gained a `tags-ignore`, and that is the whole of its change.** Its `push` was
+- **`ci.yml` gained a `tags-ignore`, and that is the whole of its *behavioural* change** —
+  the rest of its diff is the matrix moving out to `build.yml`. Its `push` was
   unfiltered on purpose, and a `v*` push would otherwise have run the matrix twice over and
   reported two statuses for one tag — the `concurrency` group is keyed by workflow name, so
   nothing collapses the pair. `tags-ignore` rather than a positive `branches: ['**']` filter,
@@ -1098,7 +1099,10 @@ operator to choose between `Type=simple` and `Type=forking` and write the unit t
   is one a downloader cannot use without knowing that. The notes give the macOS spelling
   (`shasum -a 256 -c`) beside the Linux one, one of the three archives being macOS-only, and
   say out loud that the checksums do not cover the `Source code` archives GitHub attaches on
-  its own.
+  its own. Both are given with `--ignore-missing`, which is not a detail: `SHA256SUMS` lists
+  all three archives and a reader has almost certainly taken one, so the bare form reports the
+  other two as failures and exits non-zero on a file that is perfectly good. Supported by GNU
+  coreutils and by macOS's Perl `shasum` alike, both checked rather than assumed.
 - **The notes are written by hand, not `--generate-notes`.** On a first tag that emits every
   merged PR since the initial commit as a flat list, there is no `.github/release.yml` taxonomy
   to shape it, and the narrative of what shipped already exists here and is better. They state
@@ -1183,6 +1187,22 @@ which is why none ships. No audio came out of a unit — the container has no `/
 ALSA path under it is inference from a foreground run. And the `.pkg`-facing half of the payload
 is untested beyond its layout: the macOS legs stage and upload it, nothing installs from it.
 
+**A fourth, for the release slice: `release.yml` has never run.** Everything asserted about it
+above is reasoning plus a local dry run, not a release. What *was* exercised, on macOS against
+this branch: `actionlint` over all three workflows with `shellcheck` present, so the `run:`
+blocks are linted; the preflight's tag and version checks driven through their accepting and
+every rejecting case; the completeness assertion driven through a skipped leg, an empty
+download, a version mismatch and an unexpected extra file; the publish gate driven through a
+complete asset set and two incomplete ones against a stubbed `gh`; and the whole version chain
+end to end — `CMakeLists.txt` 0.1.0, `--version` 0.1.0, and a real `cmake --install` payload
+tarred as `sendspin-cli-0.1.0-macos-arm64.tar.gz`, which is the name the release job expects.
+What that leaves unproven is everything only GitHub can answer: that `gh release view` finds a
+*draft* by tag name (the REST `releases/tags/{tag}` endpoint does not return drafts, so this
+rests on `gh`'s list-and-match fallback), that `download-artifact`'s `merge-multiple` lays the
+files out flat as read here, and that the release job's narrowed `permissions` still let it
+reach the artifact service. A throwaway tag on a fork is what would settle all three, and is
+worth doing before `v0.1.0` rather than after.
+
 ### 11. Interactive TUI mode
 
 Optional, later. Upstream's `examples/tui_client` shows the shape.
@@ -1252,7 +1272,7 @@ reasoning into a check. It is cheap: the smoke test already drives the whole boo
 shutdown path, and produced zero reports when run that way by hand.
 
 The matrix also has no armv7 or 32-bit Pi leg, and no macOS x86_64 leg. Artifacts are per-commit
-workflow artifacts only, and a tagged release still belongs to item 10. The hand-rolled tar this
+workflow artifacts only; the tagged release that does not expire is item 10's, and shipped. The hand-rolled tar this
 entry used to describe is gone: item 10 shipped the `install()` rules, and the archive is now a
 `DESTDIR`-staged `cmake --install` payload whose file list this workflow asserts — plus, on the
 Linux legs, a `systemd-analyze verify` of the unit it installs.

@@ -1083,8 +1083,11 @@ per-commit builds kept for 14 days. For something that does not expire, take a
 
 ## Releases
 
-Pushing a `v*` tag builds the same matrix and publishes the three platform archives
-plus a `SHA256SUMS` covering them, as a GitHub Release. Nothing else publishes, and
+Pushing a `vMAJOR.MINOR.PATCH` tag builds the same matrix and publishes the three
+platform archives plus a `SHA256SUMS` covering them, as a GitHub Release. The
+workflow triggers on `v*` but refuses anything else that matches — a prerelease
+like `v0.2.0-rc1` is rejected rather than quietly published as the latest release,
+until somebody decides what it should mean. Nothing else publishes, and
 the workflow never creates a tag: a release exists because a human tagged a commit
 whose version `CMakeLists.txt` already agreed with. It is attached whole or not at
 all — the release is drafted, its assets are checked against the set the tag is
@@ -1102,8 +1105,9 @@ shasum -a 256 --ignore-missing -c SHA256SUMS  # macOS
 `--ignore-missing` because `SHA256SUMS` lists all three archives and you have
 almost certainly taken one; without it the other two are reported as failures
 and the command exits non-zero on a file that is fine. Those checksums cover the
-three binary archives, not the `Source code` archives GitHub attaches on its own. The macOS binary is unsigned — see below. A signed
-macOS `.pkg` is still owed, tracked in [`docs/ROADMAP.md`](docs/ROADMAP.md) item 10.
+three binary archives, not the `Source code` archives GitHub attaches on its
+own. The macOS binary is unsigned — see below. A signed macOS `.pkg` is still
+owed, tracked in [`docs/ROADMAP.md`](docs/ROADMAP.md) item 10.
 
 ### macOS, and Gatekeeper
 

@@ -41,7 +41,9 @@ jobs:
       fail-fast: false
       # `publish` and `avahi` are spelled out on every leg, false included: an `if:` reads a
       # missing key as false, so a leg that simply omitted one would quietly stop publishing
-      # and still go green. A new leg owes both.
+      # and still go green. A new leg owes both -- and a `publish: true` leg owes a third thing
+      # in another file: an entry in the archive set release.yml asserts before it publishes,
+      # which otherwise fails the release with a diff rather than a reason.
       matrix:
         include:
           - name: linux-x86_64

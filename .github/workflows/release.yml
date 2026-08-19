@@ -59,14 +59,18 @@ jobs:
           # pushed -- not derived from git. Deriving it would tie the version to the presence of
           # a .git directory and put the tag into the deps cache key; checking beats deriving.
           #
-          # Matched lines are counted rather than the first one taken: no match yields an empty
-          # string that would only fail below by luck, and two matches would silently pick one.
-          matches="$(grep -cE '^ *VERSION [0-9]+\.[0-9]+\.[0-9]+$' CMakeLists.txt)"
+          # Counted rather than read first-match-wins, which is what catches a second VERSION
+          # line appearing somewhere in the file: taking the first would silently pick between
+          # them. `|| true` because `grep -c` exits 1 when the count is zero, and this shell runs
+          # under `-e` -- without it the step dies on the assignment and the message below, the
+          # one that says what is actually wrong, never prints.
+          pattern='^[[:space:]]*VERSION [0-9]+\.[0-9]+\.[0-9]+$'
+          matches="$(grep -cE "$pattern" CMakeLists.txt || true)"
           [ "$matches" = 1 ] || {
             echo "::error::expected exactly one VERSION line in CMakeLists.txt, found $matches"
             exit 1
           }
-          version="$(grep -E '^ *VERSION [0-9]+\.[0-9]+\.[0-9]+$' CMakeLists.txt | awk '{print $2}')"
+          version="$(grep -E "$pattern" CMakeLists.txt | awk '{print $2}')"
 
           echo "tag $TAG, CMakeLists.txt VERSION $version"
           [ "$TAG" = "v$version" ] || {
@@ -206,44 +210,58 @@ jobs:
           `SHA256SUMS` lists all three archives and you have almost certainly taken one: without
           it, the two you did not download are reported as failures and the command exits
           non-zero on a perfectly good file.
-          NOTES
-
-          # Substituted rather than interpolated by the shell, so the heredoc above can stay
-          # quoted. The README and roadmap links are pinned to this tag: a relative link in a
-          # release body resolves against the default branch, where the text it points at is
-          # free to move after the release is cut.
-          cat >>notes.md <<NOTES
 
           ## What this build is
 
-          sendspin-cli $VERSION. The version of the sendspin-cpp library it is linked against
-          is pinned at build time and printed on the second line of \`sendspin-cli --version\`,
+          sendspin-cli @VERSION@. The version of the sendspin-cpp library it is linked against
+          is pinned at build time and printed on the second line of `sendspin-cli --version`,
           alongside this one on the first.
 
-          - [README](https://github.com/$GH_REPO/blob/$TAG/README.md) — build, install, run, and
-            [macOS, and Gatekeeper](https://github.com/$GH_REPO/blob/$TAG/README.md#macos-and-gatekeeper)
-          - [Roadmap](https://github.com/$GH_REPO/blob/$TAG/docs/ROADMAP.md) — what shipped and
+          - [README](https://github.com/@REPO@/blob/@TAG@/README.md) — build, install, run, and
+            [macOS, and Gatekeeper](https://github.com/@REPO@/blob/@TAG@/README.md#macos-and-gatekeeper)
+          - [Roadmap](https://github.com/@REPO@/blob/@TAG@/docs/ROADMAP.md) — what shipped and
             what is owed, item by item
           NOTES
 
-          sed -i "s|@VERSION@|$VERSION|g" notes.md
+          # One quoted heredoc and one substitution pass, rather than a second unquoted heredoc
+          # for the parts that need a value: nothing in this text is then subject to shell
+          # expansion, so a backtick added to it later cannot become a command substitution in a
+          # published release body. `|` as the delimiter because the repository name holds a `/`,
+          # and every value substituted here is one the preflight already matched against a
+          # pattern with no delimiter in it.
+          #
+          # The README and roadmap links are pinned to the tag: a relative link in a release body
+          # resolves against the default branch, where the text it points at is free to move
+          # after the release is cut.
+          sed -i -e "s|@VERSION@|$VERSION|g" -e "s|@REPO@|$GH_REPO|g" -e "s|@TAG@|$TAG|g" notes.md
           echo '--- notes.md ---'
           cat notes.md
 
       # Created as a draft and published only once its assets are confirmed, which is what makes
       # the release atomic on the way out. `gh release create` does draft-upload-publish
-      # internally already, but it publishes on "no upload returned an error" rather than on
-      # "every asset is present" -- and that is an implementation detail of gh, not a promise.
-      # Splitting it makes the check ours and names what it is checking.
+      # internally already, so this is not the only thing standing between a failed upload and a
+      # published release -- it is the only *pinned* thing. `gh` is the one tool here that cannot
+      # be pinned to a version, so its internal sequencing is not pinned either, and this job
+      # exists to guarantee exactly the property that sequencing provides. Splitting it moves the
+      # guarantee into this file, versioned with everything else.
+      #
+      # The read-back below also catches what an uploader structurally cannot report: an asset
+      # GitHub accepted under a name it sanitized, which is a successful upload and a release
+      # SHA256SUMS no longer describes. It asks the API what the release holds rather than
+      # trusting what was sent to it.
       #
       # A draft left behind by a failed run makes the next attempt fail here rather than
       # overwrite anything: --clobber on a step that may be facing an already-published release
-      # is the opposite of what this is for. Delete the draft by hand and re-run.
+      # is the opposite of what this is for. Delete the draft by hand and re-run the *failed
+      # jobs* -- re-running all of them repeats the build, and upload-artifact refuses an
+      # artifact name the run already has.
       #
       # --verify-tag is what turns "this workflow never creates tags" into a gate: without it,
       # gh creates a missing tag from the default branch rather than refusing.
       - name: Create the release as a draft
         run: |
+          # Printed because it is the one tool version this workflow cannot pin: the runner
+          # provides it, so the log is the only place a future behaviour change is diagnosable.
           gh --version
           echo "Publishing $TAG (version $VERSION) with:"
           ls -l dist
