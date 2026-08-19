@@ -252,9 +252,15 @@ resolve_latest_tag() {
             ;;
     esac
 
-    # curl folds the header name to lower case for `-w`, but the raw header file keeps
-    # whatever the server sent, so the match is case-insensitive.
-    location="$(grep -i '^location:' "$headers" | tail -n 1 | tr -d '\r' | awk '{print $2}')"
+    # curl folds the header name to lower case for `-w`, but the raw header file keeps whatever
+    # the server sent, so the match is case-insensitive.
+    #
+    # `|| true` is load-bearing rather than sloppy: with no `location:` line at all, `grep` exits
+    # 1, `pipefail` carries that out of the pipeline, and `set -e` would kill the script *before*
+    # the guard below could say why. A redirect with no Location is exactly the case that guard
+    # exists for, so it must survive long enough to run.
+    location="$( (grep -i '^location:' "$headers" || true) | tail -n 1 | tr -d '\r' |
+        awk '{print $2}')"
     [ -n "$location" ] ||
         fail "github.com answered $status with no Location header, which should not happen"
 
@@ -322,7 +328,8 @@ else
     # mentions this archive at all would leave `sha256sum` with nothing to check. It does exit
     # non-zero when that leaves it with no file verified -- but "the checksum file does not
     # cover this download" deserves to be said in those words rather than as `-c` failing.
-    grep -q "  $ARCHIVE\$" "$WORK_DIR/SHA256SUMS" ||
+    awk -v want="$ARCHIVE" '$2 == want { found = 1 } END { exit !found }' \
+        "$WORK_DIR/SHA256SUMS" ||
         fail "the SHA256SUMS published with $TAG does not list $ARCHIVE, so there is no
     checksum to verify it against. Nothing has been installed"
 
@@ -372,8 +379,12 @@ grep -Fqx "$PAYLOAD_ROOT/usr/local/bin/sendspin-cli" <<<"$ARCHIVE_LIST" ||
 # and guessing at that would be worse than naming the one file the unit's own documentation
 # tells an operator to edit. A line is a comment when its first non-blank character is `#`, so
 # an indented `#output = …` is correctly not a match.
+# Read through as_root because /etc/sendspin-cli.conf need not be world-readable: an
+# unprivileged `grep` on an unreadable file exits 2, which would read here as "no output is
+# configured" and quietly leave a properly configured player stopped.
 CONFIG_HAS_OUTPUT='no'
-if [ -f "$CONFIG" ] && grep -Eq '^[[:space:]]*output[[:space:]]*=' "$CONFIG"; then
+if as_root test -f "$CONFIG" &&
+    as_root grep -Eq '^[[:space:]]*output[[:space:]]*=' "$CONFIG"; then
     CONFIG_HAS_OUTPUT='yes'
 fi
 readonly CONFIG_HAS_OUTPUT
@@ -418,7 +429,9 @@ if [ "$ASSUME_YES" != 'yes' ]; then
         fail 'stdin is not a terminal, so there is nobody to confirm those commands with.
     Re-run with --yes if you have read them and want them run'
     printf '\nRun them? [y/N] '
-    read -r answer
+    # `|| fail` for SC1's reason: a closed stdin makes `read` exit non-zero, and `set -e` would
+    # otherwise end the run with no word about why nothing was installed.
+    read -r answer || fail 'stdin closed before an answer arrived; nothing was installed'
     case "$answer" in
         y | Y | yes | YES) ;;
         *) fail 'nothing was installed' ;;
@@ -434,6 +447,14 @@ step 'Installing'
 # script is how you upgrade. `--strip-components=1` drops the archive's own top level, so
 # every remaining path is the path the file installs to.
 as_root tar -xzf "$TARBALL" --strip-components=1 -C / "$PAYLOAD_ROOT/usr"
+
+# Checked before the binary is run rather than after: every Linux payload carries the unit, so
+# its absence means a macOS archive was unpacked here -- and running the binary first would
+# answer that with the dynamic loader's message instead of this one.
+[ -f "$UNIT_FILE" ] ||
+    fail "the payload installed no unit at $UNIT_FILE -- a macOS archive on a Linux host would
+    look exactly like this. Take the $LEG one"
+
 say "  $BINARY"
 "$BINARY" --version | sed 's/^/  /'
 
@@ -451,10 +472,6 @@ if [ "$HAVE_SYSTEMD" != 'yes' ]; then
     say "    $BINARY -o hw:1,0 -n \"\$(hostname)\""
     exit 0
 fi
-
-[ -f "$UNIT_FILE" ] ||
-    fail "the payload installed no unit at $UNIT_FILE -- a macOS archive on a Linux host
-    would look exactly like this. Take the $LEG one"
 
 step 'Setting the service up'
 as_root systemctl daemon-reload
@@ -483,8 +500,15 @@ if [ "$CONFIG_HAS_OUTPUT" = 'yes' ]; then
         say "  $CONFIG names an output, so this is that device failing to open rather"
         say "  than the usual first-install case. What it said:"
         say ''
-        journalctl -u "$UNIT" --no-pager -n 15 2>/dev/null | sed 's/^/    /' ||
-            say "    (could not read the journal; try: journalctl -u $UNIT -n 50)"
+        # Through as_root like every other privileged read, and emptiness treated as failure:
+        # a user outside `systemd-journal` gets no lines and exit 0, which would print a blank
+        # block at the exact moment the operator most needs to be told something.
+        journal="$(as_root journalctl -u "$UNIT" --no-pager -n 15 2>/dev/null || true)"
+        if [ -n "$journal" ]; then
+            printf '%s\n' "$journal" | sed 's/^/    /'
+        else
+            say "    (nothing readable in the journal; try: ${SUDO_P}journalctl -u $UNIT -n 50)"
+        fi
         say ''
         say "  '${SUDO_P}$BINARY -l' lists what this host really has."
     fi

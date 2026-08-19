@@ -127,10 +127,23 @@ the user first (`sudo useradd --system --no-create-home sendspin`) and chown any
 
 ## 5. Things a Pi does that a server does not
 
-- **SD cards wear out.** The player rewrites its state file on volume changes, which it
-  already coalesces — it skips the write when nothing changed. That is the whole of the
-  write traffic. If you are running from SD and want even that gone, point `--state-dir` at
-  a tmpfs and accept that volume and static delay are forgotten across reboots.
+- **SD cards wear out**, and the state file is rewritten whole on every *distinct* volume a
+  server sends. A repeat of the current value is skipped, but a slider drag is one rewrite
+  per step; debouncing is a known gap, listed under
+  [`docs/ROADMAP.md`](https://github.com/chrisuthe/sendspin-cpp-cli/blob/main/docs/ROADMAP.md)
+  item 8. If that worries you, point the state at the runtime directory, which is already a
+  tmpfs — and accept that volume, mute and the static delay are then forgotten across
+  reboots. It has to be a **drop-in** rather than a config key, because the unit passes
+  `--state-dir` itself and the command line wins (`sudo systemctl edit sendspin-cli`):
+
+  ```ini
+  [Service]
+  ExecStart=
+  ExecStart=/usr/local/bin/sendspin-cli --control-socket /run/sendspin-cli/control.sock --state-dir /run/sendspin-cli
+  ```
+
+  `ExecStart=` on its own line first, which is systemd's rule for clearing any list-valued
+  directive.
 - **Wi-Fi power saving breaks mDNS.** A Pi that vanishes from your controller after a few
   idle minutes and comes back when you ping it is the wireless NIC sleeping, not this
   player. `sudo iw dev wlan0 set power_save off` is the usual fix; Ethernet avoids it

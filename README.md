@@ -10,11 +10,10 @@ audio-streaming library, taking its command-line and control ergonomics from
 > is tracked in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 **New here?** The [wiki](https://github.com/chrisuthe/sendspin-cpp-cli/wiki) is the
-task-shaped version of this file — installing, a Raspberry Pi walkthrough, and
-troubleshooting — and on Linux
-[`scripts/get_started_linux.sh`](scripts/get_started_linux.sh) does the whole install in one
-command. Those pages are authored in [`docs/wiki/`](docs/wiki) and mirrored to the wiki tab
-on every push to `main`; this file stays the reference, and ships inside every archive.
+task-shaped version of this file — installing, a Raspberry Pi walkthrough, troubleshooting —
+and on Linux [`scripts/get_started_linux.sh`](scripts/get_started_linux.sh) does the install
+in one command. Those pages are authored in [`docs/wiki/`](docs/wiki) and mirrored to the
+wiki tab on every push to `main`.
 
 ## What it is
 

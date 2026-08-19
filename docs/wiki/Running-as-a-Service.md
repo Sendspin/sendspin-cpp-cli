@@ -13,13 +13,13 @@ The unit is installed at `/usr/local/lib/systemd/system/sendspin-cli.service`, w
 already on systemd's search path — nothing needs copying by hand. `daemon-reload` after
 installing is what makes systemd notice it.
 
-> **Set an `output` before enabling it.** A system unit has no user session, so ALSA's
-> `default` PCM has no PipeWire or PulseAudio to follow and usually will not open. The unit
-> is `Restart=on-failure` with `RestartSec=5`, so a player that cannot open its device
-> retries every five seconds indefinitely. Run `sendspin-cli -l`, pick a card, and put
-> `output = hw:1,0` in `/etc/sendspin-cli.conf`. This is why
+> **Set an `output` before enabling it**, or this unit will fail and be retried every five
+> seconds indefinitely — `Restart=on-failure` with `RestartSec=5`, and a system unit has no
+> session for ALSA's `default` PCM to follow. Run `sendspin-cli -l`, pick a card, and put
+> `output = hw:1,0` in `/etc/sendspin-cli.conf`.
+> [Getting Started on Linux](Getting-Started-on-Linux) has the argument in full, and is why
 > [`scripts/get_started_linux.sh`](https://github.com/chrisuthe/sendspin-cpp-cli/blob/main/scripts/get_started_linux.sh)
-> enables the unit but does not start it until an output is configured.
+> enables this unit without starting it.
 
 ## What the payload installs
 
@@ -64,10 +64,10 @@ path would come from:
 systemd creates and owns both directories, and removes the runtime one when the unit stops
 — which is why this unit never meets a stale socket.
 
-**One consequence**, since the command line beats the config file per option: `state-dir`
-and `control-socket` in `/etc/sendspin-cli.conf` are *silently ignored* by the service.
-Setting `control-socket` to the same path is still worth doing — it is what lets a
-*subcommand* find the socket with no flags.
+**One consequence**: `state-dir` and `control-socket` in `/etc/sendspin-cli.conf` are
+*silently ignored* by the service, because the command line beats the file per option — see
+[Configuration](Configuration). Setting `control-socket` to the same path is still worth
+doing, since it is what lets a *subcommand* find the socket with no flags.
 
 ## Configure it in the config file, not the unit
 
@@ -139,7 +139,7 @@ Everything goes to the journal, and every line carries a level letter and a subs
 
 ```console
 $ journalctl -u sendspin-cli -f
-I cli: sendspin-cli 0.1.0 listening on port 8928 as "kitchen" (output: hw:1,0)
+I cli: sendspin-cli 0.1.0 listening on port 8928 as "kitchen" (output: hw:1,0, mDNS: dns_sd (avahi-compat))
 I mdns: advertising _sendspin._tcp as "kitchen" on port 8928 (path /sendspin)
 I sendspin.ws_server: Starting server on port: 8928 (max connections: 4)
 ```

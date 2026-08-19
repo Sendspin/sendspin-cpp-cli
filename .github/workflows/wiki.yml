@@ -69,16 +69,36 @@ jobs:
         run: |
           has_wiki="$(gh api "repos/$GITHUB_REPOSITORY" --jq '.has_wiki')"
           echo "has_wiki=$has_wiki" >>"$GITHUB_OUTPUT"
-          if [ "$has_wiki" != 'true' ]; then
-            echo "::notice::Wikis are turned off for $GITHUB_REPOSITORY, so docs/wiki was not published. Enable it under Settings -> General -> Features -> Wikis, then re-run this workflow."
-          fi
+
+          # Only `false` is a reason to skip. An empty answer, a `null`, or anything else this
+          # field might become is a question that was not answered -- and reporting that as
+          # "wikis are turned off" would stop publishing indefinitely without ever failing a
+          # run. The notice below is honest for exactly one value, so only that value gets it.
+          case "$has_wiki" in
+            true) ;;
+            false)
+              echo "::notice::Wikis are turned off for $GITHUB_REPOSITORY, so docs/wiki was not published. Enable it under Settings -> General -> Features -> Wikis, then re-run this workflow."
+              ;;
+            *)
+              echo "::error::The GitHub API answered '$has_wiki' for .has_wiki, which is neither true nor false. Refusing to guess whether there is a wiki to publish to."
+              exit 1
+              ;;
+          esac
 
       # A wiki that is enabled but has never had a page created has no git repository behind it
       # yet, and GitHub offers no API to create one — the first page has to be made in the wiki
       # tab, once, by hand. That is the second setting-shaped skip, and it is recognised by
-      # git's own message rather than by "the clone failed", so a network failure, a revoked
-      # token or a rate limit still fails this job. The captured stderr is printed either way:
-      # a skip nobody can see the evidence for is a skip that hides a real error.
+      # git's own message rather than by "the clone failed", so a network failure or a rate
+      # limit still fails this job. The captured stderr is printed either way: a skip nobody
+      # can see the evidence for is a skip that hides a real error.
+      #
+      # One case this cannot separate, stated rather than glossed: GitHub answers a token that
+      # is not allowed to see the repository with the same "repository not found" it uses for
+      # one that does not exist, so a permission failure would classify as "no wiki yet" and
+      # skip green. It is checked above as far as it can be -- `has_wiki` came back from the
+      # same token one step earlier, so a token that reached the API and then cannot reach the
+      # wiki is a narrow case -- but the pattern below cannot tell the two apart, and the
+      # printed stderr is what a reader would have to judge it on.
       - name: Clone the wiki
         id: clone
         if: steps.wiki.outputs.has_wiki == 'true'
@@ -119,13 +139,23 @@ jobs:
       # commands below say what is happening more plainly than a flag does.
       #
       # `! -name .git` is load-bearing — deleting the clone's own history mid-sync would be a
-      # novel way to fail. The mirror is deliberately flat: a GitHub wiki page is one file at
-      # the wiki root, so docs/wiki/ holds no subdirectories and this copies none.
+      # novel way to fail.
+      #
+      # The whole directory rather than just `*.md`, so that a page needing an image can keep it
+      # in docs/wiki/ beside itself and have it published too. The other half of the same rule:
+      # this removes anything the wiki holds that docs/wiki/ does not, an image uploaded through
+      # the wiki tab included. That follows from the model rather than being an oversight — a
+      # file that is not in the tree is a file this wiki does not have.
+      #
+      # A GitHub wiki page is one file at the wiki root, so docs/wiki/ is kept flat; `-R` is
+      # here to carry a directory of assets if one is ever added, not as an invitation to nest
+      # pages, which the wiki would not render as pages anyway.
       - name: Mirror docs/wiki into it
         if: steps.clone.outputs.cloned == 'true'
         run: |
           find wiki -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
-          cp docs/wiki/*.md wiki/
+          cp -R docs/wiki/. wiki/
+          echo 'What the wiki holds that differs from docs/wiki:'
           git -C wiki status --porcelain
 
       # Nothing to say is the common case — this workflow also runs when only the workflow file

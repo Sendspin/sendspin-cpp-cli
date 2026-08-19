@@ -11,10 +11,13 @@ server: Music Assistant (connected)
 state: playing
 stream: receiving
 track: Nils Frahm - Says
-position: 2:05 / 9:03
+position: 2:05 / 9:03 (estimated)
 group volume: 55
+repeat: off
+shuffle: off
 player volume: 80
 static delay: 0 ms
+note: state, position, repeat and shuffle are the server's last report; a server that does not resend them after a change will show stale values here
 output: default (48000 Hz / 2 ch / 16-bit)
 
 $ sendspin-cli pause
@@ -89,8 +92,8 @@ The long version of all three is in
 `repeat` and `shuffle` all come from the server's last report, and the spec does not oblige
 it to resend them after acting. Observed against a real server, `shuffle` read `off` for
 minutes while it was demonstrably shuffling. If you have just changed something and the
-figure has not moved, that is the likely reason — not a failed command. The block ends with
-a `note:` line saying so.
+figure has not moved, that is the likely reason — not a failed command. The `note:` line
+above `output:` says so, and appears whenever a server is connected.
 
 - **`position` says `(estimated)` while playing**, because the library interpolates forward
   from the last progress the server sent. After a seek the server does not re-report, the
@@ -126,8 +129,8 @@ sudo sendspin-cli status --control-socket /run/sendspin-cli/control.sock
 ```
 
 Put `control-socket = /run/sendspin-cli/control.sock` in `/etc/sendspin-cli.conf` and the
-flag becomes unnecessary — the daemon ignores that key (its own command line wins) but the
-subcommands read it. The `sudo` is still needed.
+flag becomes unnecessary. The `sudo` is still needed. Why the daemon ignores that same key
+while its subcommands read it is [Configuration](Configuration)'s precedence rule.
 
 **On macOS the default works with nothing set**, because there is no `$XDG_RUNTIME_DIR`
 there either and the path comes from the per-user directory under `/var/folders` that

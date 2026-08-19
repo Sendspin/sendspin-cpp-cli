@@ -27,7 +27,7 @@ muscle memory carries over.
 
 ```console
 $ sendspin-cli -n living-room
-I cli: sendspin-cli 0.1.0 listening on port 8928 as "living-room" (output: default)
+I cli: sendspin-cli 0.1.0 listening on port 8928 as "living-room" (output: default, mDNS: dns_sd (avahi-compat))
 I mdns: advertising _sendspin._tcp as "living-room" on port 8928 (path /sendspin)
 ```
 

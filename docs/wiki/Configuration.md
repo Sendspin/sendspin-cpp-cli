@@ -67,9 +67,9 @@ minus its dashes, which is what makes `sendspin-cli --help` this file's referenc
 that had a short flag first — `-o -n -s -P -f -d` — grew long spellings for exactly this
 reason, so that one vocabulary covers both.
 
-Booleans take `true`/`yes`/`on`/`1` or `false`/`no`/`off`/`0`. `#` starts a comment at the
-start of a line only — a name or a path is free to contain one. Where a key appears twice,
-the last one wins.
+Booleans take `true`/`yes`/`on`/`1` or `false`/`no`/`off`/`0`. A line whose first non-blank
+character is `#` is a comment; a `#` anywhere else is not, so a name or a path is free to
+contain one. Where a key appears twice, the last one wins.
 
 **Five things cannot come from a file**: `-l`, `-z`, `--config`, `--help` and `--version`.
 Run shape stays on the command line, and a config naming one is refused as an unknown key.
@@ -119,9 +119,9 @@ this one.
 # Written by sendspin-cli. Edits are overwritten.
 last-server = 7f3a…
 last-server-hash = 3387423128
+muted = true
 static-delay-ms = 375
 volume = 42
-muted = true
 ```
 
 | Key | What it is |
@@ -153,7 +153,8 @@ one to save its volume overwrites the first's.
 whatever the state store remembers and reads the config value only when there is nothing
 remembered — exactly as a restored volume beats the sink's default. So once a server or
 `sendspin-cli delay` has set one, the remembered value wins every run after and the config
-key is inert. The startup log says which of the two it took.
+key is inert. Nothing in the log names which of the two won, so `sendspin-cli status` is
+where you read the value actually in force.
 
 Three things can set it: a server's `set_static_delay`, the `delay` subcommand, and this key
 on a first run with nothing yet remembered. To make the config value take again, remove the

@@ -48,11 +48,12 @@ The single most common first-install problem, and it usually shows as the unit f
 rather than as silence:
 
 ```
-E audio: alsa: cannot open 'default': No such file or directory
+E audio: cannot open ALSA device 'default': No such file or directory -- run with -l to list
+this host's PCMs
 ```
 
-A systemd **system** unit has no user session, so there is no PipeWire or PulseAudio for
-ALSA's `default` PCM to follow. Name a card instead:
+Name a card instead of `default`, which under a system unit has no session to follow —
+[Getting Started on Linux](Getting-Started-on-Linux) has the whole of why:
 
 ```bash
 sendspin-cli -l                        # find it
@@ -140,10 +141,9 @@ sudo apt install avahi-daemon libavahi-compat-libdnssd1
 **Or this build has no mDNS at all**, which it says at parse time rather than starting and
 quietly finding nothing:
 
-```console
-$ sendspin-cli
-This build has no mDNS support, so it cannot be discovered: point a server at
-ws://<this-host>:8928/sendspin, or dial one with -s.
+```
+I mdns: This build has no mDNS support, so it cannot be discovered: point a server at
+ws://<this-host>:8928/sendspin, or dial one with -s. See docs/ROADMAP.md.
 ```
 
 Rebuild with `libavahi-compat-libdnssd-dev` present, or point the server at the URL by hand.
@@ -275,21 +275,15 @@ If it is one speaker out of sync with the others rather than dropping out, that 
 
 ## macOS: "cannot be opened because the developer cannot be verified"
 
-The binaries are **ad-hoc signed** — the minimum an arm64 Mach-O needs to execute at all —
-so they carry no developer identity and Gatekeeper has nothing to check them against.
-Whether you meet it depends entirely on the quarantine flag, which `tar` and `unzip` do not
-propagate and Finder's Archive Utility does.
+Clear the quarantine flag:
 
 ```bash
 xattr -d com.apple.quarantine ./sendspin-cli-0.1.0-macos-arm64/usr/local/bin/sendspin-cli
 ```
 
-Unpacking from a terminal avoids it in the first place. `sudo installer -pkg … -target /`
-makes no Gatekeeper assessment at all, and files it puts on disk are never quarantined.
-
-A Developer ID signature and notarization are owed, and tracked as roadmap item 10. The full
-account of all four ways you can come by these files is in
-[macOS, and Gatekeeper](https://github.com/chrisuthe/sendspin-cpp-cli/blob/main/README.md#macos-and-gatekeeper).
+Unpacking from a terminal avoids it in the first place, and `sudo installer -pkg … -target /`
+is not gated at all. Why — and which of the four ways you can come by these files you are in
+— is on [Installation](Installation).
 
 ## The daemon exits and says nothing
 

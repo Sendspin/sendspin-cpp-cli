@@ -49,7 +49,8 @@ instead of the newest.
    that below; it is the one surprising thing the script does.
 7. **Lists this host's sound devices** and prints the two commands that finish the job.
 
-Re-running it is how you upgrade: it overwrites the same paths and restarts the service.
+Re-running it is how you upgrade: it overwrites the same paths, and restarts the service if
+step 6 finds an `output` configured — which after a first run it will.
 
 ### Why it does not start the player
 
@@ -126,7 +127,7 @@ journalctl -u sendspin-cli -f
 A healthy start looks like this:
 
 ```
-I cli: sendspin-cli 0.1.0 listening on port 8928 as "kitchen" (output: hw:1,0)
+I cli: sendspin-cli 0.1.0 listening on port 8928 as "kitchen" (output: hw:1,0, mDNS: dns_sd (avahi-compat))
 I mdns: advertising _sendspin._tcp as "kitchen" on port 8928 (path /sendspin)
 I control: Listening on /run/sendspin-cli/control.sock
 ```
