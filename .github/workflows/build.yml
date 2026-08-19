@@ -369,13 +369,20 @@ jobs:
             cat >>"stage/$name/BUILD-INFO.txt" <<'LINUX'
 
           The systemd unit is at usr/local/lib/systemd/system/sendspin-cli.service, which is
-          on systemd's own search path, so installing as above needs no copying:
+          on systemd's own search path, so installing as above needs no copying. The one
+          command a tarball cannot run for itself creates the account the unit runs as,
+          declared beside it in usr/local/lib/sysusers.d/sendspin-cli.conf:
 
+            sudo systemd-sysusers
             sudo systemctl daemon-reload
             sudo systemctl enable --now sendspin-cli
 
-          It runs the player as root, in the foreground, with its state in
-          /var/lib/sendspin-cli and its control socket in /run/sendspin-cli. Configure it in
+          Skip the first line and the unit will not start: systemctl reports 217/USER.
+
+          It runs the player as an unprivileged sendspin-cli user, in the foreground, with its
+          state in /var/lib/sendspin-cli and its control socket in /run/sendspin-cli. An
+          existing /var/lib/sendspin-cli left behind by an earlier root-run version needs
+          nothing done to it -- systemd chowns it. Configure it in
           /etc/sendspin-cli.conf; there is an annotated example beside the installed README,
           under usr/local/share/doc/sendspin-cli. Its ExecStart names /usr/local/bin/sendspin-cli
           absolutely, so a binary put anywhere else needs the unit changed to match.
@@ -406,8 +413,10 @@ jobs:
             echo usr/local/share/doc/sendspin-cli/LICENSE
             echo usr/local/share/doc/sendspin-cli/README.md
             echo usr/local/share/doc/sendspin-cli/sendspin-cli.conf.example
-            # Installed on Linux alone: a systemd unit on a Mac is a file that can never run.
+            # Installed on Linux alone: a systemd unit, and the account declaration it needs,
+            # are both files a Mac can only ignore.
             if [ "$RUNNER_OS" = 'Linux' ]; then
+              echo usr/local/lib/sysusers.d/sendspin-cli.conf
               echo usr/local/lib/systemd/system/sendspin-cli.service
             fi
           } | sort >"$expected"
@@ -454,8 +463,9 @@ jobs:
       # below are the same hazard's other half and sit after Package for the same reason,
       # though `installer` writes to /usr/local rather than into the build tree.
       #
-      # No daemon is started and nothing is enabled: verify is a parse, and a runner has no
-      # sound card to play through anyway.
+      # `verify` is only a parse, so the step below runs the thing as well. What it cannot cover
+      # is the audio path: a runner has no sound card, which is why `output = null` goes in the
+      # config and why the unit ships no directive that gates /dev/snd.
       - name: Install at the real prefix and verify the systemd unit
         if: runner.os == 'Linux'
         run: |
@@ -468,6 +478,141 @@ jobs:
           echo "What was installed as $unit:"
           cat "$unit"
           systemd-analyze verify "$unit"
+
+      # The unit run as the account it names, with the hardening block in place. A runner is a
+      # real machine with systemd as PID 1 -- the Avahi step above already leans on that -- so
+      # every claim the unit's comment makes short of `/dev/snd` can be made here rather than
+      # reasoned about, and a directive that boots on a maintainer's laptop and not on a stock
+      # 24.04 fails a leg instead of an operator's install.
+      #
+      # `systemd-sysusers` with no argument is the same command README tells an operator to run,
+      # reading the fragment the install rules just put in /usr/local/lib/sysusers.d -- so this
+      # covers the search path holding for /usr/local as well as the fragment's own content.
+      - name: Run the unit as its own user, with the hardening block
+        if: runner.os == 'Linux'
+        env:
+          AVAHI: ${{ matrix.avahi }}
+        run: |
+          # Defined first so that everything below, `systemctl start` included, reports the
+          # journal rather than dying on `set -e` with nothing but a non-zero exit to show.
+          fail() {
+            echo "::error::$1"
+            systemctl status sendspin-cli --no-pager --full || true
+            journalctl -u sendspin-cli --no-pager | tail -40 || true
+            exit 1
+          }
+
+          sudo systemd-sysusers
+          id sendspin-cli
+          # A case match rather than a pipe into grep, which is the shape every check in this
+          # step uses: `defaults.run.shell` is `bash -eo pipefail`, and `grep -q` exits the
+          # instant it matches, so the writer on the left takes SIGPIPE and pipefail then reads
+          # a *successful* match as a failed pipeline.
+          case " $(id -nG sendspin-cli) " in
+            *' audio '*) ;;
+            *)
+              echo '::error::the sysusers fragment did not put sendspin-cli in the audio group'
+              exit 1
+              ;;
+          esac
+
+          # A runner has no card, and the unit deliberately carries no -o: the config file is
+          # where an operator picks one, so it is where this picks one too.
+          printf '%s\n' 'output = null' | sudo tee /etc/sendspin-cli.conf >/dev/null
+
+          # The upgrade path, asserted rather than described: a root-owned state directory from
+          # an earlier root-run version, which StateDirectory= has to take over on its own.
+          sock=/run/sendspin-cli/control.sock
+          sudo rm -rf /var/lib/sendspin-cli
+          sudo install -d -m 0700 /var/lib/sendspin-cli
+          printf '%s\n' '# Written by sendspin-cli. Edits are overwritten.' \
+            'static-delay-ms = 175' | sudo tee /var/lib/sendspin-cli/state >/dev/null
+          sudo chmod 0600 /var/lib/sendspin-cli/state
+
+          sudo systemctl daemon-reload
+          sudo systemctl start sendspin-cli || fail 'systemctl start refused the unit'
+          for _ in $(seq 1 100); do [ -S "$sock" ] && break; sleep 0.2; done
+
+          [ "$(systemctl is-active sendspin-cli)" = active ] || fail 'the unit did not start'
+
+          # Numeric uids on both sides, the way scripts/smoke_test.sh already compares them:
+          # `ps -o user=` prints the uid instead of the name once the name outgrows the column,
+          # so a name comparison is one rename away from being a comparison of nothing.
+          main=$(systemctl show -p MainPID --value sendspin-cli)
+          [ "$main" != 0 ] || fail 'the unit reports no main process'
+          owner=$(ps -o uid= -p "$main" | tr -d ' ') || fail "no process with pid $main"
+          [ "$owner" = "$(id -u sendspin-cli)" ] ||
+            fail "the player runs as uid $owner, not sendspin-cli ($(id -u sendspin-cli))"
+
+          status=$(sudo sendspin-cli status --control-socket "$sock") ||
+            fail 'the control socket did not answer status'
+          printf '%s\n' "$status"
+
+          # Read back rather than merely chowned: 175 came from the root-owned file planted
+          # above, so seeing it proves systemd handed the whole directory over intact.
+          case "$status" in
+            *'static delay: 175 ms'*) ;;
+            *) fail 'the state left by a root-run player did not survive the ownership change' ;;
+          esac
+
+          sudo sendspin-cli delay 250 --control-socket "$sock" || fail 'delay was refused'
+          for _ in $(seq 1 50); do
+            [ "$(stat -c '%U %a' /var/lib/sendspin-cli/state 2>/dev/null)" = 'sendspin-cli 600' ] &&
+              break
+            sleep 0.2
+          done
+          state=$(stat -c '%U %a' /var/lib/sendspin-cli/state 2>/dev/null)
+          [ "$state" = 'sendspin-cli 600' ] || fail "the state file is '$state', not 'sendspin-cli 600'"
+
+          # Only on the leg that started a real avahi-daemon above, and the one claim the rest of
+          # this step cannot make: that RestrictAddressFamilies= without AF_NETLINK still reaches
+          # the daemon over AF_UNIX. Registration is asynchronous, so it is waited for.
+          if [ "$AVAHI" = 'true' ]; then
+            # Scoped to this invocation rather than `-u sendspin-cli`, which prints every start
+            # the unit has ever had: a run that failed to advertise would otherwise match the
+            # line an earlier one logged and pass. A fail-open gate is worse than no gate.
+            invocation=$(systemctl show -p InvocationID --value sendspin-cli)
+            [ -n "$invocation" ] || fail 'the unit reports no invocation id to scope the journal to'
+            for _ in $(seq 1 100); do
+              journalctl "_SYSTEMD_INVOCATION_ID=$invocation" --no-pager >journal.log
+              if grep -q 'mdns: advertising _sendspin\._tcp' journal.log; then break; fi
+              sleep 0.2
+            done
+            grep -q 'mdns: advertising _sendspin\._tcp' journal.log ||
+              fail 'the mDNS advertisement never reached avahi-daemon under the hardening block'
+          fi
+
+          sudo systemctl restart sendspin-cli || fail 'the unit would not restart'
+          for _ in $(seq 1 100); do [ -S "$sock" ] && break; sleep 0.2; done
+          status=$(sudo sendspin-cli status --control-socket "$sock") ||
+            fail 'the control socket did not answer status after a restart'
+          case "$status" in
+            *'static delay: 250 ms'*) ;;
+            *) fail 'the 250 ms set over the socket did not survive a restart' ;;
+          esac
+
+          # Restart=on-failure covering the case it exists for. RestartSec is 5s, so the poll
+          # below has to outlast it -- and a new MainPID is what says it really came back rather
+          # than the old one still being reported.
+          main=$(systemctl show -p MainPID --value sendspin-cli)
+          sudo kill -9 "$main"
+          for _ in $(seq 1 100); do
+            now=$(systemctl show -p MainPID --value sendspin-cli)
+            [ "$now" != "$main" ] && [ "$now" != 0 ] &&
+              [ "$(systemctl is-active sendspin-cli)" = active ] && break
+            sleep 0.2
+          done
+          [ "$(systemctl is-active sendspin-cli)" = active ] &&
+            [ "$(systemctl show -p MainPID --value sendspin-cli)" != "$main" ] ||
+            fail 'the unit did not come back after SIGKILL'
+
+          sudo systemctl stop sendspin-cli
+          result=$(systemctl show -p Result --value sendspin-cli)
+          [ "$result" = success ] || fail "stopping the unit left Result=$result"
+
+          # Printed rather than asserted: a score is evidence for a reader, and pinning a number
+          # would make an unrelated systemd release fail this leg for saying so differently.
+          systemd-analyze security sendspin-cli --no-pager || true
 
       # The macOS half of the same idea: the payload staged above, wrapped into the installer
       # anybody on a Mac would rather double-click than untar. `scripts/build_macos_pkg.sh` owns

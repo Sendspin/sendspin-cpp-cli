@@ -902,7 +902,7 @@ Deliberately **not** here, and each one names its owner rather than being left i
 Image and compose file. ALSA with `/dev/snd` passed through for real output, and the
 null sink for device-less containers and CI.
 
-### 10. Packaging — *shipped (install rules, the unit, the CI payload, the tagged release, the macOS `.pkg`; signing still owed)*
+### 10. Packaging — *shipped (install rules, the unit, the CI payload, the tagged release, the macOS `.pkg`, the unit's own user and hardening; signing still owed)*
 
 Nothing in this tree could be installed. `cmake --build` left the binary where it built it, and
 `.github/workflows/ci.yml` hand-rolled a tarball around it with three `cp` paths inside a
@@ -911,7 +911,8 @@ everything a unit file needs and then stopped at *documenting* it, so `README.md
 operator to choose between `Type=simple` and `Type=forking` and write the unit themselves.
 
 **Shipped** in `CMakeLists.txt`, `packaging/sendspin-cli.service.in`,
-`packaging/sendspin-cli.conf.example`, `scripts/build_macos_pkg.sh`,
+`packaging/sendspin-cli.sysusers.conf`, `packaging/sendspin-cli.conf.example`,
+`scripts/build_macos_pkg.sh`,
 `.github/workflows/{build,ci,release}.yml` and `README.md`:
 
 - **A staged `cmake --install` plus an explicit `tar`, and no CPack.** The per-leg archive name
@@ -923,8 +924,8 @@ operator to choose between `Type=simple` and `Type=forking` and write the unit t
 - **Every install rule names one component, and the payload is asked for by name:**
   `cmake --install build --component sendspin-cli`. That is load-bearing rather than tidy. The
   dependencies fetched at configure time declare install rules of their own, and a bare
-  `cmake --install` into an empty prefix stages **148 files on Linux** where the component stages
-  five: the other 143 are every ArduinoJson header and its three CMake export files.
+  `cmake --install` into an empty prefix stages **149 files on Linux** where the component stages
+  six: the other 143 are every ArduinoJson header and its three CMake export files.
   `IXWEBSOCKET_INSTALL` is now `OFF` beside the existing `INSTALL_GTEST OFF`, since otherwise
   IXWebSocket adds its archive, its headers, a `.pc` and an `install(EXPORT)` as well; but
   ArduinoJson declares its rules with no option at all, and patching a fetched subproject to get
@@ -934,9 +935,13 @@ operator to choose between `Type=simple` and `Type=forking` and write the unit t
   Naming a component is CMake's own answer to "which of these rules are mine", and unlike a
   list of upstream options it stays true across a `SENDSPIN_GIT_TAG` bump that adds a
   dependency.
-- **The install set is deliberately five files:** `bin/sendspin-cli`,
-  `lib/systemd/system/sendspin-cli.service` on Linux only, and `share/doc/sendspin-cli/`
-  holding `README.md`, `LICENSE` and `sendspin-cli.conf.example`. `sendspin-cli-core` is absent
+- **The install set is deliberately six files:** `bin/sendspin-cli`,
+  `lib/systemd/system/sendspin-cli.service` and `lib/sysusers.d/sendspin-cli.conf` on Linux
+  only, and `share/doc/sendspin-cli/`
+  holding `README.md`, `LICENSE` and `sendspin-cli.conf.example`. The count is a claim that
+  every member is argued for rather than a cap — the sysusers fragment is the unit's `User=`
+  made installable, and belongs to the hardening slice below — and CI's payload diff is what
+  stops a seventh arriving unnoticed. `sendspin-cli-core` is absent
   on purpose — it exists so the tests can link the parser without a process entry point, and
   nothing outside this build wants a static archive of it. The doc directory is named after the
   binary rather than taken from `CMAKE_INSTALL_DOCDIR`, which is built from the *project* name:
@@ -990,18 +995,54 @@ operator to choose between `Type=simple` and `Type=forking` and write the unit t
   parse error naming its file and line in the journal each time. That is the wanted end of it:
   an operator who fixes the file gets a player back without also having to `reset-failed` a unit
   that had given up.
-- **It runs as root: no `User=`, no `DynamicUser=`, and no hardening block.** Named as a
-  decision because it is one. A tarball has no `postinst` to create a dedicated user with, and
-  root already has the sound card (`/dev/snd` is `root:audio` mode `0660`), the mDNS daemon and
-  `/run` with nothing to arrange first — while `DynamicUser=` would hand the player a uid in no
-  supplementary group and so deafen the ALSA backend that is the whole point of this unit on
-  Linux. An untested hardening directive is worse than none, and this branch could not test one:
-  `ProtectSystem=`, `PrivateDevices=` and friends each have to be tried against a real card, a
-  real mDNS daemon and a real socket. What ships instead is the `systemctl edit` recipe in
-  `README.md`, naming what a drop-in owes *together* — a user that exists, membership of
-  `audio`, and ownership of `/var/lib/sendspin-cli` — because two of the three alone is a player
-  that starts and cannot play. This unit's WebSocket server therefore listens on the network as
-  root, which is said out loud here rather than left for a reader to notice.
+- **It runs as `sendspin-cli` with a hardening block, and neither shipped without the other.**
+  The account is declared in `lib/sysusers.d/sendspin-cli.conf` beside the unit, carrying two
+  lines that are owed together — the user, and its membership of `audio` — because a uid with
+  no `audio` is a player that starts and cannot open `/dev/snd` (`root:audio` mode `0660`).
+  That is also what rules out `DynamicUser=`, which hands the player a uid in no supplementary
+  group at all. A tarball still has no `postinst`, so `systemd-sysusers` is a command
+  `README.md` and `BUILD-INFO.txt` both tell an operator to run once; skipping it is not a
+  quiet degradation but `217/USER` in `systemctl status`. Nothing has to be done to an existing
+  `/var/lib/sendspin-cli` left root-owned by the version before this one: `StateDirectory=`
+  chowns a directory it finds as well as one it creates, recursively, documented since systemd
+  235 and checked against 255 — the state a root-run player wrote is read back by the new
+  account. The whole of it, the hardening block included, is exercised on every Linux CI leg
+  rather than reasoned about: the unit starts as the account, the control socket answers
+  `status`, a planted root-owned state file survives the ownership change, `delay` lands 0600,
+  it comes back from `SIGKILL`, and `systemctl stop` leaves `Result=success`.
+- **The hardening block is what was tried, not what a list suggests.** `ProtectSystem=strict`,
+  `ProtectHome=`, `PrivateTmp=`, `NoNewPrivileges=`, an empty `CapabilityBoundingSet=`,
+  `RestrictSUIDSGID=`, the `Protect*=` kernel family, `ProtectProc=invisible`,
+  `RestrictNamespaces=`, `LockPersonality=`, `MemoryDenyWriteExecute=`,
+  `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`, `SystemCallArchitectures=native` and
+  `SystemCallFilter=@system-service`. Two of those needed more than "it booted". `AF_NETLINK`
+  is left out because glibc's interface probe falls back when it cannot open one, which was
+  settled by running browse, resolve, the A-record query behind a `ws://` URL and a dial by
+  hostname that really connected — all under the restriction. And `@system-service` covers
+  every syscall `libasound` imports, `ioctl`, `mmap`, `mlock` and the SysV IPC calls `dmix`
+  uses included, read off the shipped library's own import table rather than assumed, which is
+  what keeps the audio path from being the thing that directive is gambling on.
+  One existing configuration stops working, and it is the whole of what an upgrade breaks:
+  `ProtectSystem=strict` refuses a `logfile` or `pidfile` in `/etc/sendspin-cli.conf` that
+  points outside the unit's own two directories. It fails the way this project prefers — the
+  error names the path and the reason on every retry, rather than a player logging into
+  nowhere — and `ReadWritePaths=` in a drop-in is the documented way back. Neither key was ever
+  the shape for this unit, `Type=simple` having handed stderr to journald already.
+  The block also moves the unit's *effective* floor, which is worth stating rather than
+  discovering: `ProtectProc=` is from 247 and four more land between 242 and 245, against the
+  236 the unit needs to start at all. Below 247 systemd logs `Unknown key name … ignoring` and
+  runs it anyway — checked on 245 — so the degradation is one directive and a warning rather
+  than a unit that will not load, and 247 is Debian 11.
+  `systemd-analyze security` scores the result 1.8 against the root unit's 9.6 on systemd 255;
+  CI prints it rather than asserting it, since a number is evidence and not a target, and the
+  one remaining `✗` is `UMask=`, which buys nothing here — the player creates its socket and
+  its state file `0600` itself.
+- **Four directives are deliberately absent, and that is the item's own rule applied to
+  itself.** `PrivateDevices=`, `DeviceAllow=`, `ProcSubset=pid` and `RestrictRealtime=` each
+  gate what the ALSA backend reaches — `/dev/snd`, `/proc/asound`, `SCHED_FIFO` — and every one
+  of them *passes* the checks above under `-o null`, which is exactly why passing proves
+  nothing about them. An untested hardening directive is worse than none, so they wait for a
+  run against a real card; see the open work below.
 - **CI stages the payload with `DESTDIR`, not `--prefix`,** so every path under the archive's
   `usr/` is the path the file installs to and the whole thing goes in with
   `sudo tar -xzf … --strip-components=1 -C / <name>/usr`. The member is named rather than
@@ -1245,11 +1286,13 @@ operator to choose between `Type=simple` and `Type=forking` and write the unit t
   `hostArchitectures` one. Same class of failure as the arch gate — an install that reports
   success and then cannot run — and the same declarative remedy, but it wants the deployment
   target pinned first, which is a build decision rather than a packaging one.
-- **A dedicated user and a hardening block** → owed together, with **no task open for them yet**;
-  `README.md` says the same. Mostly *verifiable in CI* rather than needing hardware: a runner
-  boots the whole daemon under `-o null` today, so every directive except the ones that gate
-  `/dev/snd` can be tried there. Kept separate because it is a behaviour change to a unit that
-  currently works.
+- **The four `/dev/snd`-gating directives**, with **no task open for them yet**: `PrivateDevices=`,
+  `DeviceAllow=`, `ProcSubset=pid` and `RestrictRealtime=`, all named in the unit where a reader
+  meets them. What is missing is not analysis but a machine — every one passes CI under `-o null`
+  and would keep passing while deafening a real card, so the check that settles them is a player
+  on hardware with a device configured, listened to. Worth doing as one sitting: the four share a
+  fixture, and `DeviceAllow=char-alsa rw` with `DevicePolicy=closed` is what the first three are
+  really reaching for.
 - **A drift guard on the version strings in `README.md`,** with **no task open for it yet**, and
   worth more now than when it was first named. Several places spell an artifact name out in
   full — `sendspin-cli-0.1.0-linux-x86_64`, its macOS twin, and the `.pkg` and
@@ -1298,10 +1341,23 @@ deliberately broken `/etc/sendspin-cli.conf` was left in place for a minute and 
 shipped example config was checked the same way, every commented line uncommented: all eight keys
 and values are accepted, the run gets as far as the sound card the container does not have.
 
-**Two things that were not exercised and are worth knowing.** No hardening directive was tried,
-which is why none ships. And no audio came out of a unit — the container has no `/dev/snd`, so
-`Type=simple` under systemd is proven to *start*, log, serve its socket and stop cleanly, but the
-ALSA path under it is inference from a foreground run.
+**The hardening slice was proven the same way, one directive at a time.** On the same
+`ubuntu:24.04` (aarch64, systemd 255) with `avahi-daemon` running, every candidate was applied on
+its own and put through the whole round — unit active, control socket answering `status`,
+WebSocket port accepting a connection, the `_sendspin._tcp` advertisement reaching Avahi, `delay`
+landing in a `0600` state file, that value surviving a restart, a `SIGKILL` recovered from, and
+`systemctl stop` leaving `Result=success` — then the shipped block was put through it whole, and
+then the real installed unit with no drop-in at all. `systemd-sysusers` creating the account from
+`/usr/local/lib/sysusers.d` was run from a host that had no such user, `217/USER` was seen before
+it and the account with its `audio` membership after, and a root-owned `/var/lib/sendspin-cli`
+holding a `175 ms` delay was planted and read back through the new uid. `PrivateDevices=` and
+`ProcSubset=pid` were run too, and passed — which is the evidence for excluding them rather than
+against it.
+
+**One thing that was not exercised and is worth knowing:** no audio came out of a unit. The
+container has no `/dev/snd`, so `Type=simple` under systemd is proven to *start*, log, serve its
+socket and stop cleanly, but the ALSA path under it is inference from a foreground run — which is
+also why the four device-gating directives above are named rather than shipped.
 
 **A third, for the release slice: `release.yml` has never run.** Everything asserted about it
 above is reasoning plus a local dry run, not a release. What *was* exercised, on macOS against

@@ -1,8 +1,11 @@
 # sendspin-cli as a system service.
 #
 # `cmake --install` puts this in <prefix>/lib/systemd/system, which systemd already searches
-# for both /usr and the default /usr/local prefix, so there is nothing to copy by hand:
+# for both /usr and the default /usr/local prefix, so there is nothing to copy by hand. The one
+# thing a tarball cannot do for itself is create the account User= names, since it has no
+# postinst to run sysusers with:
 #
+#   systemd-sysusers
 #   systemctl daemon-reload
 #   systemctl enable --now sendspin-cli
 #
@@ -18,12 +21,22 @@
 # Setting `control-socket` in the config to the same path is still worth doing: that is what a
 # subcommand reads to find this socket, which is why the example file suggests it.
 #
-# `sendspin-cli status` and the other subcommands need `sudo` here: the control socket is
-# mode 0600 and this service is root's, so an unprivileged shell cannot connect to it.
+# `sendspin-cli status` and the other subcommands need `sudo` here: the control socket is mode
+# 0600 and belongs to the service account, so an unprivileged shell cannot connect to it. Root
+# still can, because root is not subject to the mode -- which is why the recipe is `sudo` rather
+# than joining a group.
 #
-# Needs systemd 235 or newer, which is where StateDirectory= and the %S specifier arrived
-# (RuntimeDirectory= and %t are older). Debian 10 shipped 241, so every distribution this
+# Needs systemd 236 or newer: StateDirectory= is 235, and the %S that names it is 236 -- the two
+# are a release apart, and it is the specifier that sets the floor (RuntimeDirectory= and %t are
+# both far older). 235 is where the recursive chown the upgrade note below relies on was first
+# documented, so that is covered either way. Debian 10 shipped 241, so every distribution this
 # player plausibly runs on is well past it.
+#
+# The hardening block wants 247 for all of it -- ProtectProc= is the newest directive here, and
+# RestrictSUIDSGID=, ProtectHostname=, ProtectKernelLogs= and ProtectClock= arrive between 242
+# and 245. Nothing breaks below that: an unknown key is a "Unknown key name ... ignoring"
+# warning and the unit runs with one directive fewer, checked against 245. So the floor for
+# *starting* is 236 and the floor for the whole block is 247, which is Debian 11.
 
 [Unit]
 Description=Sendspin audio player
@@ -45,11 +58,83 @@ After=avahi-daemon.service
 # pointing at -P is the alternative for a supervisor that has no journal.
 Type=simple
 
-# No User= and no hardening block, so this runs as root -- its WebSocket server included, and
-# that listens on the network. A deliberate default rather than an oversight: a tarball has no
-# postinst to create a dedicated user with, and root already has the sound card (/dev/snd is
-# root:audio 0660), the mDNS daemon and /run without anything having to be arranged. A
-# `systemctl edit sendspin-cli` drop-in is where to change it; README says what one owes.
+# The account declared in lib/sysusers.d/sendspin-cli.conf, installed beside this file. It is
+# not created for you -- run `systemd-sysusers` once, as above -- and until it exists this unit
+# does not start at all: `systemctl status` reports 217/USER, which names the cause rather than
+# hiding it. No SupplementaryGroups=audio here even though the player needs it for /dev/snd
+# (root:audio 0660): the fragment's `m` line carries the membership, and the account and what it
+# may reach belong in one file rather than half in each. DynamicUser= is not the shortcut it
+# looks like -- it hands the player a uid in no supplementary group at all, which deafens the
+# ALSA backend that is the point of this unit on Linux.
+#
+# An existing /var/lib/sendspin-cli left root-owned by an earlier root-run version needs nothing
+# done to it: StateDirectory= chowns a directory it finds as well as one it creates, recursively,
+# which is documented from systemd 235 and was checked here against 255.
+User=sendspin-cli
+
+# Hardening. Every directive below was run rather than copied: with it in place the unit starts,
+# the control socket answers `status`, the WebSocket port accepts a connection, the mDNS
+# advertisement reaches avahi-daemon, `delay` lands in a 0600 state file that survives a restart,
+# the unit comes back after SIGKILL, and `systemctl stop` leaves Result=success. What could not
+# be tried is named at the end of this block instead of guessed at.
+#
+# No privilege to gain, none to keep, and none to hand on: an unprivileged service starts with
+# an empty capability set anyway, and these make that the kernel's rule rather than a
+# consequence of who it happens to be running as.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+RestrictSUIDSGID=yes
+
+# The whole hierarchy read-only, with the two directories below as the exception systemd makes
+# itself -- RuntimeDirectory= and StateDirectory= stay writable under ProtectSystem=strict, which
+# is what leaves the socket and the state file somewhere to be. /etc/sendspin-cli.conf is only
+# ever read, so nothing here wants /etc writable.
+#
+# The one thing this takes away: `logfile` or `pidfile` in the config, pointing anywhere but
+# those two directories, now fails -- "cannot open logfile ...: Read-only file system" on every
+# attempt rather than a player that quietly logs nowhere. Neither is the shape for this unit
+# anyway, since journald already has stderr, and a drop-in with ReadWritePaths= is the way back
+# for an operator who wants one regardless.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+# Kernel surface this player has no use for. ProtectProc= hides other users' processes and not
+# /proc/asound, which is the distinction that matters: ProcSubset=pid would hide that too and is
+# in the unproven list below for it. MemoryDenyWriteExecute= is the one here that touches the
+# audio path at all, and only through dlopen: alsa-lib loads its PCM plugins as shared objects,
+# which map executable-not-writable like any library and so are untouched by it -- the mDNS
+# compatibility layer this run does dlopen is the same mechanism, proven rather than argued.
+ProtectProc=invisible
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+# AF_UNIX for the control socket and for the avahi socket the mDNS compatibility layer dials,
+# AF_INET and AF_INET6 for the WebSocket server and for an -s dial. AF_NETLINK is deliberately
+# absent: glibc probes the interface list over it and falls back cleanly when it cannot, which
+# was checked rather than assumed -- browse, resolve, the A-record query behind a ws:// URL, and
+# a dial by hostname that really connected all work without it.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+# @system-service covers every syscall libasound imports, ioctl, mmap, mlock and the SysV IPC
+# calls dmix uses included -- checked against the shipped library's own import table, so the
+# audio path is not what this is gambling on. Native ABI only, since nothing here is 32-bit.
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+
+# What is NOT here, and why: PrivateDevices=, DeviceAllow= and ProcSubset=pid each gate what the
+# ALSA backend reaches -- /dev/snd and /proc/asound -- and every one of them passes the checks
+# above with `-o null`, which is exactly why passing proves nothing. They want a real card.
+# RestrictRealtime= is the same shape from the other side: an unprivileged player cannot take
+# SCHED_FIFO anyway, so the directive would be free here and untested where it counts.
+# docs/ROADMAP.md item 10 carries all four as future work.
 
 # %t and %S are the two directories the lines below create -- /run and /var/lib for a system
 # unit -- and each flag is here because a system unit has neither of the environment variables
