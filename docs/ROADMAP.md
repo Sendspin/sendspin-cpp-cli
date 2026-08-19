@@ -35,6 +35,10 @@ small flag set for identity, output, discovery, logging, and daemonization.
 - Reads a config file whose keys are the long flag names, layered under the command line, and
   remembers its own state across restarts — the last server, the static delay a server set, and
   its volume and mute — in a separate file it writes atomically at `0600` (item 8).
+- Installs: `cmake --install --component sendspin-cli` lays down the binary, an annotated
+  example config, and on Linux a systemd system unit that pairs `RuntimeDirectory=` and
+  `StateDirectory=` with the flags they exist for — and CI publishes that same payload,
+  staged with `DESTDIR`, instead of a hand-rolled tar (item 10).
 
 ## Child tasks
 
@@ -856,7 +860,7 @@ advertised an adjustable delay with nothing behind it, leaving a spec requiremen
   `fsync` and a `rename` at mode `0600`: a player whose usual way of stopping is losing power
   must not leave a half-file a later run has to reason about. `--state-dir` overrides the XDG
   search outright, because a systemd **system** unit has neither variable and gets
-  `/var/lib/sendspin-cli` from `StateDirectory=` — item 10 will want it.
+  `/var/lib/sendspin-cli` from `StateDirectory=` — which is the pairing item 10's unit ships.
 - **`last-server` and `last-server-hash` stay two independent keys with nothing reconciling
   them,** and the constraint item 5 found is why. The provider's key is an FNV1 hash computed by
   `ConnectionManager::fnv1_hash()`, which lives in the library's uninstalled `src/` — so we store
@@ -898,31 +902,198 @@ Deliberately **not** here, and each one names its owner rather than being left i
 Image and compose file. ALSA with `/dev/snd` passed through for real output, and the
 null sink for device-less containers and CI.
 
-### 10. Packaging
+### 10. Packaging — *shipped (install rules, the unit, the CI payload; a tagged release and the macOS `.pkg` still owed)*
 
-`install()` rules, a systemd unit, and distribution packaging.
+Nothing in this tree could be installed. `cmake --build` left the binary where it built it, and
+`.github/workflows/ci.yml` hand-rolled a tarball around it with three `cp` paths inside a
+workflow step — no `install()` rule anywhere for those paths to agree with. Item 6 had shipped
+everything a unit file needs and then stopped at *documenting* it, so `README.md` told an
+operator to choose between `Type=simple` and `Type=forking` and write the unit themselves.
 
-Item 6 shipped what a unit file needs and stopped at documenting it: `-z` forks so
-`Type=forking` with `PIDFile=` pointing at `-P` works, and the foreground default suits
-`Type=simple`. `README.md` says which; no unit is in the tree. `sd_notify` is not wired up,
-which is what `Type=notify` would want instead.
+**Shipped** in `CMakeLists.txt`, `packaging/sendspin-cli.service.in`,
+`packaging/sendspin-cli.conf.example`, `.github/workflows/ci.yml` and `README.md`:
 
-**macOS distribution is the other half, and it is more than layout.** The binaries item 12
-publishes are ad-hoc signed — `codesign` reports `adhoc, linker-signed`, which is the
-minimum an arm64 Mach-O needs to execute at all and carries no identity — so `spctl -a -t
-exec` rejects them and a user who unpacked in Finder is told the developer cannot be
-verified. `README.md` answers that today with `xattr -d com.apple.quarantine`, which is a
-workaround rather than a fix.
+- **A staged `cmake --install` plus an explicit `tar`, and no CPack.** The per-leg archive name
+  is not what decides it — `CPACK_PACKAGE_FILE_NAME` handles that. It is the payload's
+  `BUILD-INFO.txt`, whose content comes from the CI *environment*: the commit, the runner's OS
+  and architecture, and the leg's list of runtime packages. Generating that under CPack means
+  `CPACK_PRE_BUILD_SCRIPTS` or install rules reading environment variables, which is the point
+  at which the tool is being worked around rather than used. One mechanism, not two.
+- **Every install rule names one component, and the payload is asked for by name:**
+  `cmake --install build --component sendspin-cli`. That is load-bearing rather than tidy. The
+  dependencies fetched at configure time declare install rules of their own, and a bare
+  `cmake --install` into an empty prefix stages **148 files on Linux** where the component stages
+  five: the other 143 are every ArduinoJson header and its three CMake export files.
+  `IXWEBSOCKET_INSTALL` is now `OFF` beside the existing `INSTALL_GTEST OFF`, since otherwise
+  IXWebSocket adds its archive, its headers, a `.pc` and an `install(EXPORT)` as well; but
+  ArduinoJson declares its rules with no option at all, and patching a fetched subproject to get
+  a clean tarball is not a trade worth making. Opus declares unguarded rules of its own and
+  stays out only because micro-opus compiles its sources rather than adding that project — a
+  fact a payload should not have to rest on.
+  Naming a component is CMake's own answer to "which of these rules are mine", and unlike a
+  list of upstream options it stays true across a `SENDSPIN_GIT_TAG` bump that adds a
+  dependency.
+- **The install set is deliberately five files:** `bin/sendspin-cli`,
+  `lib/systemd/system/sendspin-cli.service` on Linux only, and `share/doc/sendspin-cli/`
+  holding `README.md`, `LICENSE` and `sendspin-cli.conf.example`. `sendspin-cli-core` is absent
+  on purpose — it exists so the tests can link the parser without a process entry point, and
+  nothing outside this build wants a static archive of it. The doc directory is named after the
+  binary rather than taken from `CMAKE_INSTALL_DOCDIR`, which is built from the *project* name:
+  everything anyone types is `sendspin-cli`, and `share/doc/sendspin-cpp-cli` would have been
+  the single place the other spelling surfaced. Nothing is written to `/etc`: the daemon
+  *reads* `/etc/sendspin-cli.conf`, so installing one would overwrite an operator's file on the
+  next upgrade, and the annotated example goes beside the README instead.
+- **The whole install section is top-level-only**, on the same test the test suite already used —
+  hoisted into one `SENDSPIN_CLI_IS_TOP_LEVEL` rather than written twice. A parent that vendors
+  this project through `FetchContent` has no use for our binary, our README, or a unit whose
+  `ExecStart` names *their* prefix; leaving the rules unconditional would have been the exact
+  complaint this item makes of ArduinoJson, made of somebody else.
+- **The unit is generated rather than copied**, because `ExecStart` is an absolute path:
+  `configure_file()` fills in `CMAKE_INSTALL_FULL_BINDIR`, so a unit installed from one prefix
+  cannot start a binary from another. The consequence is worth stating rather than discovering —
+  the prefix is fixed at **configure** time, so `cmake --install --prefix` relocates the files
+  around a unit that still names the old path. That is why the payload is staged with `DESTDIR`
+  below, and why `README.md` says to reconfigure rather than redirect.
+- **`lib/systemd/system`, not `${CMAKE_INSTALL_LIBDIR}/systemd/system`,** with the reason
+  written at the `install()` call so it survives a tidy-up: a unit file is
+  architecture-independent and systemd reads `<prefix>/lib/systemd/system`, never Debian's
+  `lib/aarch64-linux-gnu/…` or Fedora's `lib64/…`. `/usr/local/lib/systemd/system` is on that
+  search path alongside `/usr/lib/systemd/system`, which is what lets the default prefix work
+  with nothing copied by hand and no `pkg-config --variable=systemdsystemunitdir`.
+- **`Type=simple`, which is the shape `README.md` already documented as primary.** journald
+  captures stderr, so `-z` buys nothing and `-f` would put the log somewhere `logrotate` has to
+  be told about — and item 6's timestamps are `-f`-only for exactly this reason. `Type=notify`
+  is not available: `sd_notify` is not wired up, and this item deliberately did not wire it.
+  `Type=forking` with `PIDFile=` pointing at `-P` stays documented as the alternative for a
+  supervisor with no journal, rather than shipped as a second unit.
+- **`RuntimeDirectory=` and `StateDirectory=` paired with `--control-socket` and `--state-dir`,**
+  written as `%t/sendspin-cli/control.sock` and `%S/sendspin-cli` so each flag names the
+  directory the unit itself creates. Both flags exist for this case and items 7 and 8 said so:
+  unpaired, the socket is skipped with one warning because a system unit has no
+  `$XDG_RUNTIME_DIR`, and the volume, mute and static delay are forgotten on every restart
+  because it has no `$XDG_STATE_HOME`. Item 7's private-directory check does not apply here —
+  it guards the *derived* default path, and an explicit `--control-socket` goes to `bind()` — so
+  systemd's own `0755` runtime directory is not warned about, and the `0600` socket inode inside
+  it is what Linux enforces on `connect()`.
+- **`After=` twice, `Wants=` never.** `network.target` rather than `network-online.target`,
+  because the player retries its advertisement and an `-s` dial on a backoff, so it comes up
+  fine ahead of the network while `network-online.target` would delay every boot to buy nothing.
+  `avahi-daemon.service` for ordering only: a failed advertisement warns and retries rather than
+  being fatal, so a host whose operator turned Avahi off should stay that way instead of having
+  this unit pull it back in.
+- **`Restart=on-failure` with `RestartSec=5`, and it never gives up — checked, not assumed.**
+  A clean exit here means SIGTERM, which is `systemctl stop` or a shutdown, and neither wants
+  the player back; a device that is not ready yet exits 1, which is what the delay covers. A
+  config file that does not parse also exits 1, and one restart every 5 s never trips systemd's
+  default start limit of five starts in ten seconds, so the unit retries indefinitely with the
+  parse error naming its file and line in the journal each time. That is the wanted end of it:
+  an operator who fixes the file gets a player back without also having to `reset-failed` a unit
+  that had given up.
+- **It runs as root: no `User=`, no `DynamicUser=`, and no hardening block.** Named as a
+  decision because it is one. A tarball has no `postinst` to create a dedicated user with, and
+  root already has the sound card (`/dev/snd` is `root:audio` mode `0660`), the mDNS daemon and
+  `/run` with nothing to arrange first — while `DynamicUser=` would hand the player a uid in no
+  supplementary group and so deafen the ALSA backend that is the whole point of this unit on
+  Linux. An untested hardening directive is worse than none, and this branch could not test one:
+  `ProtectSystem=`, `PrivateDevices=` and friends each have to be tried against a real card, a
+  real mDNS daemon and a real socket. What ships instead is the `systemctl edit` recipe in
+  `README.md`, naming what a drop-in owes *together* — a user that exists, membership of
+  `audio`, and ownership of `/var/lib/sendspin-cli` — because two of the three alone is a player
+  that starts and cannot play. This unit's WebSocket server therefore listens on the network as
+  root, which is said out loud here rather than left for a reader to notice.
+- **CI stages the payload with `DESTDIR`, not `--prefix`,** so every path under the archive's
+  `usr/` is the path the file installs to and the whole thing goes in with
+  `sudo tar -xzf … --strip-components=1 -C / <name>/usr`. The member is named rather than
+  omitted, or `--strip-components` would deposit `BUILD-INFO.txt` at the filesystem root. Two
+  other things fall out of `DESTDIR`: the unit's absolute `ExecStart` names a path the archive
+  actually contains, which `--prefix` would have left dangling, and the `.pkg` task inherits the
+  payload root `pkgbuild --root` wants. `BUILD-INFO.txt` sits at the archive root and tells an
+  operator how to install it, how to run it in place, and what the unit does.
+- **Assertions rather than claims**, in the shape `ci.yml` already uses for the configure output.
+  Every publishing leg diffs the staged payload against the file list it is supposed to be, then
+  diffs the *tarball's* own listing against the same list and checks the staged binary is
+  executable — the archive being one `tar` away from the directory and the thing anybody actually
+  downloads. That catches a dependency which starts declaring install rules on a tag bump and a
+  file quietly dropped from our own. The Linux legs then install at the real prefix and run
+  `systemd-analyze verify` on the installed unit, which resolves `ExecStart` and so needs the
+  binary really there — exercising the install rules at the prefix the unit names, which the
+  staged payload does not.
+- **That verify step runs last, and the ordering is load-bearing.** A component install writes
+  `install_manifest_sendspin-cli.txt` into the *build* directory, so a `sudo` install before the
+  staging one leaves a root-owned manifest and the unprivileged `DESTDIR` install afterwards
+  fails on `EACCES` — a red leg, out of a file nobody thinks about. Observed under Ubuntu
+  24.04's own cmake 3.28.3, which rewrites the manifest unconditionally; cmake 4.4.1 skips a
+  write whose content has not changed and gets away with it, so the break is version-dependent
+  and putting the root install last is what stops it being anybody's problem. Unprivileged
+  first, root over the top; `README.md` says the same to anyone doing both in one build tree,
+  and `.gitignore` now covers `install_manifest*.txt` rather than only the un-suffixed name.
 
-Clearing it properly needs a Developer ID Application certificate (so, a paid Apple
-Developer Program enrolment) and notarization. The part that decides this belongs *here*
-rather than with the matrix: `xcrun stapler` takes `.app`, `.dmg` and `.pkg` and **refuses a
-bare Mach-O**, so notarizing the loose binary alone would still leave Gatekeeper asking
-Apple on first run — no good for an offline Pi or Mac. The `.pkg` this item owes is what
-makes the ticket stapleable, and therefore what makes the signing worth doing once.
+**Not in this slice**, each with its owner named rather than implied:
 
-Note also that a public repo gets no secrets on pull requests from forks, so any signing
-step has to be conditional rather than assumed.
+- **A tagged release** → the tag-driven release workflow task, blocked on this one. What CI
+  publishes is still a per-commit artifact kept 14 days; nothing here is a release, and the
+  archive this item produces is the thing that workflow will attach.
+- **The macOS `.pkg`, Developer ID signing and notarization** → the macOS installer `.pkg` task,
+  also blocked on this one, and none of that analysis has changed. The binaries are ad-hoc signed —
+  `codesign` reports `adhoc, linker-signed`, the minimum an arm64 Mach-O needs to execute at
+  all and no identity — so `spctl -a -t exec` rejects them and `README.md` still answers with
+  `xattr -d com.apple.quarantine`, which is a workaround rather than a fix. Clearing it needs a
+  Developer ID Application certificate (a paid enrolment) and notarization, and the part that
+  decides the `.pkg` belongs *here*: `xcrun stapler` takes `.app`, `.dmg` and `.pkg` and
+  **refuses a bare Mach-O**, so notarizing the loose binary alone would still leave Gatekeeper
+  asking Apple on first run — no good for an offline Pi or Mac. A public repo also gets no
+  secrets on a pull request from a fork, so any signing step has to be conditional rather than
+  assumed. The `DESTDIR` payload above is that task's input.
+- **A dedicated user and a hardening block** → owed together, with **no task open for them yet**;
+  `README.md` says the same. Mostly *verifiable in CI* rather than needing hardware: a runner
+  boots the whole daemon under `-o null` today, so every directive except the ones that gate
+  `/dev/snd` can be tried there. Kept separate because it is a behaviour change to a unit that
+  currently works.
+- **A drift guard on `packaging/sendspin-cli.conf.example`.** Item 8's "one vocabulary" claim
+  means every key in that file is a long flag name, and nothing enforces it — a renamed flag
+  would leave a shipped example that stops a player with an unknown-key error. It was checked by
+  hand this time (see below). The cheap fix is a test that uncomments the file and feeds it
+  through `config_file`, and it needs the source path handing to the suite.
+- **`.deb`, Homebrew and AUR** are not planned at all. The sanctioned set stays the tarball
+  payload, the unit, item 9's Docker image and this item's later `.pkg`.
+- **Docker** is item 9's, and is unaffected: it builds the binary rather than consuming a
+  payload.
+
+**What has and has not been exercised.** On macOS, against this branch's own build: configure
+and build clean under `-DSENDSPIN_CLI_WERROR=ON`, 346 of 347 tests passing — the exception is
+`ConfigMerge.AConfiguredControlSocketIsAbsolutizedUnderDaemonize`, which fails only because this
+worktree's path is long enough that the absolutized socket path exceeds `sockaddr_un`'s 104 bytes,
+and it passes from a shorter directory — `scripts/smoke_test.sh` green, and the payload staged three
+ways and read back: `--component sendspin-cli` giving four files with no unit (correct: a systemd
+unit on a Mac is a file that can never run), `DESTDIR` giving the same four under `usr/local/`,
+and a bare `cmake --install` giving 147 — the 143 extra files being the number the component
+exists for. CI's own packaging step and its payload assertion were run against that build too,
+including with a stray file planted to check the assertion fails rather than merely reports.
+
+**The unit itself was proven on Linux, in a container, rather than reasoned about.** On
+`ubuntu:24.04` (aarch64, systemd 255) the tree configures and builds `-Werror`-clean with the
+tests off — CI is what builds and runs those there —
+`cmake --install --component sendspin-cli` puts the unit at
+`/usr/local/lib/systemd/system/sendspin-cli.service`, and `systemd-analyze verify` accepts it
+with nothing to say — including with no `avahi-daemon.service` on the host, which is what the
+`After=` line names. Under a real `systemd` as PID 1, with the `DESTDIR` payload untarred into
+`/` exactly as `BUILD-INFO.txt` says: `systemctl enable --now` starts it, the journal carries the
+startup lines with no `-f` and no timestamps of ours, `RuntimeDirectory=` yields
+`/run/sendspin-cli/control.sock` as a `srw-------` socket beside its `.lock`, `StateDirectory=`
+yields `/var/lib/sendspin-cli`, `sendspin-cli delay 250` round-trips over that socket and lands
+in a `0600` state file, a `systemctl restart` comes back reporting the remembered 250 ms, and
+`systemctl stop` leaves `Result=success`, `ExecMainStatus=0` and `NRestarts=0` — with systemd
+removing the whole runtime directory, so the unit never meets the stale-socket case at all. A
+deliberately broken `/etc/sendspin-cli.conf` was left in place for a minute and reached
+`NRestarts=18`, still `activating`, which is where the never-gives-up note above comes from. The
+shipped example config was checked the same way, every commented line uncommented: all eight keys
+and values are accepted, the run gets as far as the sound card the container does not have.
+
+**Three things that were not exercised and are worth knowing.** No hardening directive was tried,
+which is why none ships. No audio came out of a unit — the container has no `/dev/snd`, so
+`Type=simple` under systemd is proven to *start*, log, serve its socket and stop cleanly, but the
+ALSA path under it is inference from a foreground run. And the `.pkg`-facing half of the payload
+is untested beyond its layout: the macOS legs stage and upload it, nothing installs from it.
 
 ### 11. Interactive TUI mode
 
@@ -988,9 +1159,10 @@ reasoning into a check. It is cheap: the smoke test already drives the whole boo
 shutdown path, and produced zero reports when run that way by hand.
 
 The matrix also has no armv7 or 32-bit Pi leg, and no macOS x86_64 leg. Artifacts are per-commit
-workflow artifacts only — tagged releases, `install()` rules and distribution packaging all
-belong to item 10, which will replace the workflow's hand-rolled tar with a staged
-`cmake --install` payload.
+workflow artifacts only, and a tagged release still belongs to item 10. The hand-rolled tar this
+entry used to describe is gone: item 10 shipped the `install()` rules, and the archive is now a
+`DESTDIR`-staged `cmake --install` payload whose file list this workflow asserts — plus, on the
+Linux legs, a `systemd-analyze verify` of the unit it installs.
 
 ### 13. `PlayerRoleConfig` wiring — *shipped*
 

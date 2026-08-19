@@ -17,6 +17,18 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
+# Whether this project is being built on its own rather than vendored into another one through
+# FetchContent or add_subdirectory. Two things below hang off it, and a parent wants neither:
+# the install rules, which would put our binary, our docs and a systemd unit naming *that*
+# build's prefix into somebody else's payload, and the test suite, which would fetch and build
+# GoogleTest and add our test names to their CTest run. (PROJECT_IS_TOP_LEVEL says this
+# directly, but wants CMake 3.21 and this project's floor is 3.16.)
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    set(SENDSPIN_CLI_IS_TOP_LEVEL ON)
+else()
+    set(SENDSPIN_CLI_IS_TOP_LEVEL OFF)
+endif()
+
 # ==============================================================================
 # sendspin-cpp
 # ==============================================================================
@@ -45,6 +57,20 @@ set(SENDSPIN_ENABLE_VISUALIZER OFF CACHE BOOL "Enable sendspin visualizer role")
 # building programs we do not ship, and pulling in what only they need (FTXUI). This says
 # nothing about PortAudio: our own backend depends on it deliberately, and finds it itself.
 set(BUILD_EXAMPLES OFF CACHE BOOL "Build sendspin-cpp's own examples")
+
+# IXWebSocket -- which sendspin-cpp fetches in turn -- declares install() rules and defaults
+# them ON, so without this every `cmake --install` drops libixwebsocket.a, its headers, a
+# pkg-config file and a set of CMake export files into the payload. Nothing links this binary
+# at runtime and nothing builds against it, so none of that belongs in a tarball. Turned off
+# here rather than left to the install component below, since it has an option and using it
+# keeps the export set out of the build entirely; GoogleTest's is turned off the same way where
+# it is fetched. ArduinoJson is the dependency that has no such option -- see the component in
+# the install section.
+#
+# No FORCE, so a build tree configured before this line existed keeps the cached ON until it is
+# reconfigured from scratch: that tree stages more than the component names, and is worth
+# deleting rather than reasoning about.
+set(IXWEBSOCKET_INSTALL OFF CACHE BOOL "Install IXWebSocket alongside our own targets")
 
 include(FetchContent)
 FetchContent_Declare(
@@ -283,19 +309,86 @@ message(STATUS "sendspin-cli audio backends: ${SENDSPIN_CLI_BACKEND_LIST}")
 message(STATUS "sendspin-cli mDNS: ${SENDSPIN_CLI_MDNS_DESCRIPTION}")
 
 # ==============================================================================
+# Install
+# ==============================================================================
+
+# Top-level only, for the reason the variable is declared with: a parent that vendors this
+# project has no use for our binary, our README or a unit naming its prefix -- which is the
+# same complaint the component below exists to answer, and it would be poor manners to make it
+# of somebody else while making it of ArduinoJson.
+if(SENDSPIN_CLI_IS_TOP_LEVEL)
+    include(GNUInstallDirs)
+
+    # Every rule below names this component, and the payload is staged by asking for it:
+    #
+    #     cmake --install build --prefix <dir> --component sendspin-cli
+    #
+    # The component is what makes that payload only ours. ArduinoJson -- fetched by sendspin-cpp
+    # in turn -- installs its headers and three CMake export files unconditionally, with no
+    # option to say otherwise, so a bare `cmake --install` stages 143 files nothing in the
+    # payload links or builds against. Asking for one component is the stock way to say which
+    # install rules are ours, the alternative being to patch a fetched subproject; it also holds
+    # if a later SENDSPIN_GIT_TAG brings in a dependency that installs, where a list of upstream
+    # options would have to be extended to match.
+    set(SENDSPIN_CLI_COMPONENT sendspin-cli)
+
+    # share/doc/sendspin-cli rather than GNUInstallDirs' own CMAKE_INSTALL_DOCDIR, which is built
+    # from the *project* name: everything anyone types is `sendspin-cli`, and a doc directory
+    # named after the repository would be the one place the other spelling surfaced.
+    set(SENDSPIN_CLI_DOC_DIR "${CMAKE_INSTALL_DATAROOTDIR}/doc/sendspin-cli")
+
+    install(TARGETS sendspin-cli
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+        COMPONENT ${SENDSPIN_CLI_COMPONENT}
+    )
+
+    # sendspin-cli-core is deliberately absent: it exists so the tests can link the parser
+    # without a process entry point, and nothing outside this build has any use for an archive
+    # of it.
+    install(FILES
+        README.md
+        LICENSE
+        packaging/sendspin-cli.conf.example
+        DESTINATION ${SENDSPIN_CLI_DOC_DIR}
+        COMPONENT ${SENDSPIN_CLI_COMPONENT}
+    )
+
+    # The unit names an absolute ExecStart, so it is generated from the prefix this build was
+    # configured for rather than copied -- a unit installed from one prefix cannot then start a
+    # binary from another. Note that this is the *configure-time* prefix: `cmake --install
+    # --prefix` relocates where the files land without changing what the unit says, which is what
+    # makes a staged payload a payload for /usr/local (the default) rather than for the staging
+    # directory.
+    #
+    # Generated on every platform though only Linux installs it, so the one file whose content
+    # depends on the configure line can be read back wherever the build happened.
+    set(SENDSPIN_CLI_INSTALLED_BINARY "${CMAKE_INSTALL_FULL_BINDIR}/sendspin-cli")
+    configure_file(packaging/sendspin-cli.service.in
+        ${CMAKE_CURRENT_BINARY_DIR}/sendspin-cli.service @ONLY)
+
+    # lib/systemd/system, not ${CMAKE_INSTALL_LIBDIR}/systemd/system: a unit file is
+    # architecture-independent and systemd reads <prefix>/lib/systemd/system, so Debian's
+    # multiarch libdir would put it in lib/aarch64-linux-gnu/systemd/system where nothing looks
+    # for it. /usr/local/lib/systemd/system is on that search path as well as
+    # /usr/lib/systemd/system, which is what lets the default prefix work with no drop-in and no
+    # copying by hand.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        install(FILES ${CMAKE_CURRENT_BINARY_DIR}/sendspin-cli.service
+            DESTINATION lib/systemd/system
+            COMPONENT ${SENDSPIN_CLI_COMPONENT}
+        )
+    endif()
+endif()
+
+# ==============================================================================
 # Tests
 # ==============================================================================
 
 # Defaults ON only when this is the top-level project: a parent that vendors sendspin-cli
 # via FetchContent should not pay to fetch and build GoogleTest, nor find our test names
-# in its own CTest run. (PROJECT_IS_TOP_LEVEL would say this more directly, but it wants
-# CMake 3.21 and this project's floor is 3.16.)
-if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-    set(SENDSPIN_CLI_TESTS_DEFAULT ON)
-else()
-    set(SENDSPIN_CLI_TESTS_DEFAULT OFF)
-endif()
-option(SENDSPIN_CLI_BUILD_TESTS "Build the unit tests" ${SENDSPIN_CLI_TESTS_DEFAULT})
+# in its own CTest run. An option rather than a plain `if`, unlike the install rules, because
+# a contributor turning the suite off for a quick build is a reasonable thing to want.
+option(SENDSPIN_CLI_BUILD_TESTS "Build the unit tests" ${SENDSPIN_CLI_IS_TOP_LEVEL})
 
 # Pinned to a tag for the same reason SENDSPIN_GIT_TAG is: a moving branch turns an
 # unrelated upstream commit into a build failure here.

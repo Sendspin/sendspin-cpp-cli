@@ -1,0 +1,62 @@
+# An example sendspin-cli config file. Copy it to /etc/sendspin-cli.conf and edit.
+#
+# Keys are the long flag names without their dashes, one 'key = value' per line, and a
+# value is exactly the string the flag would have been given -- so `sendspin-cli --help`
+# is this file's reference rather than a second document to keep in step with it.
+# Booleans take true/yes/on/1 or false/no/off/0, '#' starts a comment only at the start of
+# a line, and where a key appears twice the last one wins. The command line beats the file,
+# per option.
+#
+# The first of these that exists is read whole, with nothing below it merged over the top:
+#
+#   --config <path>   (fatal if it cannot be read, because you named it)
+#   $XDG_CONFIG_HOME/sendspin-cli/config
+#   $HOME/.config/sendspin-cli/config
+#   /etc/sendspin-cli.conf
+#
+# Finding none is normal. A line that does not parse, or a key that is not a flag, stops
+# the player and names the file and line -- a config that is quietly half-applied is the
+# failure this surface exists to avoid. Run shape is the exception that cannot come from
+# here at all: -l, -z, --config, --help and --version are refused as unknown keys.
+#
+# Every line below is commented out, since a line that is not is a value chosen. Where an
+# option has a default, that is the value shown; `name` and `server` have none worth
+# printing, so those two are examples instead.
+
+# The name a controller shows for this endpoint. Defaults to this host's name.
+#name = kitchen
+
+# The output device: a reserved name (null, stdout, -) or a <backend>:<device> pair.
+# `sendspin-cli -l` lists what this host has and what each device accepts. The default is
+# ALSA's own `default` PCM wherever this build has ALSA, which follows whatever the host is
+# configured for -- PipeWire, PulseAudio or bare hardware. Under the systemd *system* unit
+# there is no user session and so no PipeWire or PulseAudio to follow, and `default` will
+# usually fail: name the card there, as in `hw:1,0`.
+#output = default
+
+# Audio the output backend keeps buffered, 10-2000 ms. Raise it on a device that stutters.
+#buffer-ms = 100
+
+# The port this player's own WebSocket server listens on, for a server that connects in.
+#port = 8928
+
+# Dial a server instead of waiting to be found: <host>[:<port>], a ws:// URL, or
+# mdns:<name> to discover one by its advertised name. Any value here turns the mDNS
+# advertisement off, as -s does -- the spec forbids advertising while this end dials.
+#server = mdns:Living Room
+
+# Latency this endpoint's hardware adds after the audio port -- an amplifier, an external
+# speaker -- 0-5000 ms. A first-run default only: a delay a server or `sendspin-cli delay`
+# has set is remembered and wins over this every run after.
+#static-delay = 0
+
+# Log level for this player and the sendspin library together: none, error, warn, info,
+# debug, verbose. Under systemd this lands in the journal.
+#log-level = info
+
+# The socket the subcommands talk to. Uncomment this line when running under the systemd
+# unit: it passes --control-socket, and root has no $XDG_RUNTIME_DIR for `sendspin-cli
+# status` to derive the same path from -- so without it every subcommand has to repeat the
+# flag. It changes nothing about the daemon under that unit, whose own command line wins;
+# what it does is tell the subcommands where to look, so it must name the unit's path.
+#control-socket = /run/sendspin-cli/control.sock

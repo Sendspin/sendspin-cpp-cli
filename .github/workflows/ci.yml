@@ -308,9 +308,14 @@ jobs:
 
           kill -TERM "$client" "$publisher" 2>/dev/null || true
 
-      # A build output for trying a commit on real hardware, not an installation. `install()`
-      # rules, a systemd unit and distribution packages are roadmap item 10, and this tar is
-      # what that task replaces with a staged `cmake --install` payload.
+      # A build output for trying a commit on real hardware, staged by the same `install()`
+      # rules an operator would use. DESTDIR rather than `--prefix`, so every path in the
+      # archive is the path the file installs to: the unit's ExecStart is absolute and names the
+      # configure-time prefix, and `--prefix` would relocate the payload around it without
+      # changing what it says -- leaving a unit pointing at a binary the archive does not hold.
+      #
+      # `--component sendspin-cli` is what keeps the payload ours. Fetched dependencies declare
+      # install() rules of their own that no option turns off, and CMakeLists.txt says which.
       #
       # Tarred rather than handed to upload-artifact loose because the artifact is served as a
       # zip, and zip does not carry the executable bit -- an untarred binary would arrive
@@ -328,7 +333,7 @@ jobs:
           name="sendspin-cli-$version-$LEG"
 
           mkdir -p "stage/$name"
-          cp build/sendspin-cli README.md LICENSE "stage/$name/"
+          DESTDIR="$PWD/stage/$name" cmake --install build --component sendspin-cli
 
           cat >"stage/$name/BUILD-INFO.txt" <<INFO
           sendspin-cli $version for $LEG
@@ -338,31 +343,132 @@ jobs:
           Runtime packages this binary needs:
             $RUNTIME_PACKAGES
 
-          Unpack anywhere and run ./sendspin-cli --help. This is a build output rather than an
-          installation: install rules, a systemd unit and distribution packages are roadmap
-          item 10, and are not part of this archive.
+          Every path under usr/ here is where the file installs to, so it goes in with one
+          command from the directory holding the tarball:
+
+            sudo tar -xzf $name.tar.gz --strip-components=1 -C / $name/usr
+
+          Naming $name/usr is what leaves this file behind rather than unpacking it at /.
+
+          Or run it where you unpacked it: ./$name/usr/local/bin/sendspin-cli --help
+
+          This build is configured for the /usr/local prefix, which is why those paths are
+          what they are.
           INFO
 
           # Appended only where it applies, and carried inside the archive rather than left in
           # README alone: someone who unpacked this on a Mac and got told the developer cannot
           # be verified is holding the tarball, not the repository.
-          if [ "$RUNNER_OS" = "macOS" ]; then
-            cat >>"stage/$name/BUILD-INFO.txt" <<'MACOS'
+          if [ "$RUNNER_OS" = 'macOS' ]; then
+            cat >>"stage/$name/BUILD-INFO.txt" <<MACOS
 
           This binary is ad-hoc signed -- the minimum arm64 needs to run at all -- so it
           carries no developer identity and Gatekeeper has nothing to check it against.
-          Unpack with `tar -xzf` from a terminal, which does not propagate the quarantine
+          Unpack with \`tar -xzf\` from a terminal, which does not propagate the quarantine
           flag where Finder's Archive Utility does. If macOS refuses it anyway:
 
-            xattr -d com.apple.quarantine ./sendspin-cli
+            xattr -d com.apple.quarantine ./$name/usr/local/bin/sendspin-cli
 
-          A Developer ID signature and notarization are roadmap item 10, along with the .pkg
-          that lets the notarization be stapled.
+          A Developer ID signature and notarization belong to the macOS installer .pkg task,
+          along with the .pkg that lets the notarization be stapled.
           MACOS
+          else
+            cat >>"stage/$name/BUILD-INFO.txt" <<'LINUX'
+
+          The systemd unit is at usr/local/lib/systemd/system/sendspin-cli.service, which is
+          on systemd's own search path, so installing as above needs no copying:
+
+            sudo systemctl daemon-reload
+            sudo systemctl enable --now sendspin-cli
+
+          It runs the player as root, in the foreground, with its state in
+          /var/lib/sendspin-cli and its control socket in /run/sendspin-cli. Configure it in
+          /etc/sendspin-cli.conf; there is an annotated example beside the installed README,
+          under usr/local/share/doc/sendspin-cli. Its ExecStart names /usr/local/bin/sendspin-cli
+          absolutely, so a binary put anywhere else needs the unit changed to match.
+          LINUX
           fi
 
           tar -czf "$name.tar.gz" -C stage "$name"
           echo "name=$name" >>"$GITHUB_OUTPUT"
+
+      # What the payload holds, asserted rather than assumed -- the same check the configure
+      # output gets above, and for the same reason. Two things go wrong silently otherwise: a
+      # dependency that starts declaring install() rules on a SENDSPIN_GIT_TAG bump adds a
+      # static library and a tree of headers to a tarball nobody reads the manifest of, and a
+      # file dropped from our own install() rules leaves an archive that is merely smaller.
+      - name: Assert the payload holds exactly what it should
+        if: matrix.publish
+        env:
+          NAME: ${{ steps.package.outputs.name }}
+        run: |
+          expected=$(mktemp)
+          {
+            echo BUILD-INFO.txt
+            echo usr/local/bin/sendspin-cli
+            echo usr/local/share/doc/sendspin-cli/LICENSE
+            echo usr/local/share/doc/sendspin-cli/README.md
+            echo usr/local/share/doc/sendspin-cli/sendspin-cli.conf.example
+            # Installed on Linux alone: a systemd unit on a Mac is a file that can never run.
+            if [ "$RUNNER_OS" = 'Linux' ]; then
+              echo usr/local/lib/systemd/system/sendspin-cli.service
+            fi
+          } | sort >"$expected"
+
+          # `! -type d` rather than `-type f`, so a symlink into the payload is a difference
+          # rather than an invisible one.
+          actual=$(mktemp)
+          (cd "stage/$NAME" && find . ! -type d | sed 's|^\./||') | sort >"$actual"
+
+          echo 'What the payload holds:'
+          cat "$actual"
+          diff -u "$expected" "$actual" || {
+            echo '::error::the staged payload is not the file list this workflow expects'
+            exit 1
+          }
+
+          # And again from inside the archive that actually ships, since that is one `tar` away
+          # from the directory checked above and it is the artifact anybody downloads. The
+          # executable bit is asserted here too: it is the reason this is a tarball at all, the
+          # artifact being served as a zip that does not carry one.
+          # Directory entries dropped before the prefix is stripped, since both tars list them
+          # with a trailing slash -- including the archive's own top-level one, which would
+          # otherwise strip down to an empty line and read as a difference.
+          tar -tzf "$NAME.tar.gz" | grep -v '/$' | sed -n "s|^$NAME/||p" | sort >"$actual"
+          diff -u "$expected" "$actual" || {
+            echo '::error::the tarball does not hold what the staged payload does'
+            exit 1
+          }
+          [ -x "stage/$NAME/usr/local/bin/sendspin-cli" ] || {
+            echo '::error::the staged sendspin-cli is not executable'
+            exit 1
+          }
+
+      # The unit file is the one thing in the payload this matrix can check and no developer on
+      # macOS can, so it is checked here rather than read. Installed at the real prefix first,
+      # because `systemd-analyze verify` resolves ExecStart and reports a binary that is not
+      # there -- so this exercises the install rules at the prefix the unit names as well, which
+      # the staged payload above deliberately does not.
+      #
+      # Last, and after Package, because that is what keeps the ordering safe: a component
+      # install writes its manifest into the *build* directory, so a root-owned
+      # build/install_manifest_sendspin-cli.txt left here would make the unprivileged staging
+      # install above fail on EACCES. Unprivileged first, root over the top.
+      #
+      # No daemon is started and nothing is enabled: verify is a parse, and a runner has no
+      # sound card to play through anyway.
+      - name: Install at the real prefix and verify the systemd unit
+        if: runner.os == 'Linux'
+        run: |
+          sudo cmake --install build --component sendspin-cli
+          unit=/usr/local/lib/systemd/system/sendspin-cli.service
+          [ -f "$unit" ] || {
+            echo "::error::the install put no unit at $unit"
+            exit 1
+          }
+          echo "What was installed as $unit:"
+          cat "$unit"
+          systemd-analyze verify "$unit"
 
       - name: Upload
         if: matrix.publish
