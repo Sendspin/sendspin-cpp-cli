@@ -2,8 +2,8 @@ name: Release
 
 # A human tags; this publishes what that tag builds. Nothing here creates a tag, and there is
 # no second trigger -- no branch push, no pull request, no schedule, no `workflow_dispatch` --
-# so the only way to reach `gh release create` is to have pushed a `v*` tag. `ci.yml` ignores
-# tags for the same reason, leaving one workflow to answer for one tag.
+# so the only way to reach `gh release create` is to have pushed a `v*` tag. `ci.yml` filters on
+# branches and so never fires for a tag, leaving one workflow to answer for one tag.
 on:
   push:
     tags:

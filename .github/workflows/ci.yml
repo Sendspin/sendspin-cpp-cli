@@ -1,18 +1,26 @@
 name: CI
 
-# Unfiltered `push` as well as `pull_request` on purpose. The artifacts the build produces exist
-# so a change can be tried on a Pi or a Mac without building it there, and that only works if
-# every branch push produces them -- not just the ones that have a pull request open. The cost
-# is that a PR raised from a branch in this repo builds twice.
+# Every branch `push` as well as `pull_request` on purpose. The artifacts the build produces
+# exist so a change can be tried on a Pi or a Mac without building it there, and that only works
+# if every branch push produces them -- not just the ones that have a pull request open. The
+# cost is that a PR raised from a branch in this repo builds twice.
 #
 # Except tags, which belong to release.yml. Both workflows call the same build, and the
 # `concurrency` group below is keyed by workflow name, so nothing would collapse the pair: a
 # `v*` push would otherwise run the matrix twice over and report two statuses for one tag.
-# `tags-ignore` rather than a positive `branches` filter, so the sentence above stays "every
-# branch push, except --" instead of a list a reader has to check is exhaustive.
+#
+# The `branches` filter is what excludes them, and the rule behind it cuts both ways. A `push`
+# naming only branch filters does not fire for tags at all -- that is the whole of how a tag is
+# left to release.yml -- and the mirror of that rule is a trap worth naming: a `push` naming only
+# `tags` or `tags-ignore` does not fire for *branches*, so `tags-ignore: '**'` reads like
+# "everything except tags" and means "nothing at all".
+#
+# `'**'` and not `'*'`, because only the doubled form matches a `/`, and the branches here carry
+# two apiece. `'*'` would be this same bug wearing a better disguise: main would build and no
+# task branch would.
 on:
   push:
-    tags-ignore:
+    branches:
       - '**'
   pull_request:
 

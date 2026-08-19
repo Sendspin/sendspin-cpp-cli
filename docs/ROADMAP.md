@@ -1046,13 +1046,14 @@ operator to choose between `Type=simple` and `Type=forking` and write the unit t
   tee` returns 0 on a failed configure, and the assertion after it greps a truncated log —
   both callers green on a build that never configured. A fail-open gate is worse than no gate,
   which is the argument the shellcheck job at the top of `ci.yml` already makes.
-- **`ci.yml` gained a `tags-ignore`, and that is the whole of its *behavioural* change** —
-  the rest of its diff is the matrix moving out to `build.yml`. Its `push` was
+- **`ci.yml` gained a ref filter on its `push`, and that is the whole of its *behavioural*
+  change** — the rest of its diff is the matrix moving out to `build.yml`. Its `push` was
   unfiltered on purpose, and a `v*` push would otherwise have run the matrix twice over and
   reported two statuses for one tag — the `concurrency` group is keyed by workflow name, so
-  nothing collapses the pair. `tags-ignore` rather than a positive `branches: ['**']` filter,
-  so the existing "every branch push, on purpose" comment stays true with an exception named
-  rather than being rewritten as a list a reader has to check is exhaustive.
+  nothing collapses the pair. The filter is `branches: ['**']`, which is what excludes tags: a
+  `push` filtered on one kind of ref does not fire for the other kind at all. The inverse
+  spelling, `tags-ignore: ['**']`, reads like the same sentence but is that rule the other way
+  around, and stops branch pushes firing at all.
 - **Fail closed, in two places, because `needs:` only covers one of them.** `needs: build`
   catches a leg that went red. What it does not catch is a leg that went green *while
   publishing nothing* — `Upload` is `if: matrix.publish`, and `if-no-files-found: error`
@@ -1374,9 +1375,9 @@ on a null-sink-only, mDNS-less binary. The three platform legs additionally run 
 test and upload the binary they built, kept 14 days.
 
 The matrix itself lives in `.github/workflows/build.yml`, called by `ci.yml` and by item 10's
-`release.yml` alike, so one definition answers for both paths; `ci.yml` carries a
-`tags-ignore` so a tag push builds once rather than twice. See item 10 for why that split is
-a reusable workflow rather than a composite action.
+`release.yml` alike, so one definition answers for both paths; `ci.yml` filters its `push` to
+`branches: ['**']`, which excludes tags, so a tag push builds once rather than twice. See item
+10 for why that split is a reusable workflow rather than a composite action.
 
 The unit harness is item 1's and unchanged: GoogleTest via `FetchContent` pinned to a tag,
 wired to CTest with `gtest_discover_tests()`, defaulting ON only when this is the top-level
