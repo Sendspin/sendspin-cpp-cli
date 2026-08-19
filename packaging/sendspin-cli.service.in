@@ -1,0 +1,76 @@
+# sendspin-cli as a system service.
+#
+# `cmake --install` puts this in <prefix>/lib/systemd/system, which systemd already searches
+# for both /usr and the default /usr/local prefix, so there is nothing to copy by hand:
+#
+#   systemctl daemon-reload
+#   systemctl enable --now sendspin-cli
+#
+# ExecStart names the prefix the build was configured for, so a unit installed from one prefix
+# cannot start a binary from another.
+#
+# Anything this player needs beyond its defaults belongs in /etc/sendspin-cli.conf rather than
+# in a drop-in over ExecStart: every config key is a long flag name, so there is nothing a
+# command line can say that the file cannot. See sendspin-cli.conf.example, installed beside
+# the README. The two flags below are the exception -- they describe the directories this unit
+# creates rather than anything an operator chose -- and because the command line beats the
+# file, `state-dir` or `control-socket` in a config are silently ignored by *this* process.
+# Setting `control-socket` in the config to the same path is still worth doing: that is what a
+# subcommand reads to find this socket, which is why the example file suggests it.
+#
+# `sendspin-cli status` and the other subcommands need `sudo` here: the control socket is
+# mode 0600 and this service is root's, so an unprivileged shell cannot connect to it.
+#
+# Needs systemd 235 or newer, which is where StateDirectory= and the %S specifier arrived
+# (RuntimeDirectory= and %t are older). Debian 10 shipped 241, so every distribution this
+# player plausibly runs on is well past it.
+
+[Unit]
+Description=Sendspin audio player
+Documentation=https://github.com/chrisuthe/sendspin-cpp-cli
+# network.target rather than network-online.target: the player retries its mDNS advertisement
+# and an -s dial on a backoff, so it comes up perfectly well ahead of the network -- and
+# network-online.target delays every boot to buy nothing here. sound.target is ordering only
+# and says nothing about a device being ready; Restart= below is what covers that.
+After=network.target sound.target
+# Ordering only, and deliberately no Wants=: a failed advertisement is warned about and
+# retried rather than fatal, so a host whose operator turned avahi-daemon off should stay that
+# way instead of having this unit pull it back in.
+After=avahi-daemon.service
+
+[Service]
+# Foreground, which is what README documents as the primary shape: journald captures stderr,
+# so -z buys nothing and -f would put the log somewhere logrotate has to be told about.
+# Type=notify is not an option -- sd_notify is not wired up -- and Type=forking with PIDFile=
+# pointing at -P is the alternative for a supervisor that has no journal.
+Type=simple
+
+# No User= and no hardening block, so this runs as root -- its WebSocket server included, and
+# that listens on the network. A deliberate default rather than an oversight: a tarball has no
+# postinst to create a dedicated user with, and root already has the sound card (/dev/snd is
+# root:audio 0660), the mDNS daemon and /run without anything having to be arranged. A
+# `systemctl edit sendspin-cli` drop-in is where to change it; README says what one owes.
+
+# %t and %S are the two directories the lines below create -- /run and /var/lib for a system
+# unit -- and each flag is here because a system unit has neither of the environment variables
+# the default path would come from: no $XDG_RUNTIME_DIR for the socket, no $XDG_STATE_HOME for
+# what the player remembers. Unpaired, the socket is skipped with a warning and the volume,
+# mute and static delay are forgotten on every restart.
+ExecStart=@SENDSPIN_CLI_INSTALLED_BINARY@ --control-socket %t/sendspin-cli/control.sock --state-dir %S/sendspin-cli
+RuntimeDirectory=sendspin-cli
+StateDirectory=sendspin-cli
+
+# on-failure rather than always: a clean exit here means SIGTERM, which is `systemctl stop` or
+# a shutdown, and neither wants the player back. A device that is not ready yet exits non-zero,
+# which is exactly what the delay is for.
+#
+# A config file that does not parse exits non-zero too, and this retries it every 5s
+# indefinitely -- systemd's default start limit is 5 starts in 10s, which one every 5s never
+# trips. That is the wanted end of it rather than an oversight: the parse error names the file
+# and its line in the journal on every attempt, and an operator who fixes the file gets a player
+# back without also having to `systemctl reset-failed` a unit that gave up.
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
