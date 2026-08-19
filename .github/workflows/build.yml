@@ -42,8 +42,9 @@ jobs:
       # `publish` and `avahi` are spelled out on every leg, false included: an `if:` reads a
       # missing key as false, so a leg that simply omitted one would quietly stop publishing
       # and still go green. A new leg owes both -- and a `publish: true` leg owes a third thing
-      # in another file: an entry in the archive set release.yml asserts before it publishes,
-      # which otherwise fails the release with a diff rather than a reason.
+      # in another file: an entry in the asset set release.yml asserts before it publishes,
+      # which otherwise fails the release with a diff rather than a reason. A publishing *macOS*
+      # leg owes two entries there, its tarball and the installer .pkg built further down.
       matrix:
         include:
           - name: linux-x86_64
@@ -358,8 +359,11 @@ jobs:
 
             xattr -d com.apple.quarantine ./$name/usr/local/bin/sendspin-cli
 
-          A Developer ID signature and notarization belong to the macOS installer .pkg task,
-          along with the .pkg that lets the notarization be stapled.
+          There is an installer .pkg beside this tarball in the same build, and on every
+          release, holding the same files. It is unsigned too, and it is not the Gatekeeper
+          fix -- what it fixes is that \`installer\` makes no assessment at all, and that it
+          is the shape a notarization ticket can later be stapled to. A Developer ID
+          signature and notarization are still owed; see README.md.
           MACOS
           else
             cat >>"stage/$name/BUILD-INFO.txt" <<'LINUX'
@@ -380,6 +384,10 @@ jobs:
 
           tar -czf "$name.tar.gz" -C stage "$name"
           echo "name=$name" >>"$GITHUB_OUTPUT"
+          # Carried out of this step rather than derived again by the installer step below: the
+          # version is read off the binary above, and reading it twice is two things to keep
+          # agreeing about what this build is called.
+          echo "version=$version" >>"$GITHUB_OUTPUT"
 
       # What the payload holds, asserted rather than assumed -- the same check the configure
       # output gets above, and for the same reason. Two things go wrong silently otherwise: a
@@ -439,10 +447,12 @@ jobs:
       # there -- so this exercises the install rules at the prefix the unit names as well, which
       # the staged payload above deliberately does not.
       #
-      # Last, and after Package, because that is what keeps the ordering safe: a component
-      # install writes its manifest into the *build* directory, so a root-owned
+      # After Package, because that is what keeps the ordering safe: a component install writes
+      # its manifest into the *build* directory, so a root-owned
       # build/install_manifest_sendspin-cli.txt left here would make the unprivileged staging
-      # install above fail on EACCES. Unprivileged first, root over the top.
+      # install above fail on EACCES. Unprivileged first, root over the top. The macOS steps
+      # below are the same hazard's other half and sit after Package for the same reason,
+      # though `installer` writes to /usr/local rather than into the build tree.
       #
       # No daemon is started and nothing is enabled: verify is a parse, and a runner has no
       # sound card to play through anyway.
@@ -459,6 +469,108 @@ jobs:
           cat "$unit"
           systemd-analyze verify "$unit"
 
+      # The macOS half of the same idea: the payload staged above, wrapped into the installer
+      # anybody on a Mac would rather double-click than untar. `scripts/build_macos_pkg.sh` owns
+      # how, and is a script rather than lines here so a developer can build the same .pkg from
+      # the same payload without a runner -- and so ci.yml's shellcheck job already gates it.
+      #
+      # Here rather than in ci.yml because this file is what release.yml calls too: the .pkg is a
+      # release asset, and an installer only a branch push produced would be exactly the seam the
+      # no-inputs comment at the top of this file refuses.
+      - name: Build the macOS installer .pkg
+        if: matrix.publish && runner.os == 'macOS'
+        env:
+          NAME: ${{ steps.package.outputs.name }}
+          VERSION: ${{ steps.package.outputs.version }}
+        run: scripts/build_macos_pkg.sh "stage/$NAME" "$VERSION" "$NAME.pkg"
+
+      # An installer nobody installed is not shipped, and item 10 named this the untested half
+      # of the payload. So the .pkg goes in at `/` on the runner and the checks are made of what
+      # came out: the file list from its own receipt, then the installed binary answering
+      # --version, then the whole smoke suite against it rather than against build/sendspin-cli.
+      #
+      # `pkgutil --files` prints paths relative to the receipt's install location -- /usr/local,
+      # not `/` -- so this expected list is shorter than the tarball's above rather than a copy
+      # of it. `._`-prefixed siblings are dropped, and the filter is written to be right whether
+      # or not they are there: macOS stamps every payload file with a com.apple.provenance
+      # extended attribute that cannot be removed (`xattr -c` is undone before the next stat) and
+      # pkgbuild carries extended attributes as AppleDouble members, so they are expected today
+      # -- but a pkgbuild that stops emitting them leaves this a no-op rather than a red leg,
+      # where an expected list naming them would break. installer folds them back into attributes
+      # either way, so none of it reaches disk. The macOS tarball assertion above needs no such
+      # filter, which is the corroboration that this is pkgbuild's doing and not the payload's.
+      #
+      # Last among the macOS steps for the sibling of the reason the Linux install above is: the
+      # payload assertion reads `stage/`, and this writes the same four files to the paths they
+      # install to. It also runs the smoke suite a second time, which the fixed ports 39281-39288
+      # require be sequential with the first.
+      - name: Install the .pkg and verify what it put on disk
+        if: matrix.publish && runner.os == 'macOS'
+        env:
+          NAME: ${{ steps.package.outputs.name }}
+          VERSION: ${{ steps.package.outputs.version }}
+          # Spelled out here as well as in the script, deliberately. It is the string an operator
+          # types to `pkgutil --forget`, so changing it orphans every receipt already on disk --
+          # naming it independently is what makes that a change somebody has to mean, rather than
+          # one that follows an edit to the script and goes green.
+          IDENTIFIER: io.github.chrisuthe.sendspin-cli
+        run: |
+          sudo installer -pkg "$NAME.pkg" -target /
+
+          echo 'What the receipt says was installed:'
+          pkgutil --pkg-info "$IDENTIFIER"
+
+          # The version is threaded from the Package step rather than derived again here, so it
+          # is read back off the receipt to check it arrived. An empty one cannot reach this far
+          # -- build_macos_pkg.sh refuses it, rather than letting both sides of this comparison
+          # be the same empty string.
+          info="$(pkgutil --pkg-info "$IDENTIFIER")"
+          version="$(printf '%s\n' "$info" | sed -n 's|^version: ||p')"
+          [ "$version" = "$VERSION" ] || {
+            echo "::error::the receipt names version '$version', not '$VERSION'"
+            exit 1
+          }
+
+          # Slashes trimmed at both ends before comparing: pkgutil prints a receipt's location
+          # relative to the volume and with a trailing slash -- `Library/Apple/` -- and the two
+          # spellings mean the same directory.
+          location="$(printf '%s\n' "$info" | sed -n 's|^location: ||p' | sed 's|^/*||; s|/*$||')"
+          [ "$location" = 'usr/local' ] || {
+            echo "::error::the receipt installs into '$location', not usr/local"
+            exit 1
+          }
+
+          expected=$(mktemp)
+          {
+            echo bin/sendspin-cli
+            echo share/doc/sendspin-cli/LICENSE
+            echo share/doc/sendspin-cli/README.md
+            echo share/doc/sendspin-cli/sendspin-cli.conf.example
+          } | sort >"$expected"
+
+          # Echoed raw before anything filters or sorts it, the way the configure and payload
+          # assertions above print what they are about to judge: if the flag or the identifier is
+          # wrong, the pipeline below dies on pipefail and this is the only thing that says why.
+          echo 'What the receipt lists, unfiltered:'
+          pkgutil --files "$IDENTIFIER"
+
+          actual=$(mktemp)
+          pkgutil --files "$IDENTIFIER" --only-files | grep -Ev '(^|/)\._' | sort >"$actual"
+
+          echo 'What the installed package holds:'
+          cat "$actual"
+          diff -u "$expected" "$actual" || {
+            echo '::error::the installed .pkg is not the file list this workflow expects'
+            exit 1
+          }
+          [ -x /usr/local/bin/sendspin-cli ] || {
+            echo '::error::the installed sendspin-cli is not executable'
+            exit 1
+          }
+
+          /usr/local/bin/sendspin-cli --version
+          scripts/smoke_test.sh /usr/local/bin/sendspin-cli
+
       - name: Upload
         if: matrix.publish
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
@@ -469,5 +581,21 @@ jobs:
           # every branch do not accumulate. This artifact is never itself a release: on a tag
           # it is how the tarball reaches release.yml's release job, which attaches it to a
           # release of its own and leaves this copy to expire on the same clock.
+          retention-days: 14
+          if-no-files-found: error
+
+      # A second step rather than a second path on the one above, because `if-no-files-found:
+      # error` is wanted on both and a .pkg path there would fail every Linux leg. The artifact
+      # name has to differ from the tarball's for the same reason it is a step of its own:
+      # upload-artifact refuses to write two artifacts under one name.
+      #
+      # release.yml names this file in the asset set it asserts before it publishes, which is the
+      # third thing the matrix comment above says a publishing leg owes.
+      - name: Upload the macOS installer
+        if: matrix.publish && runner.os == 'macOS'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ${{ steps.package.outputs.name }}-installer
+          path: ${{ steps.package.outputs.name }}.pkg
           retention-days: 14
           if-no-files-found: error

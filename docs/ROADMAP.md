@@ -902,7 +902,7 @@ Deliberately **not** here, and each one names its owner rather than being left i
 Image and compose file. ALSA with `/dev/snd` passed through for real output, and the
 null sink for device-less containers and CI.
 
-### 10. Packaging — *shipped (install rules, the unit, the CI payload, the tagged release; the macOS `.pkg` still owed)*
+### 10. Packaging — *shipped (install rules, the unit, the CI payload, the tagged release, the macOS `.pkg`; signing still owed)*
 
 Nothing in this tree could be installed. `cmake --build` left the binary where it built it, and
 `.github/workflows/ci.yml` hand-rolled a tarball around it with three `cp` paths inside a
@@ -911,8 +911,8 @@ everything a unit file needs and then stopped at *documenting* it, so `README.md
 operator to choose between `Type=simple` and `Type=forking` and write the unit themselves.
 
 **Shipped** in `CMakeLists.txt`, `packaging/sendspin-cli.service.in`,
-`packaging/sendspin-cli.conf.example`, `.github/workflows/{build,ci,release}.yml` and
-`README.md`:
+`packaging/sendspin-cli.conf.example`, `scripts/build_macos_pkg.sh`,
+`.github/workflows/{build,ci,release}.yml` and `README.md`:
 
 - **A staged `cmake --install` plus an explicit `tar`, and no CPack.** The per-leg archive name
   is not what decides it — `CPACK_PACKAGE_FILE_NAME` handles that. It is the payload's
@@ -1057,8 +1057,9 @@ operator to choose between `Type=simple` and `Type=forking` and write the unit t
   catches a leg that went red. What it does not catch is a leg that went green *while
   publishing nothing* — `Upload` is `if: matrix.publish`, and `if-no-files-found: error`
   catches an empty upload rather than an absent one, while `download-artifact` matching nothing
-  is an empty directory rather than an error. So the release job names the three archives it
-  expects and diffs the set, in the shape the payload assertions already use. Only the set: each
+  is an empty directory rather than an error. So the release job names the assets it expects and
+  diffs the set, in the shape the payload assertions already use — three tarballs and, since the
+  third slice below, the macOS `.pkg`. Only the set: each
   archive's own file list was diffed twice inside the build, and re-opening them here would be
   the duplication this split exists to avoid.
 - **Created as a draft, published only once the API says every asset arrived.** `gh release
@@ -1097,11 +1098,11 @@ operator to choose between `Type=simple` and `Type=forking` and write the unit t
 - **`SHA256SUMS` is generated from inside the directory** so its entries are bare filenames:
   `sha256sum -c` resolves paths relative to the working directory, and a file naming `dist/…`
   is one a downloader cannot use without knowing that. The notes give the macOS spelling
-  (`shasum -a 256 -c`) beside the Linux one, one of the three archives being macOS-only, and
+  (`shasum -a 256 -c`) beside the Linux one, two of the four assets being macOS-only, and
   say out loud that the checksums do not cover the `Source code` archives GitHub attaches on
   its own. Both are given with `--ignore-missing`, which is not a detail: `SHA256SUMS` lists
-  all three archives and a reader has almost certainly taken one, so the bare form reports the
-  other two as failures and exits non-zero on a file that is perfectly good. Supported by GNU
+  all four and a reader has almost certainly taken one, so the bare form reports the
+  rest as failures and exits non-zero on a file that is perfectly good. Supported by GNU
   coreutils and by macOS's Perl `shasum` alike, both checked rather than assumed.
 - **The notes are written by hand, not `--generate-notes`.** On a first tag that emits every
   merged PR since the initial commit as a flat list, there is no `.github/release.yml` taxonomy
@@ -1116,38 +1117,150 @@ operator to choose between `Type=simple` and `Type=forking` and write the unit t
   cancel a run midway through uploading assets, which is the exact partial state the draft
   gate above exists to prevent. A tag is pushed once; there is no superseded run to collapse.
 
+**The macOS installer `.pkg`**, the third slice, in `scripts/build_macos_pkg.sh`, the
+`build.yml` both callers share, and `release.yml`:
+
+- **The macOS `.pkg` wraps that payload rather than restating it**, in
+  `scripts/build_macos_pkg.sh`. The staged `DESTDIR` tree is the input, so the installer ships
+  exactly the files the `install()` rules do and cannot drift from the tarball published beside
+  it; nothing is compiled, fetched or installed, and given a staged tree it runs offline in a
+  second. A script and not lines in `build.yml` for two reasons: an installer has to be
+  buildable and *installable* by a developer with no runner, and `scripts/*.sh` is already
+  gated by `ci.yml`'s `shellcheck` job, so the file arrives linted with no workflow change.
+- **It lives in `build.yml`, the shared build, not in `ci.yml`.** That is the whole of the
+  re-homing this slice owes the second one, and it falls out of what the reusable workflow is
+  for: `build.yml` takes no inputs precisely so a release is gated on what a push is gated on,
+  and an installer that only a push produced would be the seam that claim warns about. One
+  definition therefore builds it, installs it and asserts it on both paths, and `release.yml`
+  attaches what that build hands it.
+- **`pkgbuild --root <payload>/usr/local --install-location /usr/local`,** not a root one level
+  up paired with `/usr`. The staged tree carries `BUILD-INFO.txt` beside `usr/` for the
+  tarball's readers, and the wider root would install that file at `/` — excluded structurally,
+  by where the root points, rather than by a filter a later tidy-up can drop. The tighter pair
+  also declares the one directory this package writes, instead of nominally claiming a
+  SIP-protected `/usr`. `--ownership recommended` is pkgbuild's default and is named anyway,
+  because it is what makes the installed files `root:wheel`: the staged payload is owned by
+  whoever ran `cmake --install`, and `preserve` would file a build user's uid into the receipt.
+  The destination is `/usr/local` and not `/opt` because it is not a free choice — the prefix is
+  baked in at configure time, and the install rules above already chose it.
+- **`productbuild` over the component package, for two things a component package cannot do.**
+  It has no architecture gate, so an arm64-only installer reports success on an Intel Mac and
+  leaves the user a binary that answers `Bad CPU type in executable`; `<options
+  hostArchitectures>` is the declarative gate, and the value is read off the binary with
+  `lipo -archs` rather than passed in — so a universal build widens the installer by itself and
+  a per-arch one stays refused where it could only fail. And distribution panes are a
+  product-archive feature, so a component package has nowhere to say the installer is unsigned
+  at the moment somebody is deciding whether to run it. Two independent reasons is what earns
+  the extra layer. The distribution XML is generated rather than checked into `packaging/`,
+  because three of its fields — version, the component's filename, the architectures — are
+  computed by the script, and a template would be a second place to look for values it already
+  holds. `<product>` carries that same identifier and version rather than a second one nobody
+  types, which is what makes Installer refuse to put this over an install that is already newer.
+  No `<license>` pane: `LICENSE` ships inside the payload either way, so the only difference
+  would be a click-through Agree gate the tarball does not have.
+- **The version is an argument, and an empty one is refused.** It is read off the binary once,
+  in `build.yml`'s `Package` step, and carried to the installer step through `$GITHUB_OUTPUT`
+  rather than derived a second time — the same "one mechanism, not two" the CPack decision
+  above turns on.
+  `build_macos_pkg.sh` rejects an empty version rather than letting `pkgbuild` file a receipt
+  with nothing in it, because the assertion downstream compares the receipt against the value
+  that was passed: without the guard, a dropped output would leave both sides equal and empty
+  and the check would pass on an installer that had lost its version.
+- **The receipt is `io.github.chrisuthe.sendspin-cli`.** A namespace this repository actually
+  owns, rather than an `io.sendspin.*` or Open Home Foundation one it does not — the same
+  manners the component argument above makes of ArduinoJson. `sendspin-cli` and not
+  `sendspin-cpp-cli` for the reason the doc directory is named that way: everything anyone
+  types is the binary's name, and this string is typed, by an operator running
+  `pkgutil --forget`. Moving the repository under the Sendspin org would change it, and
+  changing it orphans the receipt of every install before the change rather than upgrading it.
+- **The `.pkg` is shipped honestly, and the installer says so itself.** It is unsigned and
+  unnotarized; `spctl -a -t install` rejects it exactly as `spctl -a -t exec` rejects the
+  ad-hoc-signed binary inside. The welcome pane carries that, what gets installed, and how to
+  undo it. `README.md` separates the four ways a reader can come by the file, because they
+  genuinely differ: taken from a release page the `.pkg` *is* the download, so it is quarantined
+  and Gatekeeper refuses it outright; taken from the Actions tab it arrives inside a *zip*, so
+  the flag lands on the zip and the `.pkg` inherits it only from Finder's Archive Utility and
+  not from `unzip` — the same distinction the tarball paragraph above it already draws; a
+  locally built one is never quarantined at all; and `installer -pkg` makes no Gatekeeper
+  assessment whatever the file is flagged with, which is what lets CI install its own artifact.
+  The release notes say the same in short, which is where a reader deciding whether to download
+  actually is. What the `.pkg` *does* fix is narrow and is named as such: `installer` does not
+  quarantine what it writes, so the installed binary needs no `xattr -d` where a Finder-unpacked
+  tarball's does. That is convenience, not identity.
+- **The build installs the `.pkg` at `/` and checks what came out**, on a push and on a tag
+  alike, because item 10's first slice named this the untested half of the payload and an
+  installer nobody installed is not shipped. The
+  receipt's own file list is diffed against the four paths it should hold, its `version:` and
+  `location:` are asserted so the version threaded through rather than defaulted, and then the
+  installed binary answers `--version` and runs the whole of `scripts/smoke_test.sh` — the same
+  suite the build tree's binary runs, pointed at `/usr/local/bin/sendspin-cli` instead. The two
+  runs are sequential rather than parallel: the suite binds fixed ports 39281-39288.
+  `pkgutil --files` prints paths relative to the receipt's install location, so that expected
+  list is `bin/sendspin-cli` and friends rather than a copy of the tarball's absolute one.
+  `._`-prefixed siblings are filtered, with the reason at the filter: macOS stamps every payload
+  file with a `com.apple.provenance` extended attribute that cannot be removed — `xattr -c` is
+  undone before the next `stat` — `pkgbuild` carries extended attributes as AppleDouble members,
+  and `installer` folds them back into attributes rather than leaving files on disk.
+- **The installer is a second artifact, not a second path on the tarball's upload.**
+  `if-no-files-found: error` is wanted on both, and a `.pkg` path on the existing step would
+  fail every Linux leg; `upload-artifact` also refuses two artifacts under one name, so the
+  macOS leg publishes `…-macos-arm64` and `…-macos-arm64-installer`.
+- **`release.yml` names it in both asset sets, which is the third thing a new build output
+  owes.** The matrix comment in `build.yml` says so already: the release job diffs what
+  `download-artifact` handed it against a set spelled out by hand, and diffs the draft's assets
+  read back from the API against the same set before publishing. An output nobody added there
+  fails a release with a diff rather than a reason, and this one is not per-leg — three
+  tarballs and one `.pkg` — so the sets are no longer a loop over the legs. `SHA256SUMS` covers
+  it too: a release asset a downloader cannot verify is worse than one that is not there, and
+  the notes' `--ignore-missing` advice was already the reason a reader can check just the one
+  file they took.
+
 **Not in this slice**, each with its owner named rather than implied:
 
-- **The macOS `.pkg`, Developer ID signing and notarization** → the macOS installer `.pkg` task,
-  also blocked on this one, and none of that analysis has changed. The binaries are ad-hoc signed —
-  `codesign` reports `adhoc, linker-signed`, the minimum an arm64 Mach-O needs to execute at
-  all and no identity — so `spctl -a -t exec` rejects them and `README.md` still answers with
-  `xattr -d com.apple.quarantine`, which is a workaround rather than a fix. Clearing it needs a
-  Developer ID Application certificate (a paid enrolment) and notarization, and the part that
-  decides the `.pkg` belongs *here*: `xcrun stapler` takes `.app`, `.dmg` and `.pkg` and
-  **refuses a bare Mach-O**, so notarizing the loose binary alone would still leave Gatekeeper
-  asking Apple on first run — no good for an offline Pi or Mac. A public repo also gets no
-  secrets on a pull request from a fork, so any signing step has to be conditional rather than
-  assumed. The `DESTDIR` payload above is that task's input.
+- **Developer ID signing and notarization** → a task of their own, **gated on an enrolment that
+  has not happened**, and none of the analysis has changed — only the artifact it applies to now
+  exists. Everything shipped is ad-hoc signed: `codesign` reports `adhoc, linker-signed`, the
+  minimum an arm64 Mach-O needs to execute at all and no identity, so `spctl -a -t exec` rejects
+  the binary and `spctl -a -t install` rejects the `.pkg` around it. Clearing that needs a
+  Developer ID Application certificate and a Developer ID *Installer* certificate — a paid
+  enrolment — and notarization; `README.md` still answers with `xattr -d com.apple.quarantine`
+  and the Privacy & Security override, which are workarounds rather than fixes. The part that
+  decided the `.pkg` belongs here rather than there, and is now discharged: `xcrun stapler`
+  takes `.app`, `.dmg` and `.pkg` and **refuses a bare Mach-O**, so notarizing the loose binary
+  alone would still leave Gatekeeper asking Apple on first run — no good for an offline Pi or
+  Mac. The `.pkg` this slice produces is the artifact that ticket will staple to. Nothing was
+  stubbed for it: `scripts/build_macos_pkg.sh` grows a `--sign` on its two calls, or a
+  `productsign` over the finished archive, and no placeholder branch waits in the tree for it.
+  A public repo also gets no secrets on a pull request from a fork, so that step has to be
+  conditional rather than assumed — which is why it is not written until there is an identity
+  to write it against.
+- **A minimum-macOS gate on the `.pkg`** → owed with the signing task, **no task open for it
+  yet**. The architectures are derived from the binary and declared, and the deployment target
+  is the asymmetry: nothing sets `CMAKE_OSX_DEPLOYMENT_TARGET`, so the binary's `minos` is
+  whatever the runner's SDK defaulted to, and `<options>` carries no OS floor to match the
+  `hostArchitectures` one. Same class of failure as the arch gate — an install that reports
+  success and then cannot run — and the same declarative remedy, but it wants the deployment
+  target pinned first, which is a build decision rather than a packaging one.
 - **A dedicated user and a hardening block** → owed together, with **no task open for them yet**;
   `README.md` says the same. Mostly *verifiable in CI* rather than needing hardware: a runner
   boots the whole daemon under `-o null` today, so every directive except the ones that gate
   `/dev/snd` can be tried there. Kept separate because it is a behaviour change to a unit that
   currently works.
-- **A drift guard on the version strings in `README.md`,** with **no task open for it yet**.
-  Three places spell an archive name out in full — `sendspin-cli-0.1.0-linux-x86_64` and its
-  macOS twin — and nothing checks them against `project(VERSION)`. They are correct for the
-  first release and rot silently at 0.2.0. The release notes avoid the same trap by
-  interpolating the version they were built from, and the same fix would suit here: generate
-  the examples, or assert them. Named rather than left to be noticed, since the version is now
-  a thing a tag agrees with.
+- **A drift guard on the version strings in `README.md`,** with **no task open for it yet**, and
+  worth more now than when it was first named. Several places spell an artifact name out in
+  full — `sendspin-cli-0.1.0-linux-x86_64`, its macOS twin, and the `.pkg` and
+  `build_macos_pkg.sh` lines the third slice below added — and nothing checks any of them
+  against `project(VERSION)`. They are correct for the first release and rot at 0.2.0. The
+  release notes avoid the same trap by interpolating the version they were built from, and the
+  same fix would suit here: generate the examples, or assert them. Named rather than left to be
+  noticed, since the version is now a thing a tag agrees with.
 - **A drift guard on `packaging/sendspin-cli.conf.example`.** Item 8's "one vocabulary" claim
   means every key in that file is a long flag name, and nothing enforces it — a renamed flag
   would leave a shipped example that stops a player with an unknown-key error. It was checked by
   hand this time (see below). The cheap fix is a test that uncomments the file and feeds it
   through `config_file`, and it needs the source path handing to the suite.
 - **`.deb`, Homebrew and AUR** are not planned at all. The sanctioned set stays the tarball
-  payload, the unit, item 9's Docker image and this item's later `.pkg`.
+  payload, the unit, item 9's Docker image and this item's macOS `.pkg`.
 - **Docker** is item 9's, and is unaffected: it builds the binary rather than consuming a
   payload.
 
@@ -1181,13 +1294,12 @@ deliberately broken `/etc/sendspin-cli.conf` was left in place for a minute and 
 shipped example config was checked the same way, every commented line uncommented: all eight keys
 and values are accepted, the run gets as far as the sound card the container does not have.
 
-**Three things that were not exercised and are worth knowing.** No hardening directive was tried,
-which is why none ships. No audio came out of a unit — the container has no `/dev/snd`, so
+**Two things that were not exercised and are worth knowing.** No hardening directive was tried,
+which is why none ships. And no audio came out of a unit — the container has no `/dev/snd`, so
 `Type=simple` under systemd is proven to *start*, log, serve its socket and stop cleanly, but the
-ALSA path under it is inference from a foreground run. And the `.pkg`-facing half of the payload
-is untested beyond its layout: the macOS legs stage and upload it, nothing installs from it.
+ALSA path under it is inference from a foreground run.
 
-**A fourth, for the release slice: `release.yml` has never run.** Everything asserted about it
+**A third, for the release slice: `release.yml` has never run.** Everything asserted about it
 above is reasoning plus a local dry run, not a release. What *was* exercised, on macOS against
 this branch: `actionlint` over all three workflows with `shellcheck` present, so the `run:`
 blocks are linted; the preflight's tag and version checks driven through their accepting and
@@ -1202,6 +1314,36 @@ rests on `gh`'s list-and-match fallback), that `download-artifact`'s `merge-mult
 files out flat as read here, and that the release job's narrowed `permissions` still let it
 reach the artifact service. A throwaway tag on a fork is what would settle all three, and is
 worth doing before `v0.1.0` rather than after.
+
+**The `.pkg` was closed out the same way, and it is no longer the untested half of the payload.**
+Locally on macOS 26.6 (arm64), against this branch's own build: the payload staged with `DESTDIR`,
+`scripts/build_macos_pkg.sh` writing an installer whose BOM holds exactly the four expected files
+— `com.apple.provenance` proving unstrippable on the way, which is where the `._` filter and its
+comment come from — whose `Distribution` carries `hostArchitectures="arm64"` read off the binary,
+and whose welcome pane reads back as written. `shellcheck` and `actionlint` clean. The guard
+paths were tried rather than assumed: a wrong argument count, an empty version and a payload root
+with no binary each fail with the message that names the fix. The universal case was tried rather
+than reasoned about too — a real fat binary (`clang -arch arm64 -arch x86_64`) staged as the
+payload widens the declaration to `hostArchitectures="x86_64,arm64"` by itself, which is the
+claim the `lipo` line is there to make. `spctl -a -t install` was run rather than predicted, and
+rejects the archive with `no usable signature`, as `codesign -dv` reports `adhoc, linker-signed`
+on the binary inside — the two sentences the honesty paragraphs rest on. The smoke suite passes
+against a staged-payload binary outside the build tree, which is the shape the installed run
+takes. What a developer's Mac cannot prove without `sudo` is the install itself, and that is
+precisely what the shared build now does on every push **and every tag** —
+`installer -pkg` at `/`, the receipt's file list, version and location asserted, then `--version`
+and the full smoke suite against `/usr/local/bin/sendspin-cli`. The one thing an arm64 runner
+cannot demonstrate is the *refusal* on an Intel Mac, so the architecture **declaration** is what
+is asserted instead.
+
+The `release.yml` half was driven the way the release slice drove its own, against the real `.pkg`
+and a stubbed `gh`: the completeness assertion passes on the four-file set and fails on a macOS
+leg that published only its tarball and on an unexpected extra file; the checksum step writes four
+bare names and, with no `.pkg` staged, fails on the literal glob rather than quietly checksumming
+three; `shasum -a 256 --ignore-missing -c` verifies a directory holding only the two macOS assets,
+which is the case the notes tell a reader to expect; and the publish gate publishes on the full
+asset set while refusing a draft whose `.pkg` is absent or whose name arrived sanitized. What stays
+unproven is what the paragraph above already says only a real tag can answer.
 
 ### 11. Interactive TUI mode
 
