@@ -84,6 +84,129 @@ To build against a different version of the library:
 cmake -B build -DSENDSPIN_GIT_TAG=v0.7.0
 ```
 
+## Install
+
+```bash
+cmake -B build                                        # the prefix is chosen here
+cmake --build build
+sudo cmake --install build --component sendspin-cli
+```
+
+```
+/usr/local/bin/sendspin-cli
+/usr/local/lib/systemd/system/sendspin-cli.service          # Linux only
+/usr/local/share/doc/sendspin-cli/README.md
+/usr/local/share/doc/sendspin-cli/LICENSE
+/usr/local/share/doc/sendspin-cli/sendspin-cli.conf.example
+```
+
+**`--component sendspin-cli` is not garnish.** ArduinoJson, fetched by sendspin-cpp in
+turn, installs its headers and CMake export files unconditionally — no option to turn
+that off the way IXWebSocket's and GoogleTest's have — so a plain `cmake --install`
+stages 143 files more than the payload's own, none of which anything here links or
+builds against. Naming the component is how you say which install rules are this
+project's.
+
+**The prefix is baked in at *configure* time**, because the unit's `ExecStart` is an
+absolute path: `cmake -B build -DCMAKE_INSTALL_PREFIX=/usr` moves both the binary and
+the path the unit names, while `cmake --install --prefix` relocates the files around a
+unit that still points at the old one. Reconfigure rather than redirect the install.
+
+The unit goes in `lib/systemd/system` and not in a multiarch `libdir`: a unit file is
+architecture-independent, and systemd reads `/usr/lib/systemd/system` and
+`/usr/local/lib/systemd/system` — never `lib/x86_64-linux-gnu/systemd/system`. That is
+also why the default prefix needs nothing copied by hand.
+
+To stage the same payload elsewhere — a tarball, a container image, an installer —
+give `cmake --install` a `DESTDIR` instead of a different prefix, and every path
+inside it is the path the file installs to:
+
+```bash
+DESTDIR=/tmp/stage cmake --install build --component sendspin-cli
+```
+
+That is exactly what CI publishes: see [CI](#ci). One ordering trap if you do both in
+one build tree: a component install writes `install_manifest_sendspin-cli.txt` into
+`build/`, so the `sudo` install above leaves a root-owned one and an unprivileged
+`DESTDIR` install afterwards fails trying to rewrite it — on the CMake versions that
+rewrite it unconditionally, which is most of them. Stage first, install second, which
+is the order CI uses for exactly this reason.
+
+### The systemd unit
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now sendspin-cli
+systemctl status sendspin-cli
+journalctl -u sendspin-cli -f
+```
+
+One system unit, with sane defaults and nothing to fill in. It runs the player in the
+**foreground** under `Type=simple`, so the log goes to the journal rather than to a
+file something has to rotate — `-z` and `-f` would both be working around the
+supervisor. `Type=forking` with `PIDFile=` pointing at `-P` is the shape for a
+supervisor with no journal, and `Type=notify` is not available at all: `sd_notify` is
+not wired up.
+
+Two flags are on the `ExecStart` line, and both are there because a system unit has
+neither of the environment variables a default path would come from:
+
+| Unit directive | Flag | Without the pair |
+|---|---|---|
+| `RuntimeDirectory=sendspin-cli` | `--control-socket /run/sendspin-cli/control.sock` | no `$XDG_RUNTIME_DIR`, so no control socket — one warning, and the player carries on |
+| `StateDirectory=sendspin-cli` | `--state-dir /var/lib/sendspin-cli` | no `$XDG_STATE_HOME`, so volume, mute and the static delay are forgotten every restart |
+
+**Expect to set `output` before it plays anything.** A system unit has no user session,
+so there is no PipeWire or PulseAudio for ALSA's `default` PCM to follow, and the
+default that works from your shell usually fails under `systemctl` — a device that will
+not open exits 1, and `Restart=on-failure` then retries it every five seconds. Run
+`sendspin-cli -l`, pick the card, and put `output = hw:1,0` (or whatever it names) in
+the config file below.
+
+**Configure it in `/etc/sendspin-cli.conf`**, not by editing the unit — every config
+key is a long flag name, so there is nothing the `ExecStart` line can say that the
+file cannot. The installed `sendspin-cli.conf.example` is annotated for it. One
+consequence to know, since the command line beats the file per option: `state-dir`
+and `control-socket` in a config file are *silently ignored* under this unit, because
+the unit passes both. Setting `control-socket` to the same path the unit uses is still
+worth doing — it is what lets a subcommand find the socket with no flags.
+
+**The subcommands need `sudo` here.** The control socket is mode `0600` and the
+service is root's, so an unprivileged shell cannot connect to it:
+
+```console
+$ sudo sendspin-cli status --control-socket /run/sendspin-cli/control.sock
+```
+
+**It runs as root, and that is a decision rather than an oversight.** There is no
+`User=` and no hardening block, so the player runs as root — its WebSocket server,
+which listens on the network, included. A tarball has no `postinst` to create a
+dedicated user with, and root already has the sound card (`/dev/snd` is `root:audio`
+mode `0660`), the mDNS daemon and `/run` with nothing to arrange first. A drop-in is
+where to change it:
+
+```bash
+sudo systemctl edit sendspin-cli
+```
+
+```ini
+[Service]
+User=sendspin
+SupplementaryGroups=audio
+```
+
+Both lines together, and neither alone: a user with no membership of `audio` is a
+player that starts and cannot open a device. Create the user first (`useradd
+--system --no-create-home sendspin`), and chown an existing `/var/lib/sendspin-cli`
+to it once — systemd owns the directory it creates, not one a root-run player left
+behind. This project has not run it that way, which is also why no hardening
+directive ships: a dedicated user and a hardening block are owed together, and no task
+is open for them yet.
+
+An `ExecStart=` in a drop-in has to be cleared first (`ExecStart=` on its own line,
+then the replacement), which is systemd's rule for every list-valued directive rather
+than anything about this unit.
+
 ## Run
 
 ```bash
@@ -408,8 +531,9 @@ started as a normal user wants a path it can write, such as
 
 **systemd.** A forking daemon wants `Type=forking` with `PIDFile=` pointing at the
 same path as `-P`; the foreground default suits `Type=simple`, which is usually the
-better choice under a supervisor that already captures stderr. No unit file ships
-yet — that is [`docs/ROADMAP.md`](docs/ROADMAP.md) item 10.
+better choice under a supervisor that already captures stderr. That is what the unit
+this project installs does — see [The systemd unit](#the-systemd-unit), where neither
+`-z` nor `-P` appears.
 
 ### The local control channel
 
@@ -935,11 +1059,24 @@ does not fail a configure, so without that check the matrix would happily go gre
 on a deaf, undiscoverable binary.
 
 To try a commit without building it, open its run under the repository's Actions
-tab and take `sendspin-cli-<version>-<os>-<arch>` from the run summary. Inside is
-a tarball holding the binary, this README, the licence, and a `BUILD-INFO.txt`
-naming the runtime packages it needs. These are build outputs kept for 14 days
-rather than an installation — `install()` rules, a systemd unit and distribution
-packages are [`docs/ROADMAP.md`](docs/ROADMAP.md) item 10.
+tab and take `sendspin-cli-<version>-<os>-<arch>` from the run summary. Inside is a
+tarball staged by the same [`install()` rules](#install) — `DESTDIR` and the
+`sendspin-cli` component — so every path under its `usr/` is the path the file
+installs to, plus a `BUILD-INFO.txt` at the root naming the runtime packages it needs:
+
+```bash
+sudo tar -xzf sendspin-cli-0.1.0-linux-x86_64.tar.gz --strip-components=1 -C / \
+  sendspin-cli-0.1.0-linux-x86_64/usr
+sudo systemctl daemon-reload
+```
+
+Naming the `usr` member is what leaves `BUILD-INFO.txt` in the archive rather than
+unpacking it at `/`. Or run it where you unpacked it, at
+`./<name>/usr/local/bin/sendspin-cli`. The prefix is baked in, so a binary moved out
+of `/usr/local` leaves the unit naming a path with nothing at it. These are
+per-commit builds kept for 14 days; a tagged release is the release-workflow task's,
+and a signed macOS `.pkg` the installer task's — both tracked in
+[`docs/ROADMAP.md`](docs/ROADMAP.md) item 10.
 
 ### macOS, and Gatekeeper
 
@@ -947,7 +1084,7 @@ Unpack the tarball from a terminal rather than in Finder:
 
 ```bash
 tar -xzf sendspin-cli-0.1.0-macos-arm64.tar.gz
-./sendspin-cli-0.1.0-macos-arm64/sendspin-cli --version
+./sendspin-cli-0.1.0-macos-arm64/usr/local/bin/sendspin-cli --version
 ```
 
 That is not fussiness. These binaries are **ad-hoc signed** — the minimum an
@@ -957,12 +1094,13 @@ the quarantine flag, and `tar` does not propagate it where Finder's Archive
 Utility does. If you did unpack in Finder, or macOS refuses it anyway:
 
 ```bash
-xattr -d com.apple.quarantine ./sendspin-cli
+xattr -d com.apple.quarantine ./sendspin-cli-0.1.0-macos-arm64/usr/local/bin/sendspin-cli
 ```
 
-A Developer ID signature and notarization are item 10's, together with the
-`.pkg` that lets the notarization be *stapled* — `xcrun stapler` refuses a bare
-executable, so signing alone would still leave an offline Mac asking Apple.
+A Developer ID signature and notarization belong to the macOS installer `.pkg` task,
+together with the `.pkg` that lets the notarization be *stapled* — `xcrun stapler`
+refuses a bare executable, so signing alone would still leave an offline Mac asking
+Apple.
 
 ## Roadmap
 
