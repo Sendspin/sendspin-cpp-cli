@@ -1077,37 +1077,41 @@ sudo systemctl daemon-reload
 Naming the `usr` member is what leaves `BUILD-INFO.txt` in the archive rather than
 unpacking it at `/`. Or run it where you unpacked it, at
 `./<name>/usr/local/bin/sendspin-cli`. The prefix is baked in, so a binary moved out
-of `/usr/local` leaves the unit naming a path with nothing at it. These are
-per-commit builds kept for 14 days. For something that does not expire, take a
+of `/usr/local` leaves the unit naming a path with nothing at it. The macOS leg
+publishes a second artifact beside that tarball,
+`sendspin-cli-<version>-macos-arm64-installer`, holding the
+[`.pkg`](#the-macos-installer-pkg) described below. These are per-commit builds
+kept for 14 days. For something that does not expire, take a
 [release](../../releases) instead.
 
 ## Releases
 
 Pushing a `vMAJOR.MINOR.PATCH` tag builds the same matrix and publishes the three
-platform archives plus a `SHA256SUMS` covering them, as a GitHub Release. The
-workflow triggers on `v*` but refuses anything else that matches — a prerelease
-like `v0.2.0-rc1` is rejected rather than quietly published as the latest release,
-until somebody decides what it should mean. Nothing else publishes, and
-the workflow never creates a tag: a release exists because a human tagged a commit
+platform archives and the macOS installer `.pkg`, plus a `SHA256SUMS` covering all
+four, as a GitHub Release. The workflow triggers on `v*` but refuses anything else
+that matches — a prerelease like `v0.2.0-rc1` is rejected rather than quietly
+published as the latest release, until somebody decides what it should mean.
+Nothing else publishes, and the workflow never creates a tag: a release exists
+because a human tagged a commit
 whose version `CMakeLists.txt` already agreed with. It is attached whole or not at
 all — the release is drafted, its assets are checked against the set the tag is
 supposed to carry, and only then is it published, so a half-finished upload leaves a
 draft rather than a release missing an architecture.
 
 The archives are the same staged payload described above, so they install the same
-way. Verify them first:
+way, and the `.pkg` wraps the macOS one. Verify whichever you took first:
 
 ```bash
 sha256sum --ignore-missing -c SHA256SUMS      # Linux
 shasum -a 256 --ignore-missing -c SHA256SUMS  # macOS
 ```
 
-`--ignore-missing` because `SHA256SUMS` lists all three archives and you have
-almost certainly taken one; without it the other two are reported as failures
-and the command exits non-zero on a file that is fine. Those checksums cover the
-three binary archives, not the `Source code` archives GitHub attaches on its
-own. The macOS binary is unsigned — see below. A signed macOS `.pkg` is still
-owed, tracked in [`docs/ROADMAP.md`](docs/ROADMAP.md) item 10.
+`--ignore-missing` because `SHA256SUMS` lists all four and you have almost
+certainly taken one; without it the rest are reported as failures and the command
+exits non-zero on a file that is fine. Those checksums cover the four things built
+here, not the `Source code` archives GitHub attaches on its own. Neither the macOS
+binary nor the `.pkg` around it is signed — see below. A Developer ID signature and
+notarization are still owed, tracked in [`docs/ROADMAP.md`](docs/ROADMAP.md) item 10.
 
 ### macOS, and Gatekeeper
 
@@ -1128,10 +1132,64 @@ Utility does. If you did unpack in Finder, or macOS refuses it anyway:
 xattr -d com.apple.quarantine ./sendspin-cli-0.1.0-macos-arm64/usr/local/bin/sendspin-cli
 ```
 
-A Developer ID signature and notarization belong to the macOS installer `.pkg` task,
-together with the `.pkg` that lets the notarization be *stapled* — `xcrun stapler`
-refuses a bare executable, so signing alone would still leave an offline Mac asking
-Apple.
+### The macOS installer `.pkg`
+
+Every [release](#releases) attaches an installer, and the macOS CI leg publishes the
+same thing per commit in its `-installer` artifact:
+
+```bash
+sudo installer -pkg sendspin-cli-0.1.0-macos-arm64.pkg -target /
+sendspin-cli --version
+```
+
+It carries the same four files the tarball does, staged from the same
+[`install()` rules](#install), and puts them at the `/usr/local` prefix the binary
+was built for. It refuses a Mac it cannot run on: the architectures are read off the
+binary with `lipo` at build time and declared in the package, so an arm64-only
+installer is turned away on an Intel Mac instead of reporting success and leaving a
+`Bad CPU type in executable`. Build the same `.pkg` from a payload of your own with:
+
+```bash
+DESTDIR=/tmp/stage cmake --install build --component sendspin-cli
+scripts/build_macos_pkg.sh /tmp/stage 0.1.0 sendspin-cli.pkg
+```
+
+**The `.pkg` is not the Gatekeeper fix.** It is unsigned and unnotarized, exactly as
+the binary inside it is ad-hoc signed, and `spctl -a -t install` rejects it. What it
+does change is narrower and worth stating precisely, because the four ways you can
+come by this file behave differently:
+
+- **Taken from a release page and double-clicked.** The `.pkg` is the download, so
+  the browser quarantines the `.pkg` itself and Gatekeeper refuses it outright —
+  allow it once under **System Settings → Privacy & Security**, which offers an
+  *Open Anyway* for the last thing it blocked, or take the terminal path below.
+- **Taken from the Actions tab and double-clicked.** An artifact arrives as a *zip*,
+  so it is the zip that is quarantined, and what decides whether the `.pkg` inside
+  inherits the flag is the same thing it is for the tarball above: `unzip` from a
+  terminal does not propagate it, Finder's Archive Utility does.
+- **`sudo installer -pkg … -target /`** — not gated at all. The `installer` CLI makes
+  no Gatekeeper assessment, whatever the file is flagged with, which is why CI can
+  install and test its own artifact and why it is the line printed above.
+- **Built locally** by the script above, or unzipped with `unzip` — never
+  quarantined, so it opens in Installer.app with nothing to clear.
+
+Files that `installer` puts on disk are not quarantined either way, so the installed
+`/usr/local/bin/sendspin-cli` needs no `xattr -d` — which the tarball's does if you
+unpacked it in Finder. That is convenience, not identity.
+
+There is no uninstaller. Four files and the receipt undo it completely — the systemd
+unit in the [Install](#install) list is Linux-only and never in this package:
+
+```bash
+sudo rm -f /usr/local/bin/sendspin-cli
+sudo rm -rf /usr/local/share/doc/sendspin-cli
+sudo pkgutil --forget io.github.chrisuthe.sendspin-cli
+```
+
+A Developer ID signature and notarization are still owed, and the `.pkg` is what will
+carry them: `xcrun stapler` staples a ticket to a `.app`, a `.dmg` or a `.pkg` and
+refuses a bare executable, so notarizing the loose binary alone would still leave an
+offline Mac asking Apple. Tracked in [`docs/ROADMAP.md`](docs/ROADMAP.md) item 10.
 
 ## Roadmap
 

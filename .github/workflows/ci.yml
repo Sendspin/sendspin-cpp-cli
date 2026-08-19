@@ -32,13 +32,16 @@ defaults:
     shell: bash
 
 jobs:
-  # A gate rather than a claim: scripts/smoke_test.sh is asserted to be shellcheck-clean, and
-  # an assertion nothing enforces is one that stops being true. shellcheck ships on the Ubuntu
-  # images, so this costs a runner-minute.
+  # A gate rather than a claim: the scripts under scripts/ are asserted to be shellcheck-clean,
+  # and an assertion nothing enforces is one that stops being true. shellcheck ships on the
+  # Ubuntu images, so this costs a runner-minute.
   #
-  # Stays here rather than moving into build.yml with the rest: it lints scripts/, and no script
-  # is in the install payload -- so it has nothing to say about what a release ships, while
-  # smoke_test.sh is *run* by every publishing leg of the build in any case.
+  # Stays here rather than moving into build.yml with the rest, and the asymmetry is worth being
+  # honest about now that build_macos_pkg.sh shapes a released artifact: what this job adds is
+  # *lint*, and a tag push runs release.yml alone, so it is lint that a tag does not get. What a
+  # tag does get is both scripts being run -- smoke_test.sh on every publishing leg,
+  # build_macos_pkg.sh on the macOS one, whose .pkg is then installed and its receipt asserted --
+  # so a release is gated on the scripts working whether or not it is gated on their style.
   shellcheck:
     name: shellcheck
     runs-on: ubuntu-24.04
