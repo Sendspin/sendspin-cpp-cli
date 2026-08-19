@@ -52,8 +52,12 @@ $ sendspin-cli vol 40
 | Platform | Architecture | How |
 |---|---|---|
 | Linux | `x86_64`, `arm64` | Release tarball, or `scripts/get_started_linux.sh` |
-| macOS 12+ | Apple silicon (`arm64`) | Release tarball or installer `.pkg` |
+| macOS | Apple silicon (`arm64`) | Release tarball or installer `.pkg` |
 | Raspberry Pi | `arm64` only — **a 64-bit OS is required** | The Linux tarball, same as any arm64 host |
+
+The macOS builds are made on the `macos-14` CI runner and declare no minimum OS version;
+what the installer `.pkg` does check is the architecture, read off the binary with `lipo` at
+build time, so it turns an Intel Mac away rather than reporting success.
 
 There is no 32-bit ARM build and no Intel-Mac build. The CI matrix has no armv7, 32-bit Pi
 or macOS `x86_64` leg, which is recorded in

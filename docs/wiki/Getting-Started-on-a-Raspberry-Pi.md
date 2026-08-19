@@ -33,7 +33,10 @@ builds are under **Raspberry Pi OS (other)**.
 | Model | 64-bit capable |
 |---|---|
 | Pi 5, Pi 4, Pi 400, Pi 3, Pi Zero 2 W, CM3/CM4/CM5 | Yes |
-| Pi 2 (v1.1 and earlier), Pi 1, Pi Zero / Zero W | **No** — build from source, or use other hardware |
+| Pi 1, Pi Zero, Pi Zero W, and Pi 2 boards before v1.2 | **No** — build from source, or use other hardware |
+
+If your board is not on either row, do not go looking it up: install a 64-bit image and run
+`uname -m`. That answer is the only one that decides anything here.
 
 The getting-started script refuses a 32-bit userland with this whole answer rather than an
 "unsupported architecture", because it is the single most common way a Pi install goes

@@ -110,14 +110,22 @@ jobs:
           echo '::error::Could not clone the wiki, and not because it is missing. See the git output above.'
           exit 1
 
-      # rsync --delete rather than a copy, because the tree is the source of truth in both
-      # directions: a page removed from docs/wiki/ has to leave the wiki, and one edited in the
-      # wiki tab has to go back to what the tree says. `.git` is excluded explicitly — deleting
-      # the clone's own history mid-sync would be a novel way to fail.
+      # Emptied and refilled rather than copied over, because the tree is the source of truth in
+      # both directions: a page removed from docs/wiki/ has to leave the wiki, and one edited in
+      # the wiki tab has to go back to what the tree says. A plain `cp` would only ever add.
+      #
+      # `find`/`cp` rather than `rsync --delete`, which would do this in one line: rsync is not
+      # something this workflow should have to assume is on the runner image, and the two
+      # commands below say what is happening more plainly than a flag does.
+      #
+      # `! -name .git` is load-bearing — deleting the clone's own history mid-sync would be a
+      # novel way to fail. The mirror is deliberately flat: a GitHub wiki page is one file at
+      # the wiki root, so docs/wiki/ holds no subdirectories and this copies none.
       - name: Mirror docs/wiki into it
         if: steps.clone.outputs.cloned == 'true'
         run: |
-          rsync -a --delete --exclude '.git' docs/wiki/ wiki/
+          find wiki -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
+          cp docs/wiki/*.md wiki/
           git -C wiki status --porcelain
 
       # Nothing to say is the common case — this workflow also runs when only the workflow file
