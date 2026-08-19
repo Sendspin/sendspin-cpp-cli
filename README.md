@@ -95,6 +95,7 @@ sudo cmake --install build --component sendspin-cli
 ```
 /usr/local/bin/sendspin-cli
 /usr/local/lib/systemd/system/sendspin-cli.service          # Linux only
+/usr/local/lib/sysusers.d/sendspin-cli.conf                 # Linux only
 /usr/local/share/doc/sendspin-cli/README.md
 /usr/local/share/doc/sendspin-cli/LICENSE
 /usr/local/share/doc/sendspin-cli/sendspin-cli.conf.example
@@ -115,7 +116,10 @@ unit that still points at the old one. Reconfigure rather than redirect the inst
 The unit goes in `lib/systemd/system` and not in a multiarch `libdir`: a unit file is
 architecture-independent, and systemd reads `/usr/lib/systemd/system` and
 `/usr/local/lib/systemd/system` — never `lib/x86_64-linux-gnu/systemd/system`. That is
-also why the default prefix needs nothing copied by hand.
+also why the default prefix needs nothing copied by hand. The account declaration
+beside it is in `lib/sysusers.d` for the same two reasons: `systemd-sysusers` searches
+`/usr/local/lib/sysusers.d` alongside `/usr/lib/sysusers.d`, and a list of users has no
+architecture either.
 
 To stage the same payload elsewhere — a tarball, a container image, an installer —
 give `cmake --install` a `DESTDIR` instead of a different prefix, and every path
@@ -135,18 +139,21 @@ is the order CI uses for exactly this reason.
 ### The systemd unit
 
 ```bash
+sudo systemd-sysusers
 sudo systemctl daemon-reload
 sudo systemctl enable --now sendspin-cli
 systemctl status sendspin-cli
 journalctl -u sendspin-cli -f
 ```
 
-One system unit, with sane defaults and nothing to fill in. It runs the player in the
-**foreground** under `Type=simple`, so the log goes to the journal rather than to a
-file something has to rotate — `-z` and `-f` would both be working around the
-supervisor. `Type=forking` with `PIDFile=` pointing at `-P` is the shape for a
-supervisor with no journal, and `Type=notify` is not available at all: `sd_notify` is
-not wired up.
+One system unit, with sane defaults and nothing to fill in. **`systemd-sysusers` is not
+optional** — it creates the account the unit runs as, and the unit does not start
+without it; the end of this section says what that account is and what it may reach.
+It runs the player in the **foreground** under `Type=simple`, so the log goes to the
+journal rather than to a file something has to rotate — `-z` and `-f` would both be
+working around the supervisor. `Type=forking` with `PIDFile=` pointing at `-P` is the
+shape for a supervisor with no journal, and `Type=notify` is not available at all:
+`sd_notify` is not wired up.
 
 Two flags are on the `ExecStart` line, and both are there because a system unit has
 neither of the environment variables a default path would come from:
@@ -171,37 +178,89 @@ and `control-socket` in a config file are *silently ignored* under this unit, be
 the unit passes both. Setting `control-socket` to the same path the unit uses is still
 worth doing — it is what lets a subcommand find the socket with no flags.
 
-**The subcommands need `sudo` here.** The control socket is mode `0600` and the
-service is root's, so an unprivileged shell cannot connect to it:
+**The subcommands need `sudo` here.** The control socket is mode `0600` and belongs to
+the service account, so an unprivileged shell cannot connect to it — while root can,
+because root is not subject to the mode:
 
 ```console
 $ sudo sendspin-cli status --control-socket /run/sendspin-cli/control.sock
 ```
 
-**It runs as root, and that is a decision rather than an oversight.** There is no
-`User=` and no hardening block, so the player runs as root — its WebSocket server,
-which listens on the network, included. A tarball has no `postinst` to create a
-dedicated user with, and root already has the sound card (`/dev/snd` is `root:audio`
-mode `0660`), the mDNS daemon and `/run` with nothing to arrange first. A drop-in is
-where to change it:
+**It runs as `sendspin-cli`, an unprivileged account, and creating it is the one
+step installing cannot do for you.** The unit names `User=sendspin-cli` — no home,
+no shell — and a tarball has no `postinst`, so the declaration ships beside the unit as
+`lib/sysusers.d/sendspin-cli.conf` and one command turns it into an account:
+
+```console
+$ sudo systemd-sysusers
+Creating group 'sendspin-cli' with GID 997.
+Creating user 'sendspin-cli' (Sendspin audio player) with UID 997 and GID 997.
+```
+
+It is idempotent, so running it twice is free. Skip it and the unit does not start at
+all — `systemctl status` says `status=217/USER`, which names the cause:
+
+```
+sendspin-cli.service: Main process exited, code=exited, status=217/USER
+```
+
+The fragment carries two lines, and they are owed **together**: the account, and its
+membership of `audio`. A `sendspin-cli` in no `audio` group is a player that starts and
+cannot open a device, because `/dev/snd` is `root:audio` mode `0660`. That is the whole
+reason this is a shipped declaration rather than a `useradd` line in this file — one
+artifact, both halves, or neither. If you manage accounts with your own tooling, the
+equivalent is `useradd --system --no-create-home -G audio sendspin-cli`.
+
+`DynamicUser=` looks like it would avoid all of this and does not: it hands the player a
+uid in no supplementary group at all, which deafens the ALSA backend.
+
+**Upgrading from a version that ran as root needs nothing done to
+`/var/lib/sendspin-cli`.** `StateDirectory=` chowns the directory it finds as well as
+the one it creates, recursively, so a root-owned state file from an earlier install
+becomes the new account's on the first start and the remembered volume, mute and static
+delay carry over. systemd has documented that since v235 — the same release this unit
+needs anyway — and CI plants a root-owned `/var/lib/sendspin-cli` on every Linux leg and
+reads the value back out of it afterwards.
+
+**What is hardened, and what is not.** The unit carries a hardening block —
+`ProtectSystem=strict`, `NoNewPrivileges=`, an empty `CapabilityBoundingSet=`,
+`RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`, `SystemCallFilter=@system-service`
+and the `Protect*=` family — and every directive in it was run rather than copied from a
+list. Read the unit: each is commented where it sits. On systemd 255 `systemd-analyze
+security` puts the result at **1.8 OK**, against **9.6 UNSAFE** for the root unit this
+replaces; the Linux CI legs print the score on every run rather than asserting it, since
+pinning a number would make an unrelated systemd release fail a build for rewording.
+
+**One configuration stops working, and it is worth checking before you upgrade.**
+Under `ProtectSystem=strict` a `logfile` or `pidfile` in `/etc/sendspin-cli.conf`
+pointing outside `/run/sendspin-cli` and `/var/lib/sendspin-cli` is refused — `cannot
+open logfile /var/log/sendspin-cli.log: Read-only file system`, on every restart,
+rather than a player that logs nowhere in silence. Neither key is the shape for this
+unit anyway, since journald already has stderr and `-z`/`-f` are for a supervisor
+without one. If you want a logfile regardless, a drop-in is the way back:
+
+```ini
+[Service]
+ReadWritePaths=/var/log
+```
+
+The block wants systemd **247** in full — `ProtectProc=` is its newest directive —
+while the unit itself still starts on 236. Below 247 the shortfall is one line and a
+log message: systemd warns `Unknown key name 'ProtectProc' … ignoring` and runs the
+unit with the rest, which was checked on 245.
+
+Four directives are deliberately *absent*, because they gate what the ALSA backend
+reaches and a machine with no sound card cannot tell you whether they break it:
+`PrivateDevices=`, `DeviceAllow=`, `ProcSubset=pid` and `RestrictRealtime=`. Each of
+them passes every check CI makes, which is exactly why passing proves nothing about
+them. They are tracked in [`docs/ROADMAP.md`](docs/ROADMAP.md) item 10.
+
+**To change any of it, use a drop-in** rather than editing the installed unit, which an
+upgrade overwrites:
 
 ```bash
 sudo systemctl edit sendspin-cli
 ```
-
-```ini
-[Service]
-User=sendspin
-SupplementaryGroups=audio
-```
-
-Both lines together, and neither alone: a user with no membership of `audio` is a
-player that starts and cannot open a device. Create the user first (`useradd
---system --no-create-home sendspin`), and chown an existing `/var/lib/sendspin-cli`
-to it once — systemd owns the directory it creates, not one a root-run player left
-behind. This project has not run it that way, which is also why no hardening
-directive ships: a dedicated user and a hardening block are owed together, and no task
-is open for them yet.
 
 An `ExecStart=` in a drop-in has to be cleared first (`ExecStart=` on its own line,
 then the replacement), which is systemd's rule for every list-valued directive rather
@@ -1178,7 +1237,8 @@ Files that `installer` puts on disk are not quarantined either way, so the insta
 unpacked it in Finder. That is convenience, not identity.
 
 There is no uninstaller. Four files and the receipt undo it completely — the systemd
-unit in the [Install](#install) list is Linux-only and never in this package:
+unit and the sysusers fragment in the [Install](#install) list are Linux-only and never
+in this package:
 
 ```bash
 sudo rm -f /usr/local/bin/sendspin-cli

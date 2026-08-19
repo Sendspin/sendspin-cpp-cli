@@ -183,8 +183,13 @@ jobs:
           ```bash
           sudo tar -xzf sendspin-cli-@VERSION@-linux-x86_64.tar.gz --strip-components=1 -C / \
             sendspin-cli-@VERSION@-linux-x86_64/usr
+          sudo systemd-sysusers
           sudo systemctl daemon-reload
           ```
+
+          `systemd-sysusers` creates the unprivileged account the unit runs as, from the
+          declaration the payload installs alongside it; a tarball has no `postinst` to run it
+          for you, and without it `systemctl start` reports `217/USER`.
 
           Naming the `usr` member is what leaves `BUILD-INFO.txt` in the archive rather than
           unpacking it at `/`. Each archive carries its own `BUILD-INFO.txt` at the root with

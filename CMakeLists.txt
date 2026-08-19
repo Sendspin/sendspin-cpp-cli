@@ -377,6 +377,19 @@ if(SENDSPIN_CLI_IS_TOP_LEVEL)
             DESTINATION lib/systemd/system
             COMPONENT ${SENDSPIN_CLI_COMPONENT}
         )
+
+        # The account the unit's User= names. lib/sysusers.d for the same reason as
+        # lib/systemd/system above -- the fragment is architecture-independent and
+        # systemd-sysusers reads <prefix>/lib/sysusers.d, /usr/local included -- and copied
+        # rather than generated, since nothing in it depends on the configure line.
+        #
+        # RENAME because the source name says which of this project's files it is and the
+        # installed name is what sysusers.d wants: one .conf per package, named after it.
+        install(FILES packaging/sendspin-cli.sysusers.conf
+            DESTINATION lib/sysusers.d
+            RENAME sendspin-cli.conf
+            COMPONENT ${SENDSPIN_CLI_COMPONENT}
+        )
     endif()
 endif()
 
