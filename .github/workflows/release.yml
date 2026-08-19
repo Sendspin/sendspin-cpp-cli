@@ -198,12 +198,14 @@ jobs:
           here.
 
           ```bash
-          sha256sum -c SHA256SUMS      # Linux
-          shasum -a 256 -c SHA256SUMS  # macOS
+          sha256sum --ignore-missing -c SHA256SUMS      # Linux
+          shasum -a 256 --ignore-missing -c SHA256SUMS  # macOS
           ```
 
-          Both refuse a file they have no line for, so run them from a directory holding the
-          archives you actually downloaded.
+          Run that from the directory you downloaded into. `--ignore-missing` is there because
+          `SHA256SUMS` lists all three archives and you have almost certainly taken one: without
+          it, the two you did not download are reported as failures and the command exits
+          non-zero on a perfectly good file.
           NOTES
 
           # Substituted rather than interpolated by the shell, so the heredoc above can stay

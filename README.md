@@ -1095,12 +1095,14 @@ The archives are the same staged payload described above, so they install the sa
 way. Verify them first:
 
 ```bash
-sha256sum -c SHA256SUMS      # Linux
-shasum -a 256 -c SHA256SUMS  # macOS
+sha256sum --ignore-missing -c SHA256SUMS      # Linux
+shasum -a 256 --ignore-missing -c SHA256SUMS  # macOS
 ```
 
-Those checksums cover the three binary archives, not the `Source code` archives
-GitHub attaches on its own. The macOS binary is unsigned — see below. A signed
+`--ignore-missing` because `SHA256SUMS` lists all three archives and you have
+almost certainly taken one; without it the other two are reported as failures
+and the command exits non-zero on a file that is fine. Those checksums cover the
+three binary archives, not the `Source code` archives GitHub attaches on its own. The macOS binary is unsigned — see below. A signed
 macOS `.pkg` is still owed, tracked in [`docs/ROADMAP.md`](docs/ROADMAP.md) item 10.
 
 ### macOS, and Gatekeeper
