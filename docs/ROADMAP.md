@@ -902,7 +902,7 @@ Deliberately **not** here, and each one names its owner rather than being left i
 Image and compose file. ALSA with `/dev/snd` passed through for real output, and the
 null sink for device-less containers and CI.
 
-### 10. Packaging — *shipped (install rules, the unit, the CI payload; a tagged release and the macOS `.pkg` still owed)*
+### 10. Packaging — *shipped (install rules, the unit, the CI payload, the tagged release; the macOS `.pkg` still owed)*
 
 Nothing in this tree could be installed. `cmake --build` left the binary where it built it, and
 `.github/workflows/ci.yml` hand-rolled a tarball around it with three `cp` paths inside a
@@ -911,7 +911,8 @@ everything a unit file needs and then stopped at *documenting* it, so `README.md
 operator to choose between `Type=simple` and `Type=forking` and write the unit themselves.
 
 **Shipped** in `CMakeLists.txt`, `packaging/sendspin-cli.service.in`,
-`packaging/sendspin-cli.conf.example`, `.github/workflows/ci.yml` and `README.md`:
+`packaging/sendspin-cli.conf.example`, `.github/workflows/{build,ci,release}.yml` and
+`README.md`:
 
 - **A staged `cmake --install` plus an explicit `tar`, and no CPack.** The per-leg archive name
   is not what decides it — `CPACK_PACKAGE_FILE_NAME` handles that. It is the payload's
@@ -1028,11 +1029,91 @@ operator to choose between `Type=simple` and `Type=forking` and write the unit t
   first, root over the top; `README.md` says the same to anyone doing both in one build tree,
   and `.gitignore` now covers `install_manifest*.txt` rather than only the un-suffixed name.
 
+**The release workflow**, the second slice, in `.github/workflows/release.yml` and the
+`build.yml` it shares with CI:
+
+- **The matrix moved into `build.yml`, a reusable workflow both paths call.** A composite
+  action was the other option and is the wrong one *here* specifically: what must not be
+  duplicated is the matrix, not the steps. A composite action cannot own `strategy.matrix`, so
+  `release.yml` would have had to restate the per-leg `publish` and `avahi` keys that the
+  comment above them warns a new leg owes both of — the exact block whose duplication is
+  dangerous. It takes no inputs, deliberately: a release is gated on precisely what a push is
+  gated on, the non-publishing no-mDNS leg included, since a break in `src/mdns_null.cpp` is a
+  real break and an input is the seam along which the two would start to differ.
+- **A called workflow inherits none of the caller's `defaults`, `env` or `permissions`,** so
+  `build.yml` restates all three. The one that would have bitten is `shell: bash`: left behind
+  in `ci.yml`, the configure step runs under the default `bash -e` with no pipefail, its `|
+  tee` returns 0 on a failed configure, and the assertion after it greps a truncated log —
+  both callers green on a build that never configured. A fail-open gate is worse than no gate,
+  which is the argument the shellcheck job at the top of `ci.yml` already makes.
+- **`ci.yml` gained a `tags-ignore`, and that is the whole of its change.** Its `push` was
+  unfiltered on purpose, and a `v*` push would otherwise have run the matrix twice over and
+  reported two statuses for one tag — the `concurrency` group is keyed by workflow name, so
+  nothing collapses the pair. `tags-ignore` rather than a positive `branches: ['**']` filter,
+  so the existing "every branch push, on purpose" comment stays true with an exception named
+  rather than being rewritten as a list a reader has to check is exhaustive.
+- **Fail closed, in two places, because `needs:` only covers one of them.** `needs: build`
+  catches a leg that went red. What it does not catch is a leg that went green *while
+  publishing nothing* — `Upload` is `if: matrix.publish`, and `if-no-files-found: error`
+  catches an empty upload rather than an absent one, while `download-artifact` matching nothing
+  is an empty directory rather than an error. So the release job names the three archives it
+  expects and diffs the set, in the shape the payload assertions already use. Only the set: each
+  archive's own file list was diffed twice inside the build, and re-opening them here would be
+  the duplication this split exists to avoid.
+- **Created as a draft, published only once the API says every asset arrived.** `gh release
+  create` does draft-upload-publish internally already, but it publishes on "no upload returned
+  an error" rather than on "every asset is present", and that is an implementation detail of
+  `gh` rather than a promise. Splitting it makes the check ours: the asset names are read back
+  with `gh release view --json assets` and diffed before `gh release edit --draft=false`. A
+  partial upload therefore leaves an invisible draft, never a published half-release. A draft
+  left by a failed run makes the next attempt fail rather than overwrite — `--clobber` on a
+  step that may be facing an already-published release is the opposite of the point.
+- **`--verify-tag`, which is what makes "the workflow never creates tags" a gate rather than a
+  claim:** without it `gh release create` creates a missing tag from the default branch. The
+  human tags; this publishes what that tag builds.
+- **The version is checked, not derived.** `project(VERSION)` stays a hand-edited line bumped
+  in a PR before the tag is pushed. Deriving it from `git describe` would tie the version to
+  the presence of a `.git` directory — breaking a build from a source tarball — and put the tag
+  into `CMakeLists.txt`'s hash, which is the deps cache key. A preflight job instead refuses a
+  tag that is not `vMAJOR.MINOR.PATCH` (the `v*` trigger also matches `v0.2.0-rc1`, which would
+  become `latest` with nobody having decided that) and refuses a tag that disagrees with
+  `CMakeLists.txt`, counting the matched `VERSION` lines rather than taking the first: no match
+  yields an empty string that would fail only by luck, two would silently pick one. It gates
+  the matrix, so a mistyped tag costs seconds rather than three runners for half an hour.
+  It duplicates part of the archive-name check that follows, and earns it the same way the
+  tarball listing does: the later check is authoritative because it reads names the *binary*
+  produced, and this one is an early mirror of the likeliest human error.
+- **No third-party action, and no checkout, in the job that can write to the repository.**
+  `permissions: contents: write` is scoped to the release job alone with the workflow default
+  left at `read`. Actions in this repo are pinned to a SHA because a tag can be repointed and
+  they run with write access to the *workspace*; this job runs with write access to the
+  *repository*, so it is the worst place in the tree to add one. `gh` ships on the runner,
+  `GH_REPO` replaces the checkout since nothing here reads the tree, and the only pinned action
+  left is `download-artifact`. "Pin exact tool versions" cannot honestly be done for a
+  runner-provided `gh`; what is pinned is the image label — `ubuntu-24.04`, never
+  `ubuntu-latest` — and `gh --version` is printed into the log so a future break is
+  diagnosable, in the same print-then-assert habit as the rest of the matrix.
+- **`SHA256SUMS` is generated from inside the directory** so its entries are bare filenames:
+  `sha256sum -c` resolves paths relative to the working directory, and a file naming `dist/…`
+  is one a downloader cannot use without knowing that. The notes give the macOS spelling
+  (`shasum -a 256 -c`) beside the Linux one, one of the three archives being macOS-only, and
+  say out loud that the checksums do not cover the `Source code` archives GitHub attaches on
+  its own.
+- **The notes are written by hand, not `--generate-notes`.** On a first tag that emits every
+  merged PR since the initial commit as a flat list, there is no `.github/release.yml` taxonomy
+  to shape it, and the narrative of what shipped already exists here and is better. They state
+  plainly that the macOS binary is ad-hoc signed and what Gatekeeper will do about it — the
+  third rendering of that paragraph after `README.md` and `BUILD-INFO.txt`, kept short with the
+  README linked for the full account, because a reader deciding whether to download is a third
+  audience and the alternative is presenting an unsigned binary as something else. Links are
+  pinned to the tag rather than relative: a relative link in a release body resolves against
+  the default branch, where the text it points at is free to move after the release is cut.
+- **No `concurrency` block, where `ci.yml` has one.** `cancel-in-progress: true` is free to
+  cancel a run midway through uploading assets, which is the exact partial state the draft
+  gate above exists to prevent. A tag is pushed once; there is no superseded run to collapse.
+
 **Not in this slice**, each with its owner named rather than implied:
 
-- **A tagged release** → the tag-driven release workflow task, blocked on this one. What CI
-  publishes is still a per-commit artifact kept 14 days; nothing here is a release, and the
-  archive this item produces is the thing that workflow will attach.
 - **The macOS `.pkg`, Developer ID signing and notarization** → the macOS installer `.pkg` task,
   also blocked on this one, and none of that analysis has changed. The binaries are ad-hoc signed —
   `codesign` reports `adhoc, linker-signed`, the minimum an arm64 Mach-O needs to execute at
@@ -1049,6 +1130,13 @@ operator to choose between `Type=simple` and `Type=forking` and write the unit t
   boots the whole daemon under `-o null` today, so every directive except the ones that gate
   `/dev/snd` can be tried there. Kept separate because it is a behaviour change to a unit that
   currently works.
+- **A drift guard on the version strings in `README.md`,** with **no task open for it yet**.
+  Three places spell an archive name out in full — `sendspin-cli-0.1.0-linux-x86_64` and its
+  macOS twin — and nothing checks them against `project(VERSION)`. They are correct for the
+  first release and rot silently at 0.2.0. The release notes avoid the same trap by
+  interpolating the version they were built from, and the same fix would suit here: generate
+  the examples, or assert them. Named rather than left to be noticed, since the version is now
+  a thing a tag agrees with.
 - **A drift guard on `packaging/sendspin-cli.conf.example`.** Item 8's "one vocabulary" claim
   means every key in that file is a long flag name, and nothing enforces it — a renamed flag
   would leave a shipped example that stops a player with an unknown-key error. It was checked by
@@ -1101,8 +1189,8 @@ Optional, later. Upstream's `examples/tui_client` shows the shape.
 
 ### 12. CI and tests — *shipped (matrix and smoke test; sink contract still owed)*
 
-`.github/workflows/ci.yml` builds and tests every push and pull request on `ubuntu-24.04`,
-`ubuntu-24.04-arm` and `macos-14`, plus a fourth `ubuntu-24.04` leg configured
+`.github/workflows/ci.yml` builds and tests every branch push and pull request on
+`ubuntu-24.04`, `ubuntu-24.04-arm` and `macos-14`, plus a fourth `ubuntu-24.04` leg configured
 `-DSENDSPIN_CLI_WITH_MDNS=OFF` — which compiles `src/mdns_null.cpp` instead of
 `src/mdns_dnssd.cpp`, so that translation unit is built rather than assumed. Every leg
 configures `-DSENDSPIN_CLI_WERROR=ON` and runs the CTest suite, the no-mDNS leg included:
@@ -1112,6 +1200,11 @@ backends it expects — a missing `-dev` package does not fail a configure, sinc
 backend is optional and auto-detected, so without that assertion the matrix would go green
 on a null-sink-only, mDNS-less binary. The three platform legs additionally run the smoke
 test and upload the binary they built, kept 14 days.
+
+The matrix itself lives in `.github/workflows/build.yml`, called by `ci.yml` and by item 10's
+`release.yml` alike, so one definition answers for both paths; `ci.yml` carries a
+`tags-ignore` so a tag push builds once rather than twice. See item 10 for why that split is
+a reusable workflow rather than a composite action.
 
 The unit harness is item 1's and unchanged: GoogleTest via `FetchContent` pinned to a tag,
 wired to CTest with `gtest_discover_tests()`, defaulting ON only when this is the top-level

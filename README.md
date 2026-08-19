@@ -1049,14 +1049,18 @@ path. CI runs it on every platform leg; run it yourself against any build.
 
 ## CI
 
-Every push and pull request builds on `ubuntu-24.04`, `ubuntu-24.04-arm` and
-`macos-14`, plus a fourth leg configured `-DSENDSPIN_CLI_WITH_MDNS=OFF` — which
+Every branch push and pull request builds on `ubuntu-24.04`, `ubuntu-24.04-arm`
+and `macos-14`, plus a fourth leg configured `-DSENDSPIN_CLI_WITH_MDNS=OFF` — which
 compiles `src/mdns_null.cpp` in place of `src/mdns_dnssd.cpp`, so that
 configuration is built rather than assumed. Every leg builds with
 `-DSENDSPIN_CLI_WERROR=ON` and runs the unit suite, and each asserts from its own
 configure output that it found the backends it expects: a missing `-dev` package
 does not fail a configure, so without that check the matrix would happily go green
 on a deaf, undiscoverable binary.
+
+The matrix lives in `.github/workflows/build.yml`, which both `ci.yml` and
+`release.yml` call, so a release is built and gated exactly the way a push is.
+`ci.yml` ignores tags for that reason — otherwise a tag would build twice.
 
 To try a commit without building it, open its run under the repository's Actions
 tab and take `sendspin-cli-<version>-<os>-<arch>` from the run summary. Inside is a
@@ -1074,9 +1078,30 @@ Naming the `usr` member is what leaves `BUILD-INFO.txt` in the archive rather th
 unpacking it at `/`. Or run it where you unpacked it, at
 `./<name>/usr/local/bin/sendspin-cli`. The prefix is baked in, so a binary moved out
 of `/usr/local` leaves the unit naming a path with nothing at it. These are
-per-commit builds kept for 14 days; a tagged release is the release-workflow task's,
-and a signed macOS `.pkg` the installer task's — both tracked in
-[`docs/ROADMAP.md`](docs/ROADMAP.md) item 10.
+per-commit builds kept for 14 days. For something that does not expire, take a
+[release](../../releases) instead.
+
+## Releases
+
+Pushing a `v*` tag builds the same matrix and publishes the three platform archives
+plus a `SHA256SUMS` covering them, as a GitHub Release. Nothing else publishes, and
+the workflow never creates a tag: a release exists because a human tagged a commit
+whose version `CMakeLists.txt` already agreed with. It is attached whole or not at
+all — the release is drafted, its assets are checked against the set the tag is
+supposed to carry, and only then is it published, so a half-finished upload leaves a
+draft rather than a release missing an architecture.
+
+The archives are the same staged payload described above, so they install the same
+way. Verify them first:
+
+```bash
+sha256sum -c SHA256SUMS      # Linux
+shasum -a 256 -c SHA256SUMS  # macOS
+```
+
+Those checksums cover the three binary archives, not the `Source code` archives
+GitHub attaches on its own. The macOS binary is unsigned — see below. A signed
+macOS `.pkg` is still owed, tracked in [`docs/ROADMAP.md`](docs/ROADMAP.md) item 10.
 
 ### macOS, and Gatekeeper
 
