@@ -9,7 +9,7 @@ audio-streaming library, taking its command-line and control ergonomics from
 > The initial task brings up the build and boots a sendspin client; feature work
 > is tracked in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
-**New here?** The [wiki](https://github.com/chrisuthe/sendspin-cpp-cli/wiki) is the
+**New here?** The [wiki](https://github.com/Sendspin/sendspin-cpp-cli/wiki) is the
 task-shaped version of this file — installing, a Raspberry Pi walkthrough, troubleshooting —
 and on Linux [`scripts/get_started_linux.sh`](scripts/get_started_linux.sh) does the install
 in one command. Those pages are authored in [`docs/wiki/`](docs/wiki) and mirrored to the
@@ -77,7 +77,7 @@ CI turns it on, which is where the line is actually held.
 > propagates to anything that links it.
 
 ```bash
-git clone https://github.com/chrisuthe/sendspin-cpp-cli.git
+git clone https://github.com/Sendspin/sendspin-cpp-cli.git
 cd sendspin-cpp-cli
 cmake -B build
 cmake --build build

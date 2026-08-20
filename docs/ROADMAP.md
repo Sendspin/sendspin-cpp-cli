@@ -1208,13 +1208,15 @@ operator to choose between `Type=simple` and `Type=forking` and write the unit t
   with nothing in it, because the assertion downstream compares the receipt against the value
   that was passed: without the guard, a dropped output would leave both sides equal and empty
   and the check would pass on an installer that had lost its version.
-- **The receipt is `io.github.chrisuthe.sendspin-cli`.** A namespace this repository actually
-  owns, rather than an `io.sendspin.*` or Open Home Foundation one it does not — the same
-  manners the component argument above makes of ArduinoJson. `sendspin-cli` and not
-  `sendspin-cpp-cli` for the reason the doc directory is named that way: everything anyone
-  types is the binary's name, and this string is typed, by an operator running
-  `pkgutil --forget`. Moving the repository under the Sendspin org would change it, and
-  changing it orphans the receipt of every install before the change rather than upgrading it.
+- **The receipt is `io.github.chrisuthe.sendspin-cli`.** A namespace the author holds, rather
+  than an `io.sendspin.*` or Open Home Foundation one that was not this project's to take when
+  the identifier was minted — the same manners the component argument above makes of
+  ArduinoJson. `sendspin-cli` and not `sendspin-cpp-cli` for the reason the doc directory is
+  named that way: everything anyone types is the binary's name, and this string is typed, by an
+  operator running `pkgutil --forget`. The repository has since moved under the Sendspin org,
+  which makes `io.sendspin.*` available to it for the first time, and the identifier
+  deliberately does not follow: changing it orphans the receipt of every install before the
+  change rather than upgrading it.
 - **The `.pkg` is shipped honestly, and the installer says so itself.** It is unsigned and
   unnotarized; `spctl -a -t install` rejects it exactly as `spctl -a -t exec` rejects the
   ad-hoc-signed binary inside. The welcome pane carries that, what gets installed, and how to

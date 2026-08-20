@@ -40,7 +40,7 @@
 
 [Unit]
 Description=Sendspin audio player
-Documentation=https://github.com/chrisuthe/sendspin-cpp-cli
+Documentation=https://github.com/Sendspin/sendspin-cpp-cli
 # network.target rather than network-online.target: the player retries its mDNS advertisement
 # and an -s dial on a backoff, so it comes up perfectly well ahead of the network -- and
 # network-online.target delays every boot to buy nothing here. sound.target is ordering only

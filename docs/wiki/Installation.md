@@ -10,9 +10,9 @@ Four ways in, depending on what you have. If you are on Linux and want the short
 | Anything else | [Build from source](#build-from-source) |
 
 Everything published is on the
-[Releases page](https://github.com/chrisuthe/sendspin-cpp-cli/releases). Per-commit builds
+[Releases page](https://github.com/Sendspin/sendspin-cpp-cli/releases). Per-commit builds
 of unreleased work are under the repository's Actions tab and expire after 14 days — see
-[CI](https://github.com/chrisuthe/sendspin-cpp-cli/blob/main/README.md#ci).
+[CI](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/README.md#ci).
 
 > **No release exists yet.** `v0.1.0` has not been tagged at the time of writing, so until
 > it is, the only routes are building from source or staging a payload yourself. The
@@ -46,7 +46,7 @@ nothing. Read `BUILD-INFO.txt` first; it names the runtime packages that build n
 # 1. Take the archive for this machine's architecture, and the checksums
 VERSION=0.1.0
 ARCH=$(uname -m); [ "$ARCH" = aarch64 ] && LEG=linux-arm64 || LEG=linux-x86_64
-BASE=https://github.com/chrisuthe/sendspin-cpp-cli/releases/download/v$VERSION
+BASE=https://github.com/Sendspin/sendspin-cpp-cli/releases/download/v$VERSION
 curl -fLO "$BASE/sendspin-cli-$VERSION-$LEG.tar.gz"
 curl -fLO "$BASE/SHA256SUMS"
 
@@ -123,9 +123,9 @@ xattr -d com.apple.quarantine ./sendspin-cli-0.1.0-macos-arm64/usr/local/bin/sen
 
 The full picture — including why `sudo installer` is not gated at all, and why the `.pkg`
 exists despite not fixing Gatekeeper — is in
-[macOS, and Gatekeeper](https://github.com/chrisuthe/sendspin-cpp-cli/blob/main/README.md#macos-and-gatekeeper)
+[macOS, and Gatekeeper](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/README.md#macos-and-gatekeeper)
 and
-[The macOS installer `.pkg`](https://github.com/chrisuthe/sendspin-cpp-cli/blob/main/README.md#the-macos-installer-pkg).
+[The macOS installer `.pkg`](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/README.md#the-macos-installer-pkg).
 A Developer ID signature and notarization are owed and tracked as roadmap item 10.
 
 There is no launchd job in the payload. On macOS the player runs from a shell or under a
@@ -147,7 +147,7 @@ sudo apt install pkg-config libasound2-dev portaudio19-dev libavahi-compat-libdn
 sudo dnf install pkgconf alsa-lib-devel portaudio-devel avahi-compat-libdns_sd-devel     # Fedora / RHEL
 brew install portaudio pkgconf                                                           # macOS
 
-git clone https://github.com/chrisuthe/sendspin-cpp-cli.git
+git clone https://github.com/Sendspin/sendspin-cpp-cli.git
 cd sendspin-cpp-cli
 cmake -B build
 cmake --build build
@@ -179,7 +179,7 @@ sudo cmake --install build --component sendspin-cli
 files belonging to a fetched dependency. The prefix is fixed at *configure* time because
 the unit's `ExecStart` names it absolutely, so reconfigure rather than passing
 `--install --prefix`. Both points, at length, in
-[Install](https://github.com/chrisuthe/sendspin-cpp-cli/blob/main/README.md#install).
+[Install](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/README.md#install).
 
 ## Next
 

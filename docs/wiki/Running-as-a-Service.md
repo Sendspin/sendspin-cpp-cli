@@ -24,7 +24,7 @@ the unit runs as, out of a declaration installed beside the unit, and a tarball 
 > session for ALSA's `default` PCM to follow. Run `sendspin-cli -l`, pick a card, and put
 > `output = hw:1,0` in `/etc/sendspin-cli.conf`.
 > [Getting Started on Linux](Getting-Started-on-Linux) has the argument in full, and is why
-> [`scripts/get_started_linux.sh`](https://github.com/chrisuthe/sendspin-cpp-cli/blob/main/scripts/get_started_linux.sh)
+> [`scripts/get_started_linux.sh`](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/scripts/get_started_linux.sh)
 > enables this unit without starting it.
 
 ## What the payload installs
@@ -177,11 +177,11 @@ Read the installed unit for the full block. Three operator-visible edges:
 - Four directives that would gate what the ALSA backend reaches are deliberately *absent* —
   `PrivateDevices=`, `DeviceAllow=`, `ProcSubset=pid` and `RestrictRealtime=` — because they
   pass every check a machine with no sound card can make, and tracked as
-  [`docs/ROADMAP.md`](https://github.com/chrisuthe/sendspin-cpp-cli/blob/main/docs/ROADMAP.md)
+  [`docs/ROADMAP.md`](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/docs/ROADMAP.md)
   item 10.
 
 The full argument for every directive, and the `systemd-analyze security` figures, are in
-[The systemd unit](https://github.com/chrisuthe/sendspin-cpp-cli/blob/main/README.md#the-systemd-unit).
+[The systemd unit](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/README.md#the-systemd-unit).
 
 ### Changing any of it
 
@@ -225,7 +225,7 @@ saying why".
 
 Lines are not timestamped by the player under systemd, because journald already stamps them
 and a second one would be noise. Only a `-f` logfile gets our own timestamp. See
-[Logging](https://github.com/chrisuthe/sendspin-cpp-cli/blob/main/README.md#logging).
+[Logging](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/README.md#logging).
 
 ## A user unit instead
 
