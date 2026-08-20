@@ -550,6 +550,66 @@ And "the WebSocket port is already taken" turns out **not** to be a post-fork fa
 all: two instances on one `--port` both report listening, which is pre-existing
 sendspin-cpp/IXWebSocket behaviour and is not addressed here.
 
+**Userinfo in a `-s` URL is masked wherever this player names a server.** A `-s` value may
+carry userinfo — `ws://user:token@host:8927/sendspin` — and `parse_server_url()` passes a
+full URL through verbatim, so the whole of it reached `Connecting to %s` at `info` on every
+dial, repeating under the retry pacer's backoff. `redact_url_userinfo()` in
+`src/cli.{h,cpp}` is what names a server now: it masks the secret half of the userinfo and
+keeps the rest, so the line still says which endpoint was dialled —
+`ws://user:***@host:8927/sendspin`, or `***@host` where a single userinfo field could be a
+bearer token and there is nothing to tell it from one. A fixed `***` rather than one `*` per
+character, a secret's length being worth nothing to a reader. The dial itself is handed the
+real URL, and nothing credential-bearing reaches disk: `last-server` holds the server *id*,
+not a URL. Every rejection `parse_server_url()` writes goes through the same helper, a URL
+that does not parse being the one most likely to have been mistyped around a password. The
+helper is unit-tested on its own; that the dial sink actually calls it is a
+`scripts/smoke_test.sh` check, `src/main.cpp` not being linked by the test binary.
+
+**Userinfo is the boundary, and it is the boundary because of where the spec puts
+authentication.** The spec authenticates in the handshake — pairing and a PSK — so a credential
+in a URL is never something this protocol asked for; it is something *in front of* the server
+asking, a reverse proxy wanting HTTP Basic being the case this came from. And it does not reach
+that proxy either: the 6-argument `UrlParser::parse()` IXWebSocket's transport calls copies out
+scheme, host, path, query and port and **discards** the user and password it just parsed
+(`IXUrlParser.cpp`), and nothing in either library builds an `Authorization` header. Confirmed
+against a listening socket rather than by reading: the upgrade request carries `Host`,
+`Upgrade`, `Connection`, `Sec-WebSocket-*` and `Origin`, and no credential in any form. So
+userinfo here is *tolerated and dropped*, and the reason to mask it is that an operator will
+still type it, not that it does anything.
+
+**Two limits on the masking, both of them real.** A credential written into a *query* string is
+not masked: `?token=` is not a shape this player can tell from any other query, and guessing at
+parameter names would mask what is not secret while missing what is. And the mask reads the URL
+the way a URL parser does — the authority ends at the first `/`, `?` or `#` — so a userinfo
+field containing one of those *unencoded* ends the authority early, leaves no `@` inside it, and
+comes back unmasked. A raw base64 secret is the case that bites: `/` is in the alphabet, so a
+32-character token carries one about two times in five. RFC 3986 requires those percent-encoded
+in userinfo and IXWebSocket's own parser says the same, and such a URL does not resolve to the
+endpoint the operator meant in the first place — the host reads as everything up to that `/` —
+so this is a malformed value being printed faithfully rather than a parse to be repaired by
+guesswork. `README.md` and the wiki both say to percent-encode.
+
+**What is owed, and it is the honest answer to all of the above: stop accepting a credential
+this player cannot send.** Refusing a `-s` value that carries userinfo closes every leak by
+construction — a URL that is refused reaches neither `Connecting to %s` nor `connect_to()`, so
+it never reaches the `sendspin.*` lines either — and it closes the unencoded-delimiter shape
+with it, since that shape cannot reach the endpoint it appears to name in any case. It also
+stops the worse failure this item only documents: an operator running a player they believe is
+authenticated. It is a breaking change for anyone passing such a URL today, which is why it is
+owed here rather than done here. Masking is what this item ships; refusing is the fix.
+
+**A third thing this item does not claim: the library's own dial lines.** sendspin-cpp v0.7.0
+logs the URL it is dialling at `info` from `ConnectionManager::connect_to()` and again at
+`error` from `SendspinClientConnection`, through the same sink-less `SS_LOG*` macros that put
+timestamps and per-tag filtering out of reach above — so those lines still carry whatever the
+URL carries, at the default level, and no call this layer can make will change it.
+`connect_to()` takes a URL and nothing else, so the credentials cannot be moved off it either.
+A pipe over fd 2 would catch them and is rejected here for the reason it is rejected above.
+This one is sendspin-cpp's to fix, in the same place a log sink hook belongs; per
+`AI_POLICY.md` no upstream issue was opened here. Until it is, the boundary is exactly the tag
+prefix: every line tagged `sendspin.*` is the library's, and every line tagged otherwise is
+this player's and is held to the paragraph above.
+
 ### 7. Local control channel — *shipped*
 
 The player could only be driven by a remote controller, and `CMakeLists.txt` pinned

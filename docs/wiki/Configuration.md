@@ -71,6 +71,21 @@ Booleans take `true`/`yes`/`on`/`1` or `false`/`no`/`off`/`0`. A line whose firs
 character is `#` is a comment; a `#` anywhere else is not, so a name or a path is free to
 contain one. Where a key appears twice, the last one wins.
 
+**A `server` URL that carries userinfo belongs here rather than on the command line — and it
+does not authenticate anything.** `ws://user:token@host:8927/sendspin` is accepted, and the
+`user:token` is dropped before the handshake: Sendspin authenticates in the handshake, not in
+the URL, so nothing turns userinfo into an `Authorization` header. If a proxy in front of
+your server wants HTTP Basic, this is not the way to give it to it — and the player accepting
+a credential it cannot send is a wrong it owes a fix, not a feature to configure around.
+
+Where it still matters is what gets written down. A URL typed at `-s` is in the process's
+`argv`, which `ps` shows to **every** local user for as long as the player runs; in this file
+it is protected by the file's own permissions, so `chmod 0600` and an owner is the whole of
+the fix. The player also masks userinfo out of every line *it* writes — `Connecting to
+ws://user:***@host:8927/sendspin` — but every line tagged `sendspin.*` is the library's own
+and prints the URL in full, at the default log level. Treat the log of a `-s` run with
+userinfo in it as sensitive either way.
+
 **Five things cannot come from a file**: `-l`, `-z`, `--config`, `--help` and `--version`.
 Run shape stays on the command line, and a config naming one is refused as an unknown key.
 Excluding them is reversible; debugging a `daemonize` that came out of a file under systemd

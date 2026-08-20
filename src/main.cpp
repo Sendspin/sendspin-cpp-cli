@@ -245,7 +245,8 @@ public:
             }
         } else {
             url = this->opts_.server_url;
-            log_line(LogLevel::INFO, LOG_TAG_OUTBOUND, "Connecting to %s", url.c_str());
+            log_line(LogLevel::INFO, LOG_TAG_OUTBOUND, "Connecting to %s",
+                     redact_url_userinfo(url).c_str());
         }
 
         // Stamped before the dial rather than after, so the backoff measures from when the
@@ -269,9 +270,16 @@ private:
             // Discovery already said why, at debug, when the instance first resolved.
             return false;
         }
+        // A discovered URL has no userinfo to hide -- discovered_server_url() builds it from a
+        // resolved address and a TXT path it requires to start with '/', so the authority is
+        // always just that address. It goes through the helper anyway so that both "Connecting
+        // to" lines have one spelling and one place to change it, not because this one is
+        // suspect. The mDNS backend logs the same URL when it first resolves and does *not* do
+        // this: src/mdns_dnssd.cpp depends on mdns.h and log.h and nothing else, and pulling
+        // cli.h into it to restate a guarantee it already owns would cost more than it buys.
         log_line(LogLevel::INFO, LOG_TAG_OUTBOUND,
-                 "Connecting to %s (server \"%s\") -- chosen because %s", url.c_str(),
-                 chosen->instance.c_str(), reason.c_str());
+                 "Connecting to %s (server \"%s\") -- chosen because %s",
+                 redact_url_userinfo(url).c_str(), chosen->instance.c_str(), reason.c_str());
         return true;
     }
 

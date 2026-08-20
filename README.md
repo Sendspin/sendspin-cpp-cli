@@ -343,6 +343,29 @@ mode has already ruled out.
 ./build/sendspin-cli -s "mdns:Music Assistant"  # ...or one by its advertised name
 ```
 
+**A `-s` URL may carry userinfo, and this player does not send it.** `-s
+ws://user:token@host:8927/sendspin` is accepted and dials `host:8927/sendspin` — the
+credentials are dropped before the handshake, because the spec authenticates in the
+handshake (pairing and a PSK) and neither sendspin-cpp nor the IXWebSocket transport under
+it turns URL userinfo into an `Authorization` header. Verified on the wire: the upgrade
+request carries `Host`, `Upgrade`, `Sec-WebSocket-*` and `Origin`, and nothing else. So if
+something in front of your server wants HTTP Basic, a `-s` URL is not how to give it to it —
+and accepting a credential it cannot send is a wrong the player owes a fix, tracked in
+[docs/ROADMAP.md](docs/ROADMAP.md#6-daemonization-and-logging--shipped).
+
+What userinfo does do is get written down, so **the log masks it**: `Connecting to
+ws://user:***@host:8927/sendspin`, and the same in any complaint about a URL that did not
+parse. Two limits on that are worth knowing. Lines tagged `sendspin.*` are the library's own
+and print the URL in full — it logs what it dials through macros with no sink hook, so
+nothing here can reach them. And masking reads the URL the way a URL parser does, so a
+userinfo field containing an unencoded `/`, `?` or `#` — a raw base64 secret, say — ends the
+authority early and is *not* masked; percent-encode those (`%2F`, `%3F`, `%23`). Both are in
+[docs/ROADMAP.md](docs/ROADMAP.md#6-daemonization-and-logging--shipped).
+
+Either way `argv` is not something the player controls: `ps` shows a running process's
+command line to every local user on the box, so a URL you would rather not publish belongs
+in the config file, where the file's own `0600` is the protection.
+
 `mdns:` is reserved **before the first colon only**, the same way `-o` reads
 `<backend>:<device>`, so every address form still works — `hifi:8927` is a host
 and a port, and a bare `-s mdns` is still a host called `mdns`. Discovery is not a
