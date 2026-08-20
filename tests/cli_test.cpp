@@ -628,6 +628,104 @@ TEST(ParseServerUrl, Rejected) {
 }
 
 // ---------------------------------------------------------------------------
+// redact_url_userinfo(): what a logged server URL is allowed to say
+// ---------------------------------------------------------------------------
+
+TEST(RedactUrlUserinfo, MasksTheSecretAndKeepsTheRest) {
+    const std::pair<const char*, const char*> cases[] = {
+        // A user:password pair keeps its username: the line exists to say which endpoint was
+        // dialled, and a username is not the secret.
+        {"ws://alice:s3cr3t@host:8927/sendspin", "ws://alice:***@host:8927/sendspin"},
+        {"wss://alice:s3cr3t@host/sendspin", "wss://alice:***@host/sendspin"},
+        // One field with no colon could be a bearer token, so the whole of it goes.
+        {"ws://s3cr3t@host:8927/sendspin", "ws://***@host:8927/sendspin"},
+        // A password may contain colons, so the split is on the *first* one -- splitting on the
+        // last would print a prefix of the secret.
+        {"ws://alice:s3c:r3t@host/sendspin", "ws://alice:***@host/sendspin"},
+        // And the authority splits on the *last* '@', a host being unable to contain one.
+        {"ws://alice:s3c@r3t@host/sendspin", "ws://alice:***@host/sendspin"},
+        // A bracketed IPv6 host keeps its brackets and its own colons.
+        {"ws://alice:s3cr3t@[2001:db8::1]:8927/sendspin",
+         "ws://alice:***@[2001:db8::1]:8927/sendspin"},
+        {"ws://s3cr3t@[::1]:8927/sendspin", "ws://***@[::1]:8927/sendspin"},
+        // No username is still a secret to hide.
+        {"ws://:s3cr3t@host/sendspin", "ws://:***@host/sendspin"},
+        // A rejected -s value never had a scheme, so a bare authority is read as one.
+        {"alice:s3cr3t@host", "alice:***@host"},
+        {"s3cr3t@host", "***@host"},
+    };
+
+    for (const auto& [input, expected] : cases) {
+        EXPECT_EQ(redact_url_userinfo(input), expected) << input;
+        EXPECT_EQ(redact_url_userinfo(input).find("s3cr3t"), std::string::npos)
+            << "the secret survived in '" << input << "'";
+    }
+}
+
+TEST(RedactUrlUserinfo, LeavesAloneWhatHoldsNoSecret) {
+    const char* unchanged[] = {
+        // Nothing to hide.
+        "",
+        "ws://host:8927/sendspin",
+        "wss://[2001:db8::1]:8927/sendspin",
+        "host:8927",
+        "mdns:Living room",
+        // A scheme naming nothing, and other fragments a rejected -s value arrives as.
+        "ws://",
+        "::1",
+        "[::1",
+        // An empty userinfo, and an empty password: masking either would invent a secret that is
+        // not there.
+        "ws://@host:8927/sendspin",
+        "ws://alice:@host:8927/sendspin",
+        // The authority ends at the first '/', '?' or '#', so an '@' past it is not a credential
+        // separator -- including one a server chose. A TXT `path` has to start with '/', which is
+        // what puts a hostile one here rather than in the authority.
+        "ws://host:8927/sendspin@1",
+        "ws://host:8927//alice:s3cr3t@evil/x",
+        "ws://host:8927/sendspin?token=a@b",
+        "ws://host:8927/sendspin#a@b",
+        // A known boundary, pinned rather than left to be discovered: an unencoded '/', '?' or
+        // '#' *inside* userinfo ends the authority early, so there is no '@' left in it to split
+        // on and the value comes back whole. RFC 3986 requires those percent-encoded there, and
+        // such a URL does not name the endpoint it looks like it names anyway -- the host reads
+        // as everything up to the '/'. README.md and the wiki say to percent-encode; the
+        // alternative, refusing the shape, would refuse a value -s accepts today.
+        "ws://alice:aGVsbG8/d29ybGQ=@host:8927/sendspin",
+    };
+
+    for (const char* input : unchanged) {
+        EXPECT_EQ(redact_url_userinfo(input), input);
+    }
+}
+
+// Every rejection parse_server_url() writes quotes the -s value back at the operator, and a value
+// that does not parse is exactly the one most likely to have been mistyped around a password.
+// Asserted over the reason rather than per message, so a rejection added later is covered without
+// being listed here.
+TEST(RedactUrlUserinfo, NoRejectionReasonQuotesACredential) {
+    const char* cases[] = {
+        "alice:s3cr3t@host",                     // userinfo lands in the port field
+        "alice:s3cr3t@2001:db8::1",              // ...and in the bracket-it-yourself advice
+        "http://alice:s3cr3t@host/sendspin",     // the wrong scheme
+        "ws://",                                 // a scheme and nothing else
+        "[::1]alice:s3cr3t@host",                // a fragment after the closing bracket
+        "[::1]:s3cr3t@host",                     // ...and one that reads as a port
+        ":s3cr3t@host",                          // no host before the port
+    };
+
+    for (const char* input : cases) {
+        std::string url;
+        std::string error;
+
+        ASSERT_FALSE(parse_server_url(input, url, error)) << "accepted '" << input << "'";
+        ASSERT_FALSE(error.empty()) << "no reason given for '" << input << "'";
+        EXPECT_EQ(error.find("s3cr3t"), std::string::npos)
+            << "'" << input << "' was refused with: " << error;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // -s mdns:, the discovery form
 // ---------------------------------------------------------------------------
 

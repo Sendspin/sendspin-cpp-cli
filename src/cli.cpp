@@ -49,6 +49,12 @@ constexpr const char* FALLBACK_NAME = "sendspin-cli";
 /// `ws://server.local:8927/sendspin` (include/sendspin/client.h, src/esp/client_connection.h).
 constexpr uint16_t DEFAULT_REMOTE_SERVER_PORT = 8927U;
 
+/// What stands in for a redacted secret in a logged URL, at a fixed width.
+///
+/// Fixed rather than one '*' per character: the length of a password is worth nothing to a
+/// reader of the log and something to whoever else ends up holding it.
+constexpr const char* USERINFO_MASK = "***";
+
 /// Long-only option values, picked outside the short-option alphabet so `-V`/`-p` stay
 /// unclaimed for squeezelite's own meanings.
 enum LongOnly {
@@ -780,8 +786,12 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
             // build lacks: a flag that parses and then quietly discovers nothing is worse
             // than one that says the build cannot do it.
             out.discover = false;
+            // Redacted like every other message that quotes a -s value. A discovery spec is a
+            // service instance name and has no userinfo to carry, so the helper is a no-op on
+            // any sane one -- but `mdns:` is only reserved before the first colon, so what
+            // follows it is whatever was typed, and this is the one message that prints it.
             fail_for(Opt::Server,
-                     "-s '" + out.server +
+                     "-s '" + redact_url_userinfo(out.server) +
                          "': this build has no mDNS support, so it cannot discover a server. "
                          "Rebuild with dns_sd.h available (libavahi-compat-libdnssd-dev on "
                          "Debian/Ubuntu, avahi-compat-libdns_sd-devel on Fedora), or give -s an "
@@ -1104,20 +1114,25 @@ bool parse_server_url(const std::string& server, std::string& url, std::string& 
         return false;
     }
 
+    // Every message below quotes the value the operator typed back at them, and that value may
+    // carry credentials -- so none of them quotes it raw, nor any fragment of it. A value with
+    // no userinfo, which is every well-formed one, comes back exactly as written.
+    const std::string shown = redact_url_userinfo(server);
+
     // A scheme means the caller is spelling out the whole URL -- path, port and all -- so
     // the only thing to check is that it is one we can actually speak.
     const size_t scheme_end = server.find("://");
     if (scheme_end != std::string::npos) {
         const std::string scheme = server.substr(0, scheme_end);
         if (scheme != "ws" && scheme != "wss") {
-            error = "-s '" + server + "': Sendspin runs over WebSocket, so the scheme must be " +
+            error = "-s '" + shown + "': Sendspin runs over WebSocket, so the scheme must be " +
                     "ws:// or wss://, not " + scheme + "://";
             return false;
         }
         // The rest is the caller's to get right -- port, path and all -- but a scheme with
         // nothing after it names no server at all, and would fail far from here.
         if (scheme_end + 3 == server.size()) {
-            error = "-s '" + server + "': a scheme but no host";
+            error = "-s '" + shown + "': a scheme but no host";
             return false;
         }
         url = server;
@@ -1133,14 +1148,15 @@ bool parse_server_url(const std::string& server, std::string& url, std::string& 
         // closing bracket can be a port.
         const size_t bracket = server.find(']');
         if (bracket == std::string::npos) {
-            error = "-s '" + server + "': unterminated '[' -- an IPv6 literal reads [::1]:8927";
+            error = "-s '" + shown + "': unterminated '[' -- an IPv6 literal reads [::1]:8927";
             return false;
         }
         host = server.substr(0, bracket + 1);
         const std::string rest = server.substr(bracket + 1);
         if (!rest.empty()) {
             if (rest.front() != ':') {
-                error = "-s '" + server + "': expected ':<port>' after ']', got '" + rest + "'";
+                error = "-s '" + shown + "': expected ':<port>' after ']', got '" +
+                        redact_url_userinfo(rest) + "'";
                 return false;
             }
             port_text = rest.substr(1);
@@ -1153,8 +1169,8 @@ bool parse_server_url(const std::string& server, std::string& url, std::string& 
         } else if (server.find(':', colon + 1) != std::string::npos) {
             // More than one colon and no brackets: an IPv6 literal written bare, where
             // there is no way to tell the address's colons from a port separator.
-            error = "-s '" + server + "': an IPv6 literal must be bracketed -- try '[" + server +
-                    "]' or '[" + server + "]:<port>'";
+            error = "-s '" + shown + "': an IPv6 literal must be bracketed -- try '[" + shown +
+                    "]' or '[" + shown + "]:<port>'";
             return false;
         } else {
             host = server.substr(0, colon);
@@ -1165,7 +1181,7 @@ bool parse_server_url(const std::string& server, std::string& url, std::string& 
 
     // "[]" is as empty a host as "".
     if (host.empty() || host == "[]") {
-        error = "-s '" + server + "': no host before the port";
+        error = "-s '" + shown + "': no host before the port";
         return false;
     }
 
@@ -1173,12 +1189,52 @@ bool parse_server_url(const std::string& server, std::string& url, std::string& 
     // but empty port is a truncated line, not a request for the default.
     uint16_t port = DEFAULT_REMOTE_SERVER_PORT;
     if (has_port && !parse_port(port_text, port)) {
-        error = "-s '" + server + "': '" + port_text + "' is not a port number (expected 1-65535)";
+        error = "-s '" + shown + "': '" + redact_url_userinfo(port_text) +
+                "' is not a port number (expected 1-65535)";
         return false;
     }
 
     url = "ws://" + host + ":" + std::to_string(port) + SENDSPIN_PATH;
     return true;
+}
+
+std::string redact_url_userinfo(const std::string& url) {
+    // What can carry userinfo is the authority, and only the authority: it starts after the
+    // scheme when there is one and at the front when there is not -- a rejected -s value is a
+    // bare authority -- and ends at the first delimiter that closes it. Ending it there is what
+    // keeps an '@' further along, in a path or a query, from reading as a credential separator.
+    const size_t scheme_end = url.find("://");
+    const size_t begin = scheme_end == std::string::npos ? 0 : scheme_end + 3;
+    const size_t end = url.find_first_of("/?#", begin);
+    const std::string authority =
+        url.substr(begin, end == std::string::npos ? std::string::npos : end - begin);
+
+    // The *last* '@' in it: a host cannot contain one and a userinfo field can, so anything
+    // before the final '@' is userinfo however many it holds.
+    const size_t at = authority.rfind('@');
+    if (at == std::string::npos) {
+        return url;
+    }
+    const std::string userinfo = authority.substr(0, at);
+
+    // The *first* ':': everything after it is one password, colons and all, so splitting on the
+    // last would print a prefix of the secret.
+    const size_t colon = userinfo.find(':');
+    std::string masked;
+    if (colon == std::string::npos) {
+        // Nothing to hide at all, or one field that could be a bearer token and so goes whole.
+        if (userinfo.empty()) {
+            return url;
+        }
+        masked = USERINFO_MASK;
+    } else if (colon + 1 == userinfo.size()) {
+        // A username and an empty password: masking would invent a secret that is not there.
+        return url;
+    } else {
+        masked = userinfo.substr(0, colon + 1) + USERINFO_MASK;
+    }
+
+    return url.substr(0, begin) + masked + url.substr(begin + at);
 }
 
 std::string default_client_name() {

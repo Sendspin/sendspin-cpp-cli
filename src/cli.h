@@ -294,6 +294,35 @@ void print_version(std::FILE* out);
 /// @return true if `server` resolved to a URL.
 bool parse_server_url(const std::string& server, std::string& url, std::string& error);
 
+/// @brief The spelling of a server URL that is safe to log: its userinfo masked.
+///
+/// A `-s` value may carry credentials -- `ws://user:token@host:8927/sendspin` -- and every
+/// line that names a server is a line an operator pastes into an issue, so every message that
+/// quotes one comes through here. The URL handed to the dial is untouched, which is also the
+/// limit of what this buys: the library logs the URL it dials itself, and those lines are not
+/// this layer's to redact.
+///
+/// Masks only the secret half. A `user:password` pair keeps its username, which is what makes
+/// the line still worth reading -- `ws://user:***@host:8927/sendspin` names the endpoint that
+/// was dialled. A userinfo field with no colon is indistinguishable from a bearer token, so
+/// the whole of it goes: `ws://***@host`. The mask is a fixed `***` either way, since the
+/// length of a secret is itself worth nothing to a reader and something to an attacker.
+///
+/// Reads the authority the way a URL parser would -- it ends at the first `/`, `?` or `#`, and
+/// the userinfo at the last `@` inside it -- which is what makes this safe on strings that are
+/// not URLs at all: an `@` in a path or a query, or a whole second URL smuggled into one, is
+/// left alone. A value with no scheme is read as a bare authority, which is what a rejected
+/// `-s` value is. Anything with no userinfo, an empty one (`ws://@host`) or an empty password
+/// (`ws://user:@host`) comes back unchanged: there is nothing there to hide.
+///
+/// Reading it that way is also the one thing a caller has to know the limit of: a userinfo
+/// field holding an *unencoded* `/`, `?` or `#` ends the authority early, so there is no `@`
+/// left inside it to split on and the value comes back whole. RFC 3986 requires those
+/// percent-encoded there, and such a URL does not name the host it appears to, so it is a
+/// malformed value rather than a parse to repair by guesswork -- but it is not masked.
+/// @return `url` with its userinfo masked, or `url` itself when it carries none.
+std::string redact_url_userinfo(const std::string& url);
+
 /// @brief Reads a -s value as the reserved discovery form, if that is what it is.
 ///
 /// `mdns:<name>` asks for a server whose TXT `name` is `<name>`; a bare `mdns:` asks for
