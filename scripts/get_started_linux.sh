@@ -76,7 +76,7 @@ set -euo pipefail
 # The repository releases are taken from. A constant rather than an environment knob: a
 # get-started script that can be pointed at any repository is a get-started script that can
 # be pointed at somebody else's binary.
-readonly REPO='chrisuthe/sendspin-cpp-cli'
+readonly REPO='Sendspin/sendspin-cpp-cli'
 
 readonly UNIT='sendspin-cli'
 readonly UNIT_FILE='/usr/local/lib/systemd/system/sendspin-cli.service'

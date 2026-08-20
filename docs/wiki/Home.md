@@ -8,7 +8,7 @@ player in the group, and takes its flags and its ergonomics from squeezelite so 
 muscle memory carries over.
 
 > **Status: early scaffold.** The player works; not everything on the roadmap is built.
-> [`docs/ROADMAP.md`](https://github.com/chrisuthe/sendspin-cpp-cli/blob/main/docs/ROADMAP.md)
+> [`docs/ROADMAP.md`](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/docs/ROADMAP.md)
 > is the honest list of what is and is not done.
 
 ## Start here
@@ -35,7 +35,7 @@ That is the whole of the usual setup: nothing to configure on either end. A Send
 server discovers the advertisement and dials in. `-s <server>` inverts it and makes this
 player the one dialling, which the protocol treats as the other of two mutually exclusive
 modes — see
-[The two connection modes](https://github.com/chrisuthe/sendspin-cpp-cli/blob/main/README.md#the-two-connection-modes).
+[The two connection modes](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/README.md#the-two-connection-modes).
 
 Audio goes out through ALSA (the Linux default) or PortAudio (the cross-platform one, and
 the only way to make noise on macOS), with volume applied in software on a curve the spec
@@ -61,19 +61,19 @@ build time, so it turns an Intel Mac away rather than reporting success.
 
 There is no 32-bit ARM build and no Intel-Mac build. The CI matrix has no armv7, 32-bit Pi
 or macOS `x86_64` leg, which is recorded in
-[`docs/ROADMAP.md`](https://github.com/chrisuthe/sendspin-cpp-cli/blob/main/docs/ROADMAP.md),
+[`docs/ROADMAP.md`](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/docs/ROADMAP.md),
 item 12.
 Anything else builds from source.
 
 ## Where things live
 
-- **[`README.md`](https://github.com/chrisuthe/sendspin-cpp-cli/blob/main/README.md)** is
+- **[`README.md`](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/README.md)** is
   the reference, and ships inside every archive at
   `usr/local/share/doc/sendspin-cli/README.md`. It explains *why* the player behaves as it
   does — the two connection modes, how `-o` resolves its argument, why `vol` is the group's
   volume and not this box's. These wiki pages link into it rather than restating it, so
   there is one copy of each argument and it is the copy an offline tarball holder also has.
-- **[`docs/ROADMAP.md`](https://github.com/chrisuthe/sendspin-cpp-cli/blob/main/docs/ROADMAP.md)**
+- **[`docs/ROADMAP.md`](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/docs/ROADMAP.md)**
   is what is built, what is not, and what was actually tested rather than reasoned about.
 - **`sendspin-cli --help`** is the flag reference, and the config file's reference too:
   every config key is a long flag name minus its dashes.
@@ -83,9 +83,9 @@ Anything else builds from source.
 **This wiki is generated. Do not edit it here — the edit will be overwritten.**
 
 The pages are authored in the repository at
-[`docs/wiki/`](https://github.com/chrisuthe/sendspin-cpp-cli/tree/main/docs/wiki) and
+[`docs/wiki/`](https://github.com/Sendspin/sendspin-cpp-cli/tree/main/docs/wiki) and
 mirrored here by
-[`.github/workflows/wiki.yml`](https://github.com/chrisuthe/sendspin-cpp-cli/blob/main/.github/workflows/wiki.yml)
+[`.github/workflows/wiki.yml`](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/.github/workflows/wiki.yml)
 on every push to `main`. A page removed there is removed here; a page changed here is put
 back on the next push.
 

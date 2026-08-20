@@ -114,7 +114,7 @@ shape for a unit whose stderr journald already has. See
 [Running as a Service](Running-as-a-Service#what-is-hardened).
 
 The full argument, including why the search does not merge layers, is in
-[The config file, and what the player remembers](https://github.com/chrisuthe/sendspin-cpp-cli/blob/main/README.md#the-config-file-and-what-the-player-remembers).
+[The config file, and what the player remembers](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/README.md#the-config-file-and-what-the-player-remembers).
 
 ## The state file
 

@@ -84,7 +84,7 @@ Changing it mid-stream re-times chunk scheduling, so expect a brief resync — s
 stopped where you can.
 
 The long version of all three is in
-[The local control channel](https://github.com/chrisuthe/sendspin-cpp-cli/blob/main/README.md#the-local-control-channel).
+[The local control channel](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/README.md#the-local-control-channel).
 
 ## Reading `status`
 

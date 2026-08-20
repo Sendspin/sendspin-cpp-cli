@@ -9,7 +9,7 @@ the same `linux-arm64` archive an arm64 server does — plus the five things on 
 
 **The builds are `arm64` only. There is no 32-bit ARM build, and none is coming from CI.**
 The matrix has no armv7 or 32-bit Pi leg, which is recorded in
-[`docs/ROADMAP.md`](https://github.com/chrisuthe/sendspin-cpp-cli/blob/main/docs/ROADMAP.md),
+[`docs/ROADMAP.md`](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/docs/ROADMAP.md),
 item 12.
 
 Check what you are running before anything else:
@@ -47,7 +47,7 @@ wrong.
 Exactly as on any Linux host:
 
 ```bash
-curl -fLO https://raw.githubusercontent.com/chrisuthe/sendspin-cpp-cli/main/scripts/get_started_linux.sh
+curl -fLO https://raw.githubusercontent.com/Sendspin/sendspin-cpp-cli/main/scripts/get_started_linux.sh
 less get_started_linux.sh          # read it before it runs things as root
 chmod +x get_started_linux.sh
 ./get_started_linux.sh
@@ -126,7 +126,7 @@ nothing for a player running as you.
 - **SD cards wear out**, and the state file is rewritten whole on every *distinct* volume a
   server sends. A repeat of the current value is skipped, but a slider drag is one rewrite
   per step; debouncing is a known gap, listed under
-  [`docs/ROADMAP.md`](https://github.com/chrisuthe/sendspin-cpp-cli/blob/main/docs/ROADMAP.md)
+  [`docs/ROADMAP.md`](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/docs/ROADMAP.md)
   item 8. If that worries you, point the state at the runtime directory, which is already a
   tmpfs — and accept that volume, mute and the static delay are then forgotten across
   reboots. It has to be a **drop-in** rather than a config key, because the unit passes
@@ -146,7 +146,7 @@ nothing for a player running as you.
   entirely, and a fixed endpoint deserves a cable.
 - **Underruns on a busy Pi** show as clicks or dropouts. Raise the buffer:
   `buffer-ms = 250` in the config. The default is 100 ms and the range is 10–2000; see
-  [Buffering, and what gets advertised](https://github.com/chrisuthe/sendspin-cpp-cli/blob/main/README.md#buffering-and-what-gets-advertised).
+  [Buffering, and what gets advertised](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/README.md#buffering-and-what-gets-advertised).
 - **`avahi-daemon` is what provides mDNS on a Pi**, and Raspberry Pi OS ships it running. If
   you have turned it off, the player warns and retries rather than failing — but nothing will
   discover it until it is back.

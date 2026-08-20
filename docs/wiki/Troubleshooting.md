@@ -155,7 +155,7 @@ and the Sendspin spec forbids advertising while it is
 ```
 
 There is deliberately no flag that turns both modes on together. See
-[The two connection modes](https://github.com/chrisuthe/sendspin-cpp-cli/blob/main/README.md#the-two-connection-modes).
+[The two connection modes](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/README.md#the-two-connection-modes).
 
 **`no-mdns` is set.** Remove it.
 
@@ -300,7 +300,7 @@ buffer-ms = 250
 That is one figure for every backend — ALSA divides it into periods, PortAudio makes it the
 ring size, and a device-less sink ignores it. A figure smaller than one device buffer is
 raised to the floor and says so at `debug`. See
-[Buffering, and what gets advertised](https://github.com/chrisuthe/sendspin-cpp-cli/blob/main/README.md#buffering-and-what-gets-advertised).
+[Buffering, and what gets advertised](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/README.md#buffering-and-what-gets-advertised).
 
 If it is one speaker out of sync with the others rather than dropping out, that is
 `delay`, not `buffer-ms` — see [Controlling the Player](Controlling-the-Player).
@@ -332,12 +332,12 @@ sendspin-cli -z -f /var/log/sendspin-cli.log -P /run/sendspin-cli.pid
 
 Under systemd, neither flag belongs: `Type=simple` in the foreground puts everything in the
 journal. See
-[Running as a daemon](https://github.com/chrisuthe/sendspin-cpp-cli/blob/main/README.md#running-as-a-daemon).
+[Running as a daemon](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/README.md#running-as-a-daemon).
 
 ## Still stuck
 
 Collect this and open an issue at
-[the repository](https://github.com/chrisuthe/sendspin-cpp-cli/issues):
+[the repository](https://github.com/Sendspin/sendspin-cpp-cli/issues):
 
 ```bash
 sendspin-cli --version
