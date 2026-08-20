@@ -1,0 +1,190 @@
+name: Wiki
+
+# Publishes docs/wiki/ to this repository's GitHub wiki.
+#
+# The pages are authored in the tree and mirrored *out* to the wiki, rather than edited in the
+# wiki tab, because a wiki push bypasses everything: no pull request, no review, no required
+# check, and — for a repository whose wiki is open to collaborators — no gate at all. Authoring
+# them here makes a documentation change the same kind of change as a code change. The wiki tab
+# is a rendering of `docs/wiki/`; it is not where anything is written.
+#
+# That direction is what makes the mirror one-way and destructive: a page edited in the wiki tab
+# is overwritten on the next push to main, and a page deleted from docs/wiki/ is deleted from
+# the wiki. wiki/Home.md says so, because a reader who edits a page and watches it revert
+# deserves to have been told where to send the fix instead.
+#
+# `contents: write` is scoped to the one job that needs it, the workflow default above it being
+# read-only — the same shape release.yml's publishing job uses. The wiki is a separate git
+# repository (`<repo>.wiki.git`) but the same token governs both, so this cannot be given less.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      # The workflow itself included: a change to how the mirror runs should be exercised by
+      # the push that makes it, not left until the next page edit.
+      - 'docs/wiki/**'
+      - '.github/workflows/wiki.yml'
+  # A hand-run, for the first sync after the wiki is enabled — that is a repository setting
+  # rather than a commit, so nothing about flipping it triggers a push.
+  workflow_dispatch:
+
+# Queued rather than cancelled, which is the difference between this and ci.yml. Two pushes to
+# main both clone, commit and push to one remote; cancelling the first would be fine, but
+# `cancel-in-progress: true` cancels the *older* run, and the survivor may be the one carrying
+# the older tree. Serialising them instead means the second run clones what the first pushed.
+concurrency:
+  group: wiki
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    # Named rather than left to default, because the default is `bash -e` with no pipefail.
+    shell: bash
+
+jobs:
+  sync:
+    name: sync
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      # Pinned to a commit rather than a tag, because a tag can be repointed at any time and
+      # this job runs with write access. The trailing comment is the version that commit was.
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      # Asked before anything is cloned, so the two ways there is nowhere to publish to are
+      # told apart from each other and from a clone that failed for some other reason. Both are
+      # repository settings only an owner can change, and neither is this push's fault: they
+      # skip with a notice. Everything else fails.
+      - name: Is there a wiki to publish to
+        id: wiki
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          has_wiki="$(gh api "repos/$GITHUB_REPOSITORY" --jq '.has_wiki')"
+          echo "has_wiki=$has_wiki" >>"$GITHUB_OUTPUT"
+
+          # Only `false` is a reason to skip. An empty answer, a `null`, or anything else this
+          # field might become is a question that was not answered -- and reporting that as
+          # "wikis are turned off" would stop publishing indefinitely without ever failing a
+          # run. The notice below is honest for exactly one value, so only that value gets it.
+          case "$has_wiki" in
+            true) ;;
+            false)
+              echo "::notice::Wikis are turned off for $GITHUB_REPOSITORY, so docs/wiki was not published. Enable it under Settings -> General -> Features -> Wikis, then re-run this workflow."
+              ;;
+            *)
+              echo "::error::The GitHub API answered '$has_wiki' for .has_wiki, which is neither true nor false. Refusing to guess whether there is a wiki to publish to."
+              exit 1
+              ;;
+          esac
+
+      # A wiki that is enabled but has never had a page created has no git repository behind it
+      # yet, and GitHub offers no API to create one — the first page has to be made in the wiki
+      # tab, once, by hand. That is the second setting-shaped skip, and it is recognised by
+      # git's own message rather than by "the clone failed", so a network failure or a rate
+      # limit still fails this job. The captured stderr is printed either way: a skip nobody
+      # can see the evidence for is a skip that hides a real error.
+      #
+      # One case this cannot separate, stated rather than glossed: GitHub answers a token that
+      # is not allowed to see the repository with the same "repository not found" it uses for
+      # one that does not exist, so a permission failure would classify as "no wiki yet" and
+      # skip green. It is checked above as far as it can be -- `has_wiki` came back from the
+      # same token one step earlier, so a token that reached the API and then cannot reach the
+      # wiki is a narrow case -- but the pattern below cannot tell the two apart, and the
+      # printed stderr is what a reader would have to judge it on.
+      - name: Clone the wiki
+        id: clone
+        if: steps.wiki.outputs.has_wiki == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          git clone --depth 1 \
+            "https://x-access-token:$GITHUB_TOKEN@github.com/$GITHUB_REPOSITORY.wiki.git" \
+            wiki 2>clone.err
+          status=$?
+          set -e
+
+          # Printed before it is judged, and with the token pattern that cannot appear in it
+          # anyway left alone: git reports the URL without credentials.
+          cat clone.err
+
+          if [ "$status" -eq 0 ]; then
+            echo 'cloned=true' >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if grep -qiE 'repository .* not found|not found: .*\.wiki' clone.err; then
+            echo 'cloned=false' >>"$GITHUB_OUTPUT"
+            echo "::notice::$GITHUB_REPOSITORY has wikis enabled but no wiki repository yet, so docs/wiki was not published. Create any page once in the wiki tab — that is what GitHub creates the repository on — then re-run this workflow."
+            exit 0
+          fi
+
+          echo '::error::Could not clone the wiki, and not because it is missing. See the git output above.'
+          exit 1
+
+      # Emptied and refilled rather than copied over, because the tree is the source of truth in
+      # both directions: a page removed from docs/wiki/ has to leave the wiki, and one edited in
+      # the wiki tab has to go back to what the tree says. A plain `cp` would only ever add.
+      #
+      # `find`/`cp` rather than `rsync --delete`, which would do this in one line: rsync is not
+      # something this workflow should have to assume is on the runner image, and the two
+      # commands below say what is happening more plainly than a flag does.
+      #
+      # `! -name .git` is load-bearing — deleting the clone's own history mid-sync would be a
+      # novel way to fail.
+      #
+      # The whole directory rather than just `*.md`, so that a page needing an image can keep it
+      # in docs/wiki/ beside itself and have it published too. The other half of the same rule:
+      # this removes anything the wiki holds that docs/wiki/ does not, an image uploaded through
+      # the wiki tab included. That follows from the model rather than being an oversight — a
+      # file that is not in the tree is a file this wiki does not have.
+      #
+      # A GitHub wiki page is one file at the wiki root, so docs/wiki/ is kept flat; `-R` is
+      # here to carry a directory of assets if one is ever added, not as an invitation to nest
+      # pages, which the wiki would not render as pages anyway.
+      - name: Mirror docs/wiki into it
+        if: steps.clone.outputs.cloned == 'true'
+        run: |
+          find wiki -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
+          cp -R docs/wiki/. wiki/
+          echo 'What the wiki holds that differs from docs/wiki:'
+          git -C wiki status --porcelain
+
+      # Nothing to say is the common case — this workflow also runs when only the workflow file
+      # changed — and an empty commit would put a row in the wiki's history for a push that
+      # changed no page.
+      #
+      # Never force. A rejected push means the wiki moved under this run, which is either the
+      # concurrent run above (impossible: the group serialises them) or somebody editing the
+      # wiki tab directly. That is precisely the bypass this whole arrangement exists to
+      # prevent, so it fails and names the cause instead of overwriting the evidence.
+      - name: Commit and push what changed
+        if: steps.clone.outputs.cloned == 'true'
+        run: |
+          cd wiki
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "::notice::The wiki already matches docs/wiki at $GITHUB_SHA; nothing to push."
+            exit 0
+          fi
+
+          # An identity is required to commit at all, and github-actions[bot]'s is the one that
+          # attributes this to the workflow rather than to whoever pushed to main.
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m "Sync docs/wiki from $GITHUB_SHA"
+
+          git push 2>push.err || {
+            cat push.err
+            echo '::error::Pushing to the wiki was rejected. The usual cause is a page edited in the wiki tab, which this mirror overwrites rather than merges — copy the edit into docs/wiki/ and open a pull request for it.'
+            exit 1
+          }
+          echo "::notice::Published docs/wiki to the wiki at $GITHUB_SHA."

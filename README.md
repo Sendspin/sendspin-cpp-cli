@@ -9,6 +9,12 @@ audio-streaming library, taking its command-line and control ergonomics from
 > The initial task brings up the build and boots a sendspin client; feature work
 > is tracked in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
+**New here?** The [wiki](https://github.com/chrisuthe/sendspin-cpp-cli/wiki) is the
+task-shaped version of this file — installing, a Raspberry Pi walkthrough, troubleshooting —
+and on Linux [`scripts/get_started_linux.sh`](scripts/get_started_linux.sh) does the install
+in one command. Those pages are authored in [`docs/wiki/`](docs/wiki) and mirrored to the
+wiki tab on every push to `main`.
+
 ## What it is
 
 Like squeezelite is a headless endpoint for Lyrion/Logitech Media Server,
