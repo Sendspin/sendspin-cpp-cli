@@ -23,7 +23,10 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstddef>
+#include <cstdint>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace sendspin_cli {
@@ -47,6 +50,99 @@ size_t count_codec(const std::vector<AudioSupportedFormatObject>& formats,
     return static_cast<size_t>(std::count_if(
         formats.begin(), formats.end(),
         [&](const AudioSupportedFormatObject& format) { return format.codec == codec; }));
+}
+
+/// One entry reduced to something comparable -- AudioSupportedFormatObject is a plain
+/// aggregate with no operator==.
+using FormatKey = std::tuple<int, uint8_t, uint32_t, uint8_t>;
+
+/// The advertisement as a *set*: sorted keys, so two orderings of the same entries compare
+/// equal and a difference is a difference in what was advertised, not in what order.
+std::vector<FormatKey> as_set(const std::vector<AudioSupportedFormatObject>& formats) {
+    std::vector<FormatKey> keys;
+    keys.reserve(formats.size());
+    for (const AudioSupportedFormatObject& format : formats) {
+        keys.emplace_back(static_cast<int>(format.codec), format.channels, format.sample_rate,
+                          format.bit_depth);
+    }
+    std::sort(keys.begin(), keys.end());
+    return keys;
+}
+
+/// What supported_formats() advertised before the preference ladders: the same crossing, in
+/// the ascending order a probe reports its axes in. Spelled out here so the ranking can be
+/// held to permuting that list and nothing else -- an ordering change that quietly dropped
+/// an entry would take a format away from every server and every user picking one by hand.
+std::vector<AudioSupportedFormatObject> ascending_advertisement(const SinkCapabilities& caps) {
+    std::vector<AudioSupportedFormatObject> formats;
+    if (caps.channels.empty()) {
+        return formats;
+    }
+    const uint8_t channels =
+        std::find(caps.channels.begin(), caps.channels.end(), 2) != caps.channels.end()
+            ? uint8_t{2}
+            : caps.channels.front();
+
+    for (const SendspinCodecFormat codec : {SendspinCodecFormat::FLAC, SendspinCodecFormat::PCM}) {
+        for (const uint32_t rate : caps.rates) {
+            for (const uint8_t depth : caps.bit_depths) {
+                formats.push_back({codec, channels, rate, depth});
+            }
+        }
+    }
+    if (channels <= 2 &&
+        std::find(caps.rates.begin(), caps.rates.end(), 48000U) != caps.rates.end() &&
+        std::find(caps.bit_depths.begin(), caps.bit_depths.end(), 16) != caps.bit_depths.end()) {
+        formats.push_back({SendspinCodecFormat::OPUS, channels, 48000, 16});
+    }
+    return formats;
+}
+
+/// The distinct rates `codec`'s entries carry, in the order they were advertised in.
+std::vector<uint32_t> rates_of(const std::vector<AudioSupportedFormatObject>& formats,
+                               SendspinCodecFormat codec) {
+    std::vector<uint32_t> rates;
+    for (const AudioSupportedFormatObject& format : formats) {
+        if (format.codec == codec &&
+            std::find(rates.begin(), rates.end(), format.sample_rate) == rates.end()) {
+            rates.push_back(format.sample_rate);
+        }
+    }
+    return rates;
+}
+
+/// The distinct depths `codec`'s entries carry, in the order they were advertised in.
+std::vector<uint8_t> depths_of(const std::vector<AudioSupportedFormatObject>& formats,
+                               SendspinCodecFormat codec) {
+    std::vector<uint8_t> depths;
+    for (const AudioSupportedFormatObject& format : formats) {
+        if (format.codec == codec &&
+            std::find(depths.begin(), depths.end(), format.bit_depth) == depths.end()) {
+            depths.push_back(format.bit_depth);
+        }
+    }
+    return depths;
+}
+
+/// Position of the first / last entry carrying `codec`, or formats.size() where there is none.
+size_t first_index(const std::vector<AudioSupportedFormatObject>& formats,
+                   SendspinCodecFormat codec) {
+    for (size_t i = 0; i < formats.size(); ++i) {
+        if (formats[i].codec == codec) {
+            return i;
+        }
+    }
+    return formats.size();
+}
+
+size_t last_index(const std::vector<AudioSupportedFormatObject>& formats,
+                  SendspinCodecFormat codec) {
+    for (size_t i = formats.size(); i > 0; --i) {
+        if (formats[i - 1].codec == codec) {
+            return i - 1;
+        }
+    }
+    return formats.size();
 }
 
 // ---------------------------------------------------------------------------
@@ -181,15 +277,115 @@ TEST(SupportedFormats, ThePermissiveSetCoversEveryDepthAndCodec) {
 }
 
 // ---------------------------------------------------------------------------
+// The advertisement is a ranking, not just a set
+//
+// The protocol has supported_formats in priority order, first preferred, and Music
+// Assistant's aiosendspin takes filter_encodable_formats(...)[0] without looking further.
+// So the order these come out in *is* the format a server will pick.
+// ---------------------------------------------------------------------------
+
+TEST(SupportedFormats, RankingOnlyPermutesWhatIsAdvertised) {
+    // The one thing the ordering must never do: change which formats go out. Every entry the
+    // ascending crossing produced is still there, for degenerate capability sets too.
+    const std::vector<SinkCapabilities> cases{
+        SinkCapabilities::permissive(),
+        {{44100, 48000}, {16, 24}, {2}},
+        {{22050, 96000}, {8, 16, 24, 32}, {1, 2}},
+        {{48000}, {16}, {4, 6, 8}},
+        {{44100, 88200}, {16}, {2}},
+        {{48000}, {24, 32}, {2}},
+        {{48000}, {16}, {1}},
+        {{}, {16}, {2}},
+        {{48000}, {}, {2}},
+        {{48000}, {16}, {}},
+    };
+
+    for (const SinkCapabilities& caps : cases) {
+        const std::vector<AudioSupportedFormatObject> ranked = supported_formats(caps);
+        EXPECT_EQ(as_set(ranked), as_set(ascending_advertisement(caps)))
+            << describe_formats(ranked);
+    }
+}
+
+TEST(SupportedFormats, ThePermissiveSetLeadsWithFlacStereo48kHz16Bit) {
+    // The default a device that refuses nothing lands on -- and the whole point of the
+    // ladders: ascending probe order used to put FLAC at 22050 Hz here.
+    const std::vector<AudioSupportedFormatObject> formats =
+        supported_formats(SinkCapabilities::permissive());
+
+    ASSERT_FALSE(formats.empty());
+    EXPECT_EQ(formats.front().codec, SendspinCodecFormat::FLAC);
+    EXPECT_EQ(formats.front().channels, 2);
+    EXPECT_EQ(formats.front().sample_rate, 48000U);
+    EXPECT_EQ(formats.front().bit_depth, 16);
+}
+
+TEST(SupportedFormats, ADeviceWithNeitherPreferredRateLeadsWithItsBestRemaining) {
+    // Neither 48 nor 44.1 kHz on offer: the fallback is the best rate the device does take,
+    // not its lowest.
+    const std::vector<AudioSupportedFormatObject> formats =
+        supported_formats({{22050, 96000}, {16}, {2}});
+
+    ASSERT_FALSE(formats.empty());
+    EXPECT_EQ(formats.front().sample_rate, 96000U);
+    EXPECT_EQ(rates_of(formats, SendspinCodecFormat::FLAC), (std::vector<uint32_t>{96000, 22050}));
+}
+
+TEST(SupportedFormats, RatesAndDepthsGoOutRanked) {
+    const std::vector<AudioSupportedFormatObject> formats =
+        supported_formats(SinkCapabilities::permissive());
+
+    EXPECT_EQ(rates_of(formats, SendspinCodecFormat::FLAC),
+              (std::vector<uint32_t>{48000, 44100, 96000, 88200, 192000, 176400, 32000, 22050}));
+    EXPECT_EQ(depths_of(formats, SendspinCodecFormat::FLAC), (std::vector<uint8_t>{16, 24, 32, 8}));
+    // PCM carries the same grid, so it is ranked the same way.
+    EXPECT_EQ(rates_of(formats, SendspinCodecFormat::PCM),
+              rates_of(formats, SendspinCodecFormat::FLAC));
+    EXPECT_EQ(depths_of(formats, SendspinCodecFormat::PCM),
+              depths_of(formats, SendspinCodecFormat::FLAC));
+}
+
+TEST(SupportedFormats, OpusSitsAfterEveryFlacEntryAndBeforeEveryPcmEntry) {
+    // Lossless is preferred outright; Opus is the fallback worth having where bandwidth is
+    // the constraint; PCM costs the most bytes for no gain over FLAC.
+    const std::vector<AudioSupportedFormatObject> formats =
+        supported_formats({{44100, 48000}, {16, 24}, {2}});
+
+    ASSERT_EQ(count_codec(formats, SendspinCodecFormat::OPUS), 1U);
+    EXPECT_LT(last_index(formats, SendspinCodecFormat::FLAC),
+              first_index(formats, SendspinCodecFormat::OPUS));
+    EXPECT_LT(last_index(formats, SendspinCodecFormat::OPUS),
+              first_index(formats, SendspinCodecFormat::PCM));
+}
+
+TEST(SupportedFormats, ARateTheLaddersDoNotNameIsAdvertisedLastRatherThanDropped) {
+    // A backend that grows a rate outside PROBE_RATES must not lose it to the ranking: the
+    // ordering is a permutation, and an unranked value simply sorts to the back.
+    const std::vector<AudioSupportedFormatObject> formats =
+        supported_formats({{8000, 48000}, {16}, {2}});
+
+    EXPECT_TRUE(has(formats, SendspinCodecFormat::FLAC, 2, 8000, 16));
+    EXPECT_EQ(rates_of(formats, SendspinCodecFormat::FLAC), (std::vector<uint32_t>{48000, 8000}));
+}
+
+// ---------------------------------------------------------------------------
 // The startup digest
 // ---------------------------------------------------------------------------
 
 TEST(DescribeFormats, GroupsTheAxesPerCodec) {
+    // Each axis is spelled in advertised order, and the groups follow first-seen codec order,
+    // so the digest reads as the ranking it describes -- 48000 before 44100, FLAC before PCM.
     const std::string text = describe_formats(supported_formats({{44100, 48000}, {16, 24}, {2}}));
 
-    EXPECT_NE(text.find("FLAC 2ch 16/24-bit @ 44100/48000 Hz"), std::string::npos) << text;
-    EXPECT_NE(text.find("PCM 2ch 16/24-bit @ 44100/48000 Hz"), std::string::npos) << text;
-    EXPECT_NE(text.find("OPUS 2ch 16-bit @ 48000 Hz"), std::string::npos) << text;
+    const size_t flac = text.find("FLAC 2ch 16/24-bit @ 48000/44100 Hz");
+    const size_t opus = text.find("OPUS 2ch 16-bit @ 48000 Hz");
+    const size_t pcm = text.find("PCM 2ch 16/24-bit @ 48000/44100 Hz");
+
+    ASSERT_NE(flac, std::string::npos) << text;
+    ASSERT_NE(opus, std::string::npos) << text;
+    ASSERT_NE(pcm, std::string::npos) << text;
+    EXPECT_LT(flac, opus) << text;
+    EXPECT_LT(opus, pcm) << text;
 }
 
 TEST(DescribeFormats, SaysSoWhenThereIsNothingToSay) {

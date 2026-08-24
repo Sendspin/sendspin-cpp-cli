@@ -39,20 +39,30 @@ namespace sendspin_cli {
 /// Channels are stereo where the device has two, and its narrowest count where it has not --
 /// advertising a width the device cannot take would be a promise this player cannot keep.
 ///
+/// **Ordered, not just collected.** The protocol has `supported_formats` in priority order,
+/// first preferred, and servers read it that way -- Music Assistant picks the first entry it
+/// can encode and never looks further. So the entries come out ranked by the preference
+/// ladders in supported_formats.cpp rather than in the order the device was probed in, which
+/// is ascending and would nominate the worst format the device will take. The ranking only
+/// permutes: every entry the device can reach is still advertised, so a server, and a user
+/// choosing by hand, keep the whole list.
+///
 /// Pure on purpose: crossing capabilities with codecs is the part worth testing, and a
 /// function that probed a device inside itself could not be tested without one.
 /// @param caps What the sink's device will take. SinkCapabilities::permissive() for a sink
 /// with no device to ask.
-/// @return The advertisement, grouped by codec and ascending by rate then depth within each.
-/// Empty when `caps` has an empty axis -- the caller decides what to do about a device that
-/// takes nothing, since it is the layer that can name which device that was.
+/// @return The advertisement in priority order: grouped by codec (FLAC, then OPUS, then PCM),
+/// and within FLAC and PCM by preferred rate then preferred depth. Empty when `caps` has an
+/// empty axis -- the caller decides what to do about a device that takes nothing, since it is
+/// the layer that can name which device that was.
 std::vector<sendspin::AudioSupportedFormatObject> supported_formats(const SinkCapabilities& caps);
 
 /// @brief One-line digest of an advertisement, for the startup log.
 ///
-/// Grouped per codec -- `FLAC 2ch 16/24-bit @ 44100/48000 Hz; OPUS 2ch 16-bit @ 48000 Hz` --
+/// Grouped per codec -- `FLAC 2ch 16/24-bit @ 48000/44100 Hz; OPUS 2ch 16-bit @ 48000 Hz` --
 /// because a device-derived list reaches dozens of entries, and a field report needs to say
-/// what actually went out without a screenful.
+/// what actually went out without a screenful. Each axis keeps the order it was advertised
+/// in, so the digest also shows what the front of the list is.
 std::string describe_formats(const std::vector<sendspin::AudioSupportedFormatObject>& formats);
 
 }  // namespace sendspin_cli

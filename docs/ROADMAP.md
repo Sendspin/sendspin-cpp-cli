@@ -27,7 +27,8 @@ small flag set for identity, output, discovery, logging, and daemonization.
   second instance and needs no stale cleanup, and every log line carries a level letter and
   a subsystem tag — timestamped and `SIGHUP`-reopenable under `-f` (item 6).
 - Advertises the formats the selected output device will actually take, derived by probing
-  it and crossed with what each codec can carry (item 4).
+  it and crossed with what each codec can carry -- in priority order, so a server picking
+  automatically lands on FLAC 2 ch 16-bit @ 48 kHz (item 4).
 - Can be driven from its own host: a `0600` Unix control socket in a user-private directory,
   polled from the main loop, and `sendspin-cli <subcommand>` on the same binary covering the
   whole of `controller@v1` — `status`, `play`/`pause`/`stop`/`next`/`prev`, `vol`, `mute`,
@@ -255,6 +256,16 @@ were unreachable by construction.
   and rate the device takes. The crossing is a pure function in `src/supported_formats.cpp`
   with its own no-device test suite, and the result is logged at startup — a digest at
   `info`, every entry at `debug`.
+- **In priority order, not probe order.** The protocol has `supported_formats` first-preferred
+  and servers read it that way -- Music Assistant's `aiosendspin` takes the first entry it can
+  encode and never looks further. Emitting the ladders in the ascending order they are probed
+  in therefore nominated the *worst* format the device would take: FLAC at 22050 Hz on ALSA
+  `default`, whose plugin accepts the whole ladder. `supported_formats()` ranks instead, on
+  three named ladders -- codec `FLAC, OPUS, PCM`; rate `48000, 44100, 96000, 88200, 192000,
+  176400, 32000, 22050`; depth `16, 24, 32, 8` -- so a permissive device leads with FLAC 2 ch
+  16-bit @ 48 kHz, and one that takes neither 48 nor 44.1 kHz falls to its best remaining rate
+  rather than its lowest. A permutation and never a filter: the same list is the menu a user
+  picks a format from by hand, so ranking it must not take entries away.
 - **Loud refusals**, which is why the capability work and this ship together: widening the
   advertisement multiplies the routes into a player that looks healthy and plays nothing.
   A refused `configure()` now names the format *and* the device and says the audio is being
