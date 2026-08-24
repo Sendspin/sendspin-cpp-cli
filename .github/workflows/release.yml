@@ -79,6 +79,38 @@ jobs:
           }
           echo "version=$version" >>"$GITHUB_OUTPUT"
 
+      # The second likeliest way to reach this workflow with nothing publishable at the end of
+      # it: a tag that something already claims. `gh release create` will not refuse it -- a
+      # draft is not bound to a tag ref, so it is free to add a second one alongside whatever is
+      # there -- and the release job would then publish a release for a tag that already has
+      # one. Refused here for the same reason the version check is here: seconds, not half an
+      # hour of runners, and the answer does not need a build to find.
+      - name: Refuse a tag that already carries a release
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Listed and filtered rather than asked via `releases/tags/$TAG`, which is the endpoint
+          # that caused the bug this guard accompanies: it resolves a *tag* to a release, so a
+          # miss and an error both surface as one failed lookup, and reading that as "nothing is
+          # there" is what fails open. Listing puts an API error on the step's own exit status.
+          #
+          # Whether drafts appear here depends on the token: GitHub returns them only to push
+          # access, and this job runs under the workflow's read-only default. That is the right
+          # split. A stale draft is litter -- the release job now names the draft it created, so
+          # an older one is ignored rather than published -- while a release already published
+          # against this tag is the state that has to stop the run, and that one is always
+          # visible.
+          existing="$(gh api "repos/$GH_REPO/releases" --paginate \
+            --jq '.[] | select(.tag_name == env.TAG) | "  \(.html_url)  draft=\(.draft)  assets=\(.assets | length)"')"
+          [ -z "$existing" ] || {
+            echo "$existing"
+            echo "::error::$TAG already has a release; delete it before re-cutting this tag"
+            exit 1
+          }
+          echo "no release claims $TAG yet"
+
   # The same build ci.yml runs, matrix and assertions and all. `needs: preflight` is what keeps
   # a bad tag from starting it.
   build:
@@ -286,20 +318,22 @@ jobs:
       # exists to guarantee exactly the property that sequencing provides. Splitting it moves the
       # guarantee into this file, versioned with everything else.
       #
-      # The read-back below also catches what an uploader structurally cannot report: an asset
-      # GitHub accepted under a name it sanitized, which is a successful upload and a release
-      # SHA256SUMS no longer describes. It asks the API what the release holds rather than
-      # trusting what was sent to it.
+      # Which draft, though, is a question the tag cannot answer, and that is what the release id
+      # captured below is for. A draft is not bound to a tag ref: `gh release create` does not
+      # refuse a tag something already holds, it adds another draft beside it, so one tag can
+      # name several releases at once. The preflight guard stops the case that matters, and this
+      # step still pins its own result rather than trusting the tag to be unambiguous by then.
       #
-      # A draft left behind by a failed run makes the next attempt fail here rather than
-      # overwrite anything: --clobber on a step that may be facing an already-published release
-      # is the opposite of what this is for. Delete the draft by hand and re-run the *failed
-      # jobs* -- re-running all of them repeats the build, and upload-artifact refuses an
-      # artifact name the run already has.
+      # So a draft left behind by a failed run no longer blocks anything here -- it is litter,
+      # not an obstacle, and the run that follows ignores it rather than overwriting or
+      # republishing it. Clean it up anyway, and when re-running, re-run the *failed jobs*:
+      # re-running all of them repeats the build, and upload-artifact refuses an artifact name
+      # the run already has.
       #
       # --verify-tag is what turns "this workflow never creates tags" into a gate: without it,
       # gh creates a missing tag from the default branch rather than refusing.
       - name: Create the release as a draft
+        id: draft
         run: |
           # Printed because it is the one tool version this workflow cannot pin: the runner
           # provides it, so the log is the only place a future behaviour change is diagnosable.
@@ -307,14 +341,43 @@ jobs:
           echo "Publishing $TAG (version $VERSION) with:"
           ls -l dist
 
+          # stdout is the release's URL and nothing else, so it is the one handle this step gets
+          # on what it just made. `tee` because the log should still show it.
           gh release create "$TAG" \
             --verify-tag \
             --title "sendspin-cli $VERSION" \
             --notes-file notes.md \
             --draft \
-            dist/*.tar.gz dist/*.pkg dist/SHA256SUMS
+            dist/*.tar.gz dist/*.pkg dist/SHA256SUMS | tee created.txt
+
+          # That URL ends in an `untagged-<hash>` slug, unique to this draft, and `gh release
+          # view` does resolve one. Undocumented, though -- `gh release view [<tag>]` promises a
+          # tag -- and this job's whole shape is a bet against unpinned `gh` behaviour, so the
+          # slug is traded for the numeric id here, once, and every step after this talks to the
+          # documented REST endpoints for a release by id.
+          #
+          # Matched on html_url rather than on the slug, because the URL is what `create`
+          # actually hands over; parsing a slug out of it would be one assumption about its
+          # shape for no gain. A release's html_url is unique, so this yields exactly one id --
+          # asserted rather than assumed, since an empty match under `set -e` is a *successful*
+          # jq run producing nothing, and the failure would otherwise land two steps later
+          # wearing a confusing message.
+          url="$(tail -n1 created.txt)"
+          release_id="$(RELEASE_URL="$url" gh api "repos/$GH_REPO/releases" --paginate \
+            --jq '.[] | select(.html_url == env.RELEASE_URL) | .id')"
+          case "$release_id" in
+            ''|*[!0-9]*)
+              echo "::error::could not resolve a single release id for $url; got: $release_id"
+              exit 1
+              ;;
+          esac
+
+          echo "draft $url is release id $release_id"
+          echo "release_id=$release_id" >>"$GITHUB_OUTPUT"
 
       - name: Assert every asset arrived, then publish
+        env:
+          RELEASE_ID: ${{ steps.draft.outputs.release_id }}
         run: |
           expected=$(mktemp)
           {
@@ -326,16 +389,27 @@ jobs:
           } | sort >"$expected"
 
           # Read back from the API rather than from what was uploaded, so this reports what the
-          # release actually holds.
+          # release actually holds -- which is how an asset GitHub accepted under a name it
+          # sanitized gets caught, that being a successful upload and a release SHA256SUMS no
+          # longer describes.
+          #
+          # By id, and this is the fix: what stood here read `gh release view "$TAG"`, and
+          # `releases/tags/<tag>` resolves a tag to a *published* release. Drafts are never in
+          # that answer, so the step read some other release for this tag -- on v0.1.1 and
+          # v0.1.3, an asset-less one -- diffed five expected names against nothing, and failed
+          # every release since v0.1.0 while the draft it should have been looking at sat there
+          # complete. The id from the create step names that draft and only that draft.
           actual=$(mktemp)
-          gh release view "$TAG" --json assets --jq '.assets[].name' | sort >"$actual"
+          gh api "repos/$GH_REPO/releases/$RELEASE_ID" --jq '.assets[].name' | sort >"$actual"
 
           echo 'What the draft release holds:'
           cat "$actual"
           diff -u "$expected" "$actual" || {
-            echo "::error::the draft $TAG is missing assets and will not be published; delete it and re-run"
+            echo "::error::draft release $RELEASE_ID for $TAG is missing assets and will not be published; delete it and re-run the failed jobs"
             exit 1
           }
 
-          gh release edit "$TAG" --draft=false
-          echo "Published: $(gh release view "$TAG" --json url --jq .url)"
+          # -F, not -f: draft is a boolean to the API, and -f would send the string "false",
+          # which is truthy and would leave the release a draft while reporting success.
+          gh api -X PATCH "repos/$GH_REPO/releases/$RELEASE_ID" -F draft=false --silent
+          echo "Published: $(gh api "repos/$GH_REPO/releases/$RELEASE_ID" --jq .html_url)"
