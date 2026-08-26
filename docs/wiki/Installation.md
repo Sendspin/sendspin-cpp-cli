@@ -14,10 +14,6 @@ Everything published is on the
 of unreleased work are under the repository's Actions tab and expire after 14 days — see
 [CI](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/README.md#ci).
 
-> **No release exists yet.** `v0.1.0` has not been tagged at the time of writing, so until
-> it is, the only routes are building from source or staging a payload yourself. The
-> getting-started script says the same thing rather than failing obscurely.
-
 ## What is in the archive
 
 Every tarball is a staged `cmake --install` payload, which means **every path under `usr/`
