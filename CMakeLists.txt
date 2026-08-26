@@ -248,6 +248,7 @@ add_library(sendspin-cli-core STATIC
     src/mdns_common.cpp
     src/null_sink.cpp
     src/outbound.cpp
+    src/pcm_ring.cpp
     src/pcm_volume.cpp
     src/player_listener.cpp
     src/sink_recovery.cpp
@@ -429,6 +430,7 @@ if(SENDSPIN_CLI_BUILD_TESTS)
         tests/daemon_test.cpp
         tests/device_spec_test.cpp
         tests/discovery_test.cpp
+        tests/pcm_ring_test.cpp
         tests/pcm_volume_test.cpp
         tests/sink_recovery_test.cpp
         tests/state_store_test.cpp
