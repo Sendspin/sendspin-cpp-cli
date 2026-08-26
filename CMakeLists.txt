@@ -33,7 +33,7 @@ endif()
 # sendspin-cpp
 # ==============================================================================
 
-set(SENDSPIN_GIT_TAG "v0.7.0" CACHE STRING
+set(SENDSPIN_GIT_TAG "v0.7.2" CACHE STRING
     "sendspin-cpp git tag to build against")
 
 # Roles are opt-out in the library and each one costs sources and dependencies.
