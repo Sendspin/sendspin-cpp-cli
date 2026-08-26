@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 project(sendspin-cpp-cli
-    VERSION 0.1.3
+    VERSION 0.1.4
     DESCRIPTION "Headless CLI/daemon Sendspin audio player"
     HOMEPAGE_URL "https://github.com/Sendspin/sendspin-cpp"
     LANGUAGES CXX
@@ -33,7 +33,7 @@ endif()
 # sendspin-cpp
 # ==============================================================================
 
-set(SENDSPIN_GIT_TAG "v0.7.0" CACHE STRING
+set(SENDSPIN_GIT_TAG "v0.7.2" CACHE STRING
     "sendspin-cpp git tag to build against")
 
 # Roles are opt-out in the library and each one costs sources and dependencies.
