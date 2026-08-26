@@ -14,6 +14,7 @@
 
 #include "audio_sink.h"
 
+#include "log.h"
 #include "null_sink.h"
 
 #ifdef SENDSPIN_CLI_HAVE_ALSA
@@ -22,6 +23,14 @@
 
 #ifdef SENDSPIN_CLI_HAVE_PORTAUDIO
 #include "portaudio_sink.h"
+#endif
+
+#ifdef SENDSPIN_CLI_HAVE_PULSE
+#include "pulse_sink.h"
+#endif
+
+#ifdef SENDSPIN_CLI_HAVE_PIPEWIRE
+#include "pipewire_sink.h"
 #endif
 
 #include <algorithm>
@@ -53,7 +62,13 @@ struct BuiltBackend {
 ///
 /// PortAudio's device is optional because it has a meaningful default of its own -- the
 /// host's default output -- which is what makes a bare `-o portaudio` play. ALSA's is
-/// required because its equivalent is a PCM *named* `default`, reachable by rule 3.
+/// required because its equivalent is a PCM *named* `default`, reachable by rule 3. The two
+/// sound-server backends are optional for PortAudio's reason: each server has a default of its
+/// own, so a bare `-o pulse` plays wherever a bare `-o portaudio` would.
+///
+/// `pulse` and `pipewire` also shadow ALSA plugin PCMs that are live on the hosts they target --
+/// see resolve_device_spec(), which is where that trade and its escape hatch are set out, and
+/// alsa_pcm_is_reachable(), which is what keeps `-l` honest about it.
 constexpr BuiltBackend BUILT_BACKENDS[] = {
     {"null", SinkBackend::Null, DeviceArg::None},
     {"stdout", SinkBackend::Stdout, DeviceArg::None},
@@ -63,12 +78,25 @@ constexpr BuiltBackend BUILT_BACKENDS[] = {
 #ifdef SENDSPIN_CLI_HAVE_PORTAUDIO
     {"portaudio", SinkBackend::PortAudio, DeviceArg::Optional},
 #endif
+#ifdef SENDSPIN_CLI_HAVE_PULSE
+    {"pulse", SinkBackend::Pulse, DeviceArg::Optional},
+#endif
+#ifdef SENDSPIN_CLI_HAVE_PIPEWIRE
+    {"pipewire", SinkBackend::PipeWire, DeviceArg::Optional},
+#endif
 };
 
 /// A backend prefix -o still recognizes even though this build cannot serve it.
 struct ReservedBackend {
     const char* name;
     const char* reason;
+    /// The ALSA plugin PCM that reaches the same server, or nullptr where there is none.
+    ///
+    /// Only mentioned on a build that has the ALSA backend, which is why it is a field here rather
+    /// than part of `reason`: without ALSA the advice would name a route this build does not have
+    /// either. It matters because a message naming only the CMake flag would send someone off to
+    /// rebuild for a path that already works on their host.
+    const char* alsa_plugin;
 };
 
 /// Every backend prefix this project knows, and why a build might not have it.
@@ -81,16 +109,34 @@ struct ReservedBackend {
 constexpr ReservedBackend RESERVED_BACKENDS[] = {
     {"alsa",
      "the ALSA backend is not in this build -- libasound was missing, or it was configured "
-     "with -DSENDSPIN_CLI_WITH_ALSA=OFF"},
+     "with -DSENDSPIN_CLI_WITH_ALSA=OFF",
+     nullptr},
     {"portaudio",
      "the PortAudio backend is not in this build -- libportaudio was missing, or it was "
-     "configured with -DSENDSPIN_CLI_WITH_PORTAUDIO=OFF"},
+     "configured with -DSENDSPIN_CLI_WITH_PORTAUDIO=OFF",
+     nullptr},
+    {"pulse",
+     "the PulseAudio backend is not in this build -- libpulse was missing, or it was "
+     "configured with -DSENDSPIN_CLI_WITH_PULSE=OFF",
+     "pulse"},
+    {"pipewire",
+     "the PipeWire backend is not in this build -- libpipewire was missing, or it was "
+     "configured with -DSENDSPIN_CLI_WITH_PIPEWIRE=OFF",
+     "pipewire"},
 };
 
 /// Reports a prefix this build recognizes but cannot serve. Always names what it *can*
-/// serve, so the message is actionable on its own.
+/// serve, so the message is actionable on its own -- and, where one exists, the ALSA plugin PCM
+/// that reaches the same server without any rebuild at all.
 std::string unavailable_error(const ReservedBackend& reserved) {
-    return std::string(reserved.reason) + ". This build has: " + audio_backend_list();
+    std::string error = std::string(reserved.reason) + ". This build has: " + audio_backend_list();
+#ifdef SENDSPIN_CLI_HAVE_ALSA
+    if (reserved.alsa_plugin != nullptr) {
+        error += ". That server is still reachable through ALSA's plugin PCM as -o alsa:";
+        error += reserved.alsa_plugin;
+    }
+#endif
+    return error;
 }
 
 /// Joins `values` with spaces, or yields `empty` when there are none.
@@ -126,6 +172,23 @@ std::string audio_backend_list() {
         list += entry.name;
     }
     return list;
+}
+
+bool alsa_pcm_is_reachable(const std::string& pcm) {
+#ifdef SENDSPIN_CLI_HAVE_ALSA
+    DeviceSpec spec;
+    std::string error;
+    if (!resolve_device_spec(pcm, spec, error)) {
+        // -o <pcm> is refused outright, which `alsa` itself is: a backend name that needs a device.
+        return false;
+    }
+    // Rule 3 is what makes a bare name an ALSA PCM, and it hands the name through unchanged.
+    // Anything else means a backend prefix claimed the name first.
+    return spec.backend == SinkBackend::Alsa && spec.device == pcm;
+#else
+    static_cast<void>(pcm);
+    return false;
+#endif
 }
 
 void print_sink_capabilities(std::FILE* out, const SinkCapabilities& caps,
@@ -208,10 +271,21 @@ bool resolve_device_spec(const std::string& spec, DeviceSpec& out, std::string& 
         }
     }
     for (const ReservedBackend& reserved : RESERVED_BACKENDS) {
-        if (prefix == reserved.name) {
-            error = unavailable_error(reserved);
-            return false;
+        if (prefix != reserved.name) {
+            continue;
         }
+#ifdef SENDSPIN_CLI_HAVE_ALSA
+        if (colon == std::string::npos && reserved.alsa_plugin != nullptr) {
+            // A bare `pulse` or `pipewire` on a build without that native backend. The name meant
+            // ALSA's plugin PCM before the backend existed, rule 3 below still serves it, and this
+            // build can play it -- so claiming the name here would break a working command line in
+            // order to report a backend the user never asked for. With a device after it there is
+            // no such reading, and the message below is the useful answer.
+            break;
+        }
+#endif
+        error = unavailable_error(reserved);
+        return false;
     }
 
     // 3. Anything else is an ALSA PCM name, which is how squeezelite's -o behaves: there
@@ -234,6 +308,36 @@ bool resolve_device_spec(const std::string& spec, DeviceSpec& out, std::string& 
 #endif
 }
 
+namespace {
+
+/// Says so, once at startup, when a bare `-o pulse` or `-o pipewire` has changed meaning.
+///
+/// The shadowing is documented in the README, in `-l` and in the message a build without the
+/// backend gives -- and none of those reaches the person whose config file says `output = pulse`
+/// and who upgraded without reading anything. This does: it is the one place that person is
+/// certain to look, because it is in the log beside the line that says which device opened.
+///
+/// Only where the ALSA backend is also built, because only there was the name something else
+/// first. Only for a *bare* name, because `-o pulse:<sink>` never meant the plugin PCM. And at
+/// INFO rather than WARN: nothing is wrong, the player is doing the better thing.
+void warn_if_shadowing_an_alsa_pcm([[maybe_unused]] const std::string& spec,
+                                   [[maybe_unused]] const DeviceSpec& resolved) {
+#ifdef SENDSPIN_CLI_HAVE_ALSA
+    if (resolved.backend != SinkBackend::Pulse && resolved.backend != SinkBackend::PipeWire) {
+        return;
+    }
+    if (spec.find(':') != std::string::npos) {
+        return;  // -o pulse:<sink> asked for this backend by name; nothing changed under it
+    }
+    log_line(sendspin::LogLevel::INFO, LOG_TAG_AUDIO,
+             "-o %s is the native %s backend, not ALSA's plugin PCM of the same name -- write "
+             "-o alsa:%s for that",
+             spec.c_str(), spec.c_str(), spec.c_str());
+#endif
+}
+
+}  // namespace
+
 // buffer_ms is read only by the device-backed branches below, so a build with neither
 // backend compiled in genuinely has no use for it.
 std::unique_ptr<AudioSink> make_audio_sink(const std::string& device,
@@ -243,6 +347,7 @@ std::unique_ptr<AudioSink> make_audio_sink(const std::string& device,
     if (!resolve_device_spec(device, spec, error)) {
         return nullptr;
     }
+    warn_if_shadowing_an_alsa_pcm(device, spec);
 
     switch (spec.backend) {
         case SinkBackend::Null:
@@ -271,6 +376,24 @@ std::unique_ptr<AudioSink> make_audio_sink(const std::string& device,
 #else
             break;  // unreachable, for the same reason as Alsa above
 #endif
+        case SinkBackend::Pulse:
+#ifdef SENDSPIN_CLI_HAVE_PULSE
+            if (!PulseAudioSink::probe(spec.device, error)) {
+                return nullptr;
+            }
+            return std::make_unique<PulseAudioSink>(spec.device, buffer_ms);
+#else
+            break;  // unreachable, for the same reason as Alsa above
+#endif
+        case SinkBackend::PipeWire:
+#ifdef SENDSPIN_CLI_HAVE_PIPEWIRE
+            if (!PipeWireSink::probe(spec.device, error)) {
+                return nullptr;
+            }
+            return std::make_unique<PipeWireSink>(spec.device, buffer_ms);
+#else
+            break;  // unreachable, for the same reason as Alsa above
+#endif
     }
 
     error = "internal error: output device '" + device + "' resolved to a backend this build "
@@ -285,6 +408,12 @@ void print_audio_devices(std::FILE* out) {
     std::fprintf(out, "  -         alias for stdout\n");
 #ifdef SENDSPIN_CLI_HAVE_PORTAUDIO
     std::fprintf(out, "  portaudio this host's default output device, whatever it currently is\n");
+#endif
+#ifdef SENDSPIN_CLI_HAVE_PULSE
+    std::fprintf(out, "  pulse     the PulseAudio server's own default sink\n");
+#endif
+#ifdef SENDSPIN_CLI_HAVE_PIPEWIRE
+    std::fprintf(out, "  pipewire  wherever the PipeWire graph routes a playback stream\n");
 #endif
 
     std::fprintf(out,
@@ -310,6 +439,31 @@ void print_audio_devices(std::FILE* out) {
 #endif
 #endif
 
+    // Said here rather than only in the README, because this is where someone looks after typing
+    // -o pulse and finding it no longer means the ALSA plugin PCM they were used to. Spelled out
+    // per case rather than assembled from fragments: there are only three, and a sentence a
+    // reader has to reassemble in their head is worse than three that each read straight through.
+#if defined(SENDSPIN_CLI_HAVE_ALSA) && defined(SENDSPIN_CLI_HAVE_PULSE) && \
+    defined(SENDSPIN_CLI_HAVE_PIPEWIRE)
+    std::fprintf(out,
+                 "\nALSA ships plugin PCMs called pulse and pipewire too, and on this build\n"
+                 "rule 1 wins: -o pulse and -o pipewire reach the native backends instead. The\n"
+                 "plugin PCMs are still there -- write -o alsa:pulse or -o alsa:pipewire -- and\n"
+                 "they are left out of the list below, because -o cannot reach them bare.\n");
+#elif defined(SENDSPIN_CLI_HAVE_ALSA) && defined(SENDSPIN_CLI_HAVE_PULSE)
+    std::fprintf(out,
+                 "\nALSA ships a plugin PCM called pulse too, and on this build rule 1 wins:\n"
+                 "-o pulse reaches the native backend instead. The plugin PCM is still there --\n"
+                 "write -o alsa:pulse -- and it is left out of the list below, because -o cannot\n"
+                 "reach it bare.\n");
+#elif defined(SENDSPIN_CLI_HAVE_ALSA) && defined(SENDSPIN_CLI_HAVE_PIPEWIRE)
+    std::fprintf(out,
+                 "\nALSA ships a plugin PCM called pipewire too, and on this build rule 1 wins:\n"
+                 "-o pipewire reaches the native backend instead. The plugin PCM is still\n"
+                 "there -- write -o alsa:pipewire -- and it is left out of the list below,\n"
+                 "because -o cannot reach it bare.\n");
+#endif
+
 #ifdef SENDSPIN_CLI_HAVE_ALSA
     std::fprintf(out, "\nALSA PCMs on this host (any of these names can follow -o):\n");
     AlsaAudioSink::list_devices(out);
@@ -327,6 +481,28 @@ void print_audio_devices(std::FILE* out) {
                  "\nThis build has no ALSA backend (libasound was missing, or it was configured\n"
                  "with -DSENDSPIN_CLI_WITH_ALSA=OFF), so it plays through: %s.\n",
                  audio_backend_list().c_str());
+#endif
+
+#ifdef SENDSPIN_CLI_HAVE_PULSE
+    std::fprintf(out, "\nPulseAudio sinks on this host (-o pulse:<sink>):\n");
+    PulseAudioSink::list_devices(out);
+    std::fprintf(out,
+                 "\nThe name on each sink's own line is what follows -o pulse:; the line under it\n"
+                 "is the description the server shows in a mixer, and the one after that is what\n"
+                 "the sink is currently running at. -o pulse with no sink at all follows\n"
+                 "whichever sink the server calls default, resolved by the server at every\n"
+                 "stream.\n");
+#endif
+
+#ifdef SENDSPIN_CLI_HAVE_PIPEWIRE
+    std::fprintf(out, "\nPipeWire audio sink nodes on this host (-o pipewire:<node>):\n");
+    PipeWireSink::list_devices(out);
+    std::fprintf(out,
+                 "\nThe name on each node's own line is what follows -o pipewire:. Only\n"
+                 "Audio/Sink nodes are listed, since -o cannot play through the others. No\n"
+                 "node is marked as the default: where a playback stream lands with no target\n"
+                 "named is the graph's own routing decision, taken per stream and changeable\n"
+                 "while one is running.\n");
 #endif
 
 #ifdef SENDSPIN_CLI_HAVE_PORTAUDIO

@@ -111,8 +111,8 @@ struct StreamFormat {
 /// @brief Destination for decoded PCM frames coming out of the sendspin player role.
 ///
 /// One implementation per audio backend: NullAudioSink (the device-less null/stdout pair),
-/// AlsaAudioSink and PortAudioSink, the last two compiled in only where their library is
-/// available.
+/// AlsaAudioSink, PortAudioSink, PulseAudioSink and PipeWireSink -- each of the last four
+/// compiled in only where its library is available.
 ///
 /// THREAD SAFETY: write() is called on the sendspin sync task's background thread.
 /// Every other method is called on the main loop thread. An implementation must
@@ -158,10 +158,13 @@ public:
 
     /// @brief Gives a sink a slice of the main loop, for work write()'s thread cannot do.
     ///
-    /// There is exactly one such job today, and it is why this exists: PortAudioSink rebuilds
-    /// PortAudio's device list here after a device has gone away mid-stream. That invalidates
-    /// every device index in the process, so it may only run where nothing else holds one --
-    /// which is this thread, and no other.
+    /// Every job here is one write()'s thread must not do, which is what the three implementers
+    /// have in common. PortAudioSink rebuilds PortAudio's device list after a device has gone
+    /// away mid-stream: that invalidates every device index in the process, so it may only run
+    /// where nothing else holds one -- which is this thread, and no other. PulseAudioSink and
+    /// PipeWireSink reconnect to a server that went away, which *waits on that server* -- time
+    /// that would otherwise come out of a write()'s own deadline. PipeWireSink also reports the
+    /// graph quantum here, which only its realtime callback learns and must not stop to log.
     ///
     /// Main loop only, like every method here bar write(). Must also stay cheap on the ordinary
     /// tick: the same thread drives the protocol client, mDNS and the control socket, so anything
@@ -204,6 +207,8 @@ enum class SinkBackend {
     Stdout,     ///< raw interleaved PCM on stdout; needs no device
     Alsa,       ///< an ALSA PCM, named by DeviceSpec::device
     PortAudio,  ///< a PortAudio device by index or name, or this host's default if empty
+    Pulse,      ///< a PulseAudio sink by name, or the server's own default if empty
+    PipeWire,   ///< a PipeWire node by name, or the graph's own default routing if empty
 };
 
 /// @brief A -o spec resolved into a backend and the device to hand it.
@@ -228,6 +233,14 @@ struct DeviceSpec {
 ///     PortAudio *does* have an enumerable device list, so reaching one of its devices
 ///     without the prefix would make the same `-o` mean different things per host.
 ///
+/// Rule 1 **shadows the ALSA PCMs of the same name**, and for `pulse` and `pipewire` that is a
+/// live command line changing meaning: both are real plugin PCMs on exactly the hosts these
+/// backends target, so `-o pulse` played through ALSA's plugin before these backends existed and
+/// goes native now. It is deliberate -- the native backend is the better answer on those hosts --
+/// and `-o alsa:pulse` is the documented way back to the plugin, named here, in `-l`, and in the
+/// message a build without the native backend gives. The `null` precedent is **not** the
+/// justification: `null` is device-less, so shadowing it cost nothing.
+///
 /// Separate from make_audio_sink() because this half is pure string work: it can be
 /// tested, and reasoned about, without a sound card in the machine.
 /// @param error Set to a human-readable reason when the return value is false.
@@ -236,6 +249,18 @@ bool resolve_device_spec(const std::string& spec, DeviceSpec& out, std::string& 
 
 /// @brief The backend prefixes this build has, e.g. "null, stdout, alsa". For diagnostics.
 std::string audio_backend_list();
+
+/// @brief True if a bare `-o <pcm>` really reaches the ALSA PCM of that name.
+///
+/// The one place that answers which ALSA PCMs rule 1 shadows, so `-l` cannot list a device `-o`
+/// can no longer reach. Derived from resolve_device_spec() itself rather than from a second list
+/// of names: a PCM is reachable exactly when resolving its bare name yields the ALSA backend
+/// playing that PCM, which is true by construction whatever the backend table holds. `null` is
+/// the long-standing case; `pulse` and `pipewire` join it on a build with those backends.
+///
+/// Only meaningful on a build with the ALSA backend, since rule 3 is what makes a bare name an
+/// ALSA PCM at all; without it nothing is reachable this way and it answers false.
+bool alsa_pcm_is_reachable(const std::string& pcm);
 
 /// @brief Prints one capability set as the three indented lines -l puts under every device.
 ///

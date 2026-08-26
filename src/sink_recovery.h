@@ -59,6 +59,20 @@ inline constexpr int64_t SINK_RESCAN_DELAY_MS = 2000;
 ///     PortAudio enumerates at `Pa_Initialize()` and never revisits that list, so the device that
 ///     came back is one the list has never seen.
 ///
+/// "Rescan" is PortAudio's spelling of the second attempt rather than the whole of what it means.
+/// The sound-server backends map it onto reconnecting to the server, which is the same shape --
+/// too expensive for the sync task's thread, and pointless until the delay is up, because what it
+/// exists for is a *restarted* daemon whose socket is gone for a moment and then back.
+///
+/// **Where that mapping does not fit, stated once here because the policy is this file's.**
+/// `rescan_due()` marks the second attempt spent as it hands it out, on the reasoning below that
+/// a rebuilt device list leaves nothing else to try. A *reconnect* is not like that: a daemon
+/// still down two seconds after the outage may well be up two seconds later. So a sound-server
+/// sink whose daemon takes longer than that to restart discards until the next `configure()`,
+/// which reconnects -- the cost is the rest of the current track, not the rest of the run. The
+/// fix is a `rescan_done()` symmetric with `reopen_done()`, which is ROADMAP item 20 rather than
+/// something either sound-server backend may do to policy PortAudio shares.
+///
 /// **Each is spent once per configured stream, not once per outage**, which is what stops a
 /// half-present device -- a dock mid-handshake, a hub browning out -- from having `write()` call
 /// `Pa_OpenStream()` on the sync task's thread fifty times a second. A stream that reopens and

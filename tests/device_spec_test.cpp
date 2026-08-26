@@ -94,6 +94,16 @@ TEST(ResolveDeviceSpec, BackendListMatchesTheBuild) {
 #else
     EXPECT_EQ(audio_backend_list().find("portaudio"), std::string::npos);
 #endif
+#ifdef SENDSPIN_CLI_HAVE_PULSE
+    EXPECT_NE(audio_backend_list().find("pulse"), std::string::npos);
+#else
+    EXPECT_EQ(audio_backend_list().find("pulse"), std::string::npos);
+#endif
+#ifdef SENDSPIN_CLI_HAVE_PIPEWIRE
+    EXPECT_NE(audio_backend_list().find("pipewire"), std::string::npos);
+#else
+    EXPECT_EQ(audio_backend_list().find("pipewire"), std::string::npos);
+#endif
 }
 
 #ifdef SENDSPIN_CLI_HAVE_ALSA
@@ -124,12 +134,48 @@ TEST(ResolveDeviceSpec, ABareBackendNameIsRejected) {
 // ---------------------------------------------------------------------------
 
 TEST(ResolveDeviceSpec, BarePcmNamesStillMeanAlsa) {
-    for (const char* pcm : {"default", "hw:2,0", "plughw:2,0", "pipewire", "pulse",
-                            "hdmi:CARD=NVidia,DEV=0", "surround51:CARD=PCH"}) {
+    // `pulse` and `pipewire` are deliberately not in this list: on a build with the native
+    // backends they are rule-1 names now, which is what ShadowedPcmNamesAreOnlyTheBackendNames
+    // below covers on both kinds of build.
+    for (const char* pcm : {"default", "hw:2,0", "plughw:2,0", "hdmi:CARD=NVidia,DEV=0",
+                            "surround51:CARD=PCH"}) {
         const DeviceSpec spec = resolved(pcm);
         EXPECT_EQ(spec.backend, SinkBackend::Alsa) << pcm;
         EXPECT_EQ(spec.device, pcm) << pcm;
     }
+}
+
+TEST(ResolveDeviceSpec, TheAlsaPrefixIsTheWayBackToAShadowedPluginPcm) {
+    // The escape hatch the pulse/pipewire prefixes owe: rule 2 was already unambiguous, and it
+    // has to stay that way whether or not this build has the native backends, because it is what
+    // every message about the shadowing points at.
+    EXPECT_EQ(resolved("alsa:pulse").backend, SinkBackend::Alsa);
+    EXPECT_EQ(resolved("alsa:pulse").device, "pulse");
+    EXPECT_EQ(resolved("alsa:pipewire").backend, SinkBackend::Alsa);
+    EXPECT_EQ(resolved("alsa:pipewire").device, "pipewire");
+}
+
+TEST(ResolveDeviceSpec, ShadowedPcmNamesAreOnlyTheBackendNames) {
+    // What -l filters out of the ALSA PCM list, derived from the backend table rather than from a
+    // second list of names. An ordinary PCM must never be filtered, whatever the build has.
+    for (const char* pcm : {"default", "hw:2,0", "plughw:2,0", "surround51:CARD=PCH"}) {
+        EXPECT_TRUE(alsa_pcm_is_reachable(pcm)) << pcm;
+    }
+    // ALSA ships a `null` PCM on every host, and -o null has always meant the discard sink.
+    EXPECT_FALSE(alsa_pcm_is_reachable("null"));
+    // A bare `alsa` is refused rather than resolved, so no PCM of that name is reachable either.
+    EXPECT_FALSE(alsa_pcm_is_reachable("alsa"));
+
+#ifdef SENDSPIN_CLI_HAVE_PULSE
+    EXPECT_FALSE(alsa_pcm_is_reachable("pulse"));
+#else
+    EXPECT_TRUE(alsa_pcm_is_reachable("pulse"));
+#endif
+#ifdef SENDSPIN_CLI_HAVE_PIPEWIRE
+    EXPECT_FALSE(alsa_pcm_is_reachable("pipewire"));
+#else
+    EXPECT_TRUE(alsa_pcm_is_reachable("pipewire"));
+#endif
 }
 
 #else  // no ALSA backend in this build
@@ -208,6 +254,130 @@ TEST(ResolveDeviceSpec, PortaudioSaysItIsNotInThisBuild) {
 }
 
 #endif  // SENDSPIN_CLI_HAVE_PORTAUDIO
+
+// ---------------------------------------------------------------------------
+// The sound-server prefixes, whose devices are optional -- and which shadow an
+// ALSA plugin PCM of the same name wherever they are built
+// ---------------------------------------------------------------------------
+
+#ifdef SENDSPIN_CLI_HAVE_PULSE
+
+TEST(ResolveDeviceSpec, BarePulseMeansTheServersOwnDefaultSink) {
+    const DeviceSpec spec = resolved("pulse");
+    EXPECT_EQ(spec.backend, SinkBackend::Pulse);
+    EXPECT_TRUE(spec.device.empty())
+        << "an empty device is how the sink is told to follow the server's default";
+}
+
+TEST(ResolveDeviceSpec, PulseTakesASinkName) {
+    EXPECT_EQ(resolved("pulse:alsa_output.pci-0000_00_1f.3.analog-stereo").backend,
+              SinkBackend::Pulse);
+    EXPECT_EQ(resolved("pulse:alsa_output.pci-0000_00_1f.3.analog-stereo").device,
+              "alsa_output.pci-0000_00_1f.3.analog-stereo");
+
+    // Everything after the FIRST colon is the sink, so a name carrying its own colon survives.
+    EXPECT_EQ(resolved("pulse:tunnel:hifi").device, "tunnel:hifi");
+}
+
+TEST(ResolveDeviceSpec, PulsePrefixWithNothingAfterTheColonIsRejected) {
+    // A written-but-empty device is a truncated command line, not a request for the default:
+    // -o pulse already says that, and saying it twice two ways would hide a typo.
+    const std::string error = rejected("pulse:");
+    EXPECT_NE(error.find("no device"), std::string::npos);
+    EXPECT_NE(error.find("-o pulse on its own"), std::string::npos)
+        << "the message should point at the form that does mean the default";
+}
+
+#else  // no PulseAudio backend in this build
+
+TEST(ResolveDeviceSpec, PulseSaysItIsNotInThisBuildAndNamesTheAlsaRouteToo) {
+    // Only the prefixed form lands here on a build that has ALSA: a bare `pulse` is still an ALSA
+    // PCM name there, which is what BarePulseIsStillTheAlsaPluginPcm below asserts.
+    const std::string error = rejected("pulse:my-sink");
+    EXPECT_NE(error.find("PulseAudio backend"), std::string::npos);
+    EXPECT_NE(error.find("not in this build"), std::string::npos);
+    EXPECT_NE(error.find("SENDSPIN_CLI_WITH_PULSE"), std::string::npos);
+    EXPECT_NE(error.find(audio_backend_list()), std::string::npos)
+        << "the error should name the backends this build has";
+#ifdef SENDSPIN_CLI_HAVE_ALSA
+    // The flag alone would send someone off to rebuild for a path that already works on their
+    // host: ALSA's plugin PCM reaches the same server, and this build can play through it.
+    EXPECT_NE(error.find("-o alsa:pulse"), std::string::npos);
+#endif
+}
+
+TEST(ResolveDeviceSpec, BarePulseIsStillTheAlsaPluginPcm) {
+#ifdef SENDSPIN_CLI_HAVE_ALSA
+    // Nothing shadows it on this build, and the reserved entry deliberately steps aside for a
+    // *bare* name ALSA can still serve -- so -o pulse means exactly what it always meant, and a
+    // build without the native backend takes nothing away from a working command line.
+    EXPECT_EQ(resolved("pulse").backend, SinkBackend::Alsa);
+    EXPECT_EQ(resolved("pulse").device, "pulse");
+#else
+    // No ALSA either, so there is no plugin PCM to step aside for. The reserved entry answers, and
+    // names the flag that would turn the native backend on.
+    EXPECT_NE(rejected("pulse").find("PulseAudio backend"), std::string::npos);
+#endif
+}
+
+#endif  // SENDSPIN_CLI_HAVE_PULSE
+
+#ifdef SENDSPIN_CLI_HAVE_PIPEWIRE
+
+TEST(ResolveDeviceSpec, BarePipewireMeansTheGraphsOwnRouting) {
+    const DeviceSpec spec = resolved("pipewire");
+    EXPECT_EQ(spec.backend, SinkBackend::PipeWire);
+    EXPECT_TRUE(spec.device.empty())
+        << "an empty device is how the sink is told to let the graph route it";
+}
+
+TEST(ResolveDeviceSpec, PipewireTakesANodeName) {
+    EXPECT_EQ(resolved("pipewire:alsa_output.usb-Topping_D10s").backend, SinkBackend::PipeWire);
+    EXPECT_EQ(resolved("pipewire:alsa_output.usb-Topping_D10s").device,
+              "alsa_output.usb-Topping_D10s");
+
+    // Everything after the FIRST colon is the node, so a name carrying its own colon survives.
+    EXPECT_EQ(resolved("pipewire:bluez_output:44:5C").device, "bluez_output:44:5C");
+}
+
+TEST(ResolveDeviceSpec, PipewirePrefixWithNothingAfterTheColonIsRejected) {
+    const std::string error = rejected("pipewire:");
+    EXPECT_NE(error.find("no device"), std::string::npos);
+    EXPECT_NE(error.find("-o pipewire on its own"), std::string::npos)
+        << "the message should point at the form that does mean the default";
+}
+
+#else  // no PipeWire backend in this build
+
+TEST(ResolveDeviceSpec, PipewireSaysItIsNotInThisBuildAndNamesTheAlsaRouteToo) {
+    // Only the prefixed form lands here on a build that has ALSA: a bare `pipewire` is still an
+    // ALSA PCM name there, which is what BarePipewireIsStillTheAlsaPluginPcm below asserts.
+    const std::string error = rejected("pipewire:my-node");
+    EXPECT_NE(error.find("PipeWire backend"), std::string::npos);
+    EXPECT_NE(error.find("not in this build"), std::string::npos);
+    EXPECT_NE(error.find("SENDSPIN_CLI_WITH_PIPEWIRE"), std::string::npos);
+    EXPECT_NE(error.find(audio_backend_list()), std::string::npos)
+        << "the error should name the backends this build has";
+#ifdef SENDSPIN_CLI_HAVE_ALSA
+    EXPECT_NE(error.find("-o alsa:pipewire"), std::string::npos);
+#endif
+}
+
+TEST(ResolveDeviceSpec, BarePipewireIsStillTheAlsaPluginPcm) {
+#ifdef SENDSPIN_CLI_HAVE_ALSA
+    // Nothing shadows it on this build, and the reserved entry deliberately steps aside for a
+    // *bare* name ALSA can still serve -- so -o pipewire means exactly what it always meant, and a
+    // build without the native backend takes nothing away from a working command line.
+    EXPECT_EQ(resolved("pipewire").backend, SinkBackend::Alsa);
+    EXPECT_EQ(resolved("pipewire").device, "pipewire");
+#else
+    // No ALSA either, so there is no plugin PCM to step aside for. The reserved entry answers, and
+    // names the flag that would turn the native backend on.
+    EXPECT_NE(rejected("pipewire").find("PipeWire backend"), std::string::npos);
+#endif
+}
+
+#endif  // SENDSPIN_CLI_HAVE_PIPEWIRE
 
 }  // namespace
 }  // namespace sendspin_cli

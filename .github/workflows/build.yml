@@ -41,35 +41,48 @@ jobs:
       fail-fast: false
       # `publish` and `avahi` are spelled out on every leg, false included: an `if:` reads a
       # missing key as false, so a leg that simply omitted one would quietly stop publishing
-      # and still go green. A new leg owes both -- and a `publish: true` leg owes a third thing
-      # in another file: an entry in the asset set release.yml asserts before it publishes,
-      # which otherwise fails the release with a diff rather than a reason. A publishing *macOS*
-      # leg owes two entries there, its tarball and the installer .pkg built further down.
+      # and still go green. `with_pulse` and `with_pipewire` are spelled out for the sibling
+      # reason: an omitted key reaches cmake as `-DSENDSPIN_CLI_WITH_PULSE=`, which is falsy,
+      # so a leg meaning to build the backend would silently not. A new leg owes all four --
+      # and a `publish: true` leg owes a fifth thing in another file: an entry in the asset
+      # set release.yml asserts before it publishes, which otherwise fails the release with a
+      # diff rather than a reason. A publishing *macOS* leg owes two entries there, its
+      # tarball and the installer .pkg built further down.
       matrix:
         include:
           - name: linux-x86_64
             runner: ubuntu-24.04
             with_mdns: 'ON'
+            with_pulse: 'ON'
+            with_pipewire: 'ON'
             expect_probe: 'Failed'
-            expect_backends: '^-- sendspin-cli audio backends: null, stdout, alsa, portaudio$'
+            expect_backends: '^-- sendspin-cli audio backends: null, stdout, alsa, portaudio, pulse, pipewire$'
             expect_mdns: '^-- sendspin-cli mDNS: dns_sd \(.*libdns_sd\.so.*\)$'
-            runtime_packages: 'libasound2t64 libportaudio2 libavahi-compat-libdnssd1'
+            runtime_packages: 'libasound2t64 libportaudio2 libpulse0 libpipewire-0.3-0 libavahi-compat-libdnssd1'
             publish: true
             avahi: true
 
           - name: linux-arm64
             runner: ubuntu-24.04-arm
             with_mdns: 'ON'
+            with_pulse: 'ON'
+            with_pipewire: 'ON'
             expect_probe: 'Failed'
-            expect_backends: '^-- sendspin-cli audio backends: null, stdout, alsa, portaudio$'
+            expect_backends: '^-- sendspin-cli audio backends: null, stdout, alsa, portaudio, pulse, pipewire$'
             expect_mdns: '^-- sendspin-cli mDNS: dns_sd \(.*libdns_sd\.so.*\)$'
-            runtime_packages: 'libasound2t64 libportaudio2 libavahi-compat-libdnssd1'
+            runtime_packages: 'libasound2t64 libportaudio2 libpulse0 libpipewire-0.3-0 libavahi-compat-libdnssd1'
             publish: true
             avahi: false
 
+          # Both sound-server backends are pinned OFF here rather than left to auto-detection.
+          # libpulse is brew-installable on macOS and could arrive on the image as some other
+          # formula's dependency, which would change this line without a commit -- and there is no
+          # PipeWire for macOS at all. CoreAudio through PortAudio is the macOS path either way.
           - name: macos-arm64
             runner: macos-14
             with_mdns: 'ON'
+            with_pulse: 'OFF'
+            with_pipewire: 'OFF'
             expect_probe: 'Success'
             expect_backends: '^-- sendspin-cli audio backends: null, stdout, portaudio$'
             expect_mdns: '^-- sendspin-cli mDNS: dns_sd \(Bonjour, built in\)$'
@@ -81,9 +94,17 @@ jobs:
           # swaps which translation unit is built -- src/mdns_null.cpp instead of
           # src/mdns_dnssd.cpp -- so nothing else in the matrix compiles it. It publishes
           # nothing; a binary that cannot be discovered is not one to hand anybody.
+          #
+          # The two sound-server backends are off here for a second helping of the same idea:
+          # tests/device_spec_test.cpp guards half its cases on SENDSPIN_CLI_HAVE_PULSE and
+          # _PIPEWIRE, and this is the only Linux leg that compiles and runs the #else arms --
+          # the ones that assert a bare `pulse` is still an ALSA PCM name, and that the message
+          # for `pulse:<sink>` names the alsa: route as well as the CMake flag.
           - name: linux-x86_64-nomdns
             runner: ubuntu-24.04
             with_mdns: 'OFF'
+            with_pulse: 'OFF'
+            with_pipewire: 'OFF'
             expect_backends: '^-- sendspin-cli audio backends: null, stdout, alsa, portaudio$'
             expect_mdns: '^-- sendspin-cli mDNS: none$'
             publish: false
@@ -107,6 +128,8 @@ jobs:
             pkg-config \
             libasound2-dev \
             portaudio19-dev \
+            libpulse-dev \
+            libpipewire-0.3-dev \
             libavahi-compat-libdnssd-dev
 
       - name: Install build dependencies (macOS)
@@ -135,12 +158,16 @@ jobs:
       - name: Configure
         env:
           WITH_MDNS: ${{ matrix.with_mdns }}
+          WITH_PULSE: ${{ matrix.with_pulse }}
+          WITH_PIPEWIRE: ${{ matrix.with_pipewire }}
           DEPS_DIR: ${{ github.workspace }}/.deps
         run: |
           cmake -B build \
             -DCMAKE_BUILD_TYPE=Release \
             -DSENDSPIN_CLI_WERROR=ON \
             -DSENDSPIN_CLI_WITH_MDNS="$WITH_MDNS" \
+            -DSENDSPIN_CLI_WITH_PULSE="$WITH_PULSE" \
+            -DSENDSPIN_CLI_WITH_PIPEWIRE="$WITH_PIPEWIRE" \
             -DFETCHCONTENT_BASE_DIR="$DEPS_DIR" \
             2>&1 | tee configure.log
 

@@ -18,8 +18,9 @@ small flag set for identity, output, discovery, logging, and daemonization.
   makes it dial out — to an address, or to a server discovered on
   `_sendspin-server._tcp` — retrying with a backoff until it answers (item 5).
 - Defines the `AudioSink` seam (`src/audio_sink.h`) and plays real audio through it:
-  auto-detected ALSA (item 2) and PortAudio (item 3) backends, with the device-less
-  null/stdout sink as the fallback, so the binary still runs where there is no sound card.
+  auto-detected ALSA (item 2), PortAudio (item 3), PulseAudio (item 18) and PipeWire
+  (item 19) backends, with the device-less null/stdout sink as the fallback, so the
+  binary still runs where there is no sound card.
 - Parses the squeezelite-style flag surface: `-o -l -n -s -z -P -d -f --port --buffer-ms
   --no-mdns --mdns-name --help --version`, validating every value at parse time and
   refusing to start on a bad one (item 1).
@@ -1855,3 +1856,162 @@ gated on a library that speaks the newer shape, and is likely to arrive with a
 Item 5's `src/last_server.{h,cpp}` is the nearest thing that exists today and is
 deliberately named for what it observes — the last server whose *handshake* completed, not
 its last *playback* server, which v0.7.0 gives no way to know.
+
+### 18. Native PulseAudio backend — *shipped (audible slice)*
+
+`-o pulse[:<sink>]` on libpulse. **Not required to reach a PulseAudio server** — `-o
+pulse` fell through `resolve_device_spec()`'s rule 3 to ALSA's plugin PCM and played
+long before this existed, and still does as `-o alsa:pulse`. This item is a
+deliberate step past that minimum, and what it buys is on the far side of the socket:
+
+- **Sink enumeration in `-l`**, so `-o` can name one. The plugin exposes a single
+  ALSA hint, so through it a sink is chosen with `PULSE_SINK` or `~/.asoundrc`.
+- **Honest sync feedback.** `pa_stream_get_latency()` is the *server's* answer for
+  when queued audio plays out. Through the plugin the same question reaches
+  `snd_pcm_delay()`, which reports the plugin's own buffering — and this is a
+  synchronised multi-room player, so that is not cosmetic.
+- **A named stream**, so the host's mixer shows `sendspin-cli` and can route it
+  per-application rather than showing another "ALSA plug-in".
+
+**Shipped** in `src/pulse_sink.{h,cpp}`, built when `pkg_check_modules(libpulse)`
+succeeds (`-DSENDSPIN_CLI_WITH_PULSE=OFF` forces it out):
+
+- **No ring buffer, deliberately** — the one structural difference from item 3.
+  libpulse lets any thread write to a stream under the mainloop lock, so **the
+  server's own queue is the ring**, sized by `--buffer-ms` through
+  `pa_buffer_attr::tlength` and with `PA_STREAM_ADJUST_LATENCY` sizing the rest
+  around it. A ring here would be latency `pa_stream_get_latency()` could not see,
+  which is the very thing the backend exists to report honestly.
+- Threading follows `AlsaAudioSink` rather than `PortAudioSink`: one mutex
+  serialises everything, and volume is scaled on the way in with the ramp committed
+  by the frames really written. Lock order is the sink's mutex then the mainloop
+  lock, and no libpulse callback takes the sink's mutex.
+- **Every wait has a deadline.** `pa_threaded_mainloop_wait()` has none — it returns
+  when a callback signals it and never otherwise — so a socket that accepts and then
+  says nothing would hang the player at startup. Every wait is a condition variable
+  of our own instead, and a query that times out is `pa_operation_cancel()`ed so no
+  late callback can write through a dead pointer.
+- 8/16/24/32-bit. 8-bit is the awkward one: the player emits **signed** 8-bit and
+  PulseAudio has no signed 8-bit format at all, so it goes out as `PA_SAMPLE_U8` with
+  the sign bit flipped in the same pass that scales the volume. Refusing it would
+  leave a stream the other backends play and this one does not.
+- Recovery reuses `SinkRecovery` unchanged, with its two attempts mapped onto what a
+  sound server actually needs: the inline one reopens the stream when the context is
+  still up, and the delayed one on the main loop reconnects the context — which is
+  what a *restarted* daemon needs, and why `SINK_RESCAN_DELAY_MS` is the right gap
+  rather than an arbitrary one.
+
+  **Its one poor fit, found by killing `pulseaudio` mid-stream rather than by
+  reasoning:** a daemon that takes longer than `SINK_RESCAN_DELAY_MS` to come back is
+  not chased again, so the sink discards until the next `configure()`. That is item 20,
+  which is where the whole of it is written down.
+
+**The sharp edge, accepted knowingly.** `-o pulse` used to mean the ALSA plugin PCM
+and now means this backend: a live command line changing what it does on upgrade.
+The `null` precedent is *not* the justification — `null` is device-less, so shadowing
+it cost nothing, where `pulse` is a real device on exactly these hosts. What pays for
+it instead: `-o alsa:pulse` is the documented way back and is named in the README, in
+`-l`, and in the message a build without the backend gives; and `-l`'s shadow filter
+is derived from the backend table through `alsa_pcm_is_reachable()` rather than from
+a second hardcoded name list, so the PCM list cannot drift into naming a device `-o`
+can no longer reach.
+
+Volume stays on `src/pcm_volume.{h,cpp}` and is **not** pushed to the server as a
+sink-input volume — the same one-path-or-the-other call item 15 makes for ALSA's
+hardware mixer, for three reasons that agree: the spec's `(volume/100)^1.5` is not
+PulseAudio's cubic taper, stacking the two would square it, and a gain `pavucontrol`
+can move behind our back makes the guarantee in `src/audio_sink.h` — never report a
+volume the speaker is not at — unenforceable, with group volume derived from what
+players report.
+
+### 19. Native PipeWire backend — *shipped (audible slice)*
+
+`-o pipewire[:<node>]` on libpipewire. **This item does not clear the bar item 3
+set**, and says so rather than leaning on it: item 3's justification was that
+PortAudio is *the only way this player makes noise on macOS*, and libpipewire reaches
+no host libpulse cannot — `pipewire-pulse` is on every PipeWire desktop, and item 18
+therefore already plays there. It is here for what is on the far side of the socket:
+
+- **Node selection.** `pipewire-pulse` presents *sinks*, which is a compatibility
+  view of the graph rather than the graph. Only a native client can name a node, and
+  only a native client has no compatibility layer in the audio path at all.
+- The same enumeration and mixer-visibility arguments item 18 makes, one layer
+  further in.
+
+**Shipped** in `src/pipewire_sink.{h,cpp}`, built when
+`pkg_check_modules(libpipewire-0.3 >= 0.3.64)` succeeds
+(`-DSENDSPIN_CLI_WITH_PIPEWIRE=OFF` forces it out). The version floor is real:
+`PW_KEY_TARGET_OBJECT`, which is how `-o pipewire:<node>` names a node, arrived in
+0.3.64 and an older libpipewire would build and then quietly ignore the node.
+
+- **A ring buffer, unlike item 18** — and the difference is not a preference. PipeWire
+  *pulls*: the graph runs `process()` on its own realtime data thread and wants a
+  buffer filled there and then, with no way to block. That is PortAudio's shape, so it
+  buffers PortAudio's way, through the same SPSC ring — which moved to
+  `src/pcm_ring.{h,cpp}` rather than being copied, since a second copy of a lock-free
+  ring is the kind of duplication that drifts silently. It is device-free and
+  clock-free there, so it compiles and can be tested on a host with no audio backend,
+  the split `src/sink_recovery.{h,cpp}` and `src/pcm_volume.{h,cpp}` already make.
+- Sync feedback from `pw_stream_get_time_n()`: `pw_time::delay` is when the next
+  sample this stream hands over is presented, plus whatever `queued` and `buffered`
+  say is already ahead of it, plus the buffer's own duration for its last frame.
+  `pw_buffer::size` is set in **frames**, because that is what `pw_time::queued` sums.
+- Volume is scaled on the way into the ring rather than in `process()`, so no gain
+  arithmetic runs on the realtime thread at all — the opposite of item 3's choice, and
+  for the reason item 2 makes it: the realtime thread should carry as little as
+  possible. Not that it carries *nothing*: `process()` still queries `pw_time`, notifies
+  the producer and calls `on_frames_played`. That is the same pragmatic trade
+  `src/pcm_ring.h` names, and the one item 3 already made.
+- Node enumeration for `-l` and `probe()` is a registry walk with its own thread loop,
+  context and core, ended by a `pw_core_sync()` round trip so one pass is *complete*
+  rather than merely likely, and bounded by `pw_thread_loop_timed_wait()`. Only
+  `Audio/Sink` nodes are listed, since `-o` cannot play through the others.
+- No node is marked as the default in `-l`, deliberately: where a playback stream
+  lands with no target named is the graph's own routing decision, taken per stream and
+  changeable while one is running, so marking one would be a claim `-l` cannot make.
+
+Item 18's note on shadowing, on volume, and on `SinkRecovery` applies here unchanged —
+`-o pipewire` was an ALSA plugin PCM too, and `-o alsa:pipewire` is the way back.
+
+**Cross-repo consequence, flagged rather than fixed here.** Both backends are
+auto-detected and default `ON`, and
+[`local-audio-addon`](https://github.com/music-assistant/local-audio-addon)'s
+Dockerfile asserts the configure summary line exactly
+(`grep -qE '^-- sendspin-cli audio backends: null, stdout, alsa$'`). If that build
+image ever gains `libpulse-dev` or `libpipewire-0.3-dev`, its own assertion fails. It
+needs `-DSENDSPIN_CLI_WITH_PULSE=OFF -DSENDSPIN_CLI_WITH_PIPEWIRE=OFF` alongside the
+`-DSENDSPIN_CLI_WITH_PORTAUDIO=OFF` it already passes, or a widened grep — in that
+repo, not this one.
+
+### 20. `SinkRecovery`'s second attempt should be able to fail and be retried
+
+Found while building items 18 and 19, by killing `pulseaudio` mid-stream: the sink is
+silent for the rest of the track. Not a defect in either sound-server backend — they
+reuse `SinkRecovery` exactly as items 3 and 14 wrote it — but a place where that policy
+was shaped by the one backend that then existed.
+
+`SinkRecovery::rescan_due()` marks the second attempt spent **as it hands it out**, and
+`src/sink_recovery.h` says why: "a rescan that failed and one that worked leave nothing
+further to try either way". That is true of a PortAudio device-list rebuild, which is
+what it was written for. It is not true of a *reconnect*: a daemon still down two
+seconds after the outage may well be up two seconds later, and nothing has been learned
+that makes trying again pointless.
+
+The fix is to make the second attempt symmetric with the first — a `rescan_done(bool)`
+beside `reopen_done(bool)`, where a failure re-arms the attempt behind a fresh
+`SINK_RESCAN_DELAY_MS` instead of retiring it. Two things it must not lose:
+
+- **PortAudio's behaviour must not change.** Its rescan really is one-shot, and it is
+  the expensive one — a `Pa_Terminate()`/`Pa_Initialize()` cycle on the main loop. It
+  should report `rescan_done(true)` whatever the outcome, which is what "there is
+  nothing else to try" means in its case.
+- **The retry must stay bounded.** The `SINK_RESCAN_DELAY_MS` floor already stops a
+  half-present device from being hammered, but an unbounded retry contradicts the
+  promise `SinkRecovery`'s own docstring makes — "and then silence until the next
+  stream". Either a cap on attempts or an explicit rewrite of that promise, not a
+  silent drift away from it.
+
+Item 14's hardware pass is the natural place to exercise it: the two failures are the
+same shape, and a USB DAC replug and a `systemctl --user restart pipewire` are the two
+ways to produce one on purpose.
+

@@ -285,9 +285,11 @@ void AlsaAudioSink::list_devices(std::FILE* out) {
 
         // A null IOID means the PCM does both directions; anything else must say Output.
         const bool playback = (ioid == nullptr) || (std::strcmp(ioid, "Output") == 0);
-        // ALSA ships its own "null" PCM, but -o null is reserved for the discard sink
-        // above, so listing it here would name a device -o cannot actually reach.
-        const bool shadowed = (name != nullptr) && (std::strcmp(name, "null") == 0);
+        // ALSA ships PCMs whose names -o reads as backend prefixes instead -- "null" always,
+        // and "pulse"/"pipewire" on a build with those native backends. Listing one here would
+        // name a device -o cannot actually reach. Asked of the backend table rather than matched
+        // against a second list of names kept in this file, which is how the two would drift.
+        const bool shadowed = (name != nullptr) && !alsa_pcm_is_reachable(name);
 
         if (name != nullptr && playback && !shadowed) {
             std::fprintf(out, "  %s\n", name);
