@@ -2098,9 +2098,9 @@ no workaround either — the control socket answers questions, it does not annou
   always; `SENDSPIN_SERVER_ID`, `SENDSPIN_SERVER_NAME`, `SENDSPIN_SERVER_URL` (the URL
   this run dialled — outbound only, as in Python) and `SENDSPIN_CLIENT_NAME` where
   known. A hook script written against one player runs unchanged against the other.
-  `SENDSPIN_CLIENT_ID` is reserved but never set yet: the library derives its id from
-  the interface MAC and does not expose it, so the honest value arrives with a future
-  `--id` flag. `SENDSPIN_SERVER_URL` is what this run *dialled*, which is not the same
+  `SENDSPIN_CLIENT_ID` carries the `--id` value item 23 chooses: the library's
+  MAC-derived default is not exposed, so without the flag it stays unset.
+  `SENDSPIN_SERVER_URL` is what this run *dialled*, which is not the same
   claim as which server answered: `-s` leaves the inbound listener up, and the library
   reports that a connection is up without saying where it came from — no connect callback,
   and nothing exposing a connection's URL or direction — so one that dialled in while an
@@ -2140,3 +2140,32 @@ no workaround either — the control socket answers questions, it does not annou
   reach into. SIGPIPE goes back to `SIG_DFL` for the same reason: the player ignores it, and
   an ignored disposition survives `execve()` where a caught one does not, so `… | head -1`
   inside a hook would otherwise report a failed write rather than ending.
+
+
+### 23. Identity flags (`--id`, `--manufacturer`, `--product-name`) — *shipped*
+
+The client id was the library's MAC-derived default with no way to choose one, and the
+`client/hello` device info was hardcoded. The id is the half that bites: it is the
+*stable* identity a server files volume, group membership and pairing under — `-n` is
+only what it displays — and two players on one host derive the same MAC, so each
+server-side setting lands on whichever connected last. The dual-mono
+two-daemons-one-host pattern needs a flag; the Python CLI has all three.
+
+**Shipped** in `src/cli.{h,cpp}`, `src/main.cpp`, `tests/cli_test.cpp` and
+`tests/config_file_test.cpp`:
+
+- **`--id <id>`** sets `SendspinClientConfig::client_id`, and its config key is `id`.
+  The default stays empty on purpose — the library derives the MAC-based id only when
+  nothing is set, and that remains the right identity for one fixed endpoint per host.
+  The flag also feeds item 22's `SENDSPIN_CLIENT_ID`, which until now was reserved but
+  never set: the derived id is not exposed by the library, so the flag's value is the
+  first honest one a hook can be handed.
+- **`--manufacturer` / `--product-name`** override the hello device info, for the
+  integrator whose product embeds this player and should be listed as itself. Defaults
+  stay `sendspin-cpp-cli` / `sendspin-cli`, declaring what this really is.
+- All three are refused empty, warned about on a subcommand run like every other
+  daemon-only flag, and settable from the config file through the same
+  `apply_option()` door.
+
+Verified against a real `aiosendspin` server: the connected client reports the `--id`
+value as its `client_id`, and the start hook exports it as `SENDSPIN_CLIENT_ID`.

@@ -266,9 +266,10 @@ systemctl status sendspin-cli
 pgrep -a sendspin-cli
 ```
 
-To run a second player on purpose, give it its own `--port`, its own `--control-socket` and
-its own `--state-dir` — they share the state file otherwise, and the second to save its
-volume overwrites the first's.
+To run a second player on purpose, give it its own `--id`, its own `--port`, its own
+`--control-socket` and its own `--state-dir` — they share the state file otherwise, the
+server files both under one identity, and the second to save its volume overwrites the
+first's.
 
 ## `status` is telling me something odd
 

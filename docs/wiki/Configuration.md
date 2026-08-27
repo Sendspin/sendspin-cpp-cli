@@ -49,6 +49,9 @@ already does that.
 |---|---|---|---|
 | `output` | `-o`, `--output` | a device: `hw:1,0`, `default`, `portaudio:2`, `null`, `stdout` | `default` where ALSA is built in, else `portaudio`, else `null` |
 | `name` | `-n`, `--name` | the friendly name a controller shows | this host's name |
+| `id` | `--id` | the stable client id a server files this player's settings under — two players on one host must not share it | derived from the interface MAC |
+| `manufacturer` | `--manufacturer` | the manufacturer `client/hello` reports | `sendspin-cpp-cli` |
+| `product-name` | `--product-name` | the product name `client/hello` reports | `sendspin-cli` |
 | `server` | `-s`, `--server` | `<host>[:<port>]`, a `ws://` URL, or `mdns:[<name>]` | none — wait to be discovered |
 | `port` | `--port` | the port this player's own WebSocket server listens on | `8928` |
 | `buffer-ms` | `--buffer-ms` | audio the output backend keeps queued, 10–2000 | `100` |
@@ -173,8 +176,8 @@ Writes go through a temporary, an `fsync` and a `rename` at mode `0600`, so a pl
 loses power mid-write leaves either the old file or the new one and never half of either.
 
 **Two players on one host share this file** unless you give each its own `--state-dir`. They
-already need different `--port`s; give them different state directories too, or the second
-one to save its volume overwrites the first's.
+already need different `--id`s and `--port`s; give them different state directories too, or
+the second one to save its volume overwrites the first's.
 
 ### `static-delay` versus a remembered `static-delay-ms`
 

@@ -116,6 +116,9 @@ enum class Opt : unsigned {
     Config,         ///< --config
     HookStart,      ///< --hook-start
     HookStop,       ///< --hook-stop
+    ClientId,       ///< --id
+    Manufacturer,   ///< --manufacturer
+    ProductName,    ///< --product-name
 };
 
 /// @brief Everything the flag surface configures.
@@ -126,6 +129,21 @@ struct Options {
     std::string device{DEFAULT_OUTPUT_DEVICE};  ///< -o <device>: audio output backend
     bool list_devices{false};    ///< -l: list output devices and exit
     std::string name;            ///< -n <name>: friendly name; defaults to the hostname
+
+    /// --id <id>: this player's client_id, the *stable* identity a server files volume,
+    /// group membership and pairing under -- where -n is only what it displays. Empty means
+    /// the library derives one from the network interface MAC, which is the right identity
+    /// for one fixed endpoint per host and the wrong one for two: a dual-mono pair of
+    /// daemons on one machine derive the same id, and each server-side setting lands on
+    /// whichever connected last. This flag is what gives each its own.
+    std::string client_id;
+
+    /// --manufacturer / --product-name <text>: the device info `client/hello` carries,
+    /// shown by servers in their device lists. Defaults declare what this really is; the
+    /// overrides exist for the integrator whose product embeds this player and should be
+    /// listed as itself -- same as the Python CLI's flags of the same names.
+    std::string manufacturer{"sendspin-cpp-cli"};
+    std::string product_name{"sendspin-cli"};
     std::string server;          ///< -s <server>: dial this server instead of only listening
     bool daemonize{false};       ///< -z: detach and run in the background
     std::string pidfile;         ///< -P <path>: write our pid here

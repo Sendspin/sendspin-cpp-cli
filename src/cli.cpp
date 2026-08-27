@@ -70,6 +70,9 @@ enum LongOnly {
     OPT_CONFIG,
     OPT_HOOK_START,
     OPT_HOOK_STOP,
+    OPT_ID,
+    OPT_MANUFACTURER,
+    OPT_PRODUCT_NAME,
 };
 
 /// @brief An option a config file may set: its key, and how a diagnostic names it.
@@ -108,6 +111,9 @@ const std::vector<SettableOption>& settable_options() {
         {Opt::StateDir, "state-dir", "--state-dir"},
         {Opt::HookStart, "hook-start", "--hook-start"},
         {Opt::HookStop, "hook-stop", "--hook-stop"},
+        {Opt::ClientId, "id", "--id"},
+        {Opt::Manufacturer, "manufacturer", "--manufacturer"},
+        {Opt::ProductName, "product-name", "--product-name"},
     };
     return table;
 }
@@ -387,6 +393,24 @@ bool apply_option(const SettableOption& option, const std::string& value, Option
             }
             out.hook_stop = value;
             break;
+        case Opt::ClientId:
+            if (empty_value()) {
+                return false;
+            }
+            out.client_id = value;
+            break;
+        case Opt::Manufacturer:
+            if (empty_value()) {
+                return false;
+            }
+            out.manufacturer = value;
+            break;
+        case Opt::ProductName:
+            if (empty_value()) {
+                return false;
+            }
+            out.product_name = value;
+            break;
         case Opt::NoMdns:
             if (!parse_bool(value, out.no_mdns)) {
                 error = "invalid --no-mdns '" + value + "' -- expected true or false";
@@ -581,6 +605,9 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
         {"state-dir", required_argument, nullptr, OPT_STATE_DIR},
         {"hook-start", required_argument, nullptr, OPT_HOOK_START},
         {"hook-stop", required_argument, nullptr, OPT_HOOK_STOP},
+        {"id", required_argument, nullptr, OPT_ID},
+        {"manufacturer", required_argument, nullptr, OPT_MANUFACTURER},
+        {"product-name", required_argument, nullptr, OPT_PRODUCT_NAME},
         {nullptr, 0, nullptr, 0},
     };
 
@@ -740,6 +767,15 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
                 break;
             case OPT_HOOK_STOP:
                 apply(Opt::HookStop, optarg);
+                break;
+            case OPT_ID:
+                apply(Opt::ClientId, optarg);
+                break;
+            case OPT_MANUFACTURER:
+                apply(Opt::Manufacturer, optarg);
+                break;
+            case OPT_PRODUCT_NAME:
+                apply(Opt::ProductName, optarg);
                 break;
             case ':':
                 fail("option '" + offending_option(flag_argv, optind) + "' needs a value");
@@ -908,9 +944,10 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
         // listen on anything. Left it out and it would silently produce a "this player was
         // started with --no-control" message about the wrong process.
         static constexpr Opt DAEMON_ONLY[] = {
-            Opt::Device,   Opt::Name,     Opt::Server,   Opt::Daemonize, Opt::Pidfile,
-            Opt::Logfile,  Opt::LogLevel, Opt::BufferMs, Opt::NoMdns,    Opt::MdnsName,
-            Opt::NoControl, Opt::StateDir, Opt::StaticDelay, Opt::HookStart, Opt::HookStop,
+            Opt::Device,    Opt::Name,         Opt::Server,      Opt::Daemonize, Opt::Pidfile,
+            Opt::Logfile,   Opt::LogLevel,     Opt::BufferMs,    Opt::NoMdns,    Opt::MdnsName,
+            Opt::NoControl, Opt::StateDir,     Opt::StaticDelay, Opt::HookStart, Opt::HookStop,
+            Opt::ClientId,  Opt::Manufacturer, Opt::ProductName,
         };
         for (Opt opt : DAEMON_ONLY) {
             if (out.was_given(opt)) {
@@ -1018,6 +1055,12 @@ void print_usage(std::FILE* out, const char* prog) {
     std::fprintf(out, "  -l            List output devices with their capabilities, and exit\n");
     std::fprintf(out, "  -n, --name <name>\n");
     std::fprintf(out, "                Friendly name (default: this host's name)\n");
+    std::fprintf(out, "  --id <id>     Stable client id, which is what a server files this\n");
+    std::fprintf(out, "                player's volume, group and pairing under -- -n is only\n");
+    std::fprintf(out, "                what it displays. Defaults to an id derived from the\n");
+    std::fprintf(out, "                network interface MAC, which two players on one host\n");
+    std::fprintf(out, "                would share: give each its own --id (and its own\n");
+    std::fprintf(out, "                --port and --state-dir)\n");
     std::fprintf(out, "  -s, --server <server>\n");
     std::fprintf(out, "                Connect out to <host>[:<port>] or a ws:// URL\n");
     std::fprintf(out, "                (the server's port defaults to %u), retrying until it\n",
@@ -1112,14 +1155,20 @@ void print_usage(std::FILE* out, const char* prog) {
     std::fprintf(out, "                unit has neither, so pair StateDirectory= with this\n");
     std::fprintf(out, "                flag; with none of the three the player still runs and\n");
     std::fprintf(out, "                simply remembers nothing\n");
+    std::fprintf(out, "  --manufacturer <text>\n");
+    std::fprintf(out, "  --product-name <text>\n");
+    std::fprintf(out, "                The device info client/hello carries, shown in server\n");
+    std::fprintf(out, "                device lists (defaults: sendspin-cpp-cli, sendspin-cli).\n");
+    std::fprintf(out, "                For a product that embeds this player and should be\n");
+    std::fprintf(out, "                listed as itself\n");
     std::fprintf(out, "  --hook-start <command>\n");
     std::fprintf(out, "  --hook-stop <command>\n");
     std::fprintf(out, "                Run <command> through /bin/sh when a stream starts or\n");
     std::fprintf(out, "                stops -- an amplifier relay, a light. The event's facts\n");
     std::fprintf(out, "                arrive as SENDSPIN_EVENT (start|stop) and, where known,\n");
     std::fprintf(out, "                SENDSPIN_SERVER_ID, SENDSPIN_SERVER_NAME,\n");
-    std::fprintf(out, "                SENDSPIN_SERVER_URL (outbound only) and\n");
-    std::fprintf(out, "                SENDSPIN_CLIENT_NAME. The hook runs without blocking\n");
+    std::fprintf(out, "                SENDSPIN_SERVER_URL (outbound only), SENDSPIN_CLIENT_ID\n");
+    std::fprintf(out, "                and SENDSPIN_CLIENT_NAME. The hook runs without blocking\n");
     std::fprintf(out, "                playback; its output goes to the log, and a non-zero\n");
     std::fprintf(out, "                exit is a warning, not a player failure\n");
     std::fprintf(out, "  -h, --help    Show this help\n");
