@@ -565,9 +565,12 @@ void PipeWireSink::poll(int64_t now_ms) {
     const uint32_t quantum = this->quantum_frames_.load(std::memory_order_relaxed);
     if (quantum != 0 && !this->quantum_logged_.exchange(true, std::memory_order_relaxed)) {
         const std::lock_guard<std::mutex> lock(this->mutex_);
-        if (this->bytes_per_frame_ != 0) {
-            const size_t ring_frames = (this->ring_.free_space() + this->ring_.available()) /
-                                       this->bytes_per_frame_;
+        if (this->rate_ != 0) {
+            // The size the ring was built at, rather than a measurement of it. free_space() and
+            // available() are two samples of a position the realtime callback owns, and it can
+            // consume between them -- their sum then understates the ring, which here would mean
+            // warning an operator to raise --buffer-ms on a stream that is sized correctly.
+            const size_t ring_frames = pipewire_ring_frames(this->rate_, this->buffer_ms_);
             const PipeWireQuantumFit fit = pipewire_quantum_fit(ring_frames, quantum, this->rate_);
             if (fit.starves) {
                 // Broken rather than merely tight, and not something this player can negotiate
