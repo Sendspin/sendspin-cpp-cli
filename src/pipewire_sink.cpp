@@ -39,14 +39,6 @@ static constexpr const char* LOG_TAG = LOG_TAG_AUDIO;
 
 namespace {
 
-/// Floor on the ring, as a multiple of the graph's quantum. process() asks for a whole quantum at
-/// a time, so a ring no bigger than that starves on every cycle however promptly write() refills
-/// it. The same figure, for the same reason, as PortAudioSink's device-latency floor.
-constexpr size_t RING_QUANTUM_MULTIPLE = 3;
-
-/// Absolute floor on the ring, for a stream whose quantum is not known yet.
-constexpr size_t MIN_RING_FRAMES = 1024;
-
 /// The name this stream carries in the graph, and one of the reasons the backend exists at all --
 /// through ALSA's plugin PCM every stream is just "ALSA plug-in".
 constexpr const char* PIPEWIRE_APP_NAME = "sendspin-cli";
@@ -294,6 +286,28 @@ bool walk_registry(std::vector<PipeWireNode>& out, std::string& error) {
 }
 
 }  // namespace
+
+size_t pipewire_ring_frames(uint32_t rate, uint32_t buffer_ms) {
+    const auto by_time = static_cast<size_t>((static_cast<uint64_t>(rate) * buffer_ms) / 1000);
+    return std::max(by_time, MIN_RING_FRAMES);
+}
+
+PipeWireQuantumFit pipewire_quantum_fit(size_t ring_frames, uint32_t quantum, uint32_t rate) {
+    PipeWireQuantumFit fit;
+    if (quantum == 0 || rate == 0) {
+        // Nothing has run a cycle yet, so there is no quantum to be measured against -- and
+        // reporting a fault here would mean warning about every stream before its first callback.
+        return fit;
+    }
+    const size_t floor_frames = static_cast<size_t>(quantum) * RING_QUANTUM_MULTIPLE;
+    fit.starves = ring_frames < quantum;
+    fit.tight = !fit.starves && ring_frames < floor_frames;
+    // Rounded up, because the whole use of this figure is to clear the floor when it is passed
+    // back in as --buffer-ms: rounding down would hand back a number that fails the same check.
+    fit.recommended_buffer_ms =
+        static_cast<uint32_t>(((static_cast<uint64_t>(floor_frames) * 1000) + rate - 1) / rate);
+    return fit;
+}
 
 // ============================================================================
 // PipeWireGuard
@@ -560,13 +574,26 @@ void PipeWireSink::poll(int64_t now_ms) {
         if (this->bytes_per_frame_ != 0) {
             const size_t ring_frames = (this->ring_.free_space() + this->ring_.available()) /
                                        this->bytes_per_frame_;
-            cli_log(LogLevel::DEBUG,
-                    "pipewire: the graph is running %u-frame quanta; --buffer-ms %u is a "
-                    "%zu-frame ring%s",
-                    quantum, this->buffer_ms_, ring_frames,
-                    (ring_frames < static_cast<size_t>(quantum) * RING_QUANTUM_MULTIPLE)
-                        ? " -- under three quanta, so it may starve on a busy graph"
-                        : "");
+            const PipeWireQuantumFit fit = pipewire_quantum_fit(ring_frames, quantum, this->rate_);
+            if (fit.starves) {
+                // Broken rather than merely tight, and not something this player can negotiate
+                // its way out of: reaching here means the PW_KEY_NODE_LATENCY asked for at open
+                // time was overridden, so the only lever left is the one the operator holds.
+                // Loud for that reason -- every cycle of this stream will zero-fill.
+                cli_log(LogLevel::WARN,
+                        "pipewire: '%s' will underrun on every cycle -- the graph is running "
+                        "%u-frame quanta and --buffer-ms %u is only a %zu-frame ring; pass "
+                        "--buffer-ms %u or more",
+                        this->name().c_str(), quantum, this->buffer_ms_, ring_frames,
+                        fit.recommended_buffer_ms);
+            } else {
+                cli_log(LogLevel::DEBUG,
+                        "pipewire: the graph is running %u-frame quanta; --buffer-ms %u is a "
+                        "%zu-frame ring%s",
+                        quantum, this->buffer_ms_, ring_frames,
+                        fit.tight ? " -- under three quanta, so it may starve on a busy graph"
+                                  : "");
+            }
         }
     }
 
@@ -794,6 +821,17 @@ bool PipeWireSink::open_stream_(uint32_t sample_rate, uint8_t channels,
         // node that appears after startup needs no rescan here.
         pw_properties_set(props, PW_KEY_TARGET_OBJECT, this->device_.c_str());
     }
+    // Ask the graph for a quantum the ring can actually hold. Without this the stream states no
+    // latency at all and takes whatever the graph happens to be running -- which on a host with
+    // default.clock.force-quantum set can be larger than the whole ring, and then every process()
+    // short-reads and zero-fills the remainder for the life of the stream. A third of the ring, so
+    // RING_QUANTUM_MULTIPLE quanta fit by construction. A request rather than a guarantee: a
+    // forced quantum overrides it, which is the case poll()'s warning is left to catch.
+    const std::string latency =
+        std::to_string(pipewire_ring_frames(sample_rate, this->buffer_ms_) /
+                       RING_QUANTUM_MULTIPLE) +
+        "/" + std::to_string(sample_rate);
+    pw_properties_set(props, PW_KEY_NODE_LATENCY, latency.c_str());
 
     uint8_t pod_storage[1024];
     spa_pod_builder builder = SPA_POD_BUILDER_INIT(pod_storage, sizeof(pod_storage));
@@ -954,7 +992,7 @@ bool PipeWireSink::stream_alive_() const {
 size_t PipeWireSink::ring_capacity_() const {
     const auto frames_by_time =
         static_cast<size_t>((static_cast<int64_t>(this->rate_) * this->buffer_ms_) / 1000);
-    const size_t frames = std::max(frames_by_time, MIN_RING_FRAMES);
+    const size_t frames = pipewire_ring_frames(this->rate_, this->buffer_ms_);
     if (frames > frames_by_time) {
         // --buffer-ms is a request, not a promise. Naming the floor that won is the difference
         // between "your figure was ignored" and knowing what to ask for instead.

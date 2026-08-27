@@ -2031,3 +2031,47 @@ Item 14's hardware pass is still the place to exercise the PortAudio half — a 
 replug and a `systemctl --user restart pipewire` are the two ways to produce one of
 these on purpose, and only the second has been run.
 
+
+### 21. PipeWire's ring is sized before the graph says what it wants — *open*
+
+Found in review of items 18 and 19, not by playing anything: `RING_QUANTUM_MULTIPLE`
+was documented as a floor on the ring and never actually applied to one. The ring was
+sized from `--buffer-ms` alone, the quantum is only knowable once the graph has run a
+cycle, and the constant was reached for exactly once — to decide the wording of a
+`debug` line. A floor that only ever describes is not a floor.
+
+That matters because `process()` asks for a whole quantum. A ring that cannot hold one
+short-reads and zero-fills the remainder **on every cycle, for the life of the stream**,
+however promptly `write()` refills it. It is not a starvation that recovers.
+
+**Half of it is fixed** in `src/pipewire_sink.{h,cpp}`, because half of it is cheap:
+
+- **The stream now asks.** `PW_KEY_NODE_LATENCY` is set to a third of the ring at the
+  stream's rate, so the graph is told what this client can absorb. Previously it stated
+  no latency at all and took whatever the graph was running.
+- **The arithmetic moved out and grew tests.** `pipewire_ring_frames()` and
+  `pipewire_quantum_fit()` are pure and live beside the sink rather than inside it,
+  covered by `tests/pipewire_sink_test.cpp` — including the case that cannot be produced
+  on demand from a daemon, a quantum larger than the whole ring. The same split, for the
+  same reason, as `src/pcm_ring.{h,cpp}` and `src/sink_recovery.{h,cpp}`.
+- **A ring that cannot hold a quantum is now a `warn`, not a `debug`**, and it names the
+  `--buffer-ms` that would clear the floor — a figure rounded up, so passing it back in
+  actually satisfies the check it was printed for.
+
+**What is left, and why it is left.** `PW_KEY_NODE_LATENCY` is a request. A graph with
+`default.clock.force-quantum` set overrides it, and then the warning is all there is:
+the player names the fault and keeps zero-filling. Fixing that properly means observing
+the quantum and resizing the ring to suit — which cannot be done in place, because the
+realtime data thread is reading that ring with no way to be told to wait. It means
+tearing the stream down and reopening it at a new size, on the first `process()` of a
+stream that has just started, which is a reconnect in the middle of the audible path and
+wants the same care item 20's recovery got. Worth doing deliberately rather than as a
+review fix.
+
+**Flagged rather than fixed here.** The new `pipewire-minimum` CI job — Debian 12, and
+so libpipewire 0.3.65, the oldest release the README claims — is the only build in
+`.github/workflows/build.yml` that does not pass `-DSENDSPIN_CLI_WERROR=ON`. gcc 12 has
+a `-Wrestrict` false positive on `line += " " + std::to_string(...)` in
+`src/control_common.cpp`, and it is the *only* thing standing between that leg and the
+warning line every other leg holds. One site, one rewrite; it belongs to whoever next
+touches the control protocol rather than to a PipeWire change.

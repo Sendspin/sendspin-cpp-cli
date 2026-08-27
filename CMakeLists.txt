@@ -523,6 +523,7 @@ if(SENDSPIN_CLI_BUILD_TESTS)
         tests/discovery_test.cpp
         tests/pcm_ring_test.cpp
         tests/pcm_volume_test.cpp
+        tests/pipewire_sink_test.cpp
         tests/sink_recovery_test.cpp
         tests/state_store_test.cpp
         tests/supported_formats_test.cpp

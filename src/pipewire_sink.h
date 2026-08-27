@@ -59,6 +59,39 @@ inline constexpr int PIPEWIRE_STREAM_TIMEOUT_MS = PIPEWIRE_TIMEOUT_S * 1000;
 /// the full budget anyway.
 inline constexpr int PIPEWIRE_RECOVERY_TIMEOUT_MS = 500;
 
+/// @brief Floor on the ring, as a multiple of the graph's quantum.
+///
+/// process() asks for a whole quantum at a time, so a ring no bigger than that starves on every
+/// cycle however promptly write() refills it. The same figure, for the same reason, as
+/// PortAudioSink's device-latency floor.
+inline constexpr size_t RING_QUANTUM_MULTIPLE = 3;
+
+/// @brief Absolute floor on the ring, for a stream whose quantum is not known yet.
+inline constexpr size_t MIN_RING_FRAMES = 1024;
+
+/// @brief Frames the ring holds for `buffer_ms` at `rate`, once MIN_RING_FRAMES has had its say.
+size_t pipewire_ring_frames(uint32_t rate, uint32_t buffer_ms);
+
+/// @brief What a ring of `ring_frames` is worth to a graph running `quantum`-frame cycles.
+struct PipeWireQuantumFit {
+    /// The ring cannot hold one whole quantum, so every process() short-reads and zero-fills the
+    /// remainder however promptly write() refills it. Not tight -- broken.
+    bool starves{false};
+    /// Holds a quantum but fewer than RING_QUANTUM_MULTIPLE of them, so a busy graph can outrun
+    /// the writer.
+    bool tight{false};
+    /// The --buffer-ms that would clear RING_QUANTUM_MULTIPLE quanta at this rate. Zero when
+    /// there is no quantum or rate to derive it from.
+    uint32_t recommended_buffer_ms{0};
+};
+
+/// @brief Measures the ring against the quantum the graph turned out to be running.
+///
+/// Split out and pure because this arithmetic is what decides whether a host plays or crackles,
+/// and it is worth testing without a graph to ask. `quantum` or `rate` of zero means nothing has
+/// been observed yet, and reports neither fault.
+PipeWireQuantumFit pipewire_quantum_fit(size_t ring_frames, uint32_t quantum, uint32_t rate);
+
 /// @brief Holds one pw_init()/pw_deinit() pair for as long as it lives.
 ///
 /// libpipewire reference-counts the pair, so a scoped guard around a one-off registry walk
