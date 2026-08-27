@@ -661,6 +661,12 @@ void PortAudioSink::poll(int64_t now_ms) {
     if (!this->recovery_.rescan_due(now_ms)) {
         return;
     }
+    // Reported before the work rather than after it, and always as recovered, because this
+    // backend's second attempt really is one-shot: a device-list rebuild that found nothing and
+    // one that found the device leave the same nothing left to try. Up front so none of the early
+    // returns below can drop it -- the sound-server sinks, whose reconnect *is* worth repeating,
+    // report the real outcome instead.
+    this->recovery_.rescan_done(true);
 
     const StreamFormat format = this->last_format_;
     // The stream goes first whatever happens next: Pa_Terminate() with one open is undefined,

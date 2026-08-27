@@ -144,8 +144,9 @@ public:
     /// needs: the socket is gone for a moment and comes back, so an immediate retry fails and one
     /// SINK_RESCAN_DELAY_MS later succeeds.
     ///
-    /// A daemon slower than SINK_RESCAN_DELAY_MS to come back is not chased further; see
-    /// SinkRecovery's own note on where that mapping stops fitting, which is where that lives.
+    /// Up to SINK_RESCAN_ATTEMPTS of them per configured stream, behind a delay that doubles --
+    /// so a daemon that takes most of a minute to come back is still caught, and one that takes
+    /// longer is left to the next configure(), which reconnects anyway.
     void poll(int64_t now_ms) override;
 
     /// @brief Everything this player can emit, because the graph converts.

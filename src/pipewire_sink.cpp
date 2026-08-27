@@ -567,15 +567,28 @@ void PipeWireSink::poll(int64_t now_ms) {
 
     if (!this->open_stream_(format.sample_rate, format.channels, format.bit_depth,
                             PIPEWIRE_RECOVERY_TIMEOUT_MS)) {
-        return;  // open_stream_() has already said why, once
+        // Reported as a failure, which is what buys another attempt behind a longer delay: a
+        // daemon still down now may be up in a few seconds, and that is the whole difference
+        // between this backend's second attempt and PortAudio's one-shot device rescan.
+        this->recovery_.rescan_done(false);
+        // open_stream_() has already said what went wrong, once and at ERROR; this only says what
+        // happens next -- quiet while attempts remain, because there will be several and each is
+        // a normal step of a restart, and loud once when the sink has really given up.
+        const bool retrying = this->recovery_.pending();
+        cli_log(retrying ? LogLevel::DEBUG : LogLevel::WARN, "pipewire: '%s' is not back%s",
+                this->name().c_str(),
+                retrying ? " -- trying again shortly" : " -- discarding until the next stream");
+        return;
     }
     if (this->stopping_.load()) {
         // stop() latches before it takes mutex_, so it can arrive while the reconnect above is
         // running. Hand the stream straight back rather than leave a live one for the destructor.
+        this->recovery_.rescan_done(true);  // shutting down; there is nothing left to retry for
         this->close_stream_();
         this->stop_loop_();
         return;
     }
+    this->recovery_.rescan_done(true);
     cli_log(LogLevel::INFO, "pipewire: '%s' is back after reconnecting to the graph",
             this->name().c_str());
 }

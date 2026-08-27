@@ -200,8 +200,9 @@ public:
     /// needs: the socket is gone for a moment and comes back, so an immediate retry fails and
     /// one SINK_RESCAN_DELAY_MS later succeeds.
     ///
-    /// A daemon slower than SINK_RESCAN_DELAY_MS to come back is not chased further; see
-    /// SinkRecovery's own note on where that mapping stops fitting, which is where that lives.
+    /// Up to SINK_RESCAN_ATTEMPTS of them per configured stream, behind a delay that doubles --
+    /// so a daemon that takes most of a minute to come back is still caught, and one that takes
+    /// longer is left to the next configure(), which reconnects anyway.
     void poll(int64_t now_ms) override;
 
     /// @brief Everything this player can emit, because the server converts.
@@ -241,6 +242,10 @@ private:
     /// Caller holds mutex_.
     /// @return true if a stream is running again.
     bool reopen_in_place_();
+    /// Reports a recovery attempt that failed, and says what happens next. Caller holds mutex_,
+    /// and has just made the attempt rescan_due() handed out.
+    /// @param reason What went wrong, for the log line.
+    void report_failed_recovery_(const std::string& reason);
     /// True while the context and the stream are both usable. Caller holds mutex_.
     bool stream_alive_() const;
     /// Prepares `frames` frames of `data` for the server: scaled by a ramp from `start` toward

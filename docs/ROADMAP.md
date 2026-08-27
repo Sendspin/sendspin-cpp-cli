@@ -1776,8 +1776,12 @@ the format the player is about to send audio in, and recovering to the *previous
 that audio at the wrong frame size. `stop()` zeroes it, which is what makes a write after shutdown
 attempt nothing.
 
-**Deliberately left out.** No retry loop, backoff curve or timer thread — the whole shape is two
-attempts and a stop. No re-advertising of formats mid-session: `capabilities()` is answered once
+**Deliberately left out.** No timer thread, and — as this item shipped — no retry loop or backoff
+curve either: the whole shape was two attempts and a stop. Item 20 later gave the *second* attempt
+a backoff and a bounded retry, for the backends whose version of it is a server reconnect rather
+than a device-list rebuild; PortAudio's remains the one attempt described here.
+
+No re-advertising of formats mid-session: `capabilities()` is answered once
 before `start_server()`, so a rescan does not change what the server was told, and the refusal
 path that already names the device and the format it would not take stays the mitigation, as the
 comment on `capabilities()` has said since item 3. `NullAudioSink` and `AlsaAudioSink` are
@@ -1895,16 +1899,16 @@ succeeds (`-DSENDSPIN_CLI_WITH_PULSE=OFF` forces it out):
   PulseAudio has no signed 8-bit format at all, so it goes out as `PA_SAMPLE_U8` with
   the sign bit flipped in the same pass that scales the volume. Refusing it would
   leave a stream the other backends play and this one does not.
-- Recovery reuses `SinkRecovery` unchanged, with its two attempts mapped onto what a
-  sound server actually needs: the inline one reopens the stream when the context is
+- Recovery reuses `SinkRecovery` rather than a policy of its own, with its two attempts
+  mapped onto what a sound server actually needs: the inline one reopens the stream when the context is
   still up, and the delayed one on the main loop reconnects the context — which is
   what a *restarted* daemon needs, and why `SINK_RESCAN_DELAY_MS` is the right gap
   rather than an arbitrary one.
 
-  **Its one poor fit, found by killing `pulseaudio` mid-stream rather than by
-  reasoning:** a daemon that takes longer than `SINK_RESCAN_DELAY_MS` to come back is
-  not chased again, so the sink discards until the next `configure()`. That is item 20,
-  which is where the whole of it is written down.
+  Its one poor fit — found by killing `pulseaudio` mid-stream rather than by reasoning
+  — was that the second attempt was retired as it was handed out, so a daemon slower
+  than `SINK_RESCAN_DELAY_MS` to come back was never asked again. Item 20 fixed that in
+  the same change, and is where the whole of it is written down.
 
 **The sharp edge, accepted knowingly.** `-o pulse` used to mean the ALSA plugin PCM
 and now means this backend: a live command line changing what it does on upgrade.
@@ -1983,35 +1987,47 @@ needs `-DSENDSPIN_CLI_WITH_PULSE=OFF -DSENDSPIN_CLI_WITH_PIPEWIRE=OFF` alongside
 `-DSENDSPIN_CLI_WITH_PORTAUDIO=OFF` it already passes, or a widened grep — in that
 repo, not this one.
 
-### 20. `SinkRecovery`'s second attempt should be able to fail and be retried
+### 20. `SinkRecovery`'s second attempt reports back — *shipped*
 
-Found while building items 18 and 19, by killing `pulseaudio` mid-stream: the sink is
-silent for the rest of the track. Not a defect in either sound-server backend — they
-reuse `SinkRecovery` exactly as items 3 and 14 wrote it — but a place where that policy
-was shaped by the one backend that then existed.
+Found while building items 18 and 19, by killing `pulseaudio` mid-stream rather than by
+reasoning about it: the sink went silent for the rest of the track. Not a defect in
+either sound-server backend — they reuse `SinkRecovery` exactly as items 3 and 14 wrote
+it — but a place where that policy had been shaped by the one backend that then existed.
 
-`SinkRecovery::rescan_due()` marks the second attempt spent **as it hands it out**, and
-`src/sink_recovery.h` says why: "a rescan that failed and one that worked leave nothing
-further to try either way". That is true of a PortAudio device-list rebuild, which is
-what it was written for. It is not true of a *reconnect*: a daemon still down two
-seconds after the outage may well be up two seconds later, and nothing has been learned
-that makes trying again pointless.
+`rescan_due()` used to mark the second attempt spent **as it handed it out**, and
+`src/sink_recovery.h` said why: a rescan that failed and one that worked leave nothing
+further to try either way. True of a PortAudio device-list rebuild, which is what it was
+written for. Not true of a *reconnect*: a daemon still down two seconds after the outage
+may well be up two seconds later, and nothing has been learned that makes asking again
+pointless.
 
-The fix is to make the second attempt symmetric with the first — a `rescan_done(bool)`
-beside `reopen_done(bool)`, where a failure re-arms the attempt behind a fresh
-`SINK_RESCAN_DELAY_MS` instead of retiring it. Two things it must not lose:
+**Shipped** in `src/sink_recovery.{h,cpp}`, its three callers (`src/portaudio_sink.cpp`,
+`src/pulse_sink.cpp`, `src/pipewire_sink.cpp`) and `tests/sink_recovery_test.cpp`:
 
-- **PortAudio's behaviour must not change.** Its rescan really is one-shot, and it is
-  the expensive one — a `Pa_Terminate()`/`Pa_Initialize()` cycle on the main loop. It
-  should report `rescan_done(true)` whatever the outcome, which is what "there is
-  nothing else to try" means in its case.
-- **The retry must stay bounded.** The `SINK_RESCAN_DELAY_MS` floor already stops a
-  half-present device from being hammered, but an unbounded retry contradicts the
-  promise `SinkRecovery`'s own docstring makes — "and then silence until the next
-  stream". Either a cap on attempts or an explicit rewrite of that promise, not a
-  silent drift away from it.
+- **`rescan_done(bool)`, symmetric with `reopen_done(bool)`.** A failure re-arms the
+  attempt; a success retires it. Which of the two an attempt is worth is now the
+  backend's to say rather than a property baked into the helper.
+- **PortAudio's behaviour is bit-identical.** `PortAudioSink::poll()` reports
+  `rescan_done(true)` whatever the outcome — its `Pa_Terminate()`/`Pa_Initialize()`
+  cycle really is one-shot — and reports it *before* the work, so none of that
+  function's early returns can drop it. A caller that reports nothing at all still gets
+  exactly one attempt, so the change could not silently turn some future backend into a
+  retry loop; `ACallerThatReportsNothingGetsExactlyOneRescan` covers that arm on its own.
+- **Bounded twice over, in the code rather than in a promise.** `SINK_RESCAN_ATTEMPTS`
+  (5) caps the count, and the delay doubles from `SINK_RESCAN_DELAY_MS` to a ceiling of
+  `SINK_RESCAN_MAX_DELAY_MS` — 2 + 4 + 8 + 16 + 30 seconds, a minute of cover. The
+  doubling is the half that matters to the main loop: a reconnect that waits on an
+  unresponsive socket costs the same every time, so the only way to stop paying it at a
+  fixed duty cycle is to ask less often.
+- **One loud line at the end, and quiet ones before it.** Each failed attempt is a
+  normal step of a restart and logs at `debug`; the last one, where the sink has really
+  given up until the next stream, logs at `warn`. `pending()` is what tells the two
+  apart, so the sinks need no counter of their own.
 
-Item 14's hardware pass is the natural place to exercise it: the two failures are the
-same shape, and a USB DAC replug and a `systemctl --user restart pipewire` are the two
-ways to produce one on purpose.
+Measured, not reasoned: killing the sound server mid-stream and restarting it a few
+seconds later now gets audio back without waiting for the next track.
+
+Item 14's hardware pass is still the place to exercise the PortAudio half — a USB DAC
+replug and a `systemctl --user restart pipewire` are the two ways to produce one of
+these on purpose, and only the second has been run.
 

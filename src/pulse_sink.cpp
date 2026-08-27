@@ -643,30 +643,37 @@ void PulseAudioSink::poll(int64_t now_ms) {
     this->close_stream_();
 
     // The expensive half of recovery, on the main loop for the reason PortAudioSink's device
-    // rescan is: a reconnect waits on the server, and up to PULSE_TIMEOUT_MS of that on the sync
-    // task's thread would come out of a write()'s own budget. What is delayed here is the dispatch
-    // of messages already received, which the library gives seconds of slack.
+    // rescan is: a reconnect waits on the server, and paying that on the sync task's thread would
+    // come out of a write()'s own budget. What is delayed here is the dispatch of messages already
+    // received, which the library gives seconds of slack -- and it is bounded by
+    // PULSE_RECOVERY_TIMEOUT_MS rather than by the startup budget, because nobody is watching a
+    // terminal for this one.
     //
-    // It is also the attempt that a *restarted* daemon needs, which is what makes SINK_RESCAN_
-    // DELAY_MS the right gap rather than an arbitrary one: the socket is gone for a moment and
-    // comes back, so an immediate retry fails where one two seconds later succeeds.
+    // It is also the attempt a *restarted* daemon needs, which is what SINK_RESCAN_DELAY_MS and
+    // its doubling are shaped around: the socket is gone for a moment and comes back, so an
+    // immediate retry fails where one a few seconds later succeeds. Reporting the outcome to
+    // rescan_done() is what buys those further tries -- see SinkRecovery, where a device-list
+    // rebuild deliberately gets only the one.
     std::string error;
     if (!this->conn_.connect(error, PULSE_RECOVERY_TIMEOUT_MS)) {
-        cli_log(LogLevel::WARN,
-                "pulse: '%s' is still gone -- discarding until the next stream (%s)",
-                this->name().c_str(), error.c_str());
+        this->report_failed_recovery_(error);
         return;
     }
     if (!this->open_stream_(format.sample_rate, format.channels, format.bit_depth,
                             PULSE_RECOVERY_TIMEOUT_MS)) {
-        return;  // open_stream_() has already said why, once
+        // open_stream_() has already said what went wrong, once and at ERROR; this only has to
+        // say what happens next.
+        this->report_failed_recovery_("the server would not take the stream");
+        return;
     }
     if (this->stopping_.load()) {
         // stop() latches before it takes mutex_, so it can arrive while the reconnect above is
         // running. Hand the stream straight back rather than leave a live one for the destructor.
+        this->recovery_.rescan_done(true);  // shutting down; there is nothing left to retry for
         this->close_stream_();
         return;
     }
+    this->recovery_.rescan_done(true);
     cli_log(LogLevel::INFO, "pulse: '%s' is back after reconnecting to %s", this->name().c_str(),
             this->conn_.server_name().c_str());
 }
@@ -913,6 +920,20 @@ bool PulseAudioSink::reopen_in_place_() {
     cli_log(LogLevel::INFO, "pulse: '%s' recovered without waiting for the next stream",
             this->name().c_str());
     return true;
+}
+
+void PulseAudioSink::report_failed_recovery_(const std::string& reason) {
+    // Reported as a failure, which is what buys another attempt behind a longer delay: a server
+    // still down now may be up in a few seconds, and that is the whole difference between this
+    // backend's second attempt and PortAudio's one-shot device rescan.
+    this->recovery_.rescan_done(false);
+    // Quiet while there is another attempt coming, because there will be several and each is a
+    // normal step of a restart; loud once, when the budget is gone and the sink really has given
+    // up until the next stream. pending() is the only thing that knows which this was.
+    const bool retrying = this->recovery_.pending();
+    cli_log(retrying ? LogLevel::DEBUG : LogLevel::WARN, "pulse: '%s' is not back: %s%s",
+            this->name().c_str(), reason.c_str(),
+            retrying ? " -- trying again shortly" : " -- discarding until the next stream");
 }
 
 bool PulseAudioSink::stream_alive_() const {
