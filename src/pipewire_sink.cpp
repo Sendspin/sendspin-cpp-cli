@@ -156,36 +156,30 @@ void core_error_cb(void* data, uint32_t id, int /*seq*/, int res, const char* me
     }
 }
 
-// Designated initialisers rather than positional ones, because both of these structs are long
-// and mostly nulls: a field inserted upstream would silently shift a positional table's callbacks
-// onto the wrong slots, and the compiler would only notice where the signatures happened to differ.
-constexpr pw_registry_events REGISTRY_EVENTS = {
-    .version = PW_VERSION_REGISTRY_EVENTS,
-    .global = registry_global_cb,
-    .global_remove = nullptr,
-};
+// Zeroed, then given only the callbacks this backend wants. These structs grow across releases,
+// and a member list is wrong on one side of that or the other: pw_core_events gained .bound_props
+// with PW_VERSION_CORE_EVENTS 1, after this project's 0.3.64 floor -- bookworm ships 0.3.65, where
+// it still ends at remove_mem. Naming every member is a compile error there; naming only some is
+// -Wmissing-field-initializers on a 1.x header, which SENDSPIN_CLI_WERROR makes fatal on every CI
+// leg but pipewire-minimum. `{}` is right on both, and stays right when the next member lands.
+//
+// Positional initialisers would be worse than either: a member inserted upstream would silently
+// shift these callbacks onto the wrong slots, and the compiler would only notice where the
+// signatures happened to differ.
+constexpr pw_registry_events REGISTRY_EVENTS = [] {
+    pw_registry_events events{};
+    events.version = PW_VERSION_REGISTRY_EVENTS;
+    events.global = registry_global_cb;
+    return events;
+}();
 
-constexpr pw_core_events CORE_EVENTS = {
-    .version = PW_VERSION_CORE_EVENTS,
-    .info = nullptr,
-    .done = core_done_cb,
-    .ping = nullptr,
-    .error = core_error_cb,
-    .remove_id = nullptr,
-    .bound_id = nullptr,
-    .add_mem = nullptr,
-    .remove_mem = nullptr,
-// .bound_props arrived with PW_VERSION_CORE_EVENTS 1, which is after this project's 0.3.64 floor
-// (bookworm ships 0.3.65, where pw_core_events still ends at remove_mem). Neither half of the
-// obvious answer works on its own: naming it unconditionally is a compile error on an 0.3.6x
-// header, and omitting it unconditionally is -Wmissing-field-initializers on a 1.x one, which
-// SENDSPIN_CLI_WERROR makes fatal on every CI leg but pipewire-minimum. The version macro is the
-// only thing true on both, so it is what the list is cut to. A future member gets the same
-// treatment, and the same warning is what will point it out.
-#if PW_VERSION_CORE_EVENTS >= 1
-    .bound_props = nullptr,
-#endif
-};
+constexpr pw_core_events CORE_EVENTS = [] {
+    pw_core_events events{};
+    events.version = PW_VERSION_CORE_EVENTS;
+    events.done = core_done_cb;
+    events.error = core_error_cb;
+    return events;
+}();
 
 /// Connects to the daemon, walks its registry once, and reports every audio sink node.
 ///
@@ -849,21 +843,15 @@ bool PipeWireSink::open_stream_(uint32_t sample_rate, uint8_t channels,
     params[0] = spa_format_audio_raw_build(&builder, SPA_PARAM_EnumFormat, &info);
 
     // Function-local so the two callbacks stay private to the class, and static because
-    // pw_stream_new_simple() keeps the pointer for the stream's whole life.
-    static const pw_stream_events events = {
-        .version = PW_VERSION_STREAM_EVENTS,
-        .destroy = nullptr,
-        .state_changed = &PipeWireSink::stream_state_cb,
-        .control_info = nullptr,
-        .io_changed = nullptr,
-        .param_changed = nullptr,
-        .add_buffer = nullptr,
-        .remove_buffer = nullptr,
-        .process = &PipeWireSink::stream_process_cb,
-        .drained = nullptr,
-        .command = nullptr,
-        .trigger_done = nullptr,
-    };
+    // pw_stream_new_simple() keeps the pointer for the stream's whole life. Zeroed and then
+    // filled in, for the reason CORE_EVENTS gives.
+    static constexpr pw_stream_events events = [] {
+        pw_stream_events table{};
+        table.version = PW_VERSION_STREAM_EVENTS;
+        table.state_changed = &PipeWireSink::stream_state_cb;
+        table.process = &PipeWireSink::stream_process_cb;
+        return table;
+    }();
 
     {
         const LoopLock lock(this->loop_);
