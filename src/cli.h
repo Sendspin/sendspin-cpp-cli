@@ -22,6 +22,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -119,6 +120,7 @@ enum class Opt : unsigned {
     ClientId,       ///< --id
     Manufacturer,   ///< --manufacturer
     ProductName,    ///< --product-name
+    AudioFormat,    ///< --audio-format
 };
 
 /// @brief Everything the flag surface configures.
@@ -206,6 +208,18 @@ struct Options {
     /// the device refused still switches the amplifier -- audio is arriving either way.
     std::string hook_start;
     std::string hook_stop;
+
+    /// --audio-format <codec:rate:depth:channels>: pin a preferred format, e.g.
+    /// `flac:48000:24:2` -- the way to hold a fussy DAC at the one shape it is happy in.
+    ///
+    /// A *reorder*, not a narrowing: the pinned entry moves to the front of the advertised
+    /// list, which is what "preferred" means on the wire, and everything the device takes is
+    /// still offered behind it. Parsing settles the shape here; whether the device really
+    /// takes it is answered at startup, where a pin the derived advertisement does not
+    /// contain is a hard refusal to start -- playing something else instead is the failure
+    /// this flag exists to prevent. Grammar and behaviour match the Python CLI's flag of the
+    /// same name, extended with `opus`.
+    std::optional<sendspin::AudioSupportedFormatObject> audio_format;
 
     /// --state-dir <dir>: where the daemon keeps what it remembers across restarts.
     ///

@@ -221,6 +221,38 @@ TEST(ParseOptions, IdentityFlagsRejectEmptyValues) {
 }
 
 // ---------------------------------------------------------------------------
+// --audio-format
+// ---------------------------------------------------------------------------
+
+TEST(ParseOptions, AudioFormatIsParsedAtTheFlag) {
+    Parse parse({"--audio-format", "flac:48000:24:2"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    ASSERT_TRUE(parse.options().audio_format.has_value());
+    EXPECT_EQ(parse.options().audio_format->codec, sendspin::SendspinCodecFormat::FLAC);
+    EXPECT_EQ(parse.options().audio_format->sample_rate, 48000U);
+    EXPECT_EQ(parse.options().audio_format->bit_depth, 24);
+    EXPECT_EQ(parse.options().audio_format->channels, 2);
+}
+
+TEST(ParseOptions, AudioFormatDefaultsToNoPin) {
+    Parse parse({});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_FALSE(parse.options().audio_format.has_value());
+}
+
+TEST(ParseOptions, ABadAudioFormatIsRefusedWithTheShapeToCopy) {
+    Parse parse({"--audio-format", "flac:48000"});
+
+    EXPECT_FALSE(parse.ok());
+    EXPECT_NE(parse.diagnostics().find("error: invalid --audio-format"), std::string::npos)
+        << parse.diagnostics();
+    EXPECT_NE(parse.diagnostics().find("codec:rate:depth:channels"), std::string::npos)
+        << parse.diagnostics();
+}
+
+// ---------------------------------------------------------------------------
 // --port
 // ---------------------------------------------------------------------------
 

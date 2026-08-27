@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -141,7 +142,111 @@ const char* codec_name(SendspinCodecFormat codec) {
     return "unsupported";
 }
 
+/// Reads one numeric field of a format spec: digits only, non-empty, within `max`.
+///
+/// Digits-only for the reason cli.cpp's parse_port() gives: strtoul would take " 48000",
+/// "+48000" and read "-1" as a huge unsigned, and a spec is four plain numbers or a typo.
+bool parse_format_field(const std::string& text, unsigned long max, unsigned long& value) {
+    if (text.empty() || text.find_first_not_of("0123456789") != std::string::npos) {
+        return false;
+    }
+    value = std::strtoul(text.c_str(), nullptr, 10);
+    return value > 0 && value <= max;
+}
+
+/// Whether two advertised entries name the same format. The struct has no operator== of its
+/// own, and this is the one place that wants one.
+bool same_format(const AudioSupportedFormatObject& left, const AudioSupportedFormatObject& right) {
+    return left.codec == right.codec && left.channels == right.channels &&
+           left.sample_rate == right.sample_rate && left.bit_depth == right.bit_depth;
+}
+
 }  // namespace
+
+bool parse_format_spec(const std::string& spec, AudioSupportedFormatObject& out,
+                       std::string& error) {
+    // Split on every colon and then count, so a fifth field is the same shape error a
+    // missing one is rather than being silently dropped.
+    std::vector<std::string> parts;
+    size_t begin = 0;
+    while (true) {
+        const size_t colon = spec.find(':', begin);
+        if (colon == std::string::npos) {
+            parts.push_back(spec.substr(begin));
+            break;
+        }
+        parts.push_back(spec.substr(begin, colon - begin));
+        begin = colon + 1;
+    }
+    if (parts.size() != 4) {
+        error = "expected codec:rate:depth:channels, e.g. flac:48000:24:2";
+        return false;
+    }
+
+    if (parts[0] == "flac") {
+        out.codec = SendspinCodecFormat::FLAC;
+    } else if (parts[0] == "opus") {
+        out.codec = SendspinCodecFormat::OPUS;
+    } else if (parts[0] == "pcm") {
+        out.codec = SendspinCodecFormat::PCM;
+    } else {
+        error = "unknown codec '" + parts[0] + "' -- this player plays flac, opus and pcm";
+        return false;
+    }
+
+    unsigned long rate = 0;
+    if (!parse_format_field(parts[1], 999999UL, rate)) {
+        error = "'" + parts[1] + "' is not a sample rate in Hz";
+        return false;
+    }
+    unsigned long depth = 0;
+    if (!parse_format_field(parts[2], 32UL, depth) ||
+        (depth != 8 && depth != 16 && depth != 24 && depth != 32)) {
+        // Checked here rather than left to the device match: no sink emits any other depth,
+        // so "the device does not advertise it" would blame the device for a typo.
+        error = "'" + parts[2] + "' is not a bit depth this player can emit (8, 16, 24 or 32)";
+        return false;
+    }
+    unsigned long channels = 0;
+    if (!parse_format_field(parts[3], 255UL, channels)) {
+        error = "'" + parts[3] + "' is not a channel count";
+        return false;
+    }
+
+    // Checked here for the bit depth's reason, and with more force: an Opus entry at any other
+    // shape is not merely unadvertised, it is unreachable. supported_formats() emits Opus at
+    // OPUS_RATE / OPUS_BIT_DEPTH and no wider than OPUS_MAX_CHANNELS because that is all the
+    // decoder can produce, so opus:44100:24:2 would parse, miss every entry in the derived list,
+    // and refuse to start, blaming the device for a format no device could have been offered.
+    if (out.codec == SendspinCodecFormat::OPUS &&
+        (rate != OPUS_RATE || depth != OPUS_BIT_DEPTH || channels > OPUS_MAX_CHANNELS)) {
+        error = "opus is decoded at " + std::to_string(OPUS_RATE) + " Hz, " +
+                std::to_string(static_cast<unsigned>(OPUS_BIT_DEPTH)) + "-bit, at most " +
+                std::to_string(static_cast<unsigned>(OPUS_MAX_CHANNELS)) +
+                " channels -- it is advertised in no other shape";
+        return false;
+    }
+
+    out.sample_rate = static_cast<uint32_t>(rate);
+    out.bit_depth = static_cast<uint8_t>(depth);
+    out.channels = static_cast<uint8_t>(channels);
+    return true;
+}
+
+bool pin_preferred_format(std::vector<AudioSupportedFormatObject>& formats,
+                          const AudioSupportedFormatObject& preferred) {
+    for (size_t index = 0; index < formats.size(); ++index) {
+        if (!same_format(formats[index], preferred)) {
+            continue;
+        }
+        // Rotate rather than swap, so everything else keeps its ranked order and only the
+        // pinned entry moves.
+        std::rotate(formats.begin(), formats.begin() + static_cast<ptrdiff_t>(index),
+                    formats.begin() + static_cast<ptrdiff_t>(index) + 1);
+        return true;
+    }
+    return false;
+}
 
 std::vector<AudioSupportedFormatObject> supported_formats(const SinkCapabilities& caps) {
     std::vector<AudioSupportedFormatObject> formats;

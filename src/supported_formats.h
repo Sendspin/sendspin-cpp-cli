@@ -57,6 +57,40 @@ namespace sendspin_cli {
 /// the layer that can name which device that was.
 std::vector<sendspin::AudioSupportedFormatObject> supported_formats(const SinkCapabilities& caps);
 
+/// @brief Reads an --audio-format value: `codec:rate:depth:channels`, e.g. `flac:48000:24:2`.
+///
+/// The grammar is the Python CLI's, extended with `opus` because this player decodes it.
+/// Strictly numeric fields for the reason cli.cpp's parse_port() gives, and the bit depth is
+/// checked against the four the sinks can emit -- any other depth could never match an
+/// advertised entry, so refusing it here names the real problem instead of "the device does
+/// not advertise it". An `opus` spec is held to 48 kHz / 16-bit / at most two channels for the
+/// same reason and a stronger one: that is the only shape supported_formats() ever emits it in,
+/// whatever the device would take, so any other is unreachable rather than merely unadvertised.
+///
+/// Only the *shape* is settled here. Whether the device actually takes the format is a
+/// property of the host, answered at startup by pin_preferred_format() against the derived
+/// advertisement -- the split that lets a config file be validated without opening a device.
+/// @param error Set to the reason when false comes back, without the flag's name -- the
+/// caller prefixes it, because only it knows what the value was typed as.
+/// @return true when `spec` parsed into `out`.
+bool parse_format_spec(const std::string& spec, sendspin::AudioSupportedFormatObject& out,
+                       std::string& error);
+
+/// @brief Moves `preferred` to the front of `formats`, or reports that it is not there.
+///
+/// Mirrors the Python CLI's `--audio-format`: the pin *reorders* the advertisement rather
+/// than narrowing it, so a server that cannot encode the preferred entry still has the rest
+/// of the list to fall back on. The protocol has `supported_formats` in priority order, so
+/// the front is the whole of what "preferred" means on the wire.
+///
+/// Absence is the caller's to act on, and the intended action is to refuse to start: an
+/// operator who pinned a format their device cannot take asked for something this player
+/// cannot do, and playing something else instead is the failure --audio-format exists to
+/// prevent.
+/// @return true if `preferred` was found (and is now first).
+bool pin_preferred_format(std::vector<sendspin::AudioSupportedFormatObject>& formats,
+                          const sendspin::AudioSupportedFormatObject& preferred);
+
 /// @brief One-line digest of an advertisement, for the startup log.
 ///
 /// Grouped per codec -- `FLAC 2ch 16/24-bit @ 48000/44100 Hz; OPUS 2ch 16-bit @ 48000 Hz` --
