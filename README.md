@@ -41,30 +41,44 @@ fetches its own dependencies (ArduinoJson, micro-flac, micro-opus, IXWebSocket) 
 turn.
 
 **The audio backends and mDNS are all optional and auto-detected.** Whichever of
-libasound and libportaudio is present gets compiled in; where neither is, the build
-falls back to the device-less sinks, so a sound-card-less container still builds and
-runs. mDNS comes from `dns_sd.h` — Bonjour on macOS, where it needs nothing
-installed, and `libavahi-compat-libdnssd` on Linux. The configure output says what
-you got:
+libasound, libportaudio, libpulse and libpipewire is present gets compiled in;
+where none is, the build falls back to the device-less sinks, so a
+sound-card-less container still builds and runs. mDNS comes from `dns_sd.h` —
+Bonjour on macOS, where it needs nothing installed, and
+`libavahi-compat-libdnssd` on Linux. The configure output says what you got:
 
 ```
--- sendspin-cli audio backends: null, stdout, alsa, portaudio
+-- sendspin-cli audio backends: null, stdout, alsa, portaudio, pulse, pipewire
 -- sendspin-cli mDNS: dns_sd (/usr/lib/x86_64-linux-gnu/libdns_sd.so)
 ```
 
 ```bash
-sudo dnf install pkgconf alsa-lib-devel portaudio-devel avahi-compat-libdns_sd-devel  # Fedora / RHEL
-sudo apt install pkg-config libasound2-dev portaudio19-dev libavahi-compat-libdnssd-dev  # Debian / Ubuntu
+sudo dnf install pkgconf alsa-lib-devel portaudio-devel pulseaudio-libs-devel pipewire-devel avahi-compat-libdns_sd-devel  # Fedora / RHEL
+sudo apt install pkg-config libasound2-dev portaudio19-dev libpulse-dev libpipewire-0.3-dev libavahi-compat-libdnssd-dev  # Debian / Ubuntu
 brew install portaudio pkgconf                    # macOS (no ALSA, and Bonjour is built in)
 ```
 
-ALSA is found with CMake's own `find_package(ALSA)`; PortAudio ships no CMake
-config module, so it is found with `pkg-config` (`portaudio-2.0`) — on macOS that
-is also the only thing that knows the CoreAudio frameworks have to be linked too.
-A host without `pkg-config` gets its own configure message saying so.
+ALSA is found with CMake's own `find_package(ALSA)`; the other three ship no CMake
+config module, so they are found with `pkg-config` (`portaudio-2.0`, `libpulse`,
+`libpipewire-0.3` ≥ 0.3.64) — on macOS that is also the only thing that knows the
+CoreAudio frameworks have to be linked too. A host without `pkg-config` gets its
+own configure message saying so.
 
-Pass `-DSENDSPIN_CLI_WITH_ALSA=OFF`, `-DSENDSPIN_CLI_WITH_PORTAUDIO=OFF` or
+The PipeWire minimum is a real one rather than caution: `PW_KEY_TARGET_OBJECT`,
+which is how `-o pipewire:<node>` names a node, arrived in 0.3.64, and an older
+libpipewire would build and then quietly ignore the node.
+
+Pass `-DSENDSPIN_CLI_WITH_ALSA=OFF`, `-DSENDSPIN_CLI_WITH_PORTAUDIO=OFF`,
+`-DSENDSPIN_CLI_WITH_PULSE=OFF`, `-DSENDSPIN_CLI_WITH_PIPEWIRE=OFF` or
 `-DSENDSPIN_CLI_WITH_MDNS=OFF` to leave one out even where its library is available.
+On a build that also has ALSA, dropping the two sound-server backends costs
+nothing but the extras below: a PulseAudio or PipeWire host stays reachable
+through ALSA's plugin PCMs as `-o alsa:pulse` and `-o alsa:pipewire`. Where the
+ALSA backend is absent too — it is Linux-only, and `-DSENDSPIN_CLI_WITH_ALSA=OFF`
+turns it off anywhere — those two *are* the only route to a sound server, and
+dropping them leaves the build with no audio path but `null`. That is why the
+configure summary only offers the `alsa:` way back where there is an ALSA backend
+to serve it.
 
 `-DSENDSPIN_CLI_WERROR=ON` makes warnings fatal, for sendspin-cli's own three
 targets and nothing else — the `sendspin` and GoogleTest trees fetched at
@@ -175,6 +189,12 @@ default that works from your shell usually fails under `systemctl` — a device 
 not open exits 1, and `Restart=on-failure` then retries it every five seconds. Run
 `sendspin-cli -l`, pick the card, and put `output = hw:1,0` (or whatever it names) in
 the config file below.
+
+`-o pulse` and `-o pipewire` are no way round that: a per-user sound server puts its
+socket in that user's `$XDG_RUNTIME_DIR`, which this unit's own account cannot reach —
+`ProtectHome=yes` aside, it is a different user. They fail at startup rather than
+silently, naming the server they could not reach. Point `PULSE_SERVER` at a socket the
+service account can open, run the server in system mode, or name the card directly.
 
 **Configure it in `/etc/sendspin-cli.conf`**, not by editing the unit — every config
 key is a long flag name, so there is nothing the `ExecStart` line can say that the
@@ -467,17 +487,19 @@ own line is its *default*; the rates under it are what it will take.
 `-o` reads its argument in three steps, in this order:
 
 1. a backend name on its own — `null` discards audio, `stdout` (or `-`) writes raw
-   interleaved PCM to standard output, and `portaudio` follows whatever this host's
-   default output currently is. These mean the same thing on every build, even
-   where ALSA ships a PCM of the same name;
+   interleaved PCM to standard output, `portaudio` follows whatever this host's
+   default output currently is, `pulse` the PulseAudio server's own default sink,
+   and `pipewire` wherever the PipeWire graph routes a playback stream. These mean
+   the same thing on every build that has them, even where ALSA ships a PCM of the
+   same name;
 2. `<backend>:<device>`, split on the **first** colon, where the backend is one of
-   the names the build reports (`null, stdout, alsa, portaudio`). The split is on
-   the first colon because ALSA device names carry their own, so `-o alsa:hw:2,0`
-   is the `alsa` backend playing `hw:2,0`;
+   the names the build reports (`null, stdout, alsa, portaudio, pulse, pipewire`).
+   The split is on the first colon because ALSA device names carry their own, so
+   `-o alsa:hw:2,0` is the `alsa` backend playing `hw:2,0`;
 3. anything else is an ALSA PCM name, which is squeezelite's model — so `-o hw:2,0`
    and `-o default` keep working with no prefix at all. This step is deliberately
-   ALSA-only: PortAudio *does* enumerate its devices, so letting a bare name reach
-   one would make the same command line mean different things per host.
+   ALSA-only: the other backends *do* enumerate their devices, so letting a bare
+   name reach one would make the same command line mean different things per host.
 
 ```bash
 ./build/sendspin-cli -l                 # what this host can play through
@@ -488,6 +510,11 @@ own line is its *default*; the rates under it are what it will take.
 ./build/sendspin-cli -o portaudio       # this host's default output (what macOS wants)
 ./build/sendspin-cli -o portaudio:2     # a PortAudio device by index, as -l prints it
 ./build/sendspin-cli -o "portaudio:MacBook Pro Speakers"   # ...or by name
+./build/sendspin-cli -o pulse           # the PulseAudio server's default sink
+./build/sendspin-cli -o pulse:alsa_output.pci-0000_00_1f.3.analog-stereo   # a named sink
+./build/sendspin-cli -o pipewire        # let the PipeWire graph route it
+./build/sendspin-cli -o pipewire:alsa_output.usb-Topping_D10s              # a named node
+./build/sendspin-cli -o alsa:pulse      # the same server through ALSA's plugin PCM
 ./build/sendspin-cli -o null            # no sound card needed at all
 ```
 
@@ -497,17 +524,70 @@ API, so an index shifts as devices come and go. A name matching more than one
 device is refused, naming the candidates, rather than guessed at — two host APIs
 can offer the same card under the same name.
 
-The default `-o` is `default` where the ALSA backend is present, `portaudio` where
-only that one is, and `null` where neither is. ALSA wins over PortAudio wherever
-both are built, because on Linux PortAudio is itself a layer over ALSA and going
-direct is one layer fewer.
+A PulseAudio sink or a PipeWire node is named exactly as `-l` prints it, and the
+name is passed to the server unchanged — so it is the *server* that resolves it, at
+every stream, and a sink that appears after startup is picked up by the next track
+without a restart.
 
-Volume is applied in software on both backends, sharing one Q32 fixed-point
-implementation, so a stream sounds the same either way — and works the same
-through PipeWire's ALSA plugin as through bare hardware. The ALSA hardware mixer
-is a follow-up. The one audible difference: PortAudio scales in its audio
-callback, so a volume change also reaches audio already buffered, where ALSA
-scales on the way in and so only affects what has not been written yet.
+#### `-o pulse` and `-o pipewire` changed meaning in this release
+
+Both are also the names of real ALSA plugin PCMs, on exactly the hosts these
+backends target. Before the native backends existed, `-o pulse` fell through step 3
+and opened `libasound2-plugins`' PulseAudio PCM; now step 1 claims the name and it
+reaches the native backend instead.
+
+That is deliberate — on those hosts the native backend is the better answer, for
+the reasons below — but it is a working command line changing what it does on
+upgrade, so:
+
+- **`-o alsa:pulse` and `-o alsa:pipewire` are the way back**, unambiguously, and
+  they work on every build with the ALSA backend, native backends or not;
+- `-l` leaves `pulse` and `pipewire` out of its ALSA PCM list on a build that
+  shadows them, because listing them would name devices `-o` can no longer reach —
+  and says so, with the `alsa:` form, above the list;
+- a build *without* the native backends answers `-o pulse:<sink>` by naming both
+  `-DSENDSPIN_CLI_WITH_PULSE` and the `alsa:pulse` route, rather than sending you
+  off to rebuild for a path that already works.
+
+What the native backends buy over the plugin PCM, which is why the trade is worth
+making:
+
+- **The sinks and nodes are enumerable.** Through the plugin there is one ALSA
+  hint and no more, so a sink is chosen with `PULSE_SINK` or `~/.asoundrc` rather
+  than with `-o`.
+- **Honest sync feedback.** The ALSA backend derives its playout timing from
+  `snd_pcm_delay()`, which through the plugin reports the plugin's own buffering
+  rather than the server's. `pa_stream_get_latency()` and PipeWire's `pw_time`
+  answer for the real path — and this is a *synchronised* multi-room player, so
+  that is not cosmetic.
+- **A named stream.** The host's mixer shows `sendspin-cli` and can route it
+  per-application, where every plugin stream is just "ALSA plug-in".
+
+`-o pipewire` is a native backend rather than a second way to spell `-o pulse`
+because only a native client can name a *node*: `pipewire-pulse` presents sinks,
+which is a compatibility view of the graph rather than the graph. It reaches no
+host libpulse cannot — what it buys is on the far side of the socket.
+
+The default `-o` is unchanged on every host that had one: `default` where the ALSA
+backend is present, then `portaudio`, then `pulse`, then `pipewire`, and `null`
+where none is. ALSA wins wherever it is built, because on Linux everything else is
+a layer over it or beside it and going direct is one layer fewer — and `default`
+already reaches whichever sound server the host runs.
+
+Volume is applied in software on every backend, sharing one Q32 fixed-point
+implementation, so a stream sounds the same whichever plays it — and works the same
+through PipeWire's ALSA plugin as through bare hardware. It is deliberately *not*
+handed to PulseAudio or PipeWire as a stream volume: the curve below is the spec's
+rather than either server's, stacking a server gain on the software one would square
+the taper, and a gain the host's mixer could move behind our back would leave the
+player reporting a volume the speaker is not at — which group volume is derived
+from. The ALSA hardware mixer is a follow-up, for the same one-path-or-the-other
+reason.
+
+The one audible difference between backends: PortAudio scales in its audio
+callback, so a volume change also reaches audio already buffered, where ALSA,
+PulseAudio and PipeWire scale on the way in and so only affect what has not been
+handed over yet.
 
 The curve is the one the spec names, `amplitude = (volume / 100)^1.5`, because a
 Sendspin volume is **perceived loudness** rather than amplitude — volume 50 is
@@ -531,9 +611,12 @@ volume without applying it, so there is nothing there to ramp.
 `--buffer-ms <ms>` (10–2000, default 100) is how much audio the output backend
 keeps queued — one figure for every backend rather than squeezelite's ALSA-only
 `-a`, whose `<b>:<p>:<f>:<m>` grammar would mean something different per backend
-here. ALSA divides it into five periods; PortAudio makes it the ring size, where
-a figure smaller than one device buffer is raised to the floor and says so at
-`debug`. A device-less sink (`null`, `stdout`) has nothing to size and ignores it.
+here. ALSA divides it into five periods; PortAudio and PipeWire make it the ring
+size, where a figure smaller than one device buffer or graph quantum is raised to
+the floor and says so at `debug`; PulseAudio makes it the server's own queue
+(`tlength`), which is the only buffer in that path and exactly what its latency
+query answers about. A device-less sink (`null`, `stdout`) has nothing to size and
+ignores it.
 
 The formats advertised to the server are **derived from the device**, not fixed:
 `sendspin-cli` probes what `-o` selected — the same probe `-l` prints — and crosses
@@ -548,6 +631,10 @@ Two limits worth knowing, since both make that list a snapshot:
   advertisement describes whichever device was default when the player started.
 - ALSA's `default` is usually PipeWire's plugin, so the probe describes what the
   *plugin* accepts, not the card behind it.
+- `-o pulse` and `-o pipewire` advertise everything `sendspin-cli` can emit, and
+  that is the honest answer rather than a shortcut: both servers resample and
+  reformat into whatever the sink is running at, so what a sink *accepts* says
+  nothing about the hardware behind it.
 
 Either way, a format the device then refuses is reported loudly — naming the
 device, the format, and the fact that the stream's audio is being discarded —

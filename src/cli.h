@@ -50,10 +50,19 @@ inline constexpr const char* DISCOVERY_PREFIX = "mdns:";
 /// direct is one layer fewer. `portaudio` on its own follows the host's default output, which
 /// is what makes a bare run play on macOS. A build with neither backend has no device to fall
 /// back to, so it defaults to discarding.
+///
+/// The two sound-server backends sit *below* both, so adding them changes what no existing host
+/// resolves to: anywhere ALSA is built, `default` already reaches the same server through its
+/// plugin PCM, and anywhere PortAudio is, it already follows the host's output. They are the
+/// default only on a build that has neither -- where the alternative is `null`.
 #ifdef SENDSPIN_CLI_HAVE_ALSA
 inline constexpr const char* DEFAULT_OUTPUT_DEVICE = "default";
 #elif defined(SENDSPIN_CLI_HAVE_PORTAUDIO)
 inline constexpr const char* DEFAULT_OUTPUT_DEVICE = "portaudio";
+#elif defined(SENDSPIN_CLI_HAVE_PULSE)
+inline constexpr const char* DEFAULT_OUTPUT_DEVICE = "pulse";
+#elif defined(SENDSPIN_CLI_HAVE_PIPEWIRE)
+inline constexpr const char* DEFAULT_OUTPUT_DEVICE = "pipewire";
 #else
 inline constexpr const char* DEFAULT_OUTPUT_DEVICE = "null";
 #endif
@@ -61,8 +70,11 @@ inline constexpr const char* DEFAULT_OUTPUT_DEVICE = "null";
 /// @brief How much audio each backend keeps buffered by default, in milliseconds.
 ///
 /// Small enough that a device's own playout timing stays a useful sync signal, large enough
-/// to ride out scheduling jitter. One figure for every backend: ALSA divides it into periods,
-/// PortAudio makes it the ring, and a sink with no device ignores it.
+/// to ride out scheduling jitter. One figure for every backend, though each spends it its own
+/// way: ALSA divides it into periods, PortAudio and PipeWire make it the ring (floored at the
+/// device buffer and the graph quantum respectively), PulseAudio hands it to the server as
+/// `pa_buffer_attr::tlength` -- a request the server may come back under -- and a sink with no
+/// device ignores it.
 inline constexpr uint32_t DEFAULT_BUFFER_MS = 100;
 
 /// @brief What --buffer-ms will accept, either side inclusive.

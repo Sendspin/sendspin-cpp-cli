@@ -95,9 +95,26 @@ option(SENDSPIN_CLI_WITH_ALSA "Build the ALSA output backend if libasound is ava
 option(SENDSPIN_CLI_WITH_PORTAUDIO
     "Build the PortAudio output backend if libportaudio is available" ON)
 
+# The two native sound-server backends, auto-detected like the rest. Both reach a server that
+# `-o alsa:pulse` / `-o alsa:pipewire` can also reach through ALSA's plugin PCMs, and that route
+# keeps working with these OFF -- what they add is sink/node enumeration in -l, a stream the
+# host's mixer can name and route, and playout timing answered by the server rather than by a
+# plugin's own buffering.
+option(SENDSPIN_CLI_WITH_PULSE
+    "Build the PulseAudio output backend if libpulse is available" ON)
+option(SENDSPIN_CLI_WITH_PIPEWIRE
+    "Build the PipeWire output backend if libpipewire is available" ON)
+
 set(SENDSPIN_CLI_BACKENDS null stdout)
 set(SENDSPIN_CLI_ALSA_ENABLED OFF)
 set(SENDSPIN_CLI_PORTAUDIO_ENABLED OFF)
+set(SENDSPIN_CLI_PULSE_ENABLED OFF)
+set(SENDSPIN_CLI_PIPEWIRE_ENABLED OFF)
+
+# PW_KEY_TARGET_OBJECT, which is how -o pipewire:<node> names a node, arrived in 0.3.64. An older
+# libpipewire would build and then silently ignore the node -- so the version is a requirement
+# rather than a preference.
+set(SENDSPIN_CLI_PIPEWIRE_MIN_VERSION 0.3.64)
 
 if(SENDSPIN_CLI_WITH_ALSA)
     find_package(ALSA)
@@ -136,6 +153,68 @@ if(SENDSPIN_CLI_WITH_PORTAUDIO)
             "sendspin-cli: libportaudio not found -- building without the PortAudio backend. "
             "Install portaudio (brew install portaudio) or portaudio19-dev (Debian) "
             "to enable it.")
+    endif()
+endif()
+
+# Both sound-server backends are found the same way PortAudio is, and for the same reason: neither
+# ships a CMake config module, and IMPORTED_TARGET is what carries their include paths and link
+# flags through. find_package(PkgConfig) above has already run where PortAudio was asked for, but
+# it is asked for again here so turning PortAudio off does not take these two with it.
+if(SENDSPIN_CLI_WITH_PULSE OR SENDSPIN_CLI_WITH_PIPEWIRE)
+    find_package(PkgConfig QUIET)
+endif()
+
+if(SENDSPIN_CLI_WITH_PULSE)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(PULSE QUIET IMPORTED_TARGET libpulse)
+    endif()
+
+    if(TARGET PkgConfig::PULSE)
+        set(SENDSPIN_CLI_PULSE_ENABLED ON)
+        list(APPEND SENDSPIN_CLI_BACKENDS pulse)
+    elseif(NOT PkgConfig_FOUND)
+        message(STATUS
+            "sendspin-cli: pkg-config not found -- building without the PulseAudio backend. "
+            "Install pkgconf or pkg-config, alongside libpulse, to enable it.")
+    else()
+        # The alsa: fallback is only worth naming where this build has the ALSA backend to serve
+        # it -- on macOS it has neither, and pointing at a route that is also absent would be
+        # advice that costs someone a rebuild.
+        set(SENDSPIN_CLI_PULSE_HINT "")
+        if(SENDSPIN_CLI_ALSA_ENABLED)
+            set(SENDSPIN_CLI_PULSE_HINT
+                " A PulseAudio server stays reachable as -o alsa:pulse without it.")
+        endif()
+        message(STATUS
+            "sendspin-cli: libpulse not found -- building without the PulseAudio backend. "
+            "Install pulseaudio-libs-devel (Fedora) or libpulse-dev (Debian) to enable "
+            "it.${SENDSPIN_CLI_PULSE_HINT}")
+    endif()
+endif()
+
+if(SENDSPIN_CLI_WITH_PIPEWIRE)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(PIPEWIRE QUIET IMPORTED_TARGET
+            libpipewire-0.3>=${SENDSPIN_CLI_PIPEWIRE_MIN_VERSION})
+    endif()
+
+    if(TARGET PkgConfig::PIPEWIRE)
+        set(SENDSPIN_CLI_PIPEWIRE_ENABLED ON)
+        list(APPEND SENDSPIN_CLI_BACKENDS pipewire)
+    elseif(NOT PkgConfig_FOUND)
+        message(STATUS
+            "sendspin-cli: pkg-config not found -- building without the PipeWire backend. "
+            "Install pkgconf or pkg-config, alongside libpipewire, to enable it.")
+    else()
+        set(SENDSPIN_CLI_PIPEWIRE_HINT "")
+        if(SENDSPIN_CLI_ALSA_ENABLED)
+            set(SENDSPIN_CLI_PIPEWIRE_HINT
+                " A PipeWire server stays reachable as -o alsa:pipewire without it.")
+        endif()
+        message(STATUS
+            "sendspin-cli: libpipewire-0.3 >= ${SENDSPIN_CLI_PIPEWIRE_MIN_VERSION} not found -- "
+            "building without the PipeWire backend. Install pipewire-devel (Fedora) or "
+            "libpipewire-0.3-dev (Debian) to enable it.${SENDSPIN_CLI_PIPEWIRE_HINT}")
     endif()
 endif()
 
@@ -230,8 +309,8 @@ endif()
 # Everything except main() lives in a library, so the tests can link the parser and the
 # -o spec resolver without dragging in a process entry point. The compile definitions and
 # the include directory are PUBLIC because the headers use them: cli.h picks its default
-# -o device off SENDSPIN_CLI_HAVE_ALSA and SENDSPIN_CLI_HAVE_PORTAUDIO, so a test compiled
-# without them would see a different Options than the binary does.
+# -o device off the SENDSPIN_CLI_HAVE_* definitions below, so a test compiled without them
+# would see a different Options than the binary does.
 #
 # The backend libraries are PUBLIC for a separate reason: a static archive does not record
 # its own dependencies, so anything linking this one has to be handed them too.
@@ -248,6 +327,7 @@ add_library(sendspin-cli-core STATIC
     src/mdns_common.cpp
     src/null_sink.cpp
     src/outbound.cpp
+    src/pcm_ring.cpp
     src/pcm_volume.cpp
     src/player_listener.cpp
     src/sink_recovery.cpp
@@ -289,6 +369,18 @@ if(SENDSPIN_CLI_PORTAUDIO_ENABLED)
     target_sources(sendspin-cli-core PRIVATE src/portaudio_sink.cpp)
     target_link_libraries(sendspin-cli-core PUBLIC PkgConfig::PORTAUDIO)
     target_compile_definitions(sendspin-cli-core PUBLIC SENDSPIN_CLI_HAVE_PORTAUDIO)
+endif()
+
+if(SENDSPIN_CLI_PULSE_ENABLED)
+    target_sources(sendspin-cli-core PRIVATE src/pulse_sink.cpp)
+    target_link_libraries(sendspin-cli-core PUBLIC PkgConfig::PULSE)
+    target_compile_definitions(sendspin-cli-core PUBLIC SENDSPIN_CLI_HAVE_PULSE)
+endif()
+
+if(SENDSPIN_CLI_PIPEWIRE_ENABLED)
+    target_sources(sendspin-cli-core PRIVATE src/pipewire_sink.cpp)
+    target_link_libraries(sendspin-cli-core PUBLIC PkgConfig::PIPEWIRE)
+    target_compile_definitions(sendspin-cli-core PUBLIC SENDSPIN_CLI_HAVE_PIPEWIRE)
 endif()
 
 target_include_directories(sendspin-cli-core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -429,7 +521,9 @@ if(SENDSPIN_CLI_BUILD_TESTS)
         tests/daemon_test.cpp
         tests/device_spec_test.cpp
         tests/discovery_test.cpp
+        tests/pcm_ring_test.cpp
         tests/pcm_volume_test.cpp
+        tests/pipewire_sink_test.cpp
         tests/sink_recovery_test.cpp
         tests/state_store_test.cpp
         tests/supported_formats_test.cpp

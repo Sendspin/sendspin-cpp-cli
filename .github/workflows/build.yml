@@ -41,35 +41,48 @@ jobs:
       fail-fast: false
       # `publish` and `avahi` are spelled out on every leg, false included: an `if:` reads a
       # missing key as false, so a leg that simply omitted one would quietly stop publishing
-      # and still go green. A new leg owes both -- and a `publish: true` leg owes a third thing
-      # in another file: an entry in the asset set release.yml asserts before it publishes,
-      # which otherwise fails the release with a diff rather than a reason. A publishing *macOS*
-      # leg owes two entries there, its tarball and the installer .pkg built further down.
+      # and still go green. `with_pulse` and `with_pipewire` are spelled out for the sibling
+      # reason: an omitted key reaches cmake as `-DSENDSPIN_CLI_WITH_PULSE=`, which is falsy,
+      # so a leg meaning to build the backend would silently not. A new leg owes all four --
+      # and a `publish: true` leg owes a fifth thing in another file: an entry in the asset
+      # set release.yml asserts before it publishes, which otherwise fails the release with a
+      # diff rather than a reason. A publishing *macOS* leg owes two entries there, its
+      # tarball and the installer .pkg built further down.
       matrix:
         include:
           - name: linux-x86_64
             runner: ubuntu-24.04
             with_mdns: 'ON'
+            with_pulse: 'ON'
+            with_pipewire: 'ON'
             expect_probe: 'Failed'
-            expect_backends: '^-- sendspin-cli audio backends: null, stdout, alsa, portaudio$'
+            expect_backends: '^-- sendspin-cli audio backends: null, stdout, alsa, portaudio, pulse, pipewire$'
             expect_mdns: '^-- sendspin-cli mDNS: dns_sd \(.*libdns_sd\.so.*\)$'
-            runtime_packages: 'libasound2t64 libportaudio2 libavahi-compat-libdnssd1'
+            runtime_packages: 'libasound2t64 libportaudio2 libpulse0 libpipewire-0.3-0 libavahi-compat-libdnssd1'
             publish: true
             avahi: true
 
           - name: linux-arm64
             runner: ubuntu-24.04-arm
             with_mdns: 'ON'
+            with_pulse: 'ON'
+            with_pipewire: 'ON'
             expect_probe: 'Failed'
-            expect_backends: '^-- sendspin-cli audio backends: null, stdout, alsa, portaudio$'
+            expect_backends: '^-- sendspin-cli audio backends: null, stdout, alsa, portaudio, pulse, pipewire$'
             expect_mdns: '^-- sendspin-cli mDNS: dns_sd \(.*libdns_sd\.so.*\)$'
-            runtime_packages: 'libasound2t64 libportaudio2 libavahi-compat-libdnssd1'
+            runtime_packages: 'libasound2t64 libportaudio2 libpulse0 libpipewire-0.3-0 libavahi-compat-libdnssd1'
             publish: true
             avahi: false
 
+          # Both sound-server backends are pinned OFF here rather than left to auto-detection.
+          # libpulse is brew-installable on macOS and could arrive on the image as some other
+          # formula's dependency, which would change this line without a commit -- and there is no
+          # PipeWire for macOS at all. CoreAudio through PortAudio is the macOS path either way.
           - name: macos-arm64
             runner: macos-14
             with_mdns: 'ON'
+            with_pulse: 'OFF'
+            with_pipewire: 'OFF'
             expect_probe: 'Success'
             expect_backends: '^-- sendspin-cli audio backends: null, stdout, portaudio$'
             expect_mdns: '^-- sendspin-cli mDNS: dns_sd \(Bonjour, built in\)$'
@@ -81,9 +94,17 @@ jobs:
           # swaps which translation unit is built -- src/mdns_null.cpp instead of
           # src/mdns_dnssd.cpp -- so nothing else in the matrix compiles it. It publishes
           # nothing; a binary that cannot be discovered is not one to hand anybody.
+          #
+          # The two sound-server backends are off here for a second helping of the same idea:
+          # tests/device_spec_test.cpp guards half its cases on SENDSPIN_CLI_HAVE_PULSE and
+          # _PIPEWIRE, and this is the only Linux leg that compiles and runs the #else arms --
+          # the ones that assert a bare `pulse` is still an ALSA PCM name, and that the message
+          # for `pulse:<sink>` names the alsa: route as well as the CMake flag.
           - name: linux-x86_64-nomdns
             runner: ubuntu-24.04
             with_mdns: 'OFF'
+            with_pulse: 'OFF'
+            with_pipewire: 'OFF'
             expect_backends: '^-- sendspin-cli audio backends: null, stdout, alsa, portaudio$'
             expect_mdns: '^-- sendspin-cli mDNS: none$'
             publish: false
@@ -107,6 +128,8 @@ jobs:
             pkg-config \
             libasound2-dev \
             portaudio19-dev \
+            libpulse-dev \
+            libpipewire-0.3-dev \
             libavahi-compat-libdnssd-dev
 
       - name: Install build dependencies (macOS)
@@ -135,12 +158,16 @@ jobs:
       - name: Configure
         env:
           WITH_MDNS: ${{ matrix.with_mdns }}
+          WITH_PULSE: ${{ matrix.with_pulse }}
+          WITH_PIPEWIRE: ${{ matrix.with_pipewire }}
           DEPS_DIR: ${{ github.workspace }}/.deps
         run: |
           cmake -B build \
             -DCMAKE_BUILD_TYPE=Release \
             -DSENDSPIN_CLI_WERROR=ON \
             -DSENDSPIN_CLI_WITH_MDNS="$WITH_MDNS" \
+            -DSENDSPIN_CLI_WITH_PULSE="$WITH_PULSE" \
+            -DSENDSPIN_CLI_WITH_PIPEWIRE="$WITH_PIPEWIRE" \
             -DFETCHCONTENT_BASE_DIR="$DEPS_DIR" \
             2>&1 | tee configure.log
 
@@ -745,3 +772,84 @@ jobs:
           path: ${{ steps.package.outputs.name }}.pkg
           retention-days: 14
           if-no-files-found: error
+
+  # A job of its own rather than a fifth matrix leg. The matrix is built for hosted runners --
+  # its steps use `sudo apt-get` and Ubuntu's package names, and every leg owes `publish`,
+  # `avahi` and `runtime_packages` keys that mean nothing in a container. This has one question
+  # to answer and no binary to hand anybody, so it stays clear of those invariants entirely.
+  pipewire-minimum:
+    name: linux-x86_64-pipewire-min
+    runs-on: ubuntu-24.04
+    # Debian 12 is the whole reason this exists: it ships libpipewire 0.3.65, the oldest release
+    # that satisfies SENDSPIN_CLI_PIPEWIRE_MIN_VERSION, and it is what Raspberry Pi OS bookworm
+    # is. Every hosted image carries 1.x, where a pw_core_events member added after 0.3.65
+    # initialises cleanly -- so with only those legs the floor the README advertises goes
+    # untested until somebody on bookworm tries to build and finds a designated initialiser
+    # naming a member their header does not declare. That is a compile error, not a warning.
+    container: debian:12
+    timeout-minutes: 30
+    steps:
+      # Before the checkout, and with no sudo: the image runs as root already, and it has
+      # neither git nor a CA bundle -- both of which actions/checkout needs before it can run.
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install --no-install-recommends -y             build-essential             cmake             git             ca-certificates             pkg-config             libasound2-dev             libpulse-dev             libpipewire-0.3-dev
+
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      # Without this the job rots into a duplicate of the hosted legs. If bookworm ever moves to
+      # a 1.x libpipewire it would still build, still go green, and still claim in its name to
+      # have tested the floor -- while testing exactly what ubuntu-24.04 already does. Both ends
+      # are pinned: at or above the declared minimum, and still an 0.3 release.
+      - name: Assert this image still ships the minimum
+        run: |
+          version=$(pkg-config --modversion libpipewire-0.3)
+          minimum=$(grep -oE 'SENDSPIN_CLI_PIPEWIRE_MIN_VERSION [0-9.]+' CMakeLists.txt | awk '{print $2}')
+          echo "libpipewire $version, against a declared minimum of $minimum"
+          if ! pkg-config --atleast-version="$minimum" libpipewire-0.3; then
+            echo "::error::libpipewire $version is below the declared minimum $minimum"
+            exit 1
+          fi
+          if ! pkg-config --max-version=0.3.999 libpipewire-0.3; then
+            echo "::error::libpipewire $version is no longer an 0.3 release, so this job has stopped testing the floor it is named for -- repoint it at an image that still ships one, or lower SENDSPIN_CLI_PIPEWIRE_MIN_VERSION deliberately"
+            exit 1
+          fi
+
+      # SENDSPIN_CLI_WERROR is deliberately absent, alone among the builds in this file. gcc 12
+      # has a -Wrestrict false positive on `line += " " + std::to_string(...)` in
+      # src/control_common.cpp, which has nothing to do with either sound-server backend and
+      # would fail this job for a reason it is not here to ask about. The warning line is held
+      # on the hosted legs; what is held here is that the code compiles at all against the
+      # oldest libpipewire this project claims to support.
+      - name: Configure
+        run: |
+          cmake -B build             -DCMAKE_BUILD_TYPE=Release             -DSENDSPIN_CLI_WITH_PORTAUDIO=OFF             -DSENDSPIN_CLI_WITH_MDNS=OFF             2>&1 | tee configure.log
+
+      # The same guard the matrix carries, and for a sharper reason here: a missing
+      # libpipewire-0.3-dev does not fail the configure, so without this the job would build a
+      # binary with no PipeWire backend in it and prove precisely nothing about the minimum.
+      - name: Assert the configure output found PipeWire
+        run: |
+          expected='^-- sendspin-cli audio backends: null, stdout, alsa, pulse, pipewire$'
+          if ! grep -Eq -e "$expected" configure.log; then
+            echo "::error::configure output has no line matching: $expected"
+            grep -E -- '^-- sendspin-cli' configure.log ||
+              echo '(configure.log has no sendspin-cli lines at all)'
+            exit 1
+          fi
+          grep -E -- '^-- sendspin-cli' configure.log
+
+      - name: Build
+        run: cmake --build build --parallel 3
+
+      # As somebody other than root, which is what the container otherwise runs as. Three
+      # StateStore cases assert that an unwritable directory is refused, and root is refused
+      # nothing -- they fail as root for a reason that has nothing to do with the code under
+      # test. The hosted legs never meet this because a runner is not root.
+      - name: Test
+        run: |
+          useradd --create-home tester
+          chown -R tester:tester .
+          su tester -c 'ctest --test-dir build --output-on-failure'
