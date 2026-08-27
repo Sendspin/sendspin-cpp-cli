@@ -111,6 +111,10 @@ struct RegistryWalk {
     int sync_seq{0};
     bool done{false};
     bool failed{false};
+    /// Why it failed, because a daemon that refuses is not a daemon that is slow. Without it the
+    /// only string left to report is the timeout below -- which is the one thing that did not
+    /// happen. Written by core_error_cb, read under the loop lock like every other field here.
+    std::string error_message;
 };
 
 void registry_global_cb(void* data, uint32_t /*id*/, uint32_t /*permissions*/, const char* type,
@@ -150,8 +154,10 @@ void core_done_cb(void* data, uint32_t id, int seq) {
 void core_error_cb(void* data, uint32_t id, int /*seq*/, int res, const char* message) {
     auto* walk = static_cast<RegistryWalk*>(data);
     if (id == PW_ID_CORE) {
-        cli_log(LogLevel::DEBUG, "pipewire: the daemon reported %d: %s", res,
-                (message != nullptr) ? message : "(no message)");
+        // Kept rather than logged and dropped: walk_registry()'s caller is what puts this in
+        // front of somebody, at startup and in -l alike.
+        walk->error_message =
+            (message != nullptr && *message != '\0') ? message : spa_strerror(res);
         walk->failed = true;
         walk->done = true;
         pw_thread_loop_signal(walk->loop, false);
@@ -215,6 +221,8 @@ bool walk_registry(std::vector<PipeWireNode>& out, std::string& error) {
     spa_hook core_hook{};
     spa_hook registry_hook{};
     bool answered = false;
+    bool refused = false;
+    std::string refusal;
 
     {
         const LoopLock lock(loop);
@@ -237,6 +245,10 @@ bool walk_registry(std::vector<PipeWireNode>& out, std::string& error) {
                 }
             }
             answered = walk.done && !walk.failed;
+            // Copied out under the loop lock along with everything else this function reads from
+            // the walk: once the lock is dropped the loop thread may still be running callbacks.
+            refused = walk.failed;
+            refusal = walk.error_message;
         }
     }
 
@@ -248,6 +260,11 @@ bool walk_registry(std::vector<PipeWireNode>& out, std::string& error) {
         // Connected, but the daemon would not hand out a registry -- a permissions answer rather
         // than an absence, so it must not be reported as a timeout nobody waited for.
         error = "the PipeWire daemon would not open its registry";
+    } else if (refused) {
+        // The same distinction one branch further in: the daemon answered, and answered with a
+        // reason. It arrived immediately, so the timeout below would name a wait that never
+        // happened and bury a permission or protocol refusal behind it.
+        error = "the PipeWire daemon refused the registry walk: " + refusal;
     } else if (!answered) {
         error = "the PipeWire daemon did not finish listing its nodes within " +
                 std::to_string(PIPEWIRE_TIMEOUT_S) + " s";
