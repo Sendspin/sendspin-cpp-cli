@@ -169,9 +169,17 @@ public:
     void set_volume(uint8_t volume) override;
     void set_muted(bool muted) override;
 
-    /// @brief Spends the delayed half of this sink's reconnect budget, when write()'s failed.
+    /// @brief Reports the graph's quantum once a cycle has run, and spends the delayed half of
+    /// this sink's reconnect budget when write()'s attempt failed.
     ///
-    /// Does nothing on an ordinary tick and takes no lock to establish that, like
+    /// The quantum is a one-shot, and here because the realtime callback that learns it must not
+    /// stop to format a log line: the tick that first sees one takes mutex_ to measure the ring
+    /// against it, and says so at WARN where the ring cannot hold a whole quantum and the stream
+    /// will zero-fill every cycle, at DEBUG otherwise. Exactly one tick pays that lock per
+    /// stream opened, recovery's reconnects included -- a graph that changed its quantum
+    /// under a restarted daemon is worth hearing about again.
+    ///
+    /// Every other tick does nothing, and takes no lock to establish that, like
     /// PortAudioSink::poll(). What it does when there is work is a full reconnect --
     /// SinkRecovery's second attempt, which for a sound server is what a *restarted* daemon
     /// needs: the socket is gone for a moment and comes back, so an immediate retry fails and one
