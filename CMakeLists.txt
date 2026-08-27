@@ -322,6 +322,7 @@ add_library(sendspin-cli-core STATIC
     src/control_socket.cpp
     src/config_file.cpp
     src/daemon.cpp
+    src/hooks.cpp
     src/key_value_file.cpp
     src/log.cpp
     src/mdns_common.cpp
@@ -521,6 +522,7 @@ if(SENDSPIN_CLI_BUILD_TESTS)
         tests/daemon_test.cpp
         tests/device_spec_test.cpp
         tests/discovery_test.cpp
+        tests/hooks_test.cpp
         tests/pcm_ring_test.cpp
         tests/pcm_volume_test.cpp
         tests/pipewire_sink_test.cpp

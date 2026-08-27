@@ -30,6 +30,7 @@
 #include "cli.h"
 #include "control.h"
 #include "daemon.h"
+#include "hooks.h"
 #include "log.h"
 #include "mdns.h"
 #include "outbound.h"
@@ -252,7 +253,15 @@ public:
         // Stamped before the dial rather than after, so the backoff measures from when the
         // attempt started -- which is the whole point of pacing from the dial.
         this->pacer_.note_dial(now_ms);
+        this->dialed_url_ = url;
         client.connect_to(url);
+    }
+
+    /// The URL this run last dialled, empty before the first dial. What the stream hooks
+    /// export as SENDSPIN_SERVER_URL -- best-effort by design, exactly as the Python CLI's
+    /// is: an inbound connection has no URL to name, and this does not pretend otherwise.
+    const std::string& dialed_url() const {
+        return this->dialed_url_;
     }
 
 private:
@@ -319,6 +328,7 @@ private:
     MdnsService& mdns_;
     StateStore& store_;
     std::string remembered_;
+    std::string dialed_url_;
     bool remembered_this_connection_{false};
     RetryPacer pacer_;
 };
@@ -872,6 +882,36 @@ int main(int argc, char* argv[]) {
         outbound = std::make_unique<OutboundMode>(opts, mdns, state_store);
     }
 
+    // What --hook-start/--hook-stop run. Wired only when one was given, so a player with no
+    // hooks pays nothing on the stream path. Set below `outbound` because the callback
+    // captures it, and above the loop because the loop's first client.loop() is the first
+    // moment a stream event can fire.
+    HookRunner hooks;
+    if (!opts.hook_start.empty() || !opts.hook_stop.empty()) {
+        player_listener.on_stream_event = [&opts, &client, &hooks, &outbound](bool started) {
+            const std::string& command = started ? opts.hook_start : opts.hook_stop;
+            if (command.empty()) {
+                return;
+            }
+            // Gathered per event rather than once: which server this is about is a property
+            // of the connection the stream arrived on, not of the run. client_id stays
+            // unset -- the library derives its own from the interface MAC and does not
+            // expose it, so there is no honest value to export until a flag chooses one.
+            HookContext context;
+            context.client_name = opts.name;
+            const std::optional<sendspin::ServerInformationObject> info =
+                client.get_server_information();
+            if (info.has_value()) {
+                context.server_id = info->server_id;
+                context.server_name = info->name;
+            }
+            if (outbound) {
+                context.server_url = outbound->dialed_url();
+            }
+            hooks.run(command, started ? "start" : "stop", context);
+        };
+    }
+
     while (g_running.load()) {
         const int64_t now_ms = monotonic_ms();
         client.loop();
@@ -890,6 +930,8 @@ int main(int argc, char* argv[]) {
         // it after a device has gone away mid-stream, which is why the sink gets the loop's
         // clock rather than reading one of its own.
         sink->poll(now_ms);
+        // Reaps finished hook commands. Cheap when none are running, which is almost always.
+        hooks.poll();
         // Here rather than in the SIGHUP handler: the reopen flushes the old stream and then
         // logs the result, and neither fflush() nor fprintf() is async-signal-safe -- the
         // open/dup2 pair on its own would be. This is what hands rotation to logrotate and

@@ -58,6 +58,8 @@ already does that.
 | `control-socket` | `--control-socket` | the Unix socket the subcommands talk to | `$XDG_RUNTIME_DIR/sendspin-cli-<port>.sock` |
 | `no-control` | `--no-control` | `true`/`false` — bind no control socket at all | `false` |
 | `state-dir` | `--state-dir` | where the player keeps what it remembers | `$XDG_STATE_HOME/sendspin-cli` |
+| `hook-start` | `--hook-start` | a shell command run when a stream starts — an amplifier relay, a light | none |
+| `hook-stop` | `--hook-stop` | the same, when a stream stops | none |
 | `log-level` | `-d`, `--log-level` | `none`, `error`, `warn`, `info`, `debug`, `verbose` | `info` |
 | `logfile` | `-f`, `--logfile` | write the log here instead of to stderr | stderr |
 | `pidfile` | `-P`, `--pidfile` | hold this path as a locked pidfile | none |

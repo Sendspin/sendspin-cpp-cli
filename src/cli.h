@@ -114,6 +114,8 @@ enum class Opt : unsigned {
     NoControl,      ///< --no-control
     StateDir,       ///< --state-dir
     Config,         ///< --config
+    HookStart,      ///< --hook-start
+    HookStop,       ///< --hook-stop
 };
 
 /// @brief Everything the flag surface configures.
@@ -178,6 +180,14 @@ struct Options {
     /// who has decided this player is driven only by its server can say so and silence the
     /// warning rather than reading it on every start.
     bool no_control{false};
+
+    /// --hook-start / --hook-stop <command>: a shell command run when a stream starts or
+    /// stops -- an amplifier relay, a light, a notification. `/bin/sh -c` with the event's
+    /// facts in `SENDSPIN_*` environment variables; see src/hooks.h for the contract, which
+    /// is the Python CLI's. Fired on the stream lifecycle itself, so a stream whose format
+    /// the device refused still switches the amplifier -- audio is arriving either way.
+    std::string hook_start;
+    std::string hook_stop;
 
     /// --state-dir <dir>: where the daemon keeps what it remembers across restarts.
     ///

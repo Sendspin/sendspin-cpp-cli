@@ -185,6 +185,33 @@ The socket is polled from the main loop rather than from a thread, so a request 
 in up to 10 ms. That is a deliberate trade — the library calls behind it are documented
 main-thread-only, and a reader thread would be a data race.
 
+## The player driving *your* hardware: stream hooks
+
+The control channel is you driving the player; `--hook-start` and `--hook-stop` are the
+player driving whatever sits around it. Each runs a shell command — through `/bin/sh -c`,
+so pipes and `&&` work — when a stream starts and when it stops: the amplifier relay, the
+light, the notification.
+
+```bash
+sendspin-cli -o hw:1,0 \
+  --hook-start 'amixer -c 1 set Master unmute' \
+  --hook-stop  'amixer -c 1 set Master mute'
+```
+
+The event's facts arrive in the environment, in the same vocabulary the Python
+`sendspin-cli` uses — a hook script written against one runs unchanged against the other:
+`SENDSPIN_EVENT` (`start` or `stop`) always, and `SENDSPIN_SERVER_ID`,
+`SENDSPIN_SERVER_NAME`, `SENDSPIN_SERVER_URL` (outbound `-s` runs only) and
+`SENDSPIN_CLIENT_NAME` where known. An unknown is left *unset* rather than exported
+empty, so `[ -n "$SENDSPIN_SERVER_ID" ]` means what it says.
+
+The hook never blocks playback: it is spawned and reaped from the main loop, its output
+goes to the log, and a non-zero exit is a `W hook:` warning rather than a player failure.
+It fires on the stream lifecycle — for exactly as long as `status` says
+`stream: receiving` — so a stream whose format the device refused still switches the
+amplifier: audio is arriving either way. Both flags can also come from the config file, as
+`hook-start` and `hook-stop`.
+
 ## Next
 
 - [Configuration](Configuration) — making `control-socket` stick

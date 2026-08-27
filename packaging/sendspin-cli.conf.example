@@ -50,6 +50,14 @@
 # has set is remembered and wins over this every run after.
 #static-delay = 0
 
+# Shell commands run when a stream starts and when it stops -- an amplifier relay, a
+# light. `/bin/sh -c`, with the event's facts in SENDSPIN_* environment variables:
+# SENDSPIN_EVENT (start|stop) always, and SENDSPIN_SERVER_ID, SENDSPIN_SERVER_NAME,
+# SENDSPIN_SERVER_URL and SENDSPIN_CLIENT_NAME where known. The hook runs without
+# blocking playback, its output goes to the log, and a non-zero exit is a warning.
+#hook-start = amixer set Master unmute
+#hook-stop = amixer set Master mute
+
 # Log level for this player and the sendspin library together: none, error, warn, info,
 # debug, verbose. Under systemd this lands in the journal.
 #log-level = info
