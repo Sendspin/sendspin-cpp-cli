@@ -177,7 +177,16 @@ constexpr pw_core_events CORE_EVENTS = {
     .bound_id = nullptr,
     .add_mem = nullptr,
     .remove_mem = nullptr,
+// .bound_props arrived with PW_VERSION_CORE_EVENTS 1, which is after this project's 0.3.64 floor
+// (bookworm ships 0.3.65, where pw_core_events still ends at remove_mem). Neither half of the
+// obvious answer works on its own: naming it unconditionally is a compile error on an 0.3.6x
+// header, and omitting it unconditionally is -Wmissing-field-initializers on a 1.x one, which
+// SENDSPIN_CLI_WERROR makes fatal on every CI leg but pipewire-minimum. The version macro is the
+// only thing true on both, so it is what the list is cut to. A future member gets the same
+// treatment, and the same warning is what will point it out.
+#if PW_VERSION_CORE_EVENTS >= 1
     .bound_props = nullptr,
+#endif
 };
 
 /// Connects to the daemon, walks its registry once, and reports every audio sink node.
