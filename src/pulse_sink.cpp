@@ -530,11 +530,23 @@ size_t PulseAudioSink::write(const uint8_t* data, size_t length, uint32_t timeou
         }
 
         // No room. Waiting releases mutex_, so configure(), clear() and stop() still run.
-        this->space_available_.wait_for(
-            lock, std::chrono::milliseconds(WRITE_SLICE_MS), [this, generation] {
-                return this->stopping_.load() || this->stream_ == nullptr ||
-                       this->stream_generation_ != generation;
-            });
+        //
+        // Bounded by whichever comes first: the caller's deadline, so this cannot overrun the
+        // timeout_ms write() advertises -- a zero timeout included -- and a slice, so a
+        // notification missed between the writable check above and the sleep below costs only
+        // WRITE_SLICE_MS rather than the whole deadline.
+        //
+        // No predicate, unlike the ring-backed sinks. Theirs test free space that the notifier
+        // really does create; the space this one waits on lives in the server and is only
+        // knowable through pa_stream_writable_size() under the mainloop lock, which a predicate
+        // evaluated under mutex_ has no business taking. A predicate that cannot test the real
+        // condition is worse than none: it swallows stream_write_cb()'s notification, waking to
+        // find that shutdown has not happened and sleeping out the rest of the slice, which is
+        // the opposite of what WRITE_SLICE_MS is documented to be for. Everything such a
+        // predicate would have tested is rechecked immediately below and at the top of the loop.
+        const auto slice =
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(WRITE_SLICE_MS);
+        this->space_available_.wait_until(lock, std::min(slice, deadline));
         if (this->stream_ == nullptr || this->stream_generation_ != generation) {
             // Closed, reopened or flushed while the mutex was released. What is left of this
             // buffer belongs to a stream that is gone, so report only what really landed.
