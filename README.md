@@ -71,9 +71,14 @@ libpipewire would build and then quietly ignore the node.
 Pass `-DSENDSPIN_CLI_WITH_ALSA=OFF`, `-DSENDSPIN_CLI_WITH_PORTAUDIO=OFF`,
 `-DSENDSPIN_CLI_WITH_PULSE=OFF`, `-DSENDSPIN_CLI_WITH_PIPEWIRE=OFF` or
 `-DSENDSPIN_CLI_WITH_MDNS=OFF` to leave one out even where its library is available.
-Dropping the two sound-server backends costs nothing but the extras below: a
-PulseAudio or PipeWire host stays reachable through ALSA's plugin PCMs as
-`-o alsa:pulse` and `-o alsa:pipewire`.
+On a build that also has ALSA, dropping the two sound-server backends costs
+nothing but the extras below: a PulseAudio or PipeWire host stays reachable
+through ALSA's plugin PCMs as `-o alsa:pulse` and `-o alsa:pipewire`. Where the
+ALSA backend is absent too — it is Linux-only, and `-DSENDSPIN_CLI_WITH_ALSA=OFF`
+turns it off anywhere — those two *are* the only route to a sound server, and
+dropping them leaves the build with no audio path but `null`. That is why the
+configure summary only offers the `alsa:` way back where there is an ALSA backend
+to serve it.
 
 `-DSENDSPIN_CLI_WERROR=ON` makes warnings fatal, for sendspin-cli's own three
 targets and nothing else — the `sendspin` and GoogleTest trees fetched at
