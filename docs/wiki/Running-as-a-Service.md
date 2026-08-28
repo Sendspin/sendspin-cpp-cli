@@ -201,7 +201,7 @@ Everything goes to the journal, and every line carries a level letter and a subs
 
 ```console
 $ journalctl -u sendspin-cli -f
-I cli: sendspin-cli 0.1.0 listening on port 8928 as "kitchen" (output: hw:1,0, mDNS: dns_sd (avahi-compat))
+I cli: sendspin-cli 0.1.5 listening on port 8928 as "kitchen" (output: hw:1,0, mDNS: dns_sd (avahi-compat))
 I mdns: advertising _sendspin._tcp as "kitchen" on port 8928 (path /sendspin)
 I sendspin.ws_server: Starting server on port: 8928 (max connections: 4)
 ```
@@ -231,7 +231,8 @@ and a second one would be noise. Only a `-f` logfile gets our own timestamp. See
 
 If the player should follow your desktop session's sound server, a user unit is the better
 fit — `$XDG_RUNTIME_DIR` and `$XDG_STATE_HOME` both exist there, so neither flag is needed
-and `output = default` works as it does from your shell:
+and `output = default` works as it does from your shell. So do the native `pulse` and
+`pipewire` backends, which talk to that same session's server:
 
 ```bash
 mkdir -p ~/.config/systemd/user

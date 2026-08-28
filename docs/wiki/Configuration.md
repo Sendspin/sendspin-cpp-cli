@@ -47,7 +47,7 @@ already does that.
 
 | Key | Same as | Value | Default |
 |---|---|---|---|
-| `output` | `-o`, `--output` | a device: `hw:1,0`, `default`, `portaudio:2`, `null`, `stdout` | `default` where ALSA is built in, else `portaudio`, else `null` |
+| `output` | `-o`, `--output` | a device: `hw:1,0`, `default`, `pulse`, `pipewire:<node>`, `portaudio:2`, `null`, `stdout` | `default` where ALSA is built in, else `portaudio`, else `pulse`, else `pipewire`, else `null` |
 | `name` | `-n`, `--name` | the friendly name a controller shows | this host's name |
 | `id` | `--id` | the stable client id a server files this player's settings under — two players on one host must not share it | derived from the interface MAC |
 | `manufacturer` | `--manufacturer` | the manufacturer `client/hello` reports | `sendspin-cpp-cli` |

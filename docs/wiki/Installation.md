@@ -20,7 +20,7 @@ Every tarball is a staged `cmake --install` payload, which means **every path un
 is the path the file installs to**:
 
 ```
-sendspin-cli-0.1.0-linux-arm64/
+sendspin-cli-0.1.5-linux-arm64/
 ├── BUILD-INFO.txt                                          # what this build is, and what it needs
 └── usr/local/
     ├── bin/sendspin-cli
@@ -40,7 +40,7 @@ nothing. Read `BUILD-INFO.txt` first; it names the runtime packages that build n
 
 ```bash
 # 1. Take the archive for this machine's architecture, and the checksums
-VERSION=0.1.0
+VERSION=0.1.5
 ARCH=$(uname -m); [ "$ARCH" = aarch64 ] && LEG=linux-arm64 || LEG=linux-x86_64
 BASE=https://github.com/Sendspin/sendspin-cpp-cli/releases/download/v$VERSION
 curl -fLO "$BASE/sendspin-cli-$VERSION-$LEG.tar.gz"
@@ -74,15 +74,15 @@ level so the rest lands where it belongs.
 Runtime packages, if the binary will not start:
 
 ```bash
-sudo apt install libasound2t64 libportaudio2 libavahi-compat-libdnssd1   # Debian / Ubuntu
-sudo dnf install alsa-lib portaudio avahi-compat-libdns_sd               # Fedora / RHEL
+sudo apt install libasound2t64 libportaudio2 libpulse0 libpipewire-0.3-0 libavahi-compat-libdnssd1   # Debian / Ubuntu
+sudo dnf install alsa-lib portaudio pulseaudio-libs pipewire-libs avahi-compat-libdns_sd             # Fedora / RHEL
 ```
 
 To run it without installing anywhere, unpack it and use it in place:
 
 ```bash
-tar -xzf sendspin-cli-0.1.0-linux-arm64.tar.gz
-./sendspin-cli-0.1.0-linux-arm64/usr/local/bin/sendspin-cli --help
+tar -xzf sendspin-cli-0.1.5-linux-arm64.tar.gz
+./sendspin-cli-0.1.5-linux-arm64/usr/local/bin/sendspin-cli --help
 ```
 
 Then [Running as a Service](Running-as-a-Service) for the systemd half.
@@ -92,7 +92,7 @@ Then [Running as a Service](Running-as-a-Service) for the systemd half.
 The installer is the easier of the two:
 
 ```bash
-sudo installer -pkg sendspin-cli-0.1.0-macos-arm64.pkg -target /
+sudo installer -pkg sendspin-cli-0.1.5-macos-arm64.pkg -target /
 sendspin-cli --version
 ```
 
@@ -104,8 +104,8 @@ worked. To undo it: remove the four files and
 Or take the tarball, and **unpack it from a terminal, not in Finder**:
 
 ```bash
-tar -xzf sendspin-cli-0.1.0-macos-arm64.tar.gz
-./sendspin-cli-0.1.0-macos-arm64/usr/local/bin/sendspin-cli --version
+tar -xzf sendspin-cli-0.1.5-macos-arm64.tar.gz
+./sendspin-cli-0.1.5-macos-arm64/usr/local/bin/sendspin-cli --version
 ```
 
 **Neither the binary nor the `.pkg` is signed or notarized.** They are ad-hoc signed — the
@@ -114,7 +114,7 @@ to check. Whether you notice depends entirely on the quarantine flag, which `tar
 `unzip` do not propagate and Finder's Archive Utility does. If macOS refuses it:
 
 ```bash
-xattr -d com.apple.quarantine ./sendspin-cli-0.1.0-macos-arm64/usr/local/bin/sendspin-cli
+xattr -d com.apple.quarantine ./sendspin-cli-0.1.5-macos-arm64/usr/local/bin/sendspin-cli
 ```
 
 The full picture — including why `sudo installer` is not gated at all, and why the `.pkg`
@@ -139,8 +139,8 @@ For an architecture with no release — 32-bit ARM, an Intel Mac, anything not i
 — or to build against a different version of the library.
 
 ```bash
-sudo apt install pkg-config libasound2-dev portaudio19-dev libavahi-compat-libdnssd-dev  # Debian / Ubuntu
-sudo dnf install pkgconf alsa-lib-devel portaudio-devel avahi-compat-libdns_sd-devel     # Fedora / RHEL
+sudo apt install pkg-config libasound2-dev portaudio19-dev libpulse-dev libpipewire-0.3-dev libavahi-compat-libdnssd-dev  # Debian / Ubuntu
+sudo dnf install pkgconf alsa-lib-devel portaudio-devel pulseaudio-libs-devel pipewire-devel avahi-compat-libdns_sd-devel # Fedora / RHEL
 brew install portaudio pkgconf                                                           # macOS
 
 git clone https://github.com/Sendspin/sendspin-cpp-cli.git
@@ -159,7 +159,7 @@ output rather than assuming; a missing `-dev` package does not fail a configure,
 produces a binary that cannot do that thing:
 
 ```
--- sendspin-cli audio backends: null, stdout, alsa, portaudio
+-- sendspin-cli audio backends: null, stdout, alsa, portaudio, pulse, pipewire
 -- sendspin-cli mDNS: dns_sd (/usr/lib/aarch64-linux-gnu/libdns_sd.so)
 ```
 

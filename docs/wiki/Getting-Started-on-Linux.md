@@ -22,7 +22,7 @@ commands first and waiting for you to say yes:
 ```
 ==> These are the commands that need root
 
-  sudo tar -xzf /tmp/tmp.XXXX/sendspin-cli-0.1.0-linux-arm64.tar.gz --strip-components=1 -C / sendspin-cli-0.1.0-linux-arm64/usr
+  sudo tar -xzf /tmp/tmp.XXXX/sendspin-cli-0.1.5-linux-arm64.tar.gz --strip-components=1 -C / sendspin-cli-0.1.5-linux-arm64/usr
   sudo cp /usr/local/share/doc/sendspin-cli/sendspin-cli.conf.example /etc/sendspin-cli.conf
   sudo systemd-sysusers
   sudo systemctl daemon-reload
@@ -33,7 +33,7 @@ Run them? [y/N]
 ```
 
 `--yes` skips the prompt, and is required when stdin is not a terminal — a script that
-cannot ask refuses rather than assuming. `--version v0.1.0` installs a specific release
+cannot ask refuses rather than assuming. `--version v0.1.5` installs a specific release
 instead of the newest.
 
 ### What it actually does
@@ -76,8 +76,8 @@ If you would rather do it by hand, or the script refuses this host:
 
 ```bash
 # 1. Install — see the Installation page for the checksum step
-sudo tar -xzf sendspin-cli-0.1.0-linux-arm64.tar.gz --strip-components=1 -C / \
-  sendspin-cli-0.1.0-linux-arm64/usr
+sudo tar -xzf sendspin-cli-0.1.5-linux-arm64.tar.gz --strip-components=1 -C / \
+  sendspin-cli-0.1.5-linux-arm64/usr
 
 # 2. Find a device
 sendspin-cli -l
@@ -115,7 +115,7 @@ Put the name in the config file as `output`, without the dashes of the flag it m
 output = hw:1,0
 ```
 
-Three forms are worth knowing, and there are more in
+Five forms are worth knowing, and there are more in
 [Choosing an output](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/README.md#choosing-an-output):
 
 | Value | What it means |
@@ -123,10 +123,16 @@ Three forms are worth knowing, and there are more in
 | `hw:1,0` | that card directly, bypassing any sound server |
 | `plughw:1,0` | the same card, letting ALSA convert rate and format for it |
 | `default` | follow the host's own configuration — PipeWire, PulseAudio or bare hardware |
+| `pulse` | the PulseAudio server's default sink, as a native client — or a named sink, `pulse:<sink>` as `-l` prints it |
+| `pipewire` | let the PipeWire graph route it, as a native client — or a named node, `pipewire:<node>` |
 
 `default` is the right answer from a login shell and usually the wrong one under a system
 unit, for the reason above. Under a **user** unit (`systemctl --user`) it is right again,
-because there the session and its sound server exist.
+because there the session and its sound server exist. `pulse` and `pipewire` belong to that
+same shell-and-user-unit world: they talk to the *session's* sound server, so under a system
+unit they fail the way `default` does, and a card named directly is the answer there.
+Before 0.1.5 those two names reached ALSA's plugin PCMs instead of the native backends;
+`alsa:pulse` and `alsa:pipewire` still spell that.
 
 ## Check it worked
 
@@ -138,7 +144,7 @@ journalctl -u sendspin-cli -f
 A healthy start looks like this:
 
 ```
-I cli: sendspin-cli 0.1.0 listening on port 8928 as "kitchen" (output: hw:1,0, mDNS: dns_sd (avahi-compat))
+I cli: sendspin-cli 0.1.5 listening on port 8928 as "kitchen" (output: hw:1,0, mDNS: dns_sd (avahi-compat))
 I mdns: advertising _sendspin._tcp as "kitchen" on port 8928 (path /sendspin)
 I control: Listening on /run/sendspin-cli/control.sock
 ```

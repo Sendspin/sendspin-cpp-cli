@@ -27,7 +27,7 @@ muscle memory carries over.
 
 ```console
 $ sendspin-cli -n living-room
-I cli: sendspin-cli 0.1.0 listening on port 8928 as "living-room" (output: default, mDNS: dns_sd (avahi-compat))
+I cli: sendspin-cli 0.1.5 listening on port 8928 as "living-room" (output: default, mDNS: dns_sd (avahi-compat))
 I mdns: advertising _sendspin._tcp as "living-room" on port 8928 (path /sendspin)
 ```
 
@@ -37,9 +37,11 @@ player the one dialling, which the protocol treats as the other of two mutually 
 modes — see
 [The two connection modes](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/README.md#the-two-connection-modes).
 
-Audio goes out through ALSA (the Linux default) or PortAudio (the cross-platform one, and
-the only way to make noise on macOS), with volume applied in software on a curve the spec
-names. The player is also driven from its own host over a Unix socket:
+Audio goes out through ALSA (the Linux default), natively through PulseAudio or PipeWire
+(`-o pulse`, `-o pipewire`), or through PortAudio (the cross-platform backend, and the only
+way to make noise on macOS), with volume applied in software on a curve the spec names.
+`--hook-start` and `--hook-stop` run your own commands as streams come and go — the
+amplifier relay, the light. The player is also driven from its own host over a Unix socket:
 
 ```console
 $ sendspin-cli status

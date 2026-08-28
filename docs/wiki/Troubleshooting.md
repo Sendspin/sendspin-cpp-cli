@@ -10,7 +10,7 @@ sendspin-cli -d debug                           # or run it in the foreground, l
 
 ## It starts, and there is no sound
 
-The three common causes, in the order to check them.
+The four common causes, in the order to check them.
 
 ### The device refused the stream's format
 
@@ -62,6 +62,18 @@ sudo systemctl restart sendspin-cli
 ```
 
 Under a **user** unit, or from your own shell, `default` is right again.
+
+### `-o pulse` or `-o pipewire` under a system unit
+
+The same shape as `default`, one layer up: the native PulseAudio and PipeWire backends talk
+to the *session's* sound server, and a system unit has no session — so there is nothing
+listening where the client looks. Name a card directly (`hw:`, `plughw:`) for a system unit,
+and keep `pulse` and `pipewire` for a shell or a user unit.
+
+Since 0.1.5 those two names reach the native backends rather than ALSA's plugin PCMs of the
+same names; `alsa:pulse` and `alsa:pipewire` are the plugin spellings, on every build with
+the ALSA backend. See
+[Choosing an output](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/README.md#choosing-an-output).
 
 ### The player has the wrong device, or none
 
@@ -298,20 +310,32 @@ Raise the buffer. The default is 100 ms, and the range is 10–2000:
 buffer-ms = 250
 ```
 
-That is one figure for every backend — ALSA divides it into periods, PortAudio makes it the
-ring size, and a device-less sink ignores it. A figure smaller than one device buffer is
-raised to the floor and says so at `debug`. See
+That is one figure for every backend — ALSA divides it into periods, PortAudio and PipeWire
+make it the ring size, PulseAudio makes it the server's own queue, and a device-less sink
+ignores it. PortAudio raises a figure smaller than one device buffer to that floor and says
+so at `debug`; PipeWire asks the graph for a quantum the ring can hold, and warns — naming
+the figure to pass — when a quantum forced larger would underrun it. See
 [Buffering, and what gets advertised](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/README.md#buffering-and-what-gets-advertised).
 
 If it is one speaker out of sync with the others rather than dropping out, that is
 `delay`, not `buffer-ms` — see [Controlling the Player](Controlling-the-Player).
+
+Two known issues in 0.1.5 sound like dropouts and are not the buffer:
+
+- **`-o pulse` under pipewire-pulse** can log `Lost sync` / `Regained sync` once or twice a
+  minute, with audible artifacts and no underruns anywhere —
+  [#32](https://github.com/Sendspin/sendspin-cpp-cli/issues/32). On a PipeWire host, use the
+  native `-o pipewire`, which does not show it.
+- **A mid-stream format change** — a queue moving from, say, a 48 kHz track to a 192 kHz one
+  — can leave playback desynced until you pause and resume —
+  [#30](https://github.com/Sendspin/sendspin-cpp-cli/issues/30).
 
 ## macOS: "cannot be opened because the developer cannot be verified"
 
 Clear the quarantine flag:
 
 ```bash
-xattr -d com.apple.quarantine ./sendspin-cli-0.1.0-macos-arm64/usr/local/bin/sendspin-cli
+xattr -d com.apple.quarantine ./sendspin-cli-0.1.5-macos-arm64/usr/local/bin/sendspin-cli
 ```
 
 Unpacking from a terminal avoids it in the first place, and `sudo installer -pkg … -target /`
