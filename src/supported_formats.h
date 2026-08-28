@@ -67,7 +67,7 @@ std::vector<sendspin::AudioSupportedFormatObject> supported_formats(const SinkCa
 /// same reason and a stronger one: that is the only shape supported_formats() ever emits it in,
 /// whatever the device would take, so any other is unreachable rather than merely unadvertised.
 ///
-/// Only the *shape* is settled here. Whether the device actually takes the format is a
+/// Only the *shape* is settled here. Whether the advertisement carries the format is a
 /// property of the host, answered at startup by pin_preferred_format() against the derived
 /// advertisement -- the split that lets a config file be validated without opening a device.
 /// @param error Set to the reason when false comes back, without the flag's name -- the
@@ -84,9 +84,10 @@ bool parse_format_spec(const std::string& spec, sendspin::AudioSupportedFormatOb
 /// the front is the whole of what "preferred" means on the wire.
 ///
 /// Absence is the caller's to act on, and the intended action is to refuse to start: an
-/// operator who pinned a format their device cannot take asked for something this player
-/// cannot do, and playing something else instead is the failure --audio-format exists to
-/// prevent.
+/// operator who pinned a format the advertisement does not carry asked for something no
+/// conforming server will send, and playing something else instead is the failure
+/// --audio-format exists to prevent. Absence is not proof the device refuses the format --
+/// the advertisement is narrowed on the channels axis before it gets here.
 /// @return true if `preferred` was found (and is now first).
 bool pin_preferred_format(std::vector<sendspin::AudioSupportedFormatObject>& formats,
                           const sendspin::AudioSupportedFormatObject& preferred);

@@ -789,17 +789,20 @@ int main(int argc, char* argv[]) {
 
     std::vector<sendspin::AudioSupportedFormatObject> formats = advertised_formats(*sink);
     // The --audio-format pin, applied to the derived list because that is the promise being
-    // reordered: an entry in front of it is one the device really takes. A pin the list does
-    // not contain is a hard stop -- the operator asked for the one shape their DAC is happy
-    // in, and starting anyway would play everything except that. Against the *fallback* list
-    // when the device reported nothing, deliberately: that run advertises the permissive set,
-    // so the pin is checked against what actually goes out.
+    // reordered: an entry in front of it is one already going out. That list can be narrower
+    // than the device's own report -- advertised_channels() collapses the channels axis to one
+    // count -- so a pin missing from it is not necessarily one the device refuses. It is a
+    // hard stop either way: the operator asked for the one shape their DAC is happy in, and
+    // starting anyway would play everything except that. Against the *fallback* list when the
+    // device reported nothing, deliberately: that run advertises the permissive set, so the
+    // pin is checked against what actually goes out.
     if (opts.audio_format.has_value()) {
         if (!pin_preferred_format(formats, *opts.audio_format)) {
             log_fatal(LOG_TAG_AUDIO,
-                      "--audio-format asked for %s, which output device '%s' does not take -- "
-                      "refusing to start rather than play something else. Run with -l to see "
-                      "what the device accepts.",
+                      "--audio-format asked for %s, which is not among the formats advertised "
+                      "for output device '%s' -- refusing to start rather than play something "
+                      "else. Run with -l to see what the device itself reports -- not the "
+                      "same set as what gets advertised.",
                       describe_formats({*opts.audio_format}).c_str(), sink->name().c_str());
             return 1;
         }

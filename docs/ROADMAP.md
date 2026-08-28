@@ -2191,14 +2191,15 @@ exit on failure.
   order, so the front is the whole of what "preferred" means on the wire — and
   everything else the device takes is still offered behind it, so a server that cannot
   encode the pin has the rest of the list to fall back on.
-- **A pin the device cannot take refuses to start**, naming the device, the format, and
-  `-l` as the way to see what would be accepted. Checked against the *derived* list — or
-  the permissive fallback when the device reported nothing, since that is what actually
-  goes out — so the refusal describes the real advertisement.
-- **Parse-time shape validation, startup-time device validation.** The grammar, the
+- **A pin the advertisement does not carry refuses to start**, naming the format, the
+  device, and `-l` as the way to see what the device itself reports — not the same set as
+  what is advertised, which carries a single channel count. Checked against the *derived*
+  list — or the permissive fallback when the device reported nothing, since that is what
+  actually goes out — so the refusal describes the real advertisement.
+- **Parse-time shape validation, startup-time advertisement validation.** The grammar, the
   codec names, the four emittable bit depths and the one shape Opus is ever advertised in
   are settled in `parse_format_spec()` when the flag is read — so a config file is
-  validated without opening a device — and whether the device takes the format is
+  validated without opening a device — and whether the advertisement carries the format is
   answered where the sink is real.
 
 Verified against a real `aiosendspin` server: with `pcm:44100:16:2` pinned on a device
