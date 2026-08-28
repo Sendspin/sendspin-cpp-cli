@@ -51,7 +51,8 @@
 # Pin a preferred audio format -- codec:rate:depth:channels, codecs flac/opus/pcm -- for
 # the DAC that is only happy in one shape. Moves that entry to the front of the advertised
 # list, where a server picks first; the rest of what the device takes is still offered.
-# A format the device cannot take refuses to start; `sendspin-cli -l` shows what it accepts.
+# A format the advertised list does not carry refuses to start; `sendspin-cli -l` shows what
+# the device itself reports -- not the same set as what goes out.
 #audio-format = flac:48000:24:2
 
 # The port this player's own WebSocket server listens on, for a server that connects in.

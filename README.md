@@ -641,15 +641,19 @@ device, the format, and the fact that the stream's audio is being discarded —
 rather than leaving a player that looks healthy and plays nothing.
 
 `--audio-format <codec:rate:depth:channels>` (e.g. `flac:48000:24:2`) pins a
-preferred format on top of that derived list — the way to hold a fussy DAC at the
-one shape it is happy in. It is a *reorder*, not a narrowing: the pinned entry
-moves to the front, which is where a spec-following server picks, and everything
-else the device takes is still offered behind it. A pin the device cannot take
-**refuses to start** — playing something else instead is the failure the flag
-exists to prevent — and `-l` shows what would be accepted. Codecs are `flac`,
-`opus` and `pcm`; the grammar is the Python `sendspin-cli`'s, plus `opus`. An
-`opus` pin is refused outright at anything but 48 kHz / 16-bit / at most two
-channels, since that is the only shape it is ever advertised in.
+preferred format on top of that derived list — the way to hold a fussy DAC at
+the one shape it is happy in. It is a *reorder*, not a narrowing: the pinned
+entry moves to the front, which is where a spec-following server picks, and
+everything else the device takes is still offered behind it. A pin that
+derived list does not carry **refuses to start** — playing something else
+instead is the failure the flag exists to prevent — and `-l` shows what the
+device itself reports, which is not the same set. The advertisement carries a
+single channel count — stereo where the device takes it, its narrowest count
+otherwise — so a mono or multichannel pin is refused on any device that also
+takes stereo. Codecs are `flac`, `opus` and `pcm`; the grammar is the Python
+`sendspin-cli`'s, plus `opus`. An `opus` pin is refused outright at anything
+but 48 kHz / 16-bit / at most two channels, since that is the only shape it is
+ever advertised in.
 
 ### Running as a daemon
 

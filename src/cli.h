@@ -214,8 +214,8 @@ struct Options {
     ///
     /// A *reorder*, not a narrowing: the pinned entry moves to the front of the advertised
     /// list, which is what "preferred" means on the wire, and everything the device takes is
-    /// still offered behind it. Parsing settles the shape here; whether the device really
-    /// takes it is answered at startup, where a pin the derived advertisement does not
+    /// still offered behind it. Parsing settles the shape here; whether the advertisement
+    /// carries it is answered at startup, where a pin the derived advertisement does not
     /// contain is a hard refusal to start -- playing something else instead is the failure
     /// this flag exists to prevent. Grammar and behaviour match the Python CLI's flag of the
     /// same name, extended with `opus`.

@@ -55,7 +55,7 @@ already does that.
 | `server` | `-s`, `--server` | `<host>[:<port>]`, a `ws://` URL, or `mdns:[<name>]` | none — wait to be discovered |
 | `port` | `--port` | the port this player's own WebSocket server listens on | `8928` |
 | `buffer-ms` | `--buffer-ms` | audio the output backend keeps queued, 10–2000 | `100` |
-| `audio-format` | `--audio-format` | pin a preferred format to the front of the advertised list: `codec:rate:depth:channels`, e.g. `flac:48000:24:2`; refuses to start if the device cannot take it, and an `opus` pin at anything but 48000/16 and at most 2 channels is refused outright | none — device-derived order |
+| `audio-format` | `--audio-format` | pin a preferred format to the front of the advertised list: `codec:rate:depth:channels`, e.g. `flac:48000:24:2`; refuses to start if the advertised list does not carry it — it carries a single channel count — and an `opus` pin at anything but 48000/16 and at most 2 channels is refused outright | none — device-derived order |
 | `static-delay` | `--static-delay` | latency this endpoint's hardware adds after the audio port, 0–5000 | `0` |
 | `no-mdns` | `--no-mdns` | `true`/`false` — do not advertise `_sendspin._tcp` | `false` |
 | `mdns-name` | `--mdns-name` | the instance label to advertise, when it should differ from `name` | `name` |

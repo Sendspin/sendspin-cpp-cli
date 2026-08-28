@@ -1133,8 +1133,9 @@ void print_usage(std::FILE* out, const char* prog) {
     std::fprintf(out, "                DAC that is only happy in one shape. Moves that entry to\n");
     std::fprintf(out, "                the front of the advertised list, where a server picks\n");
     std::fprintf(out, "                first; the rest of what the device takes is still\n");
-    std::fprintf(out, "                offered behind it. A format the device does not take\n");
-    std::fprintf(out, "                refuses to start -- run -l to see what it accepts\n");
+    std::fprintf(out, "                offered behind it. A format the advertised list does\n");
+    std::fprintf(out, "                not carry refuses to start -- run -l to see what the\n");
+    std::fprintf(out, "                device reports -- not the same set as what goes out\n");
     std::fprintf(out, "  --static-delay <ms>\n");
     std::fprintf(out, "                How much latency this endpoint's hardware adds AFTER the\n");
     std::fprintf(out, "                audio port -- an amplifier, an external speaker, a DSP.\n");
