@@ -1011,10 +1011,22 @@ the device refused is still audio arriving, so the amplifier is on for exactly a
 long as `status` says `stream: receiving`. Nothing waits on it — a hook that blocks
 cannot stall the audio path. It is reaped from the main loop; its output lands in
 the log (stdout deliberately re-pointed at stderr, since `-o stdout` may be
-carrying PCM); and a non-zero exit is a `W hook:` line, not a player failure. A
-hook still running at shutdown is left to finish: an amplifier half-switched is
+carrying PCM); and a non-zero exit is a `W hook:` line, not a player failure.
+
+Hooks run one at a time, in event order, so a start hook that runs long cannot
+finish after its own stream's stop hook and leave the amplifier on. While one
+runs, the newest event waits — and only the newest: a stop superseded by a start
+while an earlier hook is still running is skipped entirely (a `D hook:` line
+records it), because the hardware should end in the final state, not replay a
+stale one. A hook that *counts* events rather than setting state will see such
+flapping coalesced away. However a hook misbehaves, at most one runs and one
+waits — shutdown, below, is the one exception.
+
+A hook still running at shutdown is left to finish: an amplifier half-switched is
 worse than an orphan. A player stopped while a stream is playing runs its stop
-hook on the way out, so `systemctl stop` leaves the amplifier off rather than on.
+hook on the way out — beside a start hook that has still not finished, if it comes
+to that (a `W hook:` line says so) — so `systemctl stop` leaves the amplifier off
+rather than on.
 
 The hook is handed nothing of the player's but that output stream: every other
 descriptor is closed and SIGPIPE is back at its default, so `something | head -1`

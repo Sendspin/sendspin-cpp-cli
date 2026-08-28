@@ -217,7 +217,14 @@ tell from its own — the library reports that one is up, not where it came from
 
 The hook never blocks playback: it is spawned and reaped from the main loop, its output
 goes to the log, and a non-zero exit is a `W hook:` warning rather than a player failure.
-Stopping the player while a stream is playing runs the stop hook before it exits, so
+Hooks run one at a time, in event order — a start hook that runs long cannot finish after
+its own stream's stop hook and leave the amplifier on. While one runs, only the newest
+event waits: a stop superseded by a start while an earlier hook is still running is
+skipped entirely, since the hardware should end in the final state rather than replay a
+stale one — a hook that *counts* events rather than setting state will see such flapping
+coalesced away, and each skipped event is a `D hook:` line in the log.
+Stopping the player while a stream is playing runs the stop hook before it
+exits — beside a start hook that has still not finished, if it comes to that — so
 `systemctl stop` switches the amplifier off rather than leaving it on. The hook is handed
 nothing of the player's but that output stream — every other descriptor is closed and
 SIGPIPE is back at its default — so `something | head -1` behaves as it would in any other

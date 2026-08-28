@@ -93,6 +93,85 @@ std::vector<std::string> hook_environment(const char* event, const HookContext& 
 }  // namespace
 
 void HookRunner::run(const std::string& command, const char* event, const HookContext& context) {
+    if (!this->running_.empty()) {
+        // One at a time: spawned side by side, two events race in the scheduler, and a start
+        // hook finishing after its own stream's stop hook leaves the amplifier on with the
+        // player idle. The newest event wins the slot -- the hardware should end in the
+        // final state, not replay a stale intermediate on the way there.
+        if (this->pending_.has_value()) {
+            cli_log(LogLevel::DEBUG, "The queued %s hook was superseded by the %s event",
+                    this->pending_->event.c_str(), event);
+        }
+        this->pending_ = PendingHook{command, event, context};
+        return;
+    }
+    this->spawn(command, event, context);
+}
+
+void HookRunner::poll() {
+    for (size_t index = 0; index < this->running_.size();) {
+        const RunningHook& hook = this->running_[index];
+        int status = 0;
+        const pid_t reaped = waitpid(hook.pid, &status, WNOHANG);
+        if (reaped == 0) {
+            ++index;
+            continue;
+        }
+        if (reaped < 0 && errno == EINTR) {
+            // The signal landed on the call, not on the child: the hook is still running, and
+            // the next poll() asks again. Every handler this daemon installs restarts its call
+            // -- std::signal()'s BSD semantics for SIGINT and SIGTERM, SA_RESTART for SIGHUP --
+            // so this is a guard rather than a path taken. Erasing here instead would leak a
+            // zombie per stream, with nothing in the log to say why.
+            ++index;
+            continue;
+        }
+        if (reaped < 0) {
+            // ECHILD is the one that reaches this, and a child that cannot be waited on can
+            // only be leaked, not re-polled -- so the entry goes. Said out loud because it
+            // means something else reaped the hook, which is worth a breadcrumb; DEBUG because
+            // the hook itself ran and there is nothing an operator can do about it.
+            cli_log(LogLevel::DEBUG, "The %s hook [%d] could not be waited on (%s)",
+                    hook.event.c_str(), static_cast<int>(hook.pid), std::strerror(errno));
+        }
+        if (reaped == hook.pid && WIFEXITED(status) && WEXITSTATUS(status) != 0) {
+            cli_log(LogLevel::WARN, "The %s hook [%d] exited %d", hook.event.c_str(),
+                    static_cast<int>(hook.pid), WEXITSTATUS(status));
+        } else if (reaped == hook.pid && WIFSIGNALED(status)) {
+            cli_log(LogLevel::WARN, "The %s hook [%d] was killed by signal %d",
+                    hook.event.c_str(), static_cast<int>(hook.pid), WTERMSIG(status));
+        } else if (reaped == hook.pid) {
+            cli_log(LogLevel::DEBUG, "The %s hook [%d] finished", hook.event.c_str(),
+                    static_cast<int>(hook.pid));
+        }
+        this->running_.erase(this->running_.begin() + static_cast<ptrdiff_t>(index));
+    }
+
+    if (this->running_.empty() && this->pending_.has_value()) {
+        // Its turn: everything ahead of it has been reaped. Taken out of the slot before the
+        // spawn, which fills running_ again.
+        const PendingHook next = *this->pending_;
+        this->pending_.reset();
+        this->spawn(next.command, next.event.c_str(), next.context);
+    }
+}
+
+void HookRunner::flush() {
+    if (!this->pending_.has_value()) {
+        return;
+    }
+    if (!this->running_.empty()) {
+        // Ordering is knowingly given up, and said at WARN because it means a hook has hung:
+        // the pending hook -- the stop the daemon promised on the way out -- must run at all.
+        cli_log(LogLevel::WARN, "The %s hook has not finished -- running the %s hook beside it",
+                this->running_.front().event.c_str(), this->pending_->event.c_str());
+    }
+    const PendingHook next = *this->pending_;
+    this->pending_.reset();
+    this->spawn(next.command, next.event.c_str(), next.context);
+}
+
+void HookRunner::spawn(const std::string& command, const char* event, const HookContext& context) {
     // Built before the fork, because after it almost nothing is legal: this process has the
     // library's background threads, so the child may only call async-signal-safe functions
     // between fork() and execve() -- which allocation, and so std::string, is not.
@@ -155,46 +234,6 @@ void HookRunner::run(const std::string& command, const char* event, const HookCo
     // the event and pid identify the run.
     cli_log(LogLevel::DEBUG, "Running %s hook [%d]", event, static_cast<int>(pid));
     this->running_.push_back({pid, event});
-}
-
-void HookRunner::poll() {
-    for (size_t index = 0; index < this->running_.size();) {
-        const RunningHook& hook = this->running_[index];
-        int status = 0;
-        const pid_t reaped = waitpid(hook.pid, &status, WNOHANG);
-        if (reaped == 0) {
-            ++index;
-            continue;
-        }
-        if (reaped < 0 && errno == EINTR) {
-            // The signal landed on the call, not on the child: the hook is still running, and
-            // the next poll() asks again. Every handler this daemon installs restarts its call
-            // -- std::signal()'s BSD semantics for SIGINT and SIGTERM, SA_RESTART for SIGHUP --
-            // so this is a guard rather than a path taken. Erasing here instead would leak a
-            // zombie per stream, with nothing in the log to say why.
-            ++index;
-            continue;
-        }
-        if (reaped < 0) {
-            // ECHILD is the one that reaches this, and a child that cannot be waited on can
-            // only be leaked, not re-polled -- so the entry goes. Said out loud because it
-            // means something else reaped the hook, which is worth a breadcrumb; DEBUG because
-            // the hook itself ran and there is nothing an operator can do about it.
-            cli_log(LogLevel::DEBUG, "The %s hook [%d] could not be waited on (%s)",
-                    hook.event.c_str(), static_cast<int>(hook.pid), std::strerror(errno));
-        }
-        if (reaped == hook.pid && WIFEXITED(status) && WEXITSTATUS(status) != 0) {
-            cli_log(LogLevel::WARN, "The %s hook [%d] exited %d", hook.event.c_str(),
-                    static_cast<int>(hook.pid), WEXITSTATUS(status));
-        } else if (reaped == hook.pid && WIFSIGNALED(status)) {
-            cli_log(LogLevel::WARN, "The %s hook [%d] was killed by signal %d",
-                    hook.event.c_str(), static_cast<int>(hook.pid), WTERMSIG(status));
-        } else if (reaped == hook.pid) {
-            cli_log(LogLevel::DEBUG, "The %s hook [%d] finished", hook.event.c_str(),
-                    static_cast<int>(hook.pid));
-        }
-        this->running_.erase(this->running_.begin() + static_cast<ptrdiff_t>(index));
-    }
 }
 
 }  // namespace sendspin_cli

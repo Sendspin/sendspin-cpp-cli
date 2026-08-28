@@ -24,7 +24,6 @@
 #include <gtest/gtest.h>
 #include <unistd.h>
 
-#include <algorithm>
 #include <chrono>
 #include <csignal>
 #include <cstdio>
@@ -225,18 +224,99 @@ TEST(HookRunner, AFailingHookIsReapedRatherThanLeaked) {
     EXPECT_EQ(runner.running(), 0U);
 }
 
-TEST(HookRunner, SeveralHooksInFlightAreEachReaped) {
+// ---------------------------------------------------------------------------
+// One at a time, newest event wins the wait
+// ---------------------------------------------------------------------------
+
+/// A hook command that spins until `gate` exists, then runs `then`.
+///
+/// What every ordering test below hangs off: the gated hook is deterministically still
+/// running until the test opens the gate, with no scheduler timing assumed anywhere.
+std::string gated(const std::string& gate, const std::string& then) {
+    return "while [ ! -e " + gate + " ]; do sleep 0.01; done; " + then;
+}
+
+void open_gate(const std::string& path) {
+    const std::ofstream gate(path);
+}
+
+TEST(HookRunner, ASecondEventWaitsForTheRunningHook) {
     ScratchFile out;
+    ScratchFile gate;
     HookRunner runner;
-    runner.run("printf 'a' >> " + out.path(), "start", HookContext{});
+    // The start hook cannot write until the gate exists, so spawned side by side the stop
+    // hook's 'b' would deterministically land first. The order below is the contract.
+    runner.run(gated(gate.path(), "printf 'a' >> " + out.path()), "start", HookContext{});
+    runner.run("printf 'b' >> " + out.path(), "stop", HookContext{});
+
+    EXPECT_EQ(runner.running(), 1U);
+    open_gate(gate.path());
+    ASSERT_TRUE(drain(runner));
+    EXPECT_EQ(slurp(out.path()), "ab");
+}
+
+TEST(HookRunner, TheNewestEventReplacesTheWaitingOne) {
+    ScratchFile out;
+    ScratchFile gate;
+    HookRunner runner;
+    runner.run(gated(gate.path(), "printf 'a' >> " + out.path()), "start", HookContext{});
     runner.run("printf 'b' >> " + out.path(), "stop", HookContext{});
     runner.run("printf 'c' >> " + out.path(), "start", HookContext{});
 
+    open_gate(gate.path());
     ASSERT_TRUE(drain(runner));
-    // Order is the scheduler's, so only the multiset of writes is promised.
-    std::string content = slurp(out.path());
-    std::sort(content.begin(), content.end());
-    EXPECT_EQ(content, "abc");
+    // The stop was superseded while it waited: the hardware ends in the final state, not
+    // replaying the intermediate on the way there.
+    EXPECT_EQ(slurp(out.path()), "ac");
+}
+
+TEST(HookRunner, AWaitingEventKeepsItsOwnContext) {
+    ScratchFile out;
+    ScratchFile gate;
+    HookRunner runner;
+    runner.run(gated(gate.path(), "true"), "start", HookContext{});
+
+    HookContext context;
+    context.server_id = "srv-b";
+    runner.run("printf '%s' \"$SENDSPIN_SERVER_ID\" > " + out.path(), "stop", context);
+    // What the caller does to its object between events must not reach into the slot: the
+    // waiting event describes the stream it was fired for.
+    context.server_id = "srv-c";
+
+    open_gate(gate.path());
+    ASSERT_TRUE(drain(runner));
+    EXPECT_EQ(slurp(out.path()), "srv-b");
+}
+
+TEST(HookRunner, FlushRunsTheWaitingHookBesideAHungOne) {
+    ScratchFile out;
+    ScratchFile gate;
+    HookRunner runner;
+    runner.run(gated(gate.path(), "true"), "start", HookContext{});
+    runner.run("printf 'b' >> " + out.path(), "stop", HookContext{});
+
+    // What the shutdown path does when the drain ends: two children out at once,
+    // deliberately -- the promise that stopping the player runs the stop hook outranks
+    // ordering when no more events can come.
+    runner.flush();
+    EXPECT_EQ(runner.running(), 2U);
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (slurp(out.path()) != "b" && std::chrono::steady_clock::now() < deadline) {
+        runner.poll();
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    EXPECT_EQ(slurp(out.path()), "b");
+
+    open_gate(gate.path());
+    EXPECT_TRUE(drain(runner));
+}
+
+TEST(HookRunner, FlushWithNothingWaitingDoesNothing) {
+    HookRunner runner;
+    runner.flush();
+
+    EXPECT_EQ(runner.running(), 0U);
 }
 
 TEST(HookRunner, DoesNotHandTheHookThePlayersIgnoredSIGPIPE) {
