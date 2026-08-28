@@ -986,7 +986,8 @@ cannot stall the audio path. It is reaped from the main loop; its output lands i
 the log (stdout deliberately re-pointed at stderr, since `-o stdout` may be
 carrying PCM); and a non-zero exit is a `W hook:` line, not a player failure. A
 hook still running at shutdown is left to finish: an amplifier half-switched is
-worse than an orphan.
+worse than an orphan. A player stopped while a stream is playing runs its stop
+hook on the way out, so `systemctl stop` leaves the amplifier off rather than on.
 
 The hook is handed nothing of the player's but that output stream: every other
 descriptor is closed and SIGPIPE is back at its default, so `something | head -1`

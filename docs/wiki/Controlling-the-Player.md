@@ -209,9 +209,11 @@ a stream usually ends when its connection goes and there is nothing left to ask 
 
 The hook never blocks playback: it is spawned and reaped from the main loop, its output
 goes to the log, and a non-zero exit is a `W hook:` warning rather than a player failure.
-The hook is handed nothing of the player's but that output stream — every other descriptor
-is closed and SIGPIPE is back at its default — so `something | head -1` behaves as it would
-in any other shell, and a slow hook cannot sit on the port a restart needs.
+Stopping the player while a stream is playing runs the stop hook before it exits, so
+`systemctl stop` switches the amplifier off rather than leaving it on. The hook is handed
+nothing of the player's but that output stream — every other descriptor is closed and
+SIGPIPE is back at its default — so `something | head -1` behaves as it would in any other
+shell, and a slow hook cannot sit on the port a restart needs.
 It fires on the stream lifecycle — for exactly as long as `status` says
 `stream: receiving` — so a stream whose format the device refused still switches the
 amplifier: audio is arriving either way. Both flags can also come from the config file, as

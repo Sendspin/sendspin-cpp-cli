@@ -2111,6 +2111,12 @@ no workaround either — the control socket answers questions, it does not annou
   polled from the main loop, next to mDNS and the control socket. A non-zero exit or a
   signal death is one `W hook:` line; a hook still running at shutdown is left to
   finish, because an amplifier half-switched is worse than an orphan.
+- **The stream's end is waited for on the way out.** `disconnect()` only enqueues it, and
+  it is `client.loop()` that delivers it, so without this a player killed mid-stream reaches
+  `return 0` with its stop hook unrun and the amplifier still on. The loop is pumped after
+  the disconnect until the listener reports the stream over, bounded by
+  `SHUTDOWN_DRAIN_MS` against a wait of about fifty, and says so and goes if that passes.
+  The stop hook it spawns is by definition the orphan case above: nothing waits on it.
 - **Fired on the stream lifecycle, not on the format being accepted**, through a
   `PlayerListener::on_stream_event` seam shaped like `AudioSink::on_frames_played`. A
   stream the device refused is audio arriving and being discarded — the case where the

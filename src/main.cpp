@@ -71,6 +71,15 @@ using sendspin::LogLevel;
 /// background thread, so this only bounds how quickly the main loop reacts to events.
 constexpr int LOOP_INTERVAL_MS = 10;
 
+/// How long the shutdown below keeps pumping client.loop() for the stream's end.
+///
+/// The wait it covers is about 50 ms: one tick for the goodbye's close event to reach
+/// drop_connection() and enqueue the stream's end, up to the library's 20 ms audio-write
+/// timeout for its sync task to notice and go idle, and one more tick for the drain to see
+/// that and deliver the callback. The rest is headroom, and it is still nothing beside
+/// systemd's stop timeout.
+constexpr int SHUTDOWN_DRAIN_MS = 500;
+
 std::atomic<bool> g_running{true};
 
 void handle_signal(int /*sig*/) {
@@ -958,6 +967,28 @@ int main(int argc, char* argv[]) {
     mdns.stop();
     control_socket.close();
     client.disconnect(sendspin::SendspinGoodbyeReason::SHUTDOWN);
+    // disconnect() only asks. The stream's end is delivered by client.loop() like every other
+    // callback, so the loop above having exited is not the end of it: without this pump a
+    // player killed mid-stream runs no stop hook at all, which for the amplifier the feature
+    // exists to switch is the whole failure. Pumped rather than fired from here so the one
+    // producer of stream events stays the listener, which also clears the sink on its way past.
+    for (int waited_ms = 0; player_listener.streaming(); waited_ms += LOOP_INTERVAL_MS) {
+        if (waited_ms >= SHUTDOWN_DRAIN_MS) {
+            cli_log(LogLevel::WARN,
+                    "The stream did not end within %d ms of disconnecting -- any --hook-stop "
+                    "has not run",
+                    SHUTDOWN_DRAIN_MS);
+            break;
+        }
+        client.loop();
+        hooks.poll();
+        std::this_thread::sleep_for(std::chrono::milliseconds(LOOP_INTERVAL_MS));
+    }
+    // The lambda holds references to locals declared after the listener, so it outlives them by
+    // exactly the width of this scope's teardown. Nothing calls it there -- stream events only
+    // arrive inside client.loop(), and the last one has run -- and dropping it here is what
+    // keeps that true of any code added below rather than of this ordering.
+    player_listener.on_stream_event = nullptr;
     sink->stop();
     return 0;
 }
