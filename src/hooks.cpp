@@ -16,10 +16,13 @@
 
 #include "log.h"
 
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
+#include <csignal>
 #include <cstring>
 
 // The environ POSIX promises but no header is required to declare.
@@ -36,6 +39,22 @@ namespace {
 /// The prefix every variable a hook is handed carries, and the one inherited variables
 /// under it are cleared from.
 constexpr const char* ENV_PREFIX = "SENDSPIN_";
+
+/// How far the child's close loop runs when the descriptor limit is unlimited or absurd.
+///
+/// The loop is on the stream path, once per hook, and `LimitNOFILE=infinity` under systemd
+/// would otherwise ask it to close a million descriptors that were never open.
+constexpr rlim_t FD_CLOSE_CAP = 4096;
+
+/// Where the child's close loop stops: the soft descriptor limit, or FD_CLOSE_CAP when that is
+/// higher. Read before the fork, where getrlimit() is still legal to call.
+int fd_close_limit() {
+    rlimit limit{};
+    if (getrlimit(RLIMIT_NOFILE, &limit) != 0) {
+        return static_cast<int>(FD_CLOSE_CAP);
+    }
+    return static_cast<int>(std::min(limit.rlim_cur, FD_CLOSE_CAP));
+}
 
 /// Appends `name=value` to `env`, or nothing when the value is empty.
 ///
@@ -88,6 +107,10 @@ void HookRunner::run(const std::string& command, const char* event, const HookCo
     char* const argv[] = {const_cast<char*>("sh"), const_cast<char*>("-c"),
                           const_cast<char*>(command.c_str()), nullptr};
 
+    // Read here for the same reason the environment is built here: getrlimit() is not on the
+    // async-signal-safe list, and the close loop in the child needs the answer.
+    const int fd_limit = fd_close_limit();
+
     const pid_t pid = fork();
     if (pid < 0) {
         cli_log(LogLevel::WARN, "Could not run the %s hook: fork: %s", event,
@@ -95,10 +118,31 @@ void HookRunner::run(const std::string& command, const char* event, const HookCo
         return;
     }
     if (pid == 0) {
+        // Every call below is async-signal-safe, which after the fork is the bar: this process
+        // has the library's background threads, and the child holds whatever they were holding.
+        //
         // The player's stdout may be carrying PCM (-o stdout), so the hook's is pointed at
         // stderr -- which under -f is the logfile, where a hook's output belongs anyway.
-        // dup2() and execve() are both async-signal-safe, which after the fork is the bar.
-        dup2(STDERR_FILENO, STDOUT_FILENO);
+        // Checked, because an unnoticed failure here is a hook's `echo` in the middle of the
+        // audio -- the one thing this line exists to prevent.
+        if (dup2(STDERR_FILENO, STDOUT_FILENO) < 0) {
+            _exit(127);
+        }
+        // Everything above stderr belongs to the player, not to the hook: the audio port's
+        // listening socket, the control socket and the peers it has accepted, the connection to
+        // the server. A hook that kept them holds the port a restart needs for as long as it
+        // runs -- the restart then logs "Address already in use" and accepts nothing -- and
+        // leaves a `status` reader waiting on an EOF that can no longer come. Closed here
+        // rather than opened close-on-exec at each site, because the sockets the library and
+        // its websocket dependency open are not this process's to reach into -- unlike the
+        // pidfile and the logfile, which are opened O_CLOEXEC where they are opened.
+        for (int fd = STDERR_FILENO + 1; fd < fd_limit; ++fd) {
+            close(fd);
+        }
+        // The player ignores SIGPIPE, and an ignored disposition survives execve() where a
+        // caught one does not. A hook that inherited it would find `... | head -1` failing on a
+        // write where every other shell on the box ends the writer instead.
+        std::signal(SIGPIPE, SIG_DFL);
         execve("/bin/sh", argv, envp.data());
         // Only reached when the exec itself failed. 127 is the shell's own "command not
         // found", so the reap below reports it like any other failing hook.

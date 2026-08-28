@@ -34,7 +34,7 @@ struct HookContext {
     std::string server_id;    ///< SENDSPIN_SERVER_ID: the connected server's id
     std::string server_name;  ///< SENDSPIN_SERVER_NAME: its friendly name
     std::string server_url;   ///< SENDSPIN_SERVER_URL: the URL this run dialled, outbound only
-    std::string client_id;    ///< SENDSPIN_CLIENT_ID: this player's id, when one was chosen
+    std::string client_id;    ///< SENDSPIN_CLIENT_ID: reserved; nothing chooses this id yet
     std::string client_name;  ///< SENDSPIN_CLIENT_NAME: this player's friendly name
 };
 
@@ -49,6 +49,11 @@ struct HookContext {
 /// logfile -- so whatever a hook prints lands beside the player's own lines. Its stdout is
 /// deliberately not inherited: with -o stdout that stream is carrying PCM, and a hook's
 /// `echo` would land in the middle of the audio.
+///
+/// Nothing else of the player's crosses into the hook. Every descriptor above stderr is closed
+/// -- the listening sockets and the connection to the server are the player's, and a hook
+/// holding them keeps a restart from binding its port -- and SIGPIPE goes back to its default,
+/// which the player ignores and an exec would otherwise carry through.
 ///
 /// THREAD SAFETY: run() and poll() must both be called on the main loop thread. That is
 /// where the stream callbacks that trigger hooks already fire, and it is what lets the

@@ -2117,3 +2117,11 @@ no workaround either — the control socket answers questions, it does not annou
 - **The child's stdout goes to stderr**, because with `-o stdout` the parent's stdout is
   carrying PCM and a hook's `echo` would land in the middle of the audio. Under `-f`
   both end up in the logfile, which is where a hook's output belongs anyway.
+- **And nothing else of the player's crosses into it.** Every descriptor above stderr is
+  closed in the child, because an exec carries them all: a hook that kept the audio port's
+  listening socket holds it for as long as it runs, and a restart in that window fails to
+  bind while still logging that it is listening. Closed there rather than opened
+  close-on-exec at each site, since the library's and IXWebSocket's sockets are not ours to
+  reach into. SIGPIPE goes back to `SIG_DFL` for the same reason: the player ignores it, and
+  an ignored disposition survives `execve()` where a caught one does not, so `… | head -1`
+  inside a hook would otherwise report a failed write rather than ending.

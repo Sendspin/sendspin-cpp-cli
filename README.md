@@ -982,6 +982,11 @@ carrying PCM); and a non-zero exit is a `W hook:` line, not a player failure. A
 hook still running at shutdown is left to finish: an amplifier half-switched is
 worse than an orphan.
 
+The hook is handed nothing of the player's but that output stream: every other
+descriptor is closed and SIGPIPE is back at its default, so `something | head -1`
+behaves the way it would in any other shell and a slow hook cannot sit on the
+port a restart needs.
+
 ```bash
 sendspin-cli -o hw:1,0 \
   --hook-start 'amixer -c 1 set Master unmute' \

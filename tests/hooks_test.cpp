@@ -26,6 +26,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <csignal>
 #include <cstdio>
 #include <fstream>
 #include <sstream>
@@ -144,6 +145,24 @@ private:
     std::string path_;
 };
 
+/// Gives a signal a disposition for the length of a test, and puts back what it found.
+class ScopedSignal {
+public:
+    ScopedSignal(int number, void (*handler)(int))
+        : number_(number), previous_(std::signal(number, handler)) {}
+
+    ~ScopedSignal() {
+        std::signal(this->number_, this->previous_);
+    }
+
+    ScopedSignal(const ScopedSignal&) = delete;
+    ScopedSignal& operator=(const ScopedSignal&) = delete;
+
+private:
+    int number_;
+    void (*previous_)(int);
+};
+
 TEST(HookRunner, RunsTheCommandWithTheEventEnvironment) {
     ScratchFile out;
     HookContext context;
@@ -218,6 +237,53 @@ TEST(HookRunner, SeveralHooksInFlightAreEachReaped) {
     std::string content = slurp(out.path());
     std::sort(content.begin(), content.end());
     EXPECT_EQ(content, "abc");
+}
+
+TEST(HookRunner, DoesNotHandTheHookThePlayersIgnoredSIGPIPE) {
+    // The player ignores SIGPIPE, and an ignored disposition survives execve() where a caught
+    // one does not -- so without the reset in the child, every hook and everything it spawns
+    // would run with it ignored. 141 is the writer ended by the pipe closing (128 + SIGPIPE),
+    // which is what a shell command anywhere else on the box does; 1 is it giving up on a
+    // write error instead, which is what inheriting the ignore looks like.
+    //
+    // dd rather than `yes` because it stops on its own: a regression here should fail this
+    // assertion, not leave something writing until the timeout.
+    ScopedSignal ignored(SIGPIPE, SIG_IGN);
+    ScratchFile out;
+
+    HookRunner runner;
+    runner.run("{ dd if=/dev/zero bs=65536 count=64 2>/dev/null; echo \"$?\" > " + out.path() +
+                   "; } | head -c 1 > /dev/null",
+               "start", HookContext{});
+
+    ASSERT_TRUE(drain(runner));
+    EXPECT_EQ(slurp(out.path()), "141\n");
+}
+
+TEST(HookRunner, DoesNotHandTheHookThePlayersOpenDescriptors) {
+    // Standing in for the player's real ones: the audio port's listening socket, the control
+    // socket's accepted peers, the connection to the server. A hook that inherited them would
+    // hold the port a restart needs for as long as it ran.
+    ScratchFile out;
+    const int held = ::dup(STDERR_FILENO);
+    ASSERT_GE(held, 0);
+    if (held > 9) {
+        ::close(held);
+        GTEST_SKIP() << "no single-digit descriptor free; the shell below cannot name one above 9";
+    }
+
+    HookRunner runner;
+    // stderr redirected before the descriptor is named, so the shell's complaint about a
+    // descriptor that is not there lands in /dev/null rather than in the test's output.
+    runner.run("echo held 2>/dev/null >&" + std::to_string(held) + " || echo closed > " +
+                   out.path(),
+               "start", HookContext{});
+
+    const bool drained = drain(runner);
+    ::close(held);
+
+    ASSERT_TRUE(drained);
+    EXPECT_EQ(slurp(out.path()), "closed\n");
 }
 
 }  // namespace
