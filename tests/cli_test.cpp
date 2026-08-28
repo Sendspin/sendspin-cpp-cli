@@ -186,6 +186,41 @@ TEST(ParseOptions, EmptyValuesAreRejected) {
 }
 
 // ---------------------------------------------------------------------------
+// Identity: --id, --manufacturer, --product-name
+// ---------------------------------------------------------------------------
+
+TEST(ParseOptions, IdentityFlagsSetTheirFields) {
+    Parse parse({"--id", "kitchen-left", "--manufacturer", "Acme Audio", "--product-name",
+                 "Acme Streamer"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_EQ(parse.options().client_id, "kitchen-left");
+    EXPECT_EQ(parse.options().manufacturer, "Acme Audio");
+    EXPECT_EQ(parse.options().product_name, "Acme Streamer");
+}
+
+TEST(ParseOptions, IdentityDefaultsSayWhatThisReallyIs) {
+    Parse parse({});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    // Empty deliberately: the library derives the MAC-based id only when nothing is set,
+    // so a non-empty default here would silently turn that path off for everyone.
+    EXPECT_TRUE(parse.options().client_id.empty());
+    EXPECT_EQ(parse.options().manufacturer, "sendspin-cpp-cli");
+    EXPECT_EQ(parse.options().product_name, "sendspin-cli");
+}
+
+TEST(ParseOptions, IdentityFlagsRejectEmptyValues) {
+    for (const char* flag : {"--id", "--manufacturer", "--product-name"}) {
+        Parse parse({flag, ""});
+
+        EXPECT_FALSE(parse.ok()) << flag << " accepted an empty value";
+        EXPECT_NE(parse.diagnostics().find("error:"), std::string::npos) << flag;
+        EXPECT_NE(parse.diagnostics().find(flag), std::string::npos) << flag;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // --port
 // ---------------------------------------------------------------------------
 

@@ -150,8 +150,9 @@ nothing for a player running as you.
 - **`avahi-daemon` is what provides mDNS on a Pi**, and Raspberry Pi OS ships it running. If
   you have turned it off, the player warns and retries rather than failing — but nothing will
   discover it until it is back.
-- **One player per Pi.** Two on one host need different `--port`, different `--state-dir`
-  and different control sockets. It works; it is just not what a Pi is usually for.
+- **One player per Pi.** Two on one host need different `--id`, different `--port`,
+  different `--state-dir` and different control sockets. It works; it is just not what a
+  Pi is usually for.
 
 ## Next
 

@@ -212,7 +212,8 @@ TEST(ConfigPrecedence, AConfigValueBeatsTheBuiltInDefault) {
     ASSERT_TRUE(scratch.created());
     const std::string config = scratch.write(
         "config", "# a player in the kitchen\nname = kitchen\nport = 9100\nbuffer-ms = 250\n"
-                  "output = null\nmdns-name = Kitchen Speaker\nno-mdns = true\n");
+                  "output = null\nmdns-name = Kitchen Speaker\nno-mdns = true\n"
+                  "id = kitchen-left\nmanufacturer = Acme Audio\nproduct-name = Acme Streamer\n");
 
     Parse parse({}, config);
 
@@ -224,6 +225,9 @@ TEST(ConfigPrecedence, AConfigValueBeatsTheBuiltInDefault) {
     // A value with a space in it survives: only the key is trimmed and the first '=' splits.
     EXPECT_EQ(parse.options().mdns_name, "Kitchen Speaker");
     EXPECT_TRUE(parse.options().no_mdns);
+    EXPECT_EQ(parse.options().client_id, "kitchen-left");
+    EXPECT_EQ(parse.options().manufacturer, "Acme Audio");
+    EXPECT_EQ(parse.options().product_name, "Acme Streamer");
     EXPECT_EQ(parse.options().config_path, config);
 }
 

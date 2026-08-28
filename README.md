@@ -963,13 +963,14 @@ environment rather than as arguments:
 | `SENDSPIN_SERVER_ID` | the connected server's id |
 | `SENDSPIN_SERVER_NAME` | its friendly name |
 | `SENDSPIN_SERVER_URL` | the URL this run dialled — set only on an `-s` run |
+| `SENDSPIN_CLIENT_ID` | this player's id, when `--id` chose one |
 | `SENDSPIN_CLIENT_NAME` | this player's friendly name (`-n`) |
 
 The vocabulary is the Python `sendspin-cli`'s, deliberately: a hook script written
-against one player runs unchanged against the other. `SENDSPIN_CLIENT_ID` is part
-of that vocabulary and reserved here, but nothing arrives in it yet: the library
-derives this player's id from the interface MAC and does not expose it, so the
-honest value waits on a flag that chooses one. A variable whose value is
+against one player runs unchanged against the other. `SENDSPIN_CLIENT_ID` carries the id
+`--id` or the `id` config key chose: the library derives one from the interface
+MAC when neither did, and does not expose what it derived, so a run that
+configured no id leaves the variable unset. A variable whose value is
 unknown for the event is left unset rather than exported empty, so `[ -n
 "$SENDSPIN_SERVER_ID" ]` means what it says — and any `SENDSPIN_*` inherited from
 the player's own environment is cleared first, so a wrapper script's stale export
@@ -1082,14 +1083,21 @@ which is what a foreground run whose terminal has just closed should do.
 The flags follow squeezelite's: `-o` output device, `-l` list devices, `-n` name,
 `-s` server, `-z` daemonize, `-P` pidfile, `-d`/`-f` logging. All but `-l` and
 `-z` also have a long spelling — `--output --name --server --pidfile --logfile
---log-level` — so that every config key is a flag name. Eleven more are long-only
+--log-level` — so that every config key is a flag name. Fourteen more are long-only
 because they are not squeezelite's: `--port`, the port this player serves on,
 `--buffer-ms`, `--static-delay`, the two mDNS flags `--no-mdns` and `--mdns-name`,
 the two control-socket flags `--control-socket` and `--no-control`, the two stream
-hooks `--hook-start` and `--hook-stop`, and `--config` and `--state-dir` for the
-two files above. Run `--help` for the current state of each
-— a few still point at [`docs/ROADMAP.md`](docs/ROADMAP.md) for behaviour that is
-not built yet.
+hooks `--hook-start` and `--hook-stop`, the three identity flags `--id`,
+`--manufacturer` and `--product-name`, and `--config` and `--state-dir` for the
+two files above. `--id` is the one to know about: it is the *stable* id a server
+files this player's volume, group and pairing under, and without it the id is
+derived from the network interface MAC — so two players on one host share it, and
+each server-side setting lands on whichever connected last. A dual-mono pair needs
+its own `--id` per instance, and its own `--port` and `--state-dir` with it — the
+state file is namespaced by neither `--id` nor `--port`, so without `--state-dir`
+the two overwrite each other's volume, mute, delay and last server. Run `--help` for the current
+state of each — a few still point at [`docs/ROADMAP.md`](docs/ROADMAP.md) for
+behaviour that is not built yet.
 
 A **subcommand comes first**, before any flag: `sendspin-cli vol 50 --port 9000`,
 not `sendspin-cli --port 9000 vol 50`. That is not getopt permutation showing
@@ -1248,8 +1256,9 @@ mode `0600`, so a player that loses power mid-write leaves either the old file o
 the new one and never half of either.
 
 Two players on one host share this file unless you give each its own
-`--state-dir`. They already need different `--port`s; give them different state
-directories too, or the second one to save its volume overwrites the first's.
+`--state-dir`. They already need different `--id`s and `--port`s; give them
+different state directories too, or the second one to save its volume overwrites
+the first's.
 
 ## Tests
 

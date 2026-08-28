@@ -40,7 +40,7 @@ struct HookContext {
     /// that dialled in while an outbound attempt was outstanding or had failed carries the
     /// URL of the attempt. server_id always describes the connection the stream arrived on.
     std::string server_url;
-    std::string client_id;    ///< SENDSPIN_CLIENT_ID: reserved; nothing chooses this id yet
+    std::string client_id;    ///< SENDSPIN_CLIENT_ID: this player's id, when --id chose one
     std::string client_name;  ///< SENDSPIN_CLIENT_NAME: this player's friendly name
 };
 

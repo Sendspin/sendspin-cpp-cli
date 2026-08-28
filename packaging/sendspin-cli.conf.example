@@ -20,11 +20,22 @@
 # here at all: -l, -z, --config, --help and --version are refused as unknown keys.
 #
 # Every line below is commented out, since a line that is not is a value chosen. Where an
-# option has a default, that is the value shown; `name` and `server` have none worth
-# printing, so those two are examples instead.
+# option has a default, that is the value shown; the keys with none worth printing --
+# `name`, `id`, `server` and the two hooks -- carry an example instead.
 
 # The name a controller shows for this endpoint. Defaults to this host's name.
 #name = kitchen
+
+# The stable client id a server files this player's volume, group and pairing under --
+# the name above is only what it displays. Defaults to an id derived from the network
+# interface MAC, which two players on one host would share: give each its own id (and
+# its own port and state-dir).
+#id = kitchen-left
+
+# The device info client/hello carries, shown in server device lists. For a product
+# that embeds this player and should be listed as itself.
+#manufacturer = sendspin-cpp-cli
+#product-name = sendspin-cli
 
 # The output device: a reserved name (null, stdout, -) or a <backend>:<device> pair.
 # `sendspin-cli -l` lists what this host has and what each device accepts. The default is
@@ -53,8 +64,9 @@
 # Shell commands run when a stream starts and when it stops -- an amplifier relay, a
 # light. `/bin/sh -c`, with the event's facts in SENDSPIN_* environment variables:
 # SENDSPIN_EVENT (start|stop) always, and SENDSPIN_SERVER_ID, SENDSPIN_SERVER_NAME,
-# SENDSPIN_SERVER_URL and SENDSPIN_CLIENT_NAME where known. The hook runs without
-# blocking playback, its output goes to the log, and a non-zero exit is a warning.
+# SENDSPIN_SERVER_URL, SENDSPIN_CLIENT_ID and SENDSPIN_CLIENT_NAME where known. The hook
+# runs without blocking playback, its output goes to the log, and a non-zero exit is a
+# warning.
 #hook-start = amixer set Master unmute
 #hook-stop = amixer set Master mute
 

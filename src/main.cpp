@@ -769,11 +769,13 @@ int main(int argc, char* argv[]) {
     CliPersistenceProvider persistence(state_store);
 
     sendspin::SendspinClientConfig config;
-    // client_id is left empty on purpose: the library then derives a stable id from the
-    // network interface MAC, which is the right identity for a fixed endpoint.
+    // Without --id this is empty, and the library then derives a stable id from the network
+    // interface MAC -- the right identity for one fixed endpoint per host, and exactly wrong
+    // for two, which is what the flag exists for.
+    config.client_id = opts.client_id;
     config.name = opts.name;
-    config.product_name = "sendspin-cli";
-    config.manufacturer = "sendspin-cpp-cli";
+    config.product_name = opts.product_name;
+    config.manufacturer = opts.manufacturer;
     config.software_version = SENDSPIN_CLI_VERSION;
     config.server_port = opts.port;
 
@@ -914,10 +916,11 @@ int main(int argc, char* argv[]) {
             // has the start's facts to hand it.
             if (started) {
                 stream_context = HookContext{};
+                // client_id is only exported when --id chose one: the MAC-derived default is
+                // the library's own and is not exposed, so there is no honest value to hand a
+                // hook without the flag.
+                stream_context.client_id = opts.client_id;
                 stream_context.client_name = opts.name;
-                // client_id stays unset: the library derives its own from the interface MAC
-                // and does not expose it, so there is no honest value to export until a flag
-                // chooses one.
                 const std::optional<sendspin::ServerInformationObject> info =
                     client.get_server_information();
                 if (info.has_value()) {
