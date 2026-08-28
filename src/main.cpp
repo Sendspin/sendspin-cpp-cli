@@ -887,28 +887,38 @@ int main(int argc, char* argv[]) {
     // captures it, and above the loop because the loop's first client.loop() is the first
     // moment a stream event can fire.
     HookRunner hooks;
+    // What the stream now running started on. Both of its events describe that one stream, so
+    // both are told the same thing -- and the stop event has no other source for it: a stream
+    // ends because its connection went, and by then get_server_information() has nothing left
+    // to answer with. Never stale, because the library fires on_stream_end() only for a stream
+    // it fired on_stream_start() for, and this is rewritten on every one of those.
+    HookContext stream_context;
     if (!opts.hook_start.empty() || !opts.hook_stop.empty()) {
-        player_listener.on_stream_event = [&opts, &client, &hooks, &outbound](bool started) {
+        player_listener.on_stream_event = [&opts, &client, &hooks, &outbound,
+                                           &stream_context](bool started) {
+            // Above the empty-command return below, so a run that gave only --hook-stop still
+            // has the start's facts to hand it.
+            if (started) {
+                stream_context = HookContext{};
+                stream_context.client_name = opts.name;
+                // client_id stays unset: the library derives its own from the interface MAC
+                // and does not expose it, so there is no honest value to export until a flag
+                // chooses one.
+                const std::optional<sendspin::ServerInformationObject> info =
+                    client.get_server_information();
+                if (info.has_value()) {
+                    stream_context.server_id = info->server_id;
+                    stream_context.server_name = info->name;
+                }
+                if (outbound) {
+                    stream_context.server_url = outbound->dialed_url();
+                }
+            }
             const std::string& command = started ? opts.hook_start : opts.hook_stop;
             if (command.empty()) {
                 return;
             }
-            // Gathered per event rather than once: which server this is about is a property
-            // of the connection the stream arrived on, not of the run. client_id stays
-            // unset -- the library derives its own from the interface MAC and does not
-            // expose it, so there is no honest value to export until a flag chooses one.
-            HookContext context;
-            context.client_name = opts.name;
-            const std::optional<sendspin::ServerInformationObject> info =
-                client.get_server_information();
-            if (info.has_value()) {
-                context.server_id = info->server_id;
-                context.server_name = info->name;
-            }
-            if (outbound) {
-                context.server_url = outbound->dialed_url();
-            }
-            hooks.run(command, started ? "start" : "stop", context);
+            hooks.run(command, started ? "start" : "stop", stream_context);
         };
     }
 

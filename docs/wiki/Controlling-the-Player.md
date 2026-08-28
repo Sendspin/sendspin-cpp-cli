@@ -203,7 +203,9 @@ The event's facts arrive in the environment, in the same vocabulary the Python
 `SENDSPIN_EVENT` (`start` or `stop`) always, and `SENDSPIN_SERVER_ID`,
 `SENDSPIN_SERVER_NAME`, `SENDSPIN_SERVER_URL` (outbound `-s` runs only) and
 `SENDSPIN_CLIENT_NAME` where known. An unknown is left *unset* rather than exported
-empty, so `[ -n "$SENDSPIN_SERVER_ID" ]` means what it says.
+empty, so `[ -n "$SENDSPIN_SERVER_ID" ]` means what it says. A stop event carries the
+same server facts as the start it pairs with — gathered when the stream started, because
+a stream usually ends when its connection goes and there is nothing left to ask by then.
 
 The hook never blocks playback: it is spawned and reaped from the main loop, its output
 goes to the log, and a non-zero exit is a `W hook:` warning rather than a player failure.

@@ -2102,7 +2102,9 @@ no workaround either — the control socket answers questions, it does not annou
   the interface MAC and does not expose it, so the honest value arrives with a future
   `--id` flag. An unknown is left *unset* rather than exported empty, and inherited
   `SENDSPIN_*` variables are cleared so a wrapper script's stale export cannot describe
-  some other run.
+  some other run. Both events of a stream are told what was gathered when it started: by
+  the time one ends its connection is usually already gone, and asking again would hand
+  the stop hook a server it can no longer name.
 - **Nothing waits on a hook.** The spawn is a `fork()`/`execve()` with the environment
   built before the fork — this process has the library's background threads, so the
   child may only touch async-signal-safe calls — and the reap is a `WNOHANG` `waitpid()`

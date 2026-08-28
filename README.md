@@ -973,6 +973,12 @@ unknown for the event is left unset rather than exported empty, so `[ -n
 the player's own environment is cleared first, so a wrapper script's stale export
 cannot describe some other run to the hook.
 
+A stop event carries the same server facts as the start it pairs with, so
+`--hook-stop 'curl -X POST .../$SENDSPIN_SERVER_ID/off'` names the server the
+stream was actually on. They are the values gathered when the stream started
+rather than whatever is left to ask at the end: a stream usually ends *because*
+its connection went, and the server is no longer there to describe itself.
+
 The hook fires on the stream lifecycle, not on the format being accepted: a stream
 the device refused is still audio arriving, so the amplifier is on for exactly as
 long as `status` says `stream: receiving`. Nothing waits on it — a hook that blocks
