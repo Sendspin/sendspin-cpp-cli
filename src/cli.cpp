@@ -1118,8 +1118,8 @@ void print_usage(std::FILE* out, const char* prog) {
     std::fprintf(out, "                stops -- an amplifier relay, a light. The event's facts\n");
     std::fprintf(out, "                arrive as SENDSPIN_EVENT (start|stop) and, where known,\n");
     std::fprintf(out, "                SENDSPIN_SERVER_ID, SENDSPIN_SERVER_NAME,\n");
-    std::fprintf(out, "                SENDSPIN_SERVER_URL (outbound only), SENDSPIN_CLIENT_ID\n");
-    std::fprintf(out, "                and SENDSPIN_CLIENT_NAME. The hook runs without blocking\n");
+    std::fprintf(out, "                SENDSPIN_SERVER_URL (outbound only) and\n");
+    std::fprintf(out, "                SENDSPIN_CLIENT_NAME. The hook runs without blocking\n");
     std::fprintf(out, "                playback; its output goes to the log, and a non-zero\n");
     std::fprintf(out, "                exit is a warning, not a player failure\n");
     std::fprintf(out, "  -h, --help    Show this help\n");

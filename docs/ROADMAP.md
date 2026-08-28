@@ -2094,7 +2094,7 @@ no workaround either — the control socket answers questions, it does not annou
   shell command (`/bin/sh -c`, so pipes and `&&` are one hook) on stream start and stop.
   `hook-start` / `hook-stop` in the config file, through the same `apply_option()` door
   as every other key.
-- **The Python CLI's environment contract, verbatim.** `SENDSPIN_EVENT` (`start`|`stop`)
+- **The Python CLI's vocabulary, verbatim.** `SENDSPIN_EVENT` (`start`|`stop`)
   always; `SENDSPIN_SERVER_ID`, `SENDSPIN_SERVER_NAME`, `SENDSPIN_SERVER_URL` (the URL
   this run dialled — outbound only, as in Python) and `SENDSPIN_CLIENT_NAME` where
   known. A hook script written against one player runs unchanged against the other.

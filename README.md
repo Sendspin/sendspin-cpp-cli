@@ -963,11 +963,13 @@ environment rather than as arguments:
 | `SENDSPIN_SERVER_ID` | the connected server's id |
 | `SENDSPIN_SERVER_NAME` | its friendly name |
 | `SENDSPIN_SERVER_URL` | the URL this run dialled — outbound (`-s`) only |
-| `SENDSPIN_CLIENT_ID` | this player's id, once a flag exists to choose one |
 | `SENDSPIN_CLIENT_NAME` | this player's friendly name (`-n`) |
 
 The vocabulary is the Python `sendspin-cli`'s, deliberately: a hook script written
-against one player runs unchanged against the other. A variable whose value is
+against one player runs unchanged against the other. `SENDSPIN_CLIENT_ID` is part
+of that vocabulary and reserved here, but nothing arrives in it yet: the library
+derives this player's id from the interface MAC and does not expose it, so the
+honest value waits on a flag that chooses one. A variable whose value is
 unknown for the event is left unset rather than exported empty, so `[ -n
 "$SENDSPIN_SERVER_ID" ]` means what it says — and any `SENDSPIN_*` inherited from
 the player's own environment is cleared first, so a wrapper script's stale export
