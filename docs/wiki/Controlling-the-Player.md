@@ -201,11 +201,18 @@ sendspin-cli -o hw:1,0 \
 The event's facts arrive in the environment, in the same vocabulary the Python
 `sendspin-cli` uses — a hook script written against one runs unchanged against the other:
 `SENDSPIN_EVENT` (`start` or `stop`) always, and `SENDSPIN_SERVER_ID`,
-`SENDSPIN_SERVER_NAME`, `SENDSPIN_SERVER_URL` (outbound `-s` runs only) and
+`SENDSPIN_SERVER_NAME`, `SENDSPIN_SERVER_URL` (`-s` runs only, and the URL this run
+dialled rather than a statement about which server answered — see below) and
 `SENDSPIN_CLIENT_NAME` where known. An unknown is left *unset* rather than exported
 empty, so `[ -n "$SENDSPIN_SERVER_ID" ]` means what it says. A stop event carries the
 same server facts as the start it pairs with — gathered when the stream started, because
 a stream usually ends when its connection goes and there is nothing left to ask by then.
+
+`SENDSPIN_SERVER_URL` is the one to read carefully: it is the URL this run dialled, not
+which server answered. `-s` leaves the inbound listener up, so a server that dials *in*
+while an outbound attempt is outstanding or has failed is a connection the player cannot
+tell from its own — the library reports that one is up, not where it came from. Read
+`SENDSPIN_SERVER_ID` when a hook has to be certain which server it is acting on.
 
 The hook never blocks playback: it is spawned and reaped from the main loop, its output
 goes to the log, and a non-zero exit is a `W hook:` warning rather than a player failure.

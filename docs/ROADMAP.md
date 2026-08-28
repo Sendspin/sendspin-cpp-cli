@@ -2100,7 +2100,14 @@ no workaround either — the control socket answers questions, it does not annou
   known. A hook script written against one player runs unchanged against the other.
   `SENDSPIN_CLIENT_ID` is reserved but never set yet: the library derives its id from
   the interface MAC and does not expose it, so the honest value arrives with a future
-  `--id` flag. An unknown is left *unset* rather than exported empty, and inherited
+  `--id` flag. `SENDSPIN_SERVER_URL` is what this run *dialled*, which is not the same
+  claim as which server answered: `-s` leaves the inbound listener up, and the library
+  reports that a connection is up without saying where it came from — no connect callback,
+  and nothing exposing a connection's URL or direction — so one that dialled in while an
+  outbound attempt was outstanding or had failed carries the attempt's URL. Closing that
+  needs sendspin-cpp to name the live connection's origin; until it does, the docs point a
+  hook that must be certain at `SENDSPIN_SERVER_ID`, which is read from the connection the
+  stream arrived on. An unknown is left *unset* rather than exported empty, and inherited
   `SENDSPIN_*` variables are cleared so a wrapper script's stale export cannot describe
   some other run. Both events of a stream are told what was gathered when it started: by
   the time one ends its connection is usually already gone, and asking again would hand

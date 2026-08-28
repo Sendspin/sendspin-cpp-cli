@@ -33,7 +33,13 @@ namespace sendspin_cli {
 struct HookContext {
     std::string server_id;    ///< SENDSPIN_SERVER_ID: the connected server's id
     std::string server_name;  ///< SENDSPIN_SERVER_NAME: its friendly name
-    std::string server_url;   ///< SENDSPIN_SERVER_URL: the URL this run dialled, outbound only
+    /// SENDSPIN_SERVER_URL: the URL this run dialled, on an -s run only.
+    ///
+    /// What was dialled, not which server answered. -s leaves the inbound listener up, and
+    /// the library reports that a connection is up without saying where it came from, so one
+    /// that dialled in while an outbound attempt was outstanding or had failed carries the
+    /// URL of the attempt. server_id always describes the connection the stream arrived on.
+    std::string server_url;
     std::string client_id;    ///< SENDSPIN_CLIENT_ID: reserved; nothing chooses this id yet
     std::string client_name;  ///< SENDSPIN_CLIENT_NAME: this player's friendly name
 };

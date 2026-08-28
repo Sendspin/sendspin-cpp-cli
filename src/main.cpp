@@ -267,8 +267,13 @@ public:
     }
 
     /// The URL this run last dialled, empty before the first dial. What the stream hooks
-    /// export as SENDSPIN_SERVER_URL -- best-effort by design, exactly as the Python CLI's
-    /// is: an inbound connection has no URL to name, and this does not pretend otherwise.
+    /// export as SENDSPIN_SERVER_URL.
+    ///
+    /// What was dialled, not what answered, and the two can differ: -s leaves the inbound
+    /// listener up, so a server that dialled in while an attempt of ours was outstanding or
+    /// had failed is a connection this cannot tell from its own. Telling them apart needs the
+    /// library to say where the live connection came from, which it does not -- there is no
+    /// connect callback, and nothing exposes a connection's URL or its direction.
     const std::string& dialed_url() const {
         return this->dialed_url_;
     }

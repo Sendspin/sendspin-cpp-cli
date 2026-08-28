@@ -962,7 +962,7 @@ environment rather than as arguments:
 | `SENDSPIN_EVENT` | `start` or `stop` |
 | `SENDSPIN_SERVER_ID` | the connected server's id |
 | `SENDSPIN_SERVER_NAME` | its friendly name |
-| `SENDSPIN_SERVER_URL` | the URL this run dialled — outbound (`-s`) only |
+| `SENDSPIN_SERVER_URL` | the URL this run dialled — set only on an `-s` run |
 | `SENDSPIN_CLIENT_NAME` | this player's friendly name (`-n`) |
 
 The vocabulary is the Python `sendspin-cli`'s, deliberately: a hook script written
@@ -974,6 +974,15 @@ unknown for the event is left unset rather than exported empty, so `[ -n
 "$SENDSPIN_SERVER_ID" ]` means what it says — and any `SENDSPIN_*` inherited from
 the player's own environment is cleared first, so a wrapper script's stale export
 cannot describe some other run to the hook.
+
+`SENDSPIN_SERVER_URL` says what this run dialled, not which server answered.
+Those are the same thing whenever `-s` is how the player got its connection —
+but `-s` leaves the inbound listener up, and a server that dials *in* while an
+outbound attempt is outstanding or has failed is a connection the player cannot
+tell apart from its own: the library reports that one is up, not where it came
+from. A hook that must be certain which server it is acting on should read
+`SENDSPIN_SERVER_ID`, which always describes the connection the stream arrived
+on.
 
 A stop event carries the same server facts as the start it pairs with, so
 `--hook-stop 'curl -X POST .../$SENDSPIN_SERVER_ID/off'` names the server the
