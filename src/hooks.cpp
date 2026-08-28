@@ -163,8 +163,23 @@ void HookRunner::poll() {
             ++index;
             continue;
         }
-        // An error from waitpid() is treated as reaped too: the one it returns here is
-        // ECHILD, and a child that cannot be waited on can only be leaked, not re-polled.
+        if (reaped < 0 && errno == EINTR) {
+            // The signal landed on the call, not on the child: the hook is still running, and
+            // the next poll() asks again. Every handler this daemon installs restarts its call
+            // -- std::signal()'s BSD semantics for SIGINT and SIGTERM, SA_RESTART for SIGHUP --
+            // so this is a guard rather than a path taken. Erasing here instead would leak a
+            // zombie per stream, with nothing in the log to say why.
+            ++index;
+            continue;
+        }
+        if (reaped < 0) {
+            // ECHILD is the one that reaches this, and a child that cannot be waited on can
+            // only be leaked, not re-polled -- so the entry goes. Said out loud because it
+            // means something else reaped the hook, which is worth a breadcrumb; DEBUG because
+            // the hook itself ran and there is nothing an operator can do about it.
+            cli_log(LogLevel::DEBUG, "The %s hook could not be waited on (%s): %s",
+                    hook.event.c_str(), std::strerror(errno), hook.command.c_str());
+        }
         if (reaped == hook.pid && WIFEXITED(status) && WEXITSTATUS(status) != 0) {
             cli_log(LogLevel::WARN, "The %s hook exited %d: %s", hook.event.c_str(),
                     WEXITSTATUS(status), hook.command.c_str());
