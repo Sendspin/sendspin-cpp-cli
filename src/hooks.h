@@ -90,7 +90,6 @@ private:
     struct RunningHook {
         pid_t pid;
         std::string event;
-        std::string command;
     };
 
     std::vector<RunningHook> running_;

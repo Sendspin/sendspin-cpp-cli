@@ -149,9 +149,12 @@ void HookRunner::run(const std::string& command, const char* event, const HookCo
         _exit(127);
     }
 
-    cli_log(LogLevel::DEBUG, "Running %s hook [%d]: %s", event, static_cast<int>(pid),
-            command.c_str());
-    this->running_.push_back({pid, event, command});
+    // The command itself is never logged, at any level: it is an arbitrary shell line, so it
+    // routinely carries a credential -- a bearer token in a `curl -H`, a key in a query string
+    // -- and under -f the log is a file on disk. Whoever set the hook already knows the text;
+    // the event and pid identify the run.
+    cli_log(LogLevel::DEBUG, "Running %s hook [%d]", event, static_cast<int>(pid));
+    this->running_.push_back({pid, event});
 }
 
 void HookRunner::poll() {
@@ -177,18 +180,18 @@ void HookRunner::poll() {
             // only be leaked, not re-polled -- so the entry goes. Said out loud because it
             // means something else reaped the hook, which is worth a breadcrumb; DEBUG because
             // the hook itself ran and there is nothing an operator can do about it.
-            cli_log(LogLevel::DEBUG, "The %s hook could not be waited on (%s): %s",
-                    hook.event.c_str(), std::strerror(errno), hook.command.c_str());
+            cli_log(LogLevel::DEBUG, "The %s hook [%d] could not be waited on (%s)",
+                    hook.event.c_str(), static_cast<int>(hook.pid), std::strerror(errno));
         }
         if (reaped == hook.pid && WIFEXITED(status) && WEXITSTATUS(status) != 0) {
-            cli_log(LogLevel::WARN, "The %s hook exited %d: %s", hook.event.c_str(),
-                    WEXITSTATUS(status), hook.command.c_str());
+            cli_log(LogLevel::WARN, "The %s hook [%d] exited %d", hook.event.c_str(),
+                    static_cast<int>(hook.pid), WEXITSTATUS(status));
         } else if (reaped == hook.pid && WIFSIGNALED(status)) {
-            cli_log(LogLevel::WARN, "The %s hook was killed by signal %d: %s",
-                    hook.event.c_str(), WTERMSIG(status), hook.command.c_str());
+            cli_log(LogLevel::WARN, "The %s hook [%d] was killed by signal %d",
+                    hook.event.c_str(), static_cast<int>(hook.pid), WTERMSIG(status));
         } else if (reaped == hook.pid) {
-            cli_log(LogLevel::DEBUG, "The %s hook finished: %s", hook.event.c_str(),
-                    hook.command.c_str());
+            cli_log(LogLevel::DEBUG, "The %s hook [%d] finished", hook.event.c_str(),
+                    static_cast<int>(hook.pid));
         }
         this->running_.erase(this->running_.begin() + static_cast<ptrdiff_t>(index));
     }
