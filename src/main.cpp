@@ -787,8 +787,28 @@ int main(int argc, char* argv[]) {
     // `client` by being declared above it.
     client.set_persistence_provider(&persistence);
 
+    std::vector<sendspin::AudioSupportedFormatObject> formats = advertised_formats(*sink);
+    // The --audio-format pin, applied to the derived list because that is the promise being
+    // reordered: an entry in front of it is one the device really takes. A pin the list does
+    // not contain is a hard stop -- the operator asked for the one shape their DAC is happy
+    // in, and starting anyway would play everything except that. Against the *fallback* list
+    // when the device reported nothing, deliberately: that run advertises the permissive set,
+    // so the pin is checked against what actually goes out.
+    if (opts.audio_format.has_value()) {
+        if (!pin_preferred_format(formats, *opts.audio_format)) {
+            log_fatal(LOG_TAG_AUDIO,
+                      "--audio-format asked for %s, which output device '%s' does not take -- "
+                      "refusing to start rather than play something else. Run with -l to see "
+                      "what the device accepts.",
+                      describe_formats({*opts.audio_format}).c_str(), sink->name().c_str());
+            return 1;
+        }
+        log_line(LogLevel::INFO, LOG_TAG_AUDIO, "Preferred format pinned first: %s",
+                 describe_formats({*opts.audio_format}).c_str());
+    }
+
     sendspin::PlayerRoleConfig player_config;
-    player_config.audio_formats = advertised_formats(*sink);
+    player_config.audio_formats = std::move(formats);
     // Explicitly 0, and it must stay 0: both real sinks already report *future* finish timestamps
     // that include their own buffering -- snd_pcm_delay() on ALSA, outputBufferDacTime on
     // PortAudio -- so folding device latency in here would count it twice and push playout early

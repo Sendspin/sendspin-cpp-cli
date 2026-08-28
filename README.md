@@ -640,6 +640,17 @@ Either way, a format the device then refuses is reported loudly — naming the
 device, the format, and the fact that the stream's audio is being discarded —
 rather than leaving a player that looks healthy and plays nothing.
 
+`--audio-format <codec:rate:depth:channels>` (e.g. `flac:48000:24:2`) pins a
+preferred format on top of that derived list — the way to hold a fussy DAC at the
+one shape it is happy in. It is a *reorder*, not a narrowing: the pinned entry
+moves to the front, which is where a spec-following server picks, and everything
+else the device takes is still offered behind it. A pin the device cannot take
+**refuses to start** — playing something else instead is the failure the flag
+exists to prevent — and `-l` shows what would be accepted. Codecs are `flac`,
+`opus` and `pcm`; the grammar is the Python `sendspin-cli`'s, plus `opus`. An
+`opus` pin is refused outright at anything but 48 kHz / 16-bit / at most two
+channels, since that is the only shape it is ever advertised in.
+
 ### Running as a daemon
 
 `-z` forks once, `setsid()`s away from the controlling terminal, `chdir()`s to `/`
@@ -1083,13 +1094,13 @@ which is what a foreground run whose terminal has just closed should do.
 The flags follow squeezelite's: `-o` output device, `-l` list devices, `-n` name,
 `-s` server, `-z` daemonize, `-P` pidfile, `-d`/`-f` logging. All but `-l` and
 `-z` also have a long spelling — `--output --name --server --pidfile --logfile
---log-level` — so that every config key is a flag name. Fourteen more are long-only
+--log-level` — so that every config key is a flag name. Fifteen more are long-only
 because they are not squeezelite's: `--port`, the port this player serves on,
-`--buffer-ms`, `--static-delay`, the two mDNS flags `--no-mdns` and `--mdns-name`,
-the two control-socket flags `--control-socket` and `--no-control`, the two stream
-hooks `--hook-start` and `--hook-stop`, the three identity flags `--id`,
-`--manufacturer` and `--product-name`, and `--config` and `--state-dir` for the
-two files above. `--id` is the one to know about: it is the *stable* id a server
+`--buffer-ms`, `--static-delay`, `--audio-format`, the two mDNS flags `--no-mdns`
+and `--mdns-name`, the two control-socket flags `--control-socket` and
+`--no-control`, the two stream hooks `--hook-start` and `--hook-stop`, the three
+identity flags `--id`, `--manufacturer` and `--product-name`, and `--config` and
+`--state-dir` for the two files above. `--id` is the one to know about: it is the *stable* id a server
 files this player's volume, group and pairing under, and without it the id is
 derived from the network interface MAC — so two players on one host share it, and
 each server-side setting lands on whichever connected last. A dual-mono pair needs

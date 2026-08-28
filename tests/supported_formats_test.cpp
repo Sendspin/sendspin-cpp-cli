@@ -392,5 +392,138 @@ TEST(DescribeFormats, SaysSoWhenThereIsNothingToSay) {
     EXPECT_EQ(describe_formats({}), "(nothing)");
 }
 
+// ---------------------------------------------------------------------------
+// parse_format_spec(): the --audio-format grammar
+// ---------------------------------------------------------------------------
+
+TEST(ParseFormatSpec, ReadsEachCodec) {
+    const std::pair<const char*, SendspinCodecFormat> specs[] = {
+        {"flac:48000:24:2", SendspinCodecFormat::FLAC},
+        {"opus:48000:16:2", SendspinCodecFormat::OPUS},
+        {"pcm:44100:16:1", SendspinCodecFormat::PCM},
+    };
+    for (const auto& [spec, codec] : specs) {
+        AudioSupportedFormatObject format{};
+        std::string error;
+
+        ASSERT_TRUE(parse_format_spec(spec, format, error)) << spec << ": " << error;
+        EXPECT_EQ(format.codec, codec) << spec;
+    }
+}
+
+TEST(ParseFormatSpec, ReadsTheThreeNumericFields) {
+    AudioSupportedFormatObject format{};
+    std::string error;
+
+    ASSERT_TRUE(parse_format_spec("flac:96000:24:2", format, error)) << error;
+    EXPECT_EQ(format.sample_rate, 96000U);
+    EXPECT_EQ(format.bit_depth, 24);
+    EXPECT_EQ(format.channels, 2);
+}
+
+TEST(ParseFormatSpec, RejectsTheWrongShape) {
+    for (const char* spec : {"", "flac", "flac:48000", "flac:48000:24", "flac:48000:24:2:extra"}) {
+        AudioSupportedFormatObject format{};
+        std::string error;
+
+        EXPECT_FALSE(parse_format_spec(spec, format, error)) << spec;
+        EXPECT_NE(error.find("codec:rate:depth:channels"), std::string::npos) << spec;
+    }
+}
+
+TEST(ParseFormatSpec, RejectsACodecThisPlayerCannotPlay) {
+    AudioSupportedFormatObject format{};
+    std::string error;
+
+    EXPECT_FALSE(parse_format_spec("mp3:48000:16:2", format, error));
+    EXPECT_NE(error.find("mp3"), std::string::npos) << error;
+    EXPECT_NE(error.find("flac, opus and pcm"), std::string::npos) << error;
+}
+
+TEST(ParseFormatSpec, RejectsNumbersThatAreNotPlainNumbers) {
+    // Digits-only for parse_port()'s reason: strtoul would take " 48000", "+48000" and read
+    // "-1" as a huge unsigned.
+    for (const char* spec : {"flac:abc:24:2", "flac: 48000:24:2", "flac:-48000:24:2",
+                             "flac:48000:24:", "flac:48000:24:0", "flac:0:24:2"}) {
+        AudioSupportedFormatObject format{};
+        std::string error;
+
+        EXPECT_FALSE(parse_format_spec(spec, format, error)) << spec;
+    }
+}
+
+TEST(ParseFormatSpec, RejectsADepthNoSinkCanEmit) {
+    AudioSupportedFormatObject format{};
+    std::string error;
+
+    EXPECT_FALSE(parse_format_spec("flac:48000:20:2", format, error));
+    EXPECT_NE(error.find("8, 16, 24 or 32"), std::string::npos) << error;
+}
+
+TEST(ParseFormatSpec, RejectsAnOpusShapeNoDecoderCanReach) {
+    // One spec per axis: the rate, the depth, and a width past what opus_decoder_init() takes.
+    // Each parses as a shape and would then miss every advertised entry on every device, so the
+    // refusal has to name the codec rather than let startup blame the output device.
+    for (const char* spec : {"opus:44100:16:2", "opus:48000:24:2", "opus:48000:16:4"}) {
+        AudioSupportedFormatObject format{};
+        std::string error;
+
+        EXPECT_FALSE(parse_format_spec(spec, format, error)) << spec;
+        EXPECT_NE(error.find("opus"), std::string::npos) << spec << ": " << error;
+        EXPECT_NE(error.find("48000"), std::string::npos) << spec << ": " << error;
+    }
+}
+
+TEST(ParseFormatSpec, KeepsTheOpusShapesTheDecoderReaches) {
+    // Mono is the one that needs pinning down: OpusSurvivesOnAMonoDevice proves the emit path
+    // produces it, so the check above has to be a ceiling on the channel count and not an
+    // equality against OPUS_MAX_CHANNELS.
+    for (const char* spec : {"opus:48000:16:2", "opus:48000:16:1"}) {
+        AudioSupportedFormatObject format{};
+        std::string error;
+
+        EXPECT_TRUE(parse_format_spec(spec, format, error)) << spec << ": " << error;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// pin_preferred_format(): what the pin does to the advertisement
+// ---------------------------------------------------------------------------
+
+TEST(PinPreferredFormat, MovesTheEntryToTheFrontAndKeepsTheRest) {
+    std::vector<AudioSupportedFormatObject> formats =
+        supported_formats({{44100, 48000}, {16, 24}, {2}});
+    const size_t count = formats.size();
+    const AudioSupportedFormatObject pin{SendspinCodecFormat::PCM, 2, 44100, 16};
+
+    ASSERT_TRUE(pin_preferred_format(formats, pin));
+    EXPECT_EQ(formats.size(), count);
+    EXPECT_EQ(formats.front().codec, SendspinCodecFormat::PCM);
+    EXPECT_EQ(formats.front().sample_rate, 44100U);
+    EXPECT_EQ(formats.front().bit_depth, 16);
+    // A reorder, not a narrowing: the ranked head of the unpinned list is still offered.
+    EXPECT_TRUE(has(formats, SendspinCodecFormat::FLAC, 2, 48000, 16));
+}
+
+TEST(PinPreferredFormat, AnEntryAlreadyFirstStaysPut) {
+    std::vector<AudioSupportedFormatObject> formats =
+        supported_formats({{44100, 48000}, {16, 24}, {2}});
+    const AudioSupportedFormatObject pin = formats.front();
+
+    ASSERT_TRUE(pin_preferred_format(formats, pin));
+    EXPECT_TRUE(has({formats.front()}, pin.codec, pin.channels, pin.sample_rate, pin.bit_depth));
+}
+
+TEST(PinPreferredFormat, ReportsAFormatTheDeviceDoesNotTake) {
+    std::vector<AudioSupportedFormatObject> formats =
+        supported_formats({{44100, 48000}, {16, 24}, {2}});
+    const std::vector<AudioSupportedFormatObject> before = formats;
+    const AudioSupportedFormatObject pin{SendspinCodecFormat::FLAC, 2, 192000, 24};
+
+    EXPECT_FALSE(pin_preferred_format(formats, pin));
+    // Left untouched, so the caller's refusal describes the list that would have gone out.
+    EXPECT_EQ(formats.size(), before.size());
+}
+
 }  // namespace
 }  // namespace sendspin_cli

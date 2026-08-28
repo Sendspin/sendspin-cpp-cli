@@ -19,6 +19,7 @@
 #include "control.h"
 #include "log.h"
 #include "mdns.h"
+#include "supported_formats.h"
 
 #include <getopt.h>
 #include <limits.h>
@@ -73,6 +74,7 @@ enum LongOnly {
     OPT_ID,
     OPT_MANUFACTURER,
     OPT_PRODUCT_NAME,
+    OPT_AUDIO_FORMAT,
 };
 
 /// @brief An option a config file may set: its key, and how a diagnostic names it.
@@ -114,6 +116,7 @@ const std::vector<SettableOption>& settable_options() {
         {Opt::ClientId, "id", "--id"},
         {Opt::Manufacturer, "manufacturer", "--manufacturer"},
         {Opt::ProductName, "product-name", "--product-name"},
+        {Opt::AudioFormat, "audio-format", "--audio-format"},
     };
     return table;
 }
@@ -411,6 +414,16 @@ bool apply_option(const SettableOption& option, const std::string& value, Option
             }
             out.product_name = value;
             break;
+        case Opt::AudioFormat: {
+            sendspin::AudioSupportedFormatObject format;
+            std::string reason;
+            if (!parse_format_spec(value, format, reason)) {
+                error = "invalid --audio-format '" + value + "': " + reason;
+                return false;
+            }
+            out.audio_format = format;
+            break;
+        }
         case Opt::NoMdns:
             if (!parse_bool(value, out.no_mdns)) {
                 error = "invalid --no-mdns '" + value + "' -- expected true or false";
@@ -608,6 +621,7 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
         {"id", required_argument, nullptr, OPT_ID},
         {"manufacturer", required_argument, nullptr, OPT_MANUFACTURER},
         {"product-name", required_argument, nullptr, OPT_PRODUCT_NAME},
+        {"audio-format", required_argument, nullptr, OPT_AUDIO_FORMAT},
         {nullptr, 0, nullptr, 0},
     };
 
@@ -777,6 +791,9 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
             case OPT_PRODUCT_NAME:
                 apply(Opt::ProductName, optarg);
                 break;
+            case OPT_AUDIO_FORMAT:
+                apply(Opt::AudioFormat, optarg);
+                break;
             case ':':
                 fail("option '" + offending_option(flag_argv, optind) + "' needs a value");
                 break;
@@ -944,10 +961,10 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
         // listen on anything. Left it out and it would silently produce a "this player was
         // started with --no-control" message about the wrong process.
         static constexpr Opt DAEMON_ONLY[] = {
-            Opt::Device,    Opt::Name,         Opt::Server,      Opt::Daemonize, Opt::Pidfile,
-            Opt::Logfile,   Opt::LogLevel,     Opt::BufferMs,    Opt::NoMdns,    Opt::MdnsName,
-            Opt::NoControl, Opt::StateDir,     Opt::StaticDelay, Opt::HookStart, Opt::HookStop,
-            Opt::ClientId,  Opt::Manufacturer, Opt::ProductName,
+            Opt::Device,    Opt::Name,         Opt::Server,      Opt::Daemonize,   Opt::Pidfile,
+            Opt::Logfile,   Opt::LogLevel,     Opt::BufferMs,    Opt::NoMdns,      Opt::MdnsName,
+            Opt::NoControl, Opt::StateDir,     Opt::StaticDelay, Opt::HookStart,   Opt::HookStop,
+            Opt::ClientId,  Opt::Manufacturer, Opt::ProductName, Opt::AudioFormat,
         };
         for (Opt opt : DAEMON_ONLY) {
             if (out.was_given(opt)) {
@@ -1111,6 +1128,13 @@ void print_usage(std::FILE* out, const char* prog) {
                  DEFAULT_BUFFER_MS);
     std::fprintf(out, "                device-less sink ignores it, and a device that needs\n");
     std::fprintf(out, "                more than it asks for gets more\n");
+    std::fprintf(out, "  --audio-format <codec:rate:depth:channels>\n");
+    std::fprintf(out, "                Pin a preferred format, e.g. flac:48000:24:2 -- for the\n");
+    std::fprintf(out, "                DAC that is only happy in one shape. Moves that entry to\n");
+    std::fprintf(out, "                the front of the advertised list, where a server picks\n");
+    std::fprintf(out, "                first; the rest of what the device takes is still\n");
+    std::fprintf(out, "                offered behind it. A format the device does not take\n");
+    std::fprintf(out, "                refuses to start -- run -l to see what it accepts\n");
     std::fprintf(out, "  --static-delay <ms>\n");
     std::fprintf(out, "                How much latency this endpoint's hardware adds AFTER the\n");
     std::fprintf(out, "                audio port -- an amplifier, an external speaker, a DSP.\n");

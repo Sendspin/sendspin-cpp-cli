@@ -2169,3 +2169,37 @@ two-daemons-one-host pattern needs a flag; the Python CLI has all three.
 
 Verified against a real `aiosendspin` server: the connected client reports the `--id`
 value as its `client_id`, and the start hook exports it as `SENDSPIN_CLIENT_ID`.
+
+
+### 24. `--audio-format` pin — *shipped*
+
+Item 4 made the advertisement device-derived and ranked, and that is the right default —
+but it decides *for* the operator. The case it cannot cover is the fussy DAC: a device
+that opens at many formats and is only actually happy in one, where the fix is to hold
+the player at that shape and refuse to run any other way. The Python CLI's
+`--audio-format` is exactly that, validated against the device at startup with a hard
+exit on failure.
+
+**Shipped** in `src/supported_formats.{h,cpp}`, `src/cli.{h,cpp}`, `src/main.cpp`,
+`tests/supported_formats_test.cpp` and `tests/cli_test.cpp`:
+
+- **`--audio-format <codec:rate:depth:channels>`** (config key `audio-format`), e.g.
+  `flac:48000:24:2`. The grammar is the Python CLI's, extended with `opus` because this
+  player decodes it.
+- **A reorder, not a narrowing.** `pin_preferred_format()` moves the pinned entry to the
+  front of the derived advertisement — the protocol has `supported_formats` in priority
+  order, so the front is the whole of what "preferred" means on the wire — and
+  everything else the device takes is still offered behind it, so a server that cannot
+  encode the pin has the rest of the list to fall back on.
+- **A pin the device cannot take refuses to start**, naming the device, the format, and
+  `-l` as the way to see what would be accepted. Checked against the *derived* list — or
+  the permissive fallback when the device reported nothing, since that is what actually
+  goes out — so the refusal describes the real advertisement.
+- **Parse-time shape validation, startup-time device validation.** The grammar, the
+  codec names, the four emittable bit depths and the one shape Opus is ever advertised in
+  are settled in `parse_format_spec()` when the flag is read — so a config file is
+  validated without opening a device — and whether the device takes the format is
+  answered where the sink is real.
+
+Verified against a real `aiosendspin` server: with `pcm:44100:16:2` pinned on a device
+whose ranked head is FLAC 48 kHz, the server encoded and streamed PCM at 44100 Hz.
