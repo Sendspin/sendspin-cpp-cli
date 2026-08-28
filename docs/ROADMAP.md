@@ -2204,3 +2204,110 @@ exit on failure.
 
 Verified against a real `aiosendspin` server: with `pcm:44100:16:2` pinned on a device
 whose ranked head is FLAC 48 kHz, the server encoded and streamed PCM at 44100 Hz.
+
+
+### 25. `--interface` — *open*
+
+Bind the inbound listener — and scope the advertisement — to one interface, instead of
+taking every address the host holds. **Nothing here is buildable against the pinned
+library**, so this item exists to settle the design and the evidence rather than to leave
+them to be re-derived.
+
+**The gap, in the real code.** The listener is constructed with a literal at
+sendspin-cpp's `src/host/ws_server.cpp:53` — `ix::WebSocketServer(server_port_,
+"0.0.0.0", ...)` — and its `SendspinClientConfig` (`include/sendspin/config.h`) carries
+`server_port` and `server_max_connections` and nothing else about the socket. This repo's
+advertisement registers on `kDNSServiceInterfaceIndexAny` at `src/mdns_dnssd.cpp:200`.
+Those two are *consistent* today: both unrestricted. The flaw is not a mismatch between
+them — it is that neither can be narrowed, and only the listener would matter if it could.
+
+**The one knob that looks like it and is not.** `SendspinClientConfig` does carry a
+`mac_address` override, documented upstream as "recommended on multi-homed hosts where
+detection may pick the wrong interface" — the same scenario, so it is worth saying that it
+is not the same lever. That value goes into `client/hello`'s `device_info`: it is identity,
+and it moves no socket.
+
+**Why this is more than "it listens broadly".** Pinned v0.7.2 has **no inbound
+authentication of any kind**: no PSK, no pairing gate on the inbound path, and — per item
+17, whose text still cites v0.7.0, re-checked here at v0.7.2 — no `activities` /
+`server/activate` either, since it still runs the older `connection_reason` handoff.
+`server_max_connections` is the only inbound limit, and it counts sockets rather than
+judging them. Reachability is therefore authorization: whatever reaches the listen port
+completes the handshake and drives the player, and a bind address would be the only such
+control the player itself offers.
+
+**That is a statement about the pinned library, not about Sendspin.** The spec
+authenticates in the handshake — pairing and a PSK, as item 6 records — and v0.7.2 does
+not implement that half yet. This item's premise expires when it does.
+
+**In proportion.** Most installs sit behind NAT, where no interface holds a routable
+address and the exposure is the LAN the player is meant to serve anyway. The real cases
+are multi-homed hosts, VPSes, tunnel interfaces and untrusted VLANs. **A host firewall is
+the working mitigation today**, and it is the honest answer for an operator who needs one
+now.
+
+**Why the mDNS half is not shippable on its own.** An advertisement scoped to one
+interface while the socket still listens on `0.0.0.0` hides the player without protecting
+it: anything that already knows the address and port still connects. It does buy something
+real — an unscoped register publishes address records on every interface, and a server can
+take one that is unreachable from where it sits — but that is a *discovery-correctness*
+fix, not access control. Shipping it under this flag's name would sell it as the latter.
+Both halves land together, or the mDNS half lands under its own name.
+
+**The parity record, corrected.** The Python CLI is the usual reference for a flag like
+this, and two things commonly assumed about it are wrong — the flag checked in
+`sendspin-python-cli`, the behaviour in `aiosendspin` `6.0.1`, the version that CLI pins:
+
+- **Its `--interface` takes an IP address, not an interface name.** `sendspin/cli.py:475`
+  documents it as "IP address of the network interface to bind to", and
+  `sendspin/daemon/daemon.py:212` passes it through unexamined as
+  `host=self._args.interface if ... else "0.0.0.0"`. There is no `if_nametoindex()`
+  anywhere in it.
+- **It does not scope the advertisement to that address.** The bind is honoured —
+  `ClientListener` does `web.TCPSite(self._runner, self._host, self._port)` — but
+  `_start_mdns()` builds a bare `AsyncZeroconf()` and takes the address it publishes from
+  `get_local_ip()` in `aiosendspin/util.py`, a UDP route lookup to `8.8.8.8`.
+  `self._host` never reaches it. Unchanged at `9.1.0`.
+
+  What Python *does* scope locally is the **browse**: `ServiceDiscovery(interfaces=[...])`
+  hands the value to `AsyncZeroconf(interfaces=...)` in `sendspin/discovery.py:150`. That
+  is the outbound discovery path, not the inbound listener.
+
+**The flag, settled.** `--interface <name-or-address>` (config key `interface`), long-only
+like the other non-squeezelite flags. **One value has to yield both halves** — the bind
+needs an *address*, `DNSServiceRegister` needs an *index* — and a name is what an operator
+on a Pi actually knows, while the address is the thing a DHCP lease changes underneath
+them. That makes this a deliberate superset of Python's address-only flag rather than a
+divergence from it.
+
+**Both directions have to be resolved, and neither is a lookup.** A name yields an index
+from `if_nametoindex()` but must go through `getifaddrs()` for an address — and an
+interface holds several: a v4, a link-local v6, often a global v6, sometimes aliases.
+`ix::WebSocketServer` takes one host string, so **which one is a decision to settle when
+the flag is built**, not a detail: prefer the first global v4, fall back to a global v6,
+and refuse a link-local v6 rather than guess at a `%scope` suffix the transport may not
+accept. In reverse, a literal address is what the bind wants directly but yields an index
+only by scanning `getifaddrs()` for the interface holding it — which can match none, and
+with aliases can match more than one. Both misses are refusals, not fallbacks.
+
+**Validated in two stages, the split item 24 established.** The shape is checked when the
+flag is read — a name within `IFNAMSIZ`, or an address `inet_pton()` accepts — so a config
+file is validated without touching the host, and a typo still hard-fails at parse time with
+the single `error:` line of item 1. **Resolution happens at startup**, where the interfaces
+are real, because it depends on live host state: a Pi booting with `interface = eth0` in
+its config before DHCP has brought the link up must fail where a device failure is reported,
+not from inside the parser. That is the same seam item 24 drew between `parse_format_spec()`
+and the advertisement check, for the same reason.
+
+**Scope when it lands.** The inbound listener, which is the whole point, and the
+advertisement's interface index. The outbound `-s` dial stays out: it is kernel-routed,
+as it is in Python. Scoping the browse at `src/mdns_dnssd.cpp:217` is the one thing Python
+does locally and can come along as an extension — but it is discovery convenience, not
+security, and is not what the flag exists for.
+
+**The upstream gate.** A bind address on `SendspinClientConfig`, threaded through
+`ConnectionManager` into `SendspinWsServer` to replace the literal. Host-only and small,
+but `SendspinWsServer` exposes only connection callbacks — there is no transport seam the
+CLI can reach around it — so the flag cannot be expressed by any other route. Gated on a
+`SENDSPIN_GIT_TAG` bump the same way item 17 is, and likely to arrive with one rather than
+on its own. **Not expected to move soon.**
