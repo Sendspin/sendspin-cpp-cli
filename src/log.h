@@ -39,6 +39,7 @@ inline constexpr const char* LOG_TAG_OUTBOUND = "outbound";
 inline constexpr const char* LOG_TAG_PLAYER = "player";
 inline constexpr const char* LOG_TAG_METADATA = "metadata";
 inline constexpr const char* LOG_TAG_CONTROL = "control";
+inline constexpr const char* LOG_TAG_HOOK = "hook";
 
 /// @brief Every tag above, for the diagnostics that have to list them.
 ///
@@ -54,6 +55,7 @@ inline constexpr auto LOG_TAGS = std::to_array({
     LOG_TAG_PLAYER,
     LOG_TAG_METADATA,
     LOG_TAG_CONTROL,
+    LOG_TAG_HOOK,
 });
 
 /// @brief Writes one tagged line to stderr if `level` passes the library's current level.

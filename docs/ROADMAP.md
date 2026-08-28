@@ -34,6 +34,9 @@ small flag set for identity, output, discovery, logging, and daemonization.
   polled from the main loop, and `sendspin-cli <subcommand>` on the same binary covering the
   whole of `controller@v1` — `status`, `play`/`pause`/`stop`/`next`/`prev`, `vol`, `mute`,
   `seek`, `seek-rel`, `repeat`, `shuffle`, `switch` (item 7).
+- Runs stream hooks: `--hook-start`/`--hook-stop` shell commands on stream start and stop,
+  with the event's facts in the same `SENDSPIN_*` environment variables the Python CLI
+  exports, spawned and reaped without ever blocking the audio path (item 22).
 - Reads a config file whose keys are the long flag names, layered under the command line, and
   remembers its own state across restarts — the last server, the static delay a server set, and
   its volume and mute — in a separate file it writes atomically at `0600` (item 8).
@@ -2075,3 +2078,65 @@ a `-Wrestrict` false positive on `line += " " + std::to_string(...)` in
 `src/control_common.cpp`, and it is the *only* thing standing between that leg and the
 warning line every other leg holds. One site, one rewrite; it belongs to whoever next
 touches the control protocol rather than to a PipeWire change.
+
+
+### 22. Stream hooks (`--hook-start` / `--hook-stop`) — *shipped*
+
+The Python `sendspin-cli` grew hooks because headless installs asked for them: the box a
+player runs on usually has an amplifier relay, a light, or a `curl`-able switch next to
+it, and "a stream started" is the moment to flip it. The C++ CLI had no equivalent, and
+no workaround either — the control socket answers questions, it does not announce events.
+
+**Shipped** in `src/hooks.{h,cpp}`, `src/cli.{h,cpp}`, `src/player_listener.{h,cpp}`,
+`src/main.cpp` and `tests/hooks_test.cpp`:
+
+- **Two long-only flags, and their config keys.** `--hook-start` / `--hook-stop` run a
+  shell command (`/bin/sh -c`, so pipes and `&&` are one hook) on stream start and stop.
+  `hook-start` / `hook-stop` in the config file, through the same `apply_option()` door
+  as every other key.
+- **The Python CLI's vocabulary, verbatim.** `SENDSPIN_EVENT` (`start`|`stop`)
+  always; `SENDSPIN_SERVER_ID`, `SENDSPIN_SERVER_NAME`, `SENDSPIN_SERVER_URL` (the URL
+  this run dialled — outbound only, as in Python) and `SENDSPIN_CLIENT_NAME` where
+  known. A hook script written against one player runs unchanged against the other.
+  `SENDSPIN_CLIENT_ID` is reserved but never set yet: the library derives its id from
+  the interface MAC and does not expose it, so the honest value arrives with a future
+  `--id` flag. `SENDSPIN_SERVER_URL` is what this run *dialled*, which is not the same
+  claim as which server answered: `-s` leaves the inbound listener up, and the library
+  reports that a connection is up without saying where it came from — no connect callback,
+  and nothing exposing a connection's URL or direction — so one that dialled in while an
+  outbound attempt was outstanding or had failed carries the attempt's URL. Closing that
+  needs sendspin-cpp to name the live connection's origin; until it does, the docs point a
+  hook that must be certain at `SENDSPIN_SERVER_ID`, which is read from the connection the
+  stream arrived on. An unknown is left *unset* rather than exported empty, and inherited
+  `SENDSPIN_*` variables are cleared so a wrapper script's stale export cannot describe
+  some other run. Both events of a stream are told what was gathered when it started: by
+  the time one ends its connection is usually already gone, and asking again would hand
+  the stop hook a server it can no longer name.
+- **Nothing waits on a hook.** The spawn is a `fork()`/`execve()` with the environment
+  built before the fork — this process has the library's background threads, so the
+  child may only touch async-signal-safe calls — and the reap is a `WNOHANG` `waitpid()`
+  polled from the main loop, next to mDNS and the control socket. A non-zero exit or a
+  signal death is one `W hook:` line; a hook still running at shutdown is left to
+  finish, because an amplifier half-switched is worse than an orphan.
+- **The stream's end is waited for on the way out.** `disconnect()` only enqueues it, and
+  it is `client.loop()` that delivers it, so without this a player killed mid-stream reaches
+  `return 0` with its stop hook unrun and the amplifier still on. The loop is pumped after
+  the disconnect until the listener reports the stream over, bounded by
+  `SHUTDOWN_DRAIN_MS` against a wait of about fifty, and says so and goes if that passes.
+  The stop hook it spawns is by definition the orphan case above: nothing waits on it.
+- **Fired on the stream lifecycle, not on the format being accepted**, through a
+  `PlayerListener::on_stream_event` seam shaped like `AudioSink::on_frames_played`. A
+  stream the device refused is audio arriving and being discarded — the case where the
+  amplifier being on matters most — so the hook window is exactly `status`'s
+  `stream: receiving`.
+- **The child's stdout goes to stderr**, because with `-o stdout` the parent's stdout is
+  carrying PCM and a hook's `echo` would land in the middle of the audio. Under `-f`
+  both end up in the logfile, which is where a hook's output belongs anyway.
+- **And nothing else of the player's crosses into it.** Every descriptor above stderr is
+  closed in the child, because an exec carries them all: a hook that kept the audio port's
+  listening socket holds it for as long as it runs, and a restart in that window fails to
+  bind while still logging that it is listening. Closed there rather than opened
+  close-on-exec at each site, since the library's and IXWebSocket's sockets are not ours to
+  reach into. SIGPIPE goes back to `SIG_DFL` for the same reason: the player ignores it, and
+  an ignored disposition survives `execve()` where a caught one does not, so `… | head -1`
+  inside a hook would otherwise report a failed write rather than ending.

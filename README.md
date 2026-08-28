@@ -950,6 +950,67 @@ name: living-room
 ...
 ```
 
+### Stream hooks
+
+`--hook-start` and `--hook-stop` run a shell command when a stream starts and when
+it stops — the amplifier relay, the light, the notification. The command goes
+through `/bin/sh -c`, so pipes and `&&` work, and the event's facts arrive in the
+environment rather than as arguments:
+
+| Variable | Carries |
+|---|---|
+| `SENDSPIN_EVENT` | `start` or `stop` |
+| `SENDSPIN_SERVER_ID` | the connected server's id |
+| `SENDSPIN_SERVER_NAME` | its friendly name |
+| `SENDSPIN_SERVER_URL` | the URL this run dialled — set only on an `-s` run |
+| `SENDSPIN_CLIENT_NAME` | this player's friendly name (`-n`) |
+
+The vocabulary is the Python `sendspin-cli`'s, deliberately: a hook script written
+against one player runs unchanged against the other. `SENDSPIN_CLIENT_ID` is part
+of that vocabulary and reserved here, but nothing arrives in it yet: the library
+derives this player's id from the interface MAC and does not expose it, so the
+honest value waits on a flag that chooses one. A variable whose value is
+unknown for the event is left unset rather than exported empty, so `[ -n
+"$SENDSPIN_SERVER_ID" ]` means what it says — and any `SENDSPIN_*` inherited from
+the player's own environment is cleared first, so a wrapper script's stale export
+cannot describe some other run to the hook.
+
+`SENDSPIN_SERVER_URL` says what this run dialled, not which server answered.
+Those are the same thing whenever `-s` is how the player got its connection —
+but `-s` leaves the inbound listener up, and a server that dials *in* while an
+outbound attempt is outstanding or has failed is a connection the player cannot
+tell apart from its own: the library reports that one is up, not where it came
+from. A hook that must be certain which server it is acting on should read
+`SENDSPIN_SERVER_ID`, which always describes the connection the stream arrived
+on.
+
+A stop event carries the same server facts as the start it pairs with, so
+`--hook-stop 'curl -X POST .../$SENDSPIN_SERVER_ID/off'` names the server the
+stream was actually on. They are the values gathered when the stream started
+rather than whatever is left to ask at the end: a stream usually ends *because*
+its connection went, and the server is no longer there to describe itself.
+
+The hook fires on the stream lifecycle, not on the format being accepted: a stream
+the device refused is still audio arriving, so the amplifier is on for exactly as
+long as `status` says `stream: receiving`. Nothing waits on it — a hook that blocks
+cannot stall the audio path. It is reaped from the main loop; its output lands in
+the log (stdout deliberately re-pointed at stderr, since `-o stdout` may be
+carrying PCM); and a non-zero exit is a `W hook:` line, not a player failure. A
+hook still running at shutdown is left to finish: an amplifier half-switched is
+worse than an orphan. A player stopped while a stream is playing runs its stop
+hook on the way out, so `systemctl stop` leaves the amplifier off rather than on.
+
+The hook is handed nothing of the player's but that output stream: every other
+descriptor is closed and SIGPIPE is back at its default, so `something | head -1`
+behaves the way it would in any other shell and a slow hook cannot sit on the
+port a restart needs.
+
+```bash
+sendspin-cli -o hw:1,0 \
+  --hook-start 'amixer -c 1 set Master unmute' \
+  --hook-stop  'amixer -c 1 set Master mute'
+```
+
 ### Logging
 
 Every *log* line carries a level letter and a subsystem tag:
@@ -1021,11 +1082,12 @@ which is what a foreground run whose terminal has just closed should do.
 The flags follow squeezelite's: `-o` output device, `-l` list devices, `-n` name,
 `-s` server, `-z` daemonize, `-P` pidfile, `-d`/`-f` logging. All but `-l` and
 `-z` also have a long spelling — `--output --name --server --pidfile --logfile
---log-level` — so that every config key is a flag name. Nine more are long-only
+--log-level` — so that every config key is a flag name. Eleven more are long-only
 because they are not squeezelite's: `--port`, the port this player serves on,
 `--buffer-ms`, `--static-delay`, the two mDNS flags `--no-mdns` and `--mdns-name`,
-the two control-socket flags `--control-socket` and `--no-control`, and `--config`
-and `--state-dir` for the two files above. Run `--help` for the current state of each
+the two control-socket flags `--control-socket` and `--no-control`, the two stream
+hooks `--hook-start` and `--hook-stop`, and `--config` and `--state-dir` for the
+two files above. Run `--help` for the current state of each
 — a few still point at [`docs/ROADMAP.md`](docs/ROADMAP.md) for behaviour that is
 not built yet.
 

@@ -30,6 +30,7 @@
 #include "cli.h"
 #include "control.h"
 #include "daemon.h"
+#include "hooks.h"
 #include "log.h"
 #include "mdns.h"
 #include "outbound.h"
@@ -69,6 +70,15 @@ using sendspin::LogLevel;
 /// How long to sleep between client.loop() calls. The library does its own timing on a
 /// background thread, so this only bounds how quickly the main loop reacts to events.
 constexpr int LOOP_INTERVAL_MS = 10;
+
+/// How long the shutdown below keeps pumping client.loop() for the stream's end.
+///
+/// The wait it covers is about 50 ms: one tick for the goodbye's close event to reach
+/// drop_connection() and enqueue the stream's end, up to the library's 20 ms audio-write
+/// timeout for its sync task to notice and go idle, and one more tick for the drain to see
+/// that and deliver the callback. The rest is headroom, and it is still nothing beside
+/// systemd's stop timeout.
+constexpr int SHUTDOWN_DRAIN_MS = 500;
 
 std::atomic<bool> g_running{true};
 
@@ -252,7 +262,20 @@ public:
         // Stamped before the dial rather than after, so the backoff measures from when the
         // attempt started -- which is the whole point of pacing from the dial.
         this->pacer_.note_dial(now_ms);
+        this->dialed_url_ = url;
         client.connect_to(url);
+    }
+
+    /// The URL this run last dialled, empty before the first dial. What the stream hooks
+    /// export as SENDSPIN_SERVER_URL.
+    ///
+    /// What was dialled, not what answered, and the two can differ: -s leaves the inbound
+    /// listener up, so a server that dialled in while an attempt of ours was outstanding or
+    /// had failed is a connection this cannot tell from its own. Telling them apart needs the
+    /// library to say where the live connection came from, which it does not -- there is no
+    /// connect callback, and nothing exposes a connection's URL or its direction.
+    const std::string& dialed_url() const {
+        return this->dialed_url_;
     }
 
 private:
@@ -319,6 +342,7 @@ private:
     MdnsService& mdns_;
     StateStore& store_;
     std::string remembered_;
+    std::string dialed_url_;
     bool remembered_this_connection_{false};
     RetryPacer pacer_;
 };
@@ -872,6 +896,46 @@ int main(int argc, char* argv[]) {
         outbound = std::make_unique<OutboundMode>(opts, mdns, state_store);
     }
 
+    // What --hook-start/--hook-stop run. Wired only when one was given, so a player with no
+    // hooks pays nothing on the stream path. Set below `outbound` because the callback
+    // captures it, and above the loop because the loop's first client.loop() is the first
+    // moment a stream event can fire.
+    HookRunner hooks;
+    // What the stream now running started on. Both of its events describe that one stream, so
+    // both are told the same thing -- and the stop event has no other source for it: a stream
+    // ends because its connection went, and by then get_server_information() has nothing left
+    // to answer with. Never stale, because the library fires on_stream_end() only for a stream
+    // it fired on_stream_start() for, and this is rewritten on every one of those.
+    HookContext stream_context;
+    if (!opts.hook_start.empty() || !opts.hook_stop.empty()) {
+        player_listener.on_stream_event = [&opts, &client, &hooks, &outbound,
+                                           &stream_context](bool started) {
+            // Above the empty-command return below, so a run that gave only --hook-stop still
+            // has the start's facts to hand it.
+            if (started) {
+                stream_context = HookContext{};
+                stream_context.client_name = opts.name;
+                // client_id stays unset: the library derives its own from the interface MAC
+                // and does not expose it, so there is no honest value to export until a flag
+                // chooses one.
+                const std::optional<sendspin::ServerInformationObject> info =
+                    client.get_server_information();
+                if (info.has_value()) {
+                    stream_context.server_id = info->server_id;
+                    stream_context.server_name = info->name;
+                }
+                if (outbound) {
+                    stream_context.server_url = outbound->dialed_url();
+                }
+            }
+            const std::string& command = started ? opts.hook_start : opts.hook_stop;
+            if (command.empty()) {
+                return;
+            }
+            hooks.run(command, started ? "start" : "stop", stream_context);
+        };
+    }
+
     while (g_running.load()) {
         const int64_t now_ms = monotonic_ms();
         client.loop();
@@ -890,6 +954,8 @@ int main(int argc, char* argv[]) {
         // it after a device has gone away mid-stream, which is why the sink gets the loop's
         // clock rather than reading one of its own.
         sink->poll(now_ms);
+        // Reaps finished hook commands. Cheap when none are running, which is almost always.
+        hooks.poll();
         // Here rather than in the SIGHUP handler: the reopen flushes the old stream and then
         // logs the result, and neither fflush() nor fprintf() is async-signal-safe -- the
         // open/dup2 pair on its own would be. This is what hands rotation to logrotate and
@@ -906,6 +972,28 @@ int main(int argc, char* argv[]) {
     mdns.stop();
     control_socket.close();
     client.disconnect(sendspin::SendspinGoodbyeReason::SHUTDOWN);
+    // disconnect() only asks. The stream's end is delivered by client.loop() like every other
+    // callback, so the loop above having exited is not the end of it: without this pump a
+    // player killed mid-stream runs no stop hook at all, which for the amplifier the feature
+    // exists to switch is the whole failure. Pumped rather than fired from here so the one
+    // producer of stream events stays the listener, which also clears the sink on its way past.
+    for (int waited_ms = 0; player_listener.streaming(); waited_ms += LOOP_INTERVAL_MS) {
+        if (waited_ms >= SHUTDOWN_DRAIN_MS) {
+            cli_log(LogLevel::WARN,
+                    "The stream did not end within %d ms of disconnecting -- any --hook-stop "
+                    "has not run",
+                    SHUTDOWN_DRAIN_MS);
+            break;
+        }
+        client.loop();
+        hooks.poll();
+        std::this_thread::sleep_for(std::chrono::milliseconds(LOOP_INTERVAL_MS));
+    }
+    // The lambda holds references to locals declared after the listener, so it outlives them by
+    // exactly the width of this scope's teardown. Nothing calls it there -- stream events only
+    // arrive inside client.loop(), and the last one has run -- and dropping it here is what
+    // keeps that true of any code added below rather than of this ordering.
+    player_listener.on_stream_event = nullptr;
     sink->stop();
     return 0;
 }

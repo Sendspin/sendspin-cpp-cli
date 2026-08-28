@@ -25,6 +25,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 
 namespace sendspin_cli {
@@ -50,6 +51,16 @@ public:
     /// itself accepts having nowhere to write, so a caller only passes null to opt out entirely.
     /// Must outlive this listener.
     PlayerListener(sendspin::PlayerRole& player, AudioSink& sink, StateStore* store = nullptr);
+
+    /// Fired after each stream lifecycle change: `true` at stream start, `false` at end.
+    ///
+    /// The seam main() points --hook-start/--hook-stop at, shaped like AudioSink's
+    /// on_frames_played. It fires on the *lifecycle*, not on the format being accepted: a
+    /// stream the device refused is audio arriving and being discarded, and the amplifier
+    /// the hook exists to switch should be on for exactly as long as `streaming()` is true.
+    /// Runs on the main loop, after this listener's own bookkeeping has settled. Null is
+    /// fine and is the default.
+    std::function<void(bool started)> on_stream_event;
 
     size_t on_audio_write(uint8_t* data, size_t length, uint32_t timeout_ms) override;
     void on_stream_start() override;

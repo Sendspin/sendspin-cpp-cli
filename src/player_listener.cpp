@@ -53,6 +53,13 @@ void PlayerListener::on_stream_start() {
     this->streaming_ = true;
     this->stream_format_.reset();
 
+    // After streaming_ is set and before the guards below can return, so the two facts the
+    // rest of the run sees stay in step: whenever `status` says streaming, the start hook
+    // has fired, format or no format.
+    if (this->on_stream_event) {
+        this->on_stream_event(true);
+    }
+
     const sendspin::ServerPlayerStreamObject& params = this->player_.get_current_stream_params();
     if (!params.is_complete()) {
         // The sink cannot open a device without a format. The player keeps the stream
@@ -99,6 +106,9 @@ void PlayerListener::on_stream_end() {
         cli_log(LogLevel::INFO, "Stream ended");
     }
     this->sink_.clear();
+    if (this->on_stream_event) {
+        this->on_stream_event(false);
+    }
 }
 
 void PlayerListener::on_volume_changed(uint8_t volume) {

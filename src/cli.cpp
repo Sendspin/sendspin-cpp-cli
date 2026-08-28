@@ -68,6 +68,8 @@ enum LongOnly {
     OPT_NO_CONTROL,
     OPT_STATE_DIR,
     OPT_CONFIG,
+    OPT_HOOK_START,
+    OPT_HOOK_STOP,
 };
 
 /// @brief An option a config file may set: its key, and how a diagnostic names it.
@@ -104,6 +106,8 @@ const std::vector<SettableOption>& settable_options() {
         {Opt::ControlSocket, "control-socket", "--control-socket"},
         {Opt::NoControl, "no-control", "--no-control"},
         {Opt::StateDir, "state-dir", "--state-dir"},
+        {Opt::HookStart, "hook-start", "--hook-start"},
+        {Opt::HookStop, "hook-stop", "--hook-stop"},
     };
     return table;
 }
@@ -371,6 +375,18 @@ bool apply_option(const SettableOption& option, const std::string& value, Option
             }
             out.state_dir = value;
             break;
+        case Opt::HookStart:
+            if (empty_value()) {
+                return false;
+            }
+            out.hook_start = value;
+            break;
+        case Opt::HookStop:
+            if (empty_value()) {
+                return false;
+            }
+            out.hook_stop = value;
+            break;
         case Opt::NoMdns:
             if (!parse_bool(value, out.no_mdns)) {
                 error = "invalid --no-mdns '" + value + "' -- expected true or false";
@@ -563,6 +579,8 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
         {"control-socket", required_argument, nullptr, OPT_CONTROL_SOCKET},
         {"no-control", no_argument, nullptr, OPT_NO_CONTROL},
         {"state-dir", required_argument, nullptr, OPT_STATE_DIR},
+        {"hook-start", required_argument, nullptr, OPT_HOOK_START},
+        {"hook-stop", required_argument, nullptr, OPT_HOOK_STOP},
         {nullptr, 0, nullptr, 0},
     };
 
@@ -716,6 +734,12 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
                 break;
             case OPT_STATE_DIR:
                 apply(Opt::StateDir, optarg);
+                break;
+            case OPT_HOOK_START:
+                apply(Opt::HookStart, optarg);
+                break;
+            case OPT_HOOK_STOP:
+                apply(Opt::HookStop, optarg);
                 break;
             case ':':
                 fail("option '" + offending_option(flag_argv, optind) + "' needs a value");
@@ -886,7 +910,7 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
         static constexpr Opt DAEMON_ONLY[] = {
             Opt::Device,   Opt::Name,     Opt::Server,   Opt::Daemonize, Opt::Pidfile,
             Opt::Logfile,  Opt::LogLevel, Opt::BufferMs, Opt::NoMdns,    Opt::MdnsName,
-            Opt::NoControl, Opt::StateDir, Opt::StaticDelay,
+            Opt::NoControl, Opt::StateDir, Opt::StaticDelay, Opt::HookStart, Opt::HookStop,
         };
         for (Opt opt : DAEMON_ONLY) {
             if (out.was_given(opt)) {
@@ -1088,6 +1112,16 @@ void print_usage(std::FILE* out, const char* prog) {
     std::fprintf(out, "                unit has neither, so pair StateDirectory= with this\n");
     std::fprintf(out, "                flag; with none of the three the player still runs and\n");
     std::fprintf(out, "                simply remembers nothing\n");
+    std::fprintf(out, "  --hook-start <command>\n");
+    std::fprintf(out, "  --hook-stop <command>\n");
+    std::fprintf(out, "                Run <command> through /bin/sh when a stream starts or\n");
+    std::fprintf(out, "                stops -- an amplifier relay, a light. The event's facts\n");
+    std::fprintf(out, "                arrive as SENDSPIN_EVENT (start|stop) and, where known,\n");
+    std::fprintf(out, "                SENDSPIN_SERVER_ID, SENDSPIN_SERVER_NAME,\n");
+    std::fprintf(out, "                SENDSPIN_SERVER_URL (outbound only) and\n");
+    std::fprintf(out, "                SENDSPIN_CLIENT_NAME. The hook runs without blocking\n");
+    std::fprintf(out, "                playback; its output goes to the log, and a non-zero\n");
+    std::fprintf(out, "                exit is a warning, not a player failure\n");
     std::fprintf(out, "  -h, --help    Show this help\n");
     std::fprintf(out, "  --version     Show version information\n\n");
     std::fprintf(out,
