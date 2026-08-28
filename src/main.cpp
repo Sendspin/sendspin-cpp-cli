@@ -1015,6 +1015,10 @@ int main(int argc, char* argv[]) {
         hooks.poll();
         std::this_thread::sleep_for(std::chrono::milliseconds(LOOP_INTERVAL_MS));
     }
+    // The stop hook may be sitting in the pending slot behind a start hook that never
+    // finished, and no more polls are coming. Spawned now regardless: this is the last
+    // chance to keep the promise that stopping the player switches the amplifier off.
+    hooks.flush();
     // The lambda holds references to locals declared after the listener, so it outlives them by
     // exactly the width of this scope's teardown. Nothing calls it there -- stream events only
     // arrive inside client.loop(), and the last one has run -- and dropping it here is what

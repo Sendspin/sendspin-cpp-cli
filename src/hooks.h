@@ -19,6 +19,7 @@
 
 #include <sys/types.h>
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -48,8 +49,18 @@ struct HookContext {
 ///
 /// A hook is `/bin/sh -c <command>` with `SENDSPIN_EVENT` and the context above added to
 /// this process's own environment -- a shell rather than an argv split, so `amixer set
-/// Master unmute && relay on` is one hook. The spawn returns as soon as the child is
-/// forked: a hook that blocks must not stall the audio path, so nothing here waits.
+/// Master unmute && relay on` is one hook. run() returns without waiting either way: a
+/// hook that blocks must not stall the audio path.
+///
+/// Hooks run one at a time, in event order. Two events for the same stream would otherwise
+/// race in the scheduler, and a start hook that runs long finishing *after* the stop hook
+/// of its own stream leaves the amplifier on with the player idle -- the exact state the
+/// hooks exist to prevent. While one runs, the newest event waits in a single pending
+/// slot; a newer event replaces whatever waits there, because the hardware should end in
+/// the *final* state, not replay a stale intermediate. A hook that counts events rather
+/// than setting state will see such flapping coalesced away -- each replacement is a
+/// `D hook:` line. The slot is also the bound: one event waiting at most, and one child at
+/// most until the shutdown flush(), no matter how a hook misbehaves.
 ///
 /// The child's stdout and stderr both go where the player's stderr goes -- under -f, the
 /// logfile -- so whatever a hook prints lands beside the player's own lines. Its stdout is
@@ -61,23 +72,37 @@ struct HookContext {
 /// holding them keeps a restart from binding its port -- and SIGPIPE goes back to its default,
 /// which the player ignores and an exec would otherwise carry through.
 ///
-/// THREAD SAFETY: run() and poll() must both be called on the main loop thread. That is
-/// where the stream callbacks that trigger hooks already fire, and it is what lets the
-/// bookkeeping below go unsynchronised.
+/// THREAD SAFETY: run(), poll() and flush() must all be called on the main loop thread.
+/// That is where the stream callbacks that trigger hooks already fire and where the
+/// shutdown path runs, and it is what lets the bookkeeping below go unsynchronised.
 class HookRunner {
 public:
-    /// @brief Runs `command` with `SENDSPIN_EVENT=<event>` and `context` in its environment.
+    /// @brief Runs `command` with `SENDSPIN_EVENT=<event>` and `context` in its environment,
+    /// or holds it in the pending slot while an earlier hook is still running.
     ///
     /// Failure to spawn is a WARN, not an error: the stream the event describes is fine,
     /// and the player must keep playing it.
     /// @param event What SENDSPIN_EVENT carries: "start" or "stop".
+    /// @param context Copied when the event has to wait: it describes this event's stream,
+    /// and the caller's object will already describe the next one by the time the slot is
+    /// spawned.
     void run(const std::string& command, const char* event, const HookContext& context);
 
-    /// @brief Reaps any hooks that have finished, logging the ones that failed.
+    /// @brief Reaps any hooks that have finished, logging the ones that failed, and spawns
+    /// the pending event once the running hook is out.
     ///
     /// Call from the main loop. A hook still running when the daemon exits is left to
     /// finish on its own -- an amplifier half-switched-off is worse than an orphan.
     void poll();
+
+    /// @brief Spawns the pending event now, beside the running hook if there still is one.
+    ///
+    /// For the shutdown path, after the stream-end drain: the daemon promises that
+    /// stopping it runs the stop hook, and a start hook that never finishes must not be
+    /// allowed to turn that promise into an amplifier left on. Ordering is knowingly given
+    /// up here -- there is no later event left to order against, and the alternative is
+    /// the hook never running at all.
+    void flush();
 
     /// How many hooks have been spawned and not yet reaped. For tests, which need to know
     /// when poll() has seen a child out, and for nothing else.
@@ -92,7 +117,18 @@ private:
         std::string event;
     };
 
+    /// The event waiting for the running hook to finish, newest wins.
+    struct PendingHook {
+        std::string command;
+        std::string event;
+        HookContext context;
+    };
+
+    /// Forks and execs one hook, unconditionally. run() decides whether now is the time.
+    void spawn(const std::string& command, const char* event, const HookContext& context);
+
     std::vector<RunningHook> running_;
+    std::optional<PendingHook> pending_;
 };
 
 }  // namespace sendspin_cli
