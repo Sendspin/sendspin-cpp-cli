@@ -237,6 +237,9 @@ public:
                      this->pacer_.delay_ms());
             // The next connection may be to a different server, so it is owed its own look.
             this->remembered_this_connection_ = false;
+            // Whatever the last dial produced -- or failed to produce -- went with the
+            // connection, so its URL must not describe whatever connects next.
+            this->last_dial_.note_lost();
         }
         // Covers an inbound connection too: a server that dialled us first is a connection,
         // and dialling out over the top of it would only fight with it.
@@ -249,8 +252,9 @@ public:
         }
 
         std::string url;
+        std::string server_id;
         if (this->opts_.discover) {
-            if (!this->choose(url)) {
+            if (!this->choose(url, server_id)) {
                 return;
             }
         } else {
@@ -262,25 +266,29 @@ public:
         // Stamped before the dial rather than after, so the backoff measures from when the
         // attempt started -- which is the whole point of pacing from the dial.
         this->pacer_.note_dial(now_ms);
-        this->dialed_url_ = url;
+        this->last_dial_.note_dial(url, server_id);
         client.connect_to(url);
     }
 
-    /// The URL this run last dialled, empty before the first dial. What the stream hooks
-    /// export as SENDSPIN_SERVER_URL.
+    /// The URL to export as SENDSPIN_SERVER_URL for a stream arriving from `server_id`,
+    /// empty when no dial of this run's plausibly produced that connection.
     ///
-    /// What was dialled, not what answered, and the two can differ: -s leaves the inbound
-    /// listener up, so a server that dialled in while an attempt of ours was outstanding or
-    /// had failed is a connection this cannot tell from its own. Telling them apart needs the
-    /// library to say where the live connection came from, which it does not -- there is no
-    /// connect callback, and nothing exposes a connection's URL or its direction.
-    const std::string& dialed_url() const {
-        return this->dialed_url_;
+    /// What was dialled, never a claim about what answered: a lost connection forgets the
+    /// dial, and a discovery dial is answered only for the server_id it dialled. A literal
+    /// -s URL is the case that cannot be verified -- -s leaves the inbound listener up, and
+    /// telling an inbound connection from our own needs the library to say where the live
+    /// connection came from, which it does not: there is no connect callback, and nothing
+    /// exposes a connection's URL or its direction.
+    std::string url_for(const std::string& server_id) const {
+        return this->last_dial_.url_for(server_id);
     }
 
 private:
     /// Picks a discovered server, or reports that there is nothing to dial yet.
-    bool choose(std::string& url) {
+    ///
+    /// `server_id` is the chosen instance label, which is the protocol server_id -- the
+    /// equality the remembered-server preference already stands on.
+    bool choose(std::string& url, std::string& server_id) {
         const std::vector<DiscoveredServer> servers = this->mdns_.servers();
         std::string reason;
         const DiscoveredServer* chosen =
@@ -293,6 +301,7 @@ private:
             // Discovery already said why, at debug, when the instance first resolved.
             return false;
         }
+        server_id = chosen->instance;
         // A discovered URL has no userinfo to hide -- discovered_server_url() builds it from a
         // resolved address and a TXT path it requires to start with '/', so the authority is
         // always just that address. It goes through the helper anyway so that both "Connecting
@@ -342,7 +351,7 @@ private:
     MdnsService& mdns_;
     StateStore& store_;
     std::string remembered_;
-    std::string dialed_url_;
+    LastDial last_dial_;
     bool remembered_this_connection_{false};
     RetryPacer pacer_;
 };
@@ -951,7 +960,7 @@ int main(int argc, char* argv[]) {
                     stream_context.server_name = info->name;
                 }
                 if (outbound) {
-                    stream_context.server_url = outbound->dialed_url();
+                    stream_context.server_url = outbound->url_for(stream_context.server_id);
                 }
             }
             const std::string& command = started ? opts.hook_start : opts.hook_stop;

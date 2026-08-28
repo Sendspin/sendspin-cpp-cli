@@ -13,11 +13,12 @@
 // limitations under the License.
 
 /// @file outbound.h
-/// @brief When the outbound mode is allowed to dial again
+/// @brief When the outbound mode is allowed to dial again, and what the last dial may claim
 
 #pragma once
 
 #include <cstdint>
+#include <string>
 
 namespace sendspin_cli {
 
@@ -85,6 +86,36 @@ private:
     uint32_t dials_{0};  ///< dials made since the last completed handshake
     bool dialled_{false};
     bool connected_{false};
+};
+
+/// @brief The last dial, and what SENDSPIN_SERVER_URL may honestly claim of it.
+///
+/// The library reports that a connection is up without saying where it came from -- there
+/// is no connect callback, and nothing exposes a connection's URL or direction -- so the
+/// dialled URL is exported only while nothing contradicts it being the connection's
+/// origin. A dial to a discovered server knows which server_id it dialled, because the
+/// mDNS instance label *is* the protocol server_id, so its URL is answered only for that
+/// server; a dial to a literal -s URL promises nothing about who answers and is taken at
+/// its word. Losing the connection forgets the dial either way: whatever its URL described
+/// is gone, and no answer beats a stale one.
+class LastDial {
+public:
+    /// @brief Records that connect_to() has just been called with `url`.
+    /// @param server_id The dialled server's id when discovery chose it, or empty for a
+    /// literal -s URL.
+    void note_dial(const std::string& url, const std::string& server_id);
+
+    /// @brief Forgets the dial: the connection it could have described is gone.
+    void note_lost();
+
+    /// @brief The URL to export for a stream arriving from `connected_server_id`.
+    /// @return The dialled URL, or empty when no dial is live -- or when the dial named a
+    /// server other than the connected one, an unknown one included.
+    std::string url_for(const std::string& connected_server_id) const;
+
+private:
+    std::string url_;
+    std::string server_id_;  ///< who url_ was expected to reach; empty means unverifiable
 };
 
 }  // namespace sendspin_cli

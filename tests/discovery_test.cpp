@@ -354,5 +354,54 @@ TEST(RetryPacer, TheLostTransitionIsReportedExactlyOnce) {
     EXPECT_FALSE(pacer.note_connection_state(true, 300));
 }
 
+// ---------------------------------------------------------------------------
+// What the last dial may claim
+// ---------------------------------------------------------------------------
+
+TEST(LastDial, StartsWithNothingToExport) {
+    const LastDial dial;
+
+    EXPECT_EQ(dial.url_for("srv-1"), "");
+}
+
+TEST(LastDial, ALiteralUrlIsTakenAtItsWord) {
+    // A -s URL promises nothing about who answers, so there is nothing to check the
+    // connected server against: the URL is exported as dialled.
+    LastDial dial;
+    dial.note_dial("ws://hifi:8927/sendspin", "");
+
+    EXPECT_EQ(dial.url_for("srv-1"), "ws://hifi:8927/sendspin");
+    EXPECT_EQ(dial.url_for(""), "ws://hifi:8927/sendspin");
+}
+
+TEST(LastDial, ADiscoveryDialAnswersOnlyForTheServerItDialled) {
+    LastDial dial;
+    dial.note_dial("ws://192.168.1.10:8927/sendspin", "srv-1");
+
+    EXPECT_EQ(dial.url_for("srv-1"), "ws://192.168.1.10:8927/sendspin");
+    // A different server answered -- it dialled in, or beat the attempt -- and an unknown
+    // one cannot be checked at all. Either way the URL would describe the wrong connection.
+    EXPECT_EQ(dial.url_for("srv-2"), "");
+    EXPECT_EQ(dial.url_for(""), "");
+}
+
+TEST(LastDial, ALostConnectionForgetsTheDial) {
+    LastDial dial;
+    dial.note_dial("ws://hifi:8927/sendspin", "");
+    dial.note_lost();
+
+    EXPECT_EQ(dial.url_for(""), "");
+}
+
+TEST(LastDial, ARedialAfterALossIsExportedAgain) {
+    LastDial dial;
+    dial.note_dial("ws://one:8927/sendspin", "srv-1");
+    dial.note_lost();
+    dial.note_dial("ws://two:8927/sendspin", "srv-2");
+
+    EXPECT_EQ(dial.url_for("srv-2"), "ws://two:8927/sendspin");
+    EXPECT_EQ(dial.url_for("srv-1"), "");
+}
+
 }  // namespace
 }  // namespace sendspin_cli

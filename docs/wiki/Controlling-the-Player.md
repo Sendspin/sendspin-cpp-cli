@@ -210,10 +210,13 @@ with — gathered when the stream started, because a stream usually ends when it
 connection goes and there is nothing left to ask by then.
 
 `SENDSPIN_SERVER_URL` is the one to read carefully: it is the URL this run dialled, not
-which server answered. `-s` leaves the inbound listener up, so a server that dials *in*
-while an outbound attempt is outstanding or has failed is a connection the player cannot
-tell from its own — the library reports that one is up, not where it came from. Read
-`SENDSPIN_SERVER_ID` when a hook has to be certain which server it is acting on.
+which server answered. A lost connection clears it, and when discovery chose the server it
+is exported only if the stream arrived from the server it dialled. On a literal `-s URL`
+run the rest is out of the player's reach: `-s` leaves the inbound listener up, and a
+server that dials *in* while that attempt is outstanding or has failed is a connection the
+player cannot tell from its own — the library reports that one is up, not where it came
+from. Read `SENDSPIN_SERVER_ID` when a hook has to be certain which server it is acting
+on.
 
 The hook never blocks playback: it is spawned and reaped from the main loop, its output
 goes to the log, and a non-zero exit is a `W hook:` warning rather than a player failure.

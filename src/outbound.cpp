@@ -70,4 +70,21 @@ void RetryPacer::note_dial(int64_t now_ms) {
     }
 }
 
+void LastDial::note_dial(const std::string& url, const std::string& server_id) {
+    this->url_ = url;
+    this->server_id_ = server_id;
+}
+
+void LastDial::note_lost() {
+    this->url_.clear();
+    this->server_id_.clear();
+}
+
+std::string LastDial::url_for(const std::string& connected_server_id) const {
+    if (!this->server_id_.empty() && this->server_id_ != connected_server_id) {
+        return {};
+    }
+    return this->url_;
+}
+
 }  // namespace sendspin_cli

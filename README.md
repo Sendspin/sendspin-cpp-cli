@@ -992,11 +992,14 @@ the player's own environment is cleared first, so a wrapper script's stale expor
 cannot describe some other run to the hook.
 
 `SENDSPIN_SERVER_URL` says what this run dialled, not which server answered.
-Those are the same thing whenever `-s` is how the player got its connection —
-but `-s` leaves the inbound listener up, and a server that dials *in* while an
-outbound attempt is outstanding or has failed is a connection the player cannot
-tell apart from its own: the library reports that one is up, not where it came
-from. A hook that must be certain which server it is acting on should read
+The player rules out what it can: losing a connection clears the URL rather
+than letting it describe whatever connects next, and when discovery chose the
+server, the URL is exported only if the stream arrived from the server_id it
+dialled. What it cannot rule out is a literal `-s URL` run — `-s` leaves the
+inbound listener up, and a server that dials *in* while that attempt is
+outstanding or has failed is a connection the player cannot tell apart from
+its own: the library reports that one is up, not where it came from. A hook
+that must be certain which server it is acting on should read
 `SENDSPIN_SERVER_ID`, which always describes the connection the stream arrived
 on.
 
