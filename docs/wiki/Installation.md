@@ -46,8 +46,13 @@ VERSION=0.1.0
 case "$(dpkg --print-architecture)" in
   amd64) LEG=linux-x86_64 ;;
   arm64) LEG=linux-arm64  ;;
-  armhf) LEG=linux-armv7  ;;   # not on an ARMv6 board -- see Raspberry Pi below
-  *)     echo 'no release is built for this architecture'; exit 1 ;;
+  armhf)
+    # An ARMv6 board reports armhf too, and the archive is built for ARMv7.
+    if [ "$(uname -m)" = armv6l ]; then
+      echo 'ARMv6 (Pi Zero, Pi Zero W, Pi 1) has no build -- build from source'; exit 1
+    fi
+    LEG=linux-armv7 ;;
+  *) echo 'no release is built for this architecture'; exit 1 ;;
 esac
 BASE=https://github.com/Sendspin/sendspin-cpp-cli/releases/download/v$VERSION
 curl -fLO "$BASE/sendspin-cli-$VERSION-$LEG.tar.gz"

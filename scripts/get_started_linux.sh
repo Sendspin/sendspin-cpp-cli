@@ -168,8 +168,11 @@ elif command -v getconf >/dev/null 2>&1; then
         64:x86_64 | 64:amd64) USERLAND='amd64' ;;
         64:aarch64 | 64:arm64) USERLAND='arm64' ;;
         32:aarch64 | 32:arm64 | 32:arm*) USERLAND='armhf' ;;
-        # Passed through rather than mapped, so the refusal below can name what was found.
-        *) USERLAND="$MACHINE" ;;
+        # Left empty rather than filled in from `$MACHINE`, which would be this block's own
+        # mistake made twice: a 32-bit x86 userland under an x86-64 kernel reports `x86_64`,
+        # and passing that on hands it the 64-bit archive. What cannot be identified is
+        # refused below.
+        *) USERLAND='' ;;
     esac
 else
     fail "neither dpkg nor getconf is on \$PATH, and one of them is needed to tell a 32-bit
@@ -205,6 +208,11 @@ case "$USERLAND" in
                 ;;
         esac
         LEG='linux-armv7'
+        ;;
+    '')
+        fail "this host's userland could not be identified from a $MACHINE kernel alone, and
+    guessing at it is how a 32-bit userland ends up with a 64-bit binary. Install dpkg, or
+    build from source: https://github.com/$REPO#build"
         ;;
     *)
         fail "no release is built for a '$USERLAND' userland -- the archives are linux-x86_64,
