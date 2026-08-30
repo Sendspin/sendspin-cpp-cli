@@ -35,10 +35,15 @@ jobs:
     # Sized for the slowest leg and far under the six-hour default: the point is that a player
     # which ignores SIGTERM fails rather than holds a runner all day. linux-armv6 is that leg by
     # a wide margin and the only one this number is really about -- it emulates every compile in
-    # the FetchContent tree where the others compile at native speed, which is minutes against
-    # seconds. The headroom is real but it is not vast, so a leg that starts running long is
-    # worth a look at rather than a larger number here.
-    timeout-minutes: 30
+    # the FetchContent tree where the others compile at native speed, which measures 23 minutes
+    # against two or three.
+    #
+    # 40 rather than 30 is that measurement plus room for a slow runner. At 30 the margin was
+    # under a quarter, which on shared hardware is the leg that goes red for the weather rather
+    # than for a defect -- and a flaky leg teaches people to re-run rather than to read. Every
+    # other leg finishes inside three minutes, so the larger number costs them nothing: what it
+    # buys is that a red ARMv6 leg means something.
+    timeout-minutes: 40
     strategy:
       # Every leg's result is wanted rather than only the first failure's: a break that shows
       # on one architecture and not another is precisely what the matrix is here to tell apart.
