@@ -1564,9 +1564,9 @@ shutdown path, and produced zero reports when run that way by hand.
 **The 32-bit Pi leg is there.** `linux-armv7` cross-compiles on `ubuntu-24.04` against the
 armhf multiarch tree — `scripts/build_arm32.sh` owns the configure — and runs the whole unit
 suite and `scripts/smoke_test.sh` under `qemu-user` rather than skipping them, so it holds the
-same rule every other leg does. A cross build is the only shape available: GitHub has no armv7
-runner, and its arm64 runners are Neoverse N1 with no AArch32 at EL0, so no `runs-on` value
-reaches the target at all. What keeps the leg's name honest is a `readelf` of the linked
+same rule every other leg does. Nothing builds it natively: GitHub has no armv7 runner, and its
+arm64 runners are Neoverse N1 with no AArch32 at EL0, so no `runs-on` value reaches the target
+at all — and a cross build is what buys back everything the ARMv6 leg below has to emulate. What keeps the leg's name honest is a `readelf` of the linked
 binary: the linker merges build attributes across every object in the link and reports the
 highest, so one read covers the FetchContent tree as well as our own sources, and a dependency
 compiled for the wrong architecture fails the leg instead of shipping.
@@ -1590,13 +1590,15 @@ instead of refusing it; ARMv5 and a bare `arm` are still refused, the ARMv6 arch
 oldest one built.
 
 Three things about that leg are load-bearing and none of them are about ARMv6 the instruction
-set. The unit suite and the smoke test run under `QEMU_CPU=arm1176`, because `qemu-arm` defaults
-to a Cortex-A15-class core and would happily execute the ARMv7 instructions the hardware cannot
-— an emulator more permissive than the target proves nothing. The container runs `--init` and
-builds as a non-root user, because without a reaping PID 1 the smoke test reads an exited
-daemon's zombie as a player that outlived `SIGTERM`, and because three `StateStore` cases assert
-that an unwritable directory is refused, which root is refused nothing by. And the link needs `-latomic`: ARMv6
-has no `LDREXD`, so the 64-bit atomics in `src/pulse_sink.cpp`, `src/player_listener.cpp` and
+set. Everything it runs in the container runs under `QEMU_CPU=arm1176`, because `qemu-arm`
+defaults to a Cortex-A15-class core and would happily execute the ARMv7 instructions the
+hardware cannot — an emulator more permissive than the target proves nothing. That covers the
+configure as well as the suite, a CMake `try_run` probe asking what the CPU can do being
+answerable for the wrong CPU otherwise. The container runs `--init` and builds as a non-root
+user, because without a reaping PID 1 the smoke test reads an exited daemon's zombie as a player
+that outlived `SIGTERM`, and because three `StateStore` cases assert that an unwritable
+directory is refused, which root is refused nothing by. And the link needs `-latomic`: ARMv6 has
+no `LDREXD`, so the 64-bit atomics in `src/pulse_sink.cpp`, `src/player_listener.cpp` and
 sendspin-cpp's own `connection_manager.cpp` become libatomic calls. It goes in
 `CMAKE_CXX_STANDARD_LIBRARIES` rather than `CMAKE_EXE_LINKER_FLAGS`, which places it ahead of
 the objects that need it and leaves the linker to discard it.

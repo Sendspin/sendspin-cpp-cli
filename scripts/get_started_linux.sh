@@ -19,8 +19,7 @@
 # One script for every Linux host, a Raspberry Pi included, because a Pi *is* an ordinary
 # Linux box here: it takes whichever archive its architecture names -- `linux-arm64` on a
 # 64-bit OS, `linux-armv7` or `linux-armv6` on a 32-bit one -- and installs it the way a
-# server takes
-# `linux-x86_64`. What is genuinely Pi-specific is advice -- the `audio` group,
+# server takes `linux-x86_64`. What is genuinely Pi-specific is advice -- the `audio` group,
 # and that the headphone jack and HDMI are separate cards -- and that is printed at the end
 # when a Pi is what this is running on. A second script would have been this one with two
 # paragraphs changed, and the two would have drifted.
@@ -52,12 +51,13 @@
 # full, and then either confirmed at a terminal or authorised up front with --yes.
 #
 # One asymmetry worth naming, in the spirit of the one .github/workflows/ci.yml names about
-# itself: the `shellcheck` job there lints every script under scripts/, and the other three are
+# itself: the `shellcheck` job there lints every script under scripts/, and the other four are
 # also *run* on every build -- smoke_test.sh on each publishing leg, build_arm32.sh on the
-# 32-bit ARM one, build_macos_pkg.sh on the macOS one. This is the one script CI lints but
-# never executes. A CI leg for it would want a runner willing to take a payload into `/` and a
-# sound card to then not find, so what it has instead is the container run recorded in the
-# pull request that added it.
+# cross-compiled 32-bit ARM one, build_armv6_container.sh on the containerised one,
+# build_macos_pkg.sh on the macOS one. This is the one script CI lints but never executes. A CI
+# leg for it would want a runner willing to take a payload into `/` and a sound card to then
+# not find, so what it has instead is the container run recorded in the pull request that
+# added it.
 #
 # Usage: scripts/get_started_linux.sh [--version <tag>] [--yes]
 #

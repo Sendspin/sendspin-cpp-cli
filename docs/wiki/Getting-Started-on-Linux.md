@@ -4,8 +4,8 @@ From nothing to a player your Sendspin server can find. On a Raspberry Pi, read
 [Getting Started on a Raspberry Pi](Getting-Started-on-a-Raspberry-Pi) instead — it is this
 page plus the handful of things a Pi does differently.
 
-**You need:** a Linux host (`x86_64`, `arm64`, or `armv7` on a 32-bit Raspberry Pi OS),
-systemd, a sound card, and root.
+**You need:** a Linux host (`x86_64`, `arm64`, or `armv7`/`armv6` on a 32-bit Raspberry Pi
+OS), systemd, a sound card, and root.
 
 ## The short way
 

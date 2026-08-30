@@ -56,9 +56,10 @@ jobs:
       # scripts/build_arm32.sh refuses by name, and publishes an archive that traps on an
       # ARM1176.
       #
-      # A new leg owes all eight -- and a `publish: true` leg owes a ninth thing in another
-      # file: an entry in each of the two asset sets release.yml diffs before it publishes,
-      # which otherwise fails the release with a diff rather than a reason. A publishing
+      # A new leg owes all nine, `with_mdns` included -- it has the same failure mode as its
+      # two siblings -- and a `publish: true` leg owes a tenth thing in another file: an entry
+      # in each of the two asset sets release.yml diffs before it publishes, which otherwise
+      # fails the release with a diff rather than a reason. A publishing
       # *macOS* leg owes two entries in each, its tarball and the installer .pkg built further
       # down.
       matrix:
@@ -95,8 +96,8 @@ jobs:
             avahi: false
             systemd: true
 
-          # The 32-bit Raspberry Pi leg, cross-compiled because no runner can build it any other
-          # way: GitHub offers no armv7 image, and its arm64 images are Neoverse N1, which has no
+          # The 32-bit Raspberry Pi leg, cross-compiled because no runner can build it natively:
+          # GitHub offers no armv7 image, and its arm64 images are Neoverse N1, which has no
           # AArch32 at EL0 -- so there is no `runs-on` value that reaches this target. Emulating
           # the whole build is the other route, and it would pay for every compile in the
           # FetchContent tree to arrive somewhere this already is: compiling at native speed and
@@ -357,6 +358,10 @@ jobs:
           echo 'A 32-bit ARM binary runs on this host.'
           rm -f binfmt-probe binfmt-probe.c
 
+      - name: Install build dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install portaudio pkgconf
+
       # What puts qemu-arm into the kernel's binfmt_misc, so that the ARM processes in the
       # container below -- gcc and cmake among them, this being a native build rather than a
       # cross one -- can run at all. The cross leg above registers its own handler by hand from
@@ -371,12 +376,8 @@ jobs:
       - name: Start the Raspbian build container (containerised 32-bit ARM)
         if: matrix.container
         env:
-          CONTAINER: ${{ matrix.container }}
-        run: scripts/build_armv6_container.sh start "$CONTAINER"
-
-      - name: Install build dependencies (macOS)
-        if: runner.os == 'macOS'
-        run: brew install portaudio pkgconf
+          IMAGE: ${{ matrix.container }}
+        run: scripts/build_armv6_container.sh start "$IMAGE"
 
       # The fetched sources and the populate stamps that record they were fetched -- the
       # stamps live in `-subbuild`, which is a generated CMake tree rather than a download, and
@@ -405,7 +406,7 @@ jobs:
           WERROR: ${{ matrix.werror }}
           DEPS_DIR: ${{ github.workspace }}/.deps
           ARM32: ${{ matrix.arm32 }}
-          CONTAINER: ${{ matrix.container }}
+          IMAGE: ${{ matrix.container }}
         run: |
           # Held in one array rather than written out on each side of the branch below. What a
           # cross leg changes is the compiler and the flags naming the target, which
@@ -423,11 +424,11 @@ jobs:
             -DFETCHCONTENT_BASE_DIR="$DEPS_DIR"
           )
 
-          # `$CONTAINER` is asked about first, and the order is load-bearing rather than
+          # `$IMAGE` is asked about first, and the order is load-bearing rather than
           # stylistic: the ARMv6 leg carries both keys, and scripts/build_arm32.sh refuses
           # `armv6` by design -- so an `$ARM32` test reached first would fail the leg with a
           # message about a toolchain it never meant to use.
-          if [ -n "$CONTAINER" ]; then
+          if [ -n "$IMAGE" ]; then
             scripts/build_armv6_container.sh configure build "${options[@]}" 2>&1 | tee configure.log
           elif [ -n "$ARM32" ]; then
             scripts/build_arm32.sh "$ARM32" build "${options[@]}" 2>&1 | tee configure.log
@@ -475,9 +476,9 @@ jobs:
 
       - name: Build
         env:
-          CONTAINER: ${{ matrix.container }}
+          IMAGE: ${{ matrix.container }}
         run: |
-          if [ -n "$CONTAINER" ]; then
+          if [ -n "$IMAGE" ]; then
             scripts/build_armv6_container.sh run cmake --build build
           else
             cmake --build build
@@ -508,6 +509,7 @@ jobs:
         if: matrix.arm32
         env:
           ARM32: ${{ matrix.arm32 }}
+          IMAGE: ${{ matrix.container }}
         run: |
           binary=build/sendspin-cli
 
@@ -562,6 +564,32 @@ jobs:
               ;;
           esac
 
+          # The one thing BUILD-INFO.txt claims that is not about the instruction set: that
+          # this archive loads on Raspberry Pi OS bookworm as well as trixie. It rests on the
+          # highest glibc symbol version the binary references, so it is read off the file the
+          # way everything else here is -- and a container digest that moved off bookworm would
+          # raise it silently, leaving the text inside the archive promising a Pi Zero owner
+          # something their loader would refuse. Bookworm's own 2.36 is the bound, rather than
+          # the lower number this happens to come out at, because that is the claim being made.
+          if [ -n "$IMAGE" ]; then
+            bookworm_glibc=GLIBC_2.36
+            readelf --version-info "$binary" >elf-versions.txt
+            floor="$(grep -oE 'GLIBC_[0-9]+(\.[0-9]+)+' elf-versions.txt | sort -uV | tail -1 || true)"
+            rm -f elf-versions.txt
+
+            if [ -z "$floor" ]; then
+              echo '::error::no GLIBC_ symbol version could be read off the binary, so the claim BUILD-INFO.txt makes about bookworm cannot be checked'
+              status=1
+            else
+              echo "The highest glibc symbol version this binary references: $floor"
+              # The higher of the two, compared against the bound: equal is fine, above is not.
+              if [ "$(printf '%s\n%s\n' "$floor" "$bookworm_glibc" | sort -V | tail -1)" != "$bookworm_glibc" ]; then
+                echo "::error::this binary references $floor, above the $bookworm_glibc Raspberry Pi OS bookworm carries -- its loader would refuse the archive this leg is about to publish"
+                status=1
+              fi
+            fi
+          fi
+
           rm -f elf-header.txt elf-attributes.txt
           exit "$status"
 
@@ -573,9 +601,9 @@ jobs:
       # real files, neither of which is obviously safe to run against itself in parallel.
       - name: Test
         env:
-          CONTAINER: ${{ matrix.container }}
+          IMAGE: ${{ matrix.container }}
         run: |
-          if [ -n "$CONTAINER" ]; then
+          if [ -n "$IMAGE" ]; then
             scripts/build_armv6_container.sh run ctest --test-dir build --output-on-failure
           else
             ctest --test-dir build --output-on-failure
@@ -587,9 +615,9 @@ jobs:
       - name: Smoke test
         if: matrix.publish
         env:
-          CONTAINER: ${{ matrix.container }}
+          IMAGE: ${{ matrix.container }}
         run: |
-          if [ -n "$CONTAINER" ]; then
+          if [ -n "$IMAGE" ]; then
             scripts/build_armv6_container.sh run scripts/smoke_test.sh build/sendspin-cli
           else
             scripts/smoke_test.sh build/sendspin-cli
@@ -711,14 +739,14 @@ jobs:
           RUNTIME_PACKAGES: ${{ matrix.runtime_packages }}
           LEG: ${{ matrix.name }}
           ARM32: ${{ matrix.arm32 }}
-          CONTAINER: ${{ matrix.container }}
+          IMAGE: ${{ matrix.container }}
         run: |
           # Both the version read and the install below go through the container on the leg that
           # has one. The binary is the obvious half; the install is the less obvious one, and it
           # is not about executing anything -- cmake_install.cmake was written by the container's
           # cmake 3.25 and is read back by whichever cmake runs it, and the files it lays down
           # have to arrive owned the way everything else in this workspace is.
-          if [ -n "$CONTAINER" ]; then
+          if [ -n "$IMAGE" ]; then
             reported="$(scripts/build_armv6_container.sh run ./build/sendspin-cli --version)"
           else
             reported="$(./build/sendspin-cli --version)"
@@ -728,7 +756,7 @@ jobs:
           name="sendspin-cli-$version-$LEG"
 
           mkdir -p "stage/$name"
-          if [ -n "$CONTAINER" ]; then
+          if [ -n "$IMAGE" ]; then
             scripts/build_armv6_container.sh run \
               env DESTDIR="$PWD/stage/$name" cmake --install build --component sendspin-cli
           else
@@ -811,8 +839,14 @@ jobs:
           # is exactly inverted, bookworm being what this one is *built on* rather than what it
           # refuses to load on. This text is read on a Pi, which is the whole reason it is
           # carried inside the archive.
-          if [ -n "$CONTAINER" ]; then
-            cat >>"stage/$name/BUILD-INFO.txt" <<'EMULATED'
+          if [ -n "$IMAGE" ]; then
+            # Read off the binary rather than written down, so the line below cannot drift from
+            # what was actually built. The assertion further up has already refused anything
+            # above the 2.36 bookworm itself carries; this is what says how far below it came in.
+            glibc_floor="$(readelf --version-info build/sendspin-cli |
+              grep -oE 'GLIBC_[0-9]+(\.[0-9]+)+' | sort -uV | tail -1)"
+
+            cat >>"stage/$name/BUILD-INFO.txt" <<EMULATED
 
           This was built for an ARM1176 -- a Pi Zero, a Pi Zero W or an original Pi -- inside a
           Raspbian container on the runner named above, and not on a Pi. It is a native build
@@ -824,9 +858,9 @@ jobs:
           behaves, not that it was tried on a Pi.
 
           The runtime packages above are spelled the way Raspberry Pi OS bookworm spells them;
-          on trixie they are libasound2t64 and libpipewire-0.3-0t64. This binary needs no more
-          than glibc 2.34, which is below what either release carries, so it loads on both --
-          which the linux-armv7 archive does not.
+          on trixie they are libasound2t64 and libpipewire-0.3-0t64. This binary needs no glibc
+          symbol newer than ${glibc_floor#GLIBC_}, which is below what either release carries.
+          So it loads on both -- which the linux-armv7 archive does not.
           EMULATED
           elif [ -n "$ARM32" ]; then
             cat >>"stage/$name/BUILD-INFO.txt" <<CROSS
@@ -1210,6 +1244,14 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
+      # `always()` because a leg that failed still leaves a container behind, and because this
+      # is what keeps `stop` a verb the script's own usage can promise -- exercised by the file
+      # that documents it rather than only on a developer's machine. The runner is discarded
+      # either way, so nothing here depends on it having run.
+      - name: Stop the build container (containerised 32-bit ARM)
+        if: always() && matrix.container
+        run: scripts/build_armv6_container.sh stop
+
   # A job of its own rather than a seventh matrix leg -- and not because a matrix leg cannot run
   # its build in a container, since the linux-armv6 one does. What keeps this out is that it
   # publishes nothing: it has one question to answer and no binary to hand anybody, so
@@ -1257,8 +1299,10 @@ jobs:
             exit 1
           fi
 
-      # SENDSPIN_CLI_WERROR is deliberately absent, as it is on the linux-armv6 leg above and
-      # for the same reason. gcc 12 has a -Wrestrict false positive on
+      # -Werror is off here, as it is on the linux-armv6 leg above and for the same reason --
+      # absent altogether in this job, spelled `werror: 'OFF'` there because a matrix key an
+      # omitted leg would read as falsy has to be written down. gcc 12 has a -Wrestrict false
+      # positive on
       # `line += " " + std::to_string(...)` in src/control_common.cpp, which has nothing to do
       # with either sound-server backend and would fail this job for a reason it is not here to
       # ask about. The warning line is held on every leg with a newer compiler; what is held

@@ -165,6 +165,19 @@ case "$VERB" in
             "$IMAGE" \
             infinity >/dev/null
 
+        # Proven here, where the message can name the cause, rather than left to surface as a
+        # `docker exec` complaining that the container is not running. `docker run` succeeds
+        # whether or not the kernel can execute what it started: with no handler registered the
+        # `sleep` above is an ARM binary that cannot exec, and the container is gone by the time
+        # anything else looks at it. That is by far the likeliest way this fails.
+        running || {
+            docker logs "$CONTAINER" 2>&1 || true
+            fail "the container exited as soon as it started. The usual cause is no binfmt
+    handler for 32-bit ARM: .github/workflows/build.yml registers one with
+    docker/setup-qemu-action, and on a developer's own machine 'docker run --privileged --rm
+    tonistiigi/binfmt --install arm' does the same"
+        }
+
         # A passwd entry at the invoking user's own id, so that in_container() above has a user
         # to be. Reused where the image already carries one at that id rather than replaced:
         # what this needs is an entry and a home, not a particular name.
@@ -254,8 +267,17 @@ case "$VERB" in
 
     stop)
         [ "$#" -eq 0 ] || fail "usage: $0 stop"
-        docker rm --force "$CONTAINER" >/dev/null
-        printf 'build_armv6_container: removed %s\n' "$CONTAINER"
+
+        # Nothing to remove is reported rather than refused. This is the one verb a caller runs
+        # unconditionally to tidy up -- .github/workflows/build.yml runs it with `if: always()`
+        # -- so a run that failed before the container existed must not fail again here, wearing
+        # a message about the wrong thing.
+        if docker inspect "$CONTAINER" >/dev/null 2>&1; then
+            docker rm --force "$CONTAINER" >/dev/null
+            printf 'build_armv6_container: removed %s\n' "$CONTAINER"
+        else
+            printf 'build_armv6_container: no %s container to remove\n' "$CONTAINER"
+        fi
         ;;
 
     *)

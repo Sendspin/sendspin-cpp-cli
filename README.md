@@ -1336,8 +1336,8 @@ its own configure output that it found the backends it expects: a missing `-dev`
 package does not fail a configure, so without that check the matrix would happily
 go green on a deaf, undiscoverable binary.
 
-The ARMv7 leg is cross-compiled because nothing else can build it: GitHub has
-no armv7 runner, and its arm64 runners cannot execute 32-bit ARM at all.
+The ARMv7 leg is cross-compiled because no runner can build it natively: GitHub
+has no armv7 runner, and its arm64 runners cannot execute 32-bit ARM at all.
 `scripts/build_arm32.sh` owns the cross configure, the suite and the smoke test run
 under `qemu-user`, and the linked binary's own ELF build attributes are asserted to
 say ARMv7, hard-float EABI before an archive is made — which is what catches a
@@ -1382,9 +1382,9 @@ kept for 14 days. For something that does not expire, take a
 
 ## Releases
 
-Pushing a `vMAJOR.MINOR.PATCH` tag builds the same matrix and publishes the four
+Pushing a `vMAJOR.MINOR.PATCH` tag builds the same matrix and publishes the five
 platform archives and the macOS installer `.pkg`, plus a `SHA256SUMS` covering all
-five, as a GitHub Release. The workflow triggers on `v*` but refuses anything else
+six, as a GitHub Release. The workflow triggers on `v*` but refuses anything else
 that matches — a prerelease like `v0.2.0-rc1` is rejected rather than quietly
 published as the latest release, until somebody decides what it should mean.
 Nothing else publishes, and the workflow never creates a tag: a release exists
@@ -1402,9 +1402,9 @@ sha256sum --ignore-missing -c SHA256SUMS      # Linux
 shasum -a 256 --ignore-missing -c SHA256SUMS  # macOS
 ```
 
-`--ignore-missing` because `SHA256SUMS` lists all five and you have almost
+`--ignore-missing` because `SHA256SUMS` lists all six and you have almost
 certainly taken one; without it the rest are reported as failures and the command
-exits non-zero on a file that is fine. Those checksums cover the five things built
+exits non-zero on a file that is fine. Those checksums cover the six things built
 here, not the `Source code` archives GitHub attaches on its own. Neither the macOS
 binary nor the `.pkg` around it is signed — see below. A Developer ID signature and
 notarization are still owed, tracked in [`docs/ROADMAP.md`](docs/ROADMAP.md) item 10.
