@@ -1811,13 +1811,15 @@ is a real, if bounded, pause in protocol handling.
 
 **And a correction to what this item left out.** `AlsaAudioSink` was excluded above on the
 reading that ALSA recovers inside its own `write()` and so has nothing to do with a main-loop
-tick. **That reading was wrong, and issue #45
-is what it cost.** `recover_()` handled the three transients in place and treated everything
-else — `-ENODEV` among them — as a failed write: the handle stayed open on hardware that was
-gone, and nothing *before the next stream* retired it, so a device pulled out mid-track was
-discarded audio and one `ERROR` per buffer until the process restarted. (The next `configure()`
-did retire it, by failing its `prepare()` and reopening — which is why a fresh stream recovered
-by accident, and why the outage lasted exactly as long as the track did.)
+tick. **That reading was wrong, and issue #45 is what it cost.** `recover_()` handled the three
+transients in place and treated everything else — `-ENODEV` among them — as a failed write:
+the handle stayed open on hardware that was gone, and nothing *before the next stream* retired
+it. A device pulled out mid-track therefore moved no audio at all — `write()` broke out of its
+loop and returned 0, the sync task re-presented the same buffer against the dead handle, and the
+unthrottled `ERROR` repeated once per retry until the process restarted. Discarding is what the
+sink does *now*; what it did then was spin. (The next `configure()` did retire the handle, by
+failing its `prepare()` and reopening — which is why a fresh stream recovered by accident, and
+why the outage lasted exactly as long as the track did.)
 
 It now closes the device where the loss is found and escalates to `poll()` like the rest, with
 one difference from the sound-server sinks: **the inline attempt is spent rather than made.**
@@ -1830,6 +1832,18 @@ changes the opened stream's semantics, which `write()`'s `snd_pcm_wait()` model 
 it bounds neither the config parse nor a plugin's connect. So `poll()` pays the open instead,
 which is also the attempt a replug actually wants: `SINK_RESCAN_DELAY_MS` is roughly how long a
 USB device takes to come back, and an immediate retry would be made before it had.
+
+**What that costs, said out loud.** `poll()` holds `device_mutex_` across that open, so the stall
+is the same real pause in protocol handling PortAudio's rescan is, and a concurrent `write()`
+blocks on the mutex rather than honouring its `timeout_ms`. Neither is new: `configure()` already
+makes an identical unbounded `snd_pcm_open()` on the main loop under the same mutex, on every
+stream rather than only on a lost device. What bounds it here is the budget — at most
+`SINK_RESCAN_ATTEMPTS` opens per configured stream, spaced by a doubling delay — and the case
+that actually stalls is narrow: an absent `hw:` PCM fails fast, so paying real time needs a
+plugin PCM waiting on a daemon socket, or an exclusive device another process now holds. Moving
+the open off the loop would mean a recovery thread and a handle published under the lock, which
+is a background thread this sink is deliberately built without. The measurement below is what
+would justify revisiting that.
 
 **Reasoned, not measured.** Unlike item 20, this was derived from the code and from the reporter's
 logs; nobody has yet pulled a DAC out of a running player and watched it come back. See the
@@ -1844,8 +1858,9 @@ long the rescan really stalls the loop, so the estimate above can be replaced wi
 
 The ALSA correction owes its own pass, and it is a differently shaped one — `-o hw:CARD=<name>`
 rather than `-o portaudio`, and a `snd_pcm_open()` on the main loop rather than a device-list
-rebuild. Four cases: a USB DAC powered off mid-track (one `ERROR`, then discards — not one line
-per buffer, which is the symptom #45 was reported for); the same DAC powered back on inside the
+rebuild. Four cases: a USB DAC powered off mid-track (two `ERROR`s, one naming the device and one
+saying it is discarding, and then quiet — not one line per buffer, which is the symptom #45 was
+reported for); the same DAC powered back on inside the
 budget (playback resumes with no track boundary and no restart); one powered back on *after* the
 budget is spent, which should recover on the next `configure()` and not before; and a measurement
 of how long `snd_pcm_open()` really stalls the loop on an absent `hw:` device, which is the one
