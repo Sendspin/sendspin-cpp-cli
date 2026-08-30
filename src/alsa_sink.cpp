@@ -463,8 +463,12 @@ bool AlsaAudioSink::recover_(int err) {
         // routine under load, so it is a debug line rather than a warning per occurrence.
         const int prepared = snd_pcm_prepare(this->pcm_);
         if (prepared < 0) {
+            // A prepare() that will not take is the device answering, not the ring: this is how a
+            // device pulled while the ring drains presents, the underrun being seen first and the
+            // -ENODEV only on the way back. Handled as the loss it is rather than reported as a
+            // failed write, which would leave the handle open on hardware that is gone.
             cli_log(LogLevel::ERROR, "alsa: underrun recovery failed: %s", snd_strerror(prepared));
-            return false;
+            return this->handle_device_loss_();
         }
         cli_log(LogLevel::DEBUG, "alsa: underrun recovered");
         return true;
@@ -486,14 +490,45 @@ bool AlsaAudioSink::recover_(int err) {
         }
         const int prepared = snd_pcm_prepare(this->pcm_);
         if (prepared < 0) {
+            // As above: a device that will not prepare after a suspend is one that did not come
+            // back with the host, which a dock or a hub unplugged during sleep is.
             cli_log(LogLevel::ERROR, "alsa: suspend recovery failed: %s", snd_strerror(prepared));
-            return false;
+            return this->handle_device_loss_();
         }
         cli_log(LogLevel::INFO, "alsa: restarted after suspend");
         return true;
     }
 
-    cli_log(LogLevel::ERROR, "alsa: %s", snd_strerror(err));
+    // Everything else means the device itself is gone -- -ENODEV for a USB DAC pulled out, and
+    // whatever else a driver chooses to report for the same thing. Taken as the residual rather
+    // than matched against a list of errnos, because the two mistakes are not the same size: an
+    // errno wrongly left out would keep the handle open on hardware that has vanished, and this
+    // function's callers would then re-present the same buffer against it forever, one ERROR per
+    // write. An errno wrongly taken in costs a close and a couple of seconds of discard before
+    // poll() reopens a device that was there all along, bounded by SINK_RESCAN_ATTEMPTS.
+    cli_log(LogLevel::ERROR, "alsa: '%s' is gone (%s)", this->device_.c_str(), snd_strerror(err));
+    return this->handle_device_loss_();
+}
+
+bool AlsaAudioSink::handle_device_loss_() {
+    // The handle is retired here rather than left for the next configure(). Nothing else closes
+    // one mid-run -- close_device_() is otherwise reached only from configure() and shutdown --
+    // so a stream that simply keeps playing would hold a handle to hardware that is gone.
+    // Closing it is also what makes write()'s no-device path reachable, so the audio is discarded
+    // instead of spinning the sync task, and what leaves configure()'s same-format fast path with
+    // nothing to consult: a null pcm_ is the record that the device failed.
+    this->close_device_();
+
+    // The inline attempt is spent without being made, and reported as a failure so the outage
+    // escalates to poll() -- which is where an unbounded snd_pcm_open() is affordable. Pulse does
+    // exactly this when its context is down, and for the same reason: the reopen is not this
+    // thread's to pay for. Spent through reopen_due() rather than by calling reopen_done() bare,
+    // which is the pairing SinkRecovery documents as a rule its callers keep. reopen_due()'s own
+    // spent branch escalates instead on any later call, so a stream that dies again after a
+    // recovered one is handed straight to the rescan.
+    if (this->recovery_.reopen_due()) {
+        this->recovery_.reopen_done(false);
+    }
     return false;
 }
 
@@ -506,6 +541,10 @@ bool AlsaAudioSink::configure(uint32_t sample_rate, uint8_t channels, uint8_t bi
     // nobody asked for, from a gain that was never applied to a sample.
     this->current_multiplier_ = this->target_multiplier_.load(std::memory_order_relaxed);
 
+    // Before anything below can fail: this is the format the player is about to send audio in
+    // whether or not a device takes it, which is the question poll() asks when it reopens.
+    this->last_format_ = {sample_rate, channels, bits_per_sample};
+
     if (this->pcm_ != nullptr && this->rate_ == sample_rate && this->channels_ == channels &&
         this->bits_ == bits_per_sample) {
         // Same format as the stream that just ended: keep the device and just start from a
@@ -513,24 +552,30 @@ bool AlsaAudioSink::configure(uint32_t sample_rate, uint8_t channels, uint8_t bi
         // exclusive device back to a competitor mid-track.
         snd_pcm_drop(this->pcm_);
         const int err = snd_pcm_prepare(this->pcm_);
-        if (err < 0) {
-            cli_log(LogLevel::WARN, "alsa: could not restart '%s' (%s) -- reopening",
-                    this->device_.c_str(), snd_strerror(err));
-            this->close_device_();
-            return this->open_device_(sample_rate, channels, bits_per_sample);
+        if (err == 0) {
+            cli_log(LogLevel::DEBUG, "alsa: reusing '%s' at %u Hz, %u ch, %u-bit",
+                    this->device_.c_str(), sample_rate, channels, bits_per_sample);
+            // A stream that is really running is what a budget spent on the last one was waiting
+            // for. Only here and at the reopen below, never in open_device_(): poll() calls that
+            // between rescan_due() and rescan_done(), and a reset() landing in there would refill
+            // the budget from inside the very attempt spending it.
+            this->recovery_.reset();
+            return true;
         }
-        cli_log(LogLevel::DEBUG, "alsa: reusing '%s' at %u Hz, %u ch, %u-bit",
-                this->device_.c_str(), sample_rate, channels, bits_per_sample);
-        return true;
+        // A device that went away between tracks rather than during one, so no write() found it
+        // and recover_() never ran. Falls through to the reopen below.
+        cli_log(LogLevel::WARN, "alsa: could not restart '%s' (%s) -- reopening",
+                this->device_.c_str(), snd_strerror(err));
     }
 
-    // A format change means the hardware parameters change, and those are fixed for the
-    // life of an open handle -- so the device has to be closed and reopened.
+    // Reached two ways: a format change, whose hardware parameters are fixed for the life of an
+    // open handle and so need a new one, and the fall-through above. Both want the same thing.
     this->close_device_();
     if (!this->open_device_(sample_rate, channels, bits_per_sample)) {
         this->failed_.store(true);
         return false;
     }
+    this->recovery_.reset();
     return true;
 }
 
@@ -554,15 +599,20 @@ size_t AlsaAudioSink::write(const uint8_t* data, size_t length, uint32_t timeout
             // spin the sync task on a buffer it can never hand off.
             if (!this->failed_.exchange(true)) {
                 cli_log(LogLevel::ERROR,
-                        "alsa: '%s' is not open -- discarding audio until a stream "
-                        "reconfigures it",
+                        "alsa: '%s' is not open -- discarding audio until it is back or a "
+                        "stream reconfigures it",
                         this->device_.c_str());
             }
-            // Frame-aligned per the write() contract wherever the frame size is still known.
-            // Once it is not, the sink cannot align and the caller's own framing is what
-            // protects it -- which holds here, since the player hands over whole frames.
-            return (this->bytes_per_frame_ == 0) ? length
-                                                 : length - (length % this->bytes_per_frame_);
+            // Frame-aligned per the write() contract wherever the frame size is still known --
+            // from the remembered format once close_device_() has zeroed bytes_per_frame_, which
+            // is the same figure it held. A buffer shorter than one frame therefore consumes
+            // nothing, which the caller's own framing is what protects against: the player hands
+            // over whole frames.
+            const size_t frame = (this->bytes_per_frame_ != 0)
+                                     ? this->bytes_per_frame_
+                                     : static_cast<size_t>(this->last_format_.channels) *
+                                           (static_cast<size_t>(this->last_format_.bit_depth) / 8U);
+            return (frame == 0) ? length : length - (length % frame);
         }
 
         bytes_per_frame = this->bytes_per_frame_;
@@ -658,7 +708,11 @@ size_t AlsaAudioSink::write(const uint8_t* data, size_t length, uint32_t timeout
         // Sync feedback: snd_pcm_delay() is how many frames are still queued ahead of the
         // DAC, so the frames just written finish that far into the future. Sampled here,
         // under the lock, so the timestamp matches the query.
-        if (frames_done > 0 && this->rate_ > 0) {
+        // pcm_ tested as well as rate_, because recover_() can have closed the device out from
+        // under the loop above. close_device_() zeroing rate_ in the same breath makes either
+        // test sufficient on its own; naming the handle is what keeps that a belt-and-braces
+        // detail of close_device_() rather than something a dereference here depends on.
+        if (frames_done > 0 && this->pcm_ != nullptr && this->rate_ > 0) {
             snd_pcm_sframes_t delay = 0;
             if (snd_pcm_delay(this->pcm_, &delay) == 0 && delay >= 0) {
                 finish_us = now_us() + ((static_cast<int64_t>(delay) * 1000000) / this->rate_);
@@ -711,6 +765,9 @@ void AlsaAudioSink::stop() {
     this->stopping_.store(true);
 
     const std::lock_guard<std::mutex> lock(this->device_mutex_);
+    // Cleared before the early return, not after it: a sink stopped with no device open still has
+    // to forget the format, or poll() would have something to reopen at after shutdown.
+    this->last_format_ = {};
     if (this->pcm_ == nullptr) {
         return;
     }
@@ -731,6 +788,53 @@ void AlsaAudioSink::set_muted(bool muted) {
     this->muted_.store(muted);
     this->update_target_multiplier_();
     cli_log(LogLevel::DEBUG, "alsa: %s", muted ? "muted" : "unmuted");
+}
+
+void AlsaAudioSink::poll(int64_t now_ms) {
+    // Both read without the lock, and first, because on all but a handful of ticks in a run there
+    // is nothing to do and no reason to contend with a write() for the mutex.
+    if (!this->recovery_.pending() || this->stopping_.load()) {
+        return;
+    }
+
+    const std::lock_guard<std::mutex> lock(this->device_mutex_);
+    if (this->last_format_.sample_rate == 0) {
+        return;  // nothing was ever configured, so there is nothing to reopen at
+    }
+    if (!this->recovery_.rescan_due(now_ms)) {
+        return;
+    }
+
+    // The expensive half of recovery, on the main loop because snd_pcm_open() cannot be bounded
+    // and write() has a deadline to keep. It is also the attempt a *replugged* device needs,
+    // which is what SINK_RESCAN_DELAY_MS and its doubling are shaped around: alsa-lib resolves
+    // the device name at open, so `hw:CARD=NAME` finds a card that has come back even on a
+    // different index -- but only once it has come back, which an immediate retry is too early
+    // for.
+    const StreamFormat format = this->last_format_;
+    this->close_device_();  // idempotent; recover_() has normally closed it already
+    if (!this->open_device_(format.sample_rate, format.channels, format.bit_depth)) {
+        // Reported as a failure, which is what buys another attempt behind a longer delay -- a
+        // device still absent now may be back in a few seconds. open_device_() has already said
+        // why, so this only has to say what happens next: quiet while more attempts are coming,
+        // because each is a normal step of a replug, and loud once when the budget is gone.
+        this->recovery_.rescan_done(false);
+        const bool retrying = this->recovery_.pending();
+        cli_log(retrying ? LogLevel::DEBUG : LogLevel::WARN, "alsa: '%s' is not back%s",
+                this->device_.c_str(),
+                retrying ? " -- trying again shortly" : " -- discarding until the next stream");
+        return;
+    }
+    if (this->stopping_.load()) {
+        // stop() latches before it takes device_mutex_, so it can arrive while the open above is
+        // running. Hand the device straight back rather than leave a live one for the destructor.
+        this->recovery_.rescan_done(true);  // shutting down; there is nothing left to retry for
+        this->close_device_();
+        return;
+    }
+    this->recovery_.rescan_done(true);
+    cli_log(LogLevel::INFO, "alsa: '%s' is back -- recovered without waiting for the next stream",
+            this->device_.c_str());
 }
 
 void AlsaAudioSink::update_target_multiplier_() {
