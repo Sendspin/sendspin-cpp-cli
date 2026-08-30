@@ -51,17 +51,17 @@ $ sendspin-cli vol 40
 
 | Platform | Architecture | How |
 |---|---|---|
-| Linux | `x86_64`, `arm64`, `armv7` | Release tarball, or `scripts/get_started_linux.sh` |
+| Linux | `x86_64`, `arm64`, `armv7`, `armv6` | Release tarball, or `scripts/get_started_linux.sh` |
 | macOS | Apple silicon (`arm64`) | Release tarball or installer `.pkg` |
-| Raspberry Pi | `arm64`, or `armv7` on a 32-bit OS | The Linux tarball, same as any other Linux host |
+| Raspberry Pi | `arm64`, or `armv7`/`armv6` on a 32-bit OS | The Linux tarball, same as any other Linux host |
 
 The macOS builds are made on the `macos-14` CI runner and declare no minimum OS version;
 what the installer `.pkg` does check is the architecture, read off the binary with `lipo` at
 build time, so it turns an Intel Mac away rather than reporting success.
 
-There is no ARMv6 build and no Intel-Mac build. ARMv6 — a Pi Zero, a Pi Zero W, an original
-Pi — needs a Raspberry Pi OS sysroot the matrix does not have, and there is no macOS `x86_64`
-leg; both are recorded in
+`armv6` covers the ARM1176 boards — a Pi Zero, a Pi Zero W, an original Pi — and is built
+inside an emulated Raspbian container rather than cross-compiled, because Debian and Ubuntu
+armhf are an ARMv7-A port. There is no Intel-Mac build; that one is recorded in
 [`docs/ROADMAP.md`](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/docs/ROADMAP.md),
 item 12.
 Anything else builds from source.

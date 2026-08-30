@@ -1326,8 +1326,9 @@ path. CI runs it on every platform leg; run it yourself against any build.
 ## CI
 
 Every branch push and pull request builds on `ubuntu-24.04`, `ubuntu-24.04-arm`
-and `macos-14`, a fourth leg cross-compiled for 32-bit ARM on `ubuntu-24.04`, and a
-fifth configured `-DSENDSPIN_CLI_WITH_MDNS=OFF` — which compiles
+and `macos-14`, a fourth leg cross-compiled for ARMv7 on `ubuntu-24.04`, a fifth
+built for ARMv6 inside an emulated Raspbian container on the same runner, and a
+sixth configured `-DSENDSPIN_CLI_WITH_MDNS=OFF` — which compiles
 `src/mdns_null.cpp` in place of `src/mdns_dnssd.cpp`, so that configuration is
 built rather than assumed. Every leg builds with `-DSENDSPIN_CLI_WERROR=ON` and
 runs the unit suite, and each asserts from its own configure output that it found
@@ -1335,12 +1336,23 @@ the backends it expects: a missing `-dev` package does not fail a configure, so
 without that check the matrix would happily go green on a deaf, undiscoverable
 binary.
 
-The 32-bit ARM leg is cross-compiled because nothing else can build it: GitHub has
-no armv7 runner, and its arm64 runners cannot execute 32-bit ARM at all.
+The ARMv7 leg is cross-compiled because no runner can build it natively: GitHub
+has no armv7 runner, and its arm64 runners cannot execute 32-bit ARM at all.
 `scripts/build_arm32.sh` owns the cross configure, the suite and the smoke test run
 under `qemu-user`, and the linked binary's own ELF build attributes are asserted to
 say ARMv7, hard-float EABI before an archive is made — which is what catches a
 dependency quietly compiled for something else.
+
+The ARMv6 leg cannot be that, and the difference is the toolchain rather than the
+runner: Debian and Ubuntu `armhf` are an ARMv7-A port, so a cross toolchain's own
+`crt1.o` and `libgcc.a` are ARMv7 and end up in the binary whatever `-march` said.
+Raspbian's are genuinely ARMv6, so that leg runs an ordinary native build inside a
+digest-pinned Raspbian container under `qemu-user` — with its suite and smoke test
+under `QEMU_CPU=arm1176`, so the emulator is no more permissive than an ARM1176 —
+and asserts ARMv6, hard-float EABI off the finished binary the same way. It holds
+the warning line with one exemption: Raspbian's gcc 12 has the same `-Wrestrict`
+false positive the `pipewire-minimum` job documents, so that leg passes
+`-Wno-error=restrict` and leaves `-Werror` standing over everything else.
 
 The matrix lives in `.github/workflows/build.yml`, which both `ci.yml` and
 `release.yml` call, so a release is built and gated exactly the way a push is.
@@ -1370,9 +1382,9 @@ kept for 14 days. For something that does not expire, take a
 
 ## Releases
 
-Pushing a `vMAJOR.MINOR.PATCH` tag builds the same matrix and publishes the four
+Pushing a `vMAJOR.MINOR.PATCH` tag builds the same matrix and publishes the five
 platform archives and the macOS installer `.pkg`, plus a `SHA256SUMS` covering all
-five, as a GitHub Release. The workflow triggers on `v*` but refuses anything else
+six, as a GitHub Release. The workflow triggers on `v*` but refuses anything else
 that matches — a prerelease like `v0.2.0-rc1` is rejected rather than quietly
 published as the latest release, until somebody decides what it should mean.
 Nothing else publishes, and the workflow never creates a tag: a release exists
@@ -1390,9 +1402,9 @@ sha256sum --ignore-missing -c SHA256SUMS      # Linux
 shasum -a 256 --ignore-missing -c SHA256SUMS  # macOS
 ```
 
-`--ignore-missing` because `SHA256SUMS` lists all five and you have almost
+`--ignore-missing` because `SHA256SUMS` lists all six and you have almost
 certainly taken one; without it the rest are reported as failures and the command
-exits non-zero on a file that is fine. Those checksums cover the five things built
+exits non-zero on a file that is fine. Those checksums cover the six things built
 here, not the `Source code` archives GitHub attaches on its own. Neither the macOS
 binary nor the `.pkg` around it is signed — see below. A Developer ID signature and
 notarization are still owed, tracked in [`docs/ROADMAP.md`](docs/ROADMAP.md) item 10.

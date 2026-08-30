@@ -313,14 +313,15 @@ Two answers, and they are different problems.
 **`version 'GLIBC_2.38' not found`, from the loader.** The archive is built on a newer
 distribution than the one you are running. Raspberry Pi OS **trixie** carries glibc 2.41 and
 takes it; **bookworm** carries 2.36 and refuses it before a line of the player runs. Move that
-Pi to trixie, or build from source on it.
+Pi to trixie, or build from source on it. The one exception is `linux-armv6`, which is built on
+Raspbian bookworm and so needs no glibc newer than bookworm's own — its `BUILD-INFO.txt` names
+the version it was built against.
 
 **`Illegal instruction`.** The `linux-armv7` archive is compiled for ARMv7, and a Pi Zero, a
-Pi Zero W or an original Pi is ARMv6. `uname -m` says `armv6l` on those, and
-`scripts/get_started_linux.sh` refuses them rather than installing something that traps — so
-seeing this means the archive was fetched by hand. Build from source instead;
-[`docs/ROADMAP.md`](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/docs/ROADMAP.md)
-item 12 records what an ARMv6 build would take.
+Pi Zero W or an original Pi is ARMv6. `uname -m` says `armv6l` on those, and both
+`scripts/get_started_linux.sh` and the snippet in
+[Installation](Installation) pick `linux-armv6` for them — so seeing this means the ARMv7
+archive was fetched by hand. Take `linux-armv6` instead.
 
 Neither applies to `E: Unable to locate package libasound2t64`: that is `apt` on bookworm,
 where the same libraries are spelled `libasound2` and `libpipewire-0.3-0`. The names in

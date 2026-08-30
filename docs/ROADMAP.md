@@ -1494,19 +1494,20 @@ unproven is what the paragraph above already says only a real tag can answer.
 
 Optional, later. Upstream's `examples/tui_client` shows the shape.
 
-### 12. CI and tests — *shipped (matrix and smoke test; ARMv6 and the sink contract still owed)*
+### 12. CI and tests — *shipped (matrix and smoke test; the sink contract still owed)*
 
 `.github/workflows/ci.yml` builds and tests every branch push and pull request on
-`ubuntu-24.04`, `ubuntu-24.04-arm` and `macos-14`, a fourth cross-compiled for 32-bit ARM on
-`ubuntu-24.04`, and a fifth configured
-`-DSENDSPIN_CLI_WITH_MDNS=OFF` — which compiles `src/mdns_null.cpp` instead of
-`src/mdns_dnssd.cpp`, so that translation unit is built rather than assumed. Every leg
-configures `-DSENDSPIN_CLI_WERROR=ON` and runs the CTest suite, the no-mDNS leg included:
+`ubuntu-24.04`, `ubuntu-24.04-arm` and `macos-14`, a fourth cross-compiled for ARMv7 on
+`ubuntu-24.04`, a fifth built natively for ARMv6 inside an emulated Raspbian container on that
+same runner, and a sixth configured `-DSENDSPIN_CLI_WITH_MDNS=OFF` — which compiles
+`src/mdns_null.cpp` instead of `src/mdns_dnssd.cpp`, so that translation unit is built rather
+than assumed. Every leg configures `-DSENDSPIN_CLI_WERROR=ON` and runs the CTest suite, the
+no-mDNS leg included:
 `discovery_test.cpp` links whichever `MdnsService` went in, and that configuration has no
 other coverage. Each leg also asserts against its own configure output that it found the
 backends it expects — a missing `-dev` package does not fail a configure, since every
 backend is optional and auto-detected, so without that assertion the matrix would go green
-on a null-sink-only, mDNS-less binary. The four platform legs additionally run the smoke
+on a null-sink-only, mDNS-less binary. The five platform legs additionally run the smoke
 test and upload the binary they built, kept 14 days.
 
 The matrix itself lives in `.github/workflows/build.yml`, called by `ci.yml` and by item 10's
@@ -1562,21 +1563,62 @@ shutdown path, and produced zero reports when run that way by hand.
 **The 32-bit Pi leg is there.** `linux-armv7` cross-compiles on `ubuntu-24.04` against the
 armhf multiarch tree — `scripts/build_arm32.sh` owns the configure — and runs the whole unit
 suite and `scripts/smoke_test.sh` under `qemu-user` rather than skipping them, so it holds the
-same rule every other leg does. A cross build is the only shape available: GitHub has no armv7
-runner, and its arm64 runners are Neoverse N1 with no AArch32 at EL0, so no `runs-on` value
-reaches the target at all. What keeps the leg's name honest is a `readelf` of the linked
-binary: the linker merges build attributes across every object in the link and reports the
-highest, so one read covers the FetchContent tree as well as our own sources, and a dependency
-compiled for the wrong architecture fails the leg instead of shipping.
+same rule every other leg does. Nothing builds it natively: GitHub has no armv7 runner, and its
+arm64 runners are Neoverse N1 with no AArch32 at EL0, so no `runs-on` value reaches the target
+at all — and a cross build is what buys back everything the ARMv6 leg below has to emulate.
+What keeps the leg's name honest is a `readelf` of the linked binary: the linker merges build
+attributes across every object in the link and reports the highest, so one read covers the
+FetchContent tree as well as our own sources, and a dependency compiled for the wrong
+architecture fails the leg instead of shipping.
 
-**ARMv6 is still owed, and it is not the same job.** A Pi Zero, a Pi Zero W and an original Pi
-are ARM1176 cores, and Debian and Ubuntu armhf are an ARMv7-A port — which is where a cross
-toolchain's own `crt1.o`, `crtbegin.o` and `libgcc.a` come from. Compiling our sources
+**The ARMv6 leg is there as well, and it is not the same job.** A Pi Zero, a Pi Zero W and an
+original Pi are ARM1176 cores, and Debian and Ubuntu armhf are an ARMv7-A port — which is where
+a cross toolchain's own `crt1.o`, `crtbegin.o` and `libgcc.a` come from. Compiling our sources
 `-march=armv6` therefore does not produce an ARMv6 archive: the startup and helper objects
-linked in beside them are ARMv7, and the merged `Tag_CPU_arch` says so. It needs a Raspberry Pi
-OS armhf sysroot, whose libgcc and startup objects really are ARMv6, and that sysroot is the
-work. `scripts/build_arm32.sh` refuses `armv6` outright rather than building something that
-would trap, and `scripts/get_started_linux.sh` refuses an `armv6l` host for the same reason.
+linked in beside them are ARMv7, and the merged `Tag_CPU_arch` says so. What an ARMv6 build
+needs is an ARMv6 `libgcc` and ARMv6 startup objects, which is a *distribution* rather than a
+flag — and Raspbian is one. Its gcc is configured `--with-arch=armv6 --with-float=hard`, and
+every one of `libgcc.a`'s members reads `Tag_CPU_arch: v6`, so the leg passes no `-march` at
+all.
+
+So `linux-armv6` is not a cross build at all: it is an ordinary native build run inside a
+digest-pinned Raspbian bookworm container under `qemu-user`, which is why it is the one leg
+`scripts/build_arm32.sh` has nothing to do with. That script still refuses `armv6`, and its
+reasoning is untouched — it cross-compiles against the *host* distribution's armhf tree, which
+is still ARMv7. `scripts/get_started_linux.sh` now maps an `armv6l` host onto the new archive
+instead of refusing it; ARMv5 and a bare `arm` are still refused, the ARMv6 archive being the
+oldest one built.
+
+Three things about that leg are load-bearing and none of them are about ARMv6 the instruction
+set. Everything it runs in the container runs under `QEMU_CPU=arm1176`, because `qemu-arm`
+defaults to a Cortex-A15-class core and would happily execute the ARMv7 instructions the
+hardware cannot — an emulator more permissive than the target proves nothing. That covers the
+configure as well as the suite, a CMake `try_run` probe asking what the CPU can do being
+answerable for the wrong CPU otherwise. The container runs `--init` and builds as a non-root
+user, because without a reaping PID 1 the smoke test reads an exited daemon's zombie as a player
+that outlived `SIGTERM`, and because three `StateStore` cases assert that an unwritable
+directory is refused, which root is refused nothing by. And the link needs `-latomic`: ARMv6 has
+no `LDREXD`, so the 64-bit atomics in `src/pulse_sink.cpp`, `src/player_listener.cpp` and
+sendspin-cpp's own `connection_manager.cpp` become libatomic calls. It goes in
+`CMAKE_CXX_STANDARD_LIBRARIES` rather than `CMAKE_EXE_LINKER_FLAGS`, which places it ahead of
+the objects that need it and leaves the linker to discard it.
+
+That leg holds the warning line like the rest, with one diagnostic exempted: Raspbian's gcc
+12.2.0 has a `-Wrestrict` false positive on `line += " " + std::to_string(...)`, at
+`src/control_common.cpp:391` and `:401` and at `tests/cli_test.cpp:1133`. It passes
+`-Wno-error=restrict`, which is not interchangeable with `-Wno-restrict`: `CMAKE_CXX_FLAGS`
+lands before the `-Wall` `target_compile_options` adds, and a later `-Wall` turns a *disabled*
+warning back on — where a later blanket `-Werror` does not re-promote a diagnostic an earlier
+`-Wno-error=` has already exempted. So an ARMv6-only warning nobody has met yet still fails the
+leg.
+
+One thing improves for free. The published archives need `GLIBC_2.38`, which Raspberry Pi OS
+bookworm's 2.36 refuses at load; the ARMv6 binary references nothing newer than bookworm's own
+2.36, so it loads on bookworm and trixie alike. That is asserted off the finished binary rather
+than assumed, and its `BUILD-INFO.txt` names the version it actually came out at. The bookworm caveat the
+ARMv7 archive's `BUILD-INFO.txt` carries therefore does not apply to this one, and it does not
+say it. Raising the floor for `linux-x86_64`, `linux-arm64` and `linux-armv7` is a separate
+piece of work and still owed.
 
 There is no macOS x86_64 leg. Artifacts are per-commit workflow artifacts only; the tagged
 release that does not expire is item 10's, and shipped. The hand-rolled tar this entry used to
