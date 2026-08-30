@@ -2,45 +2,51 @@
 
 A Pi makes an excellent Sendspin endpoint: it is quiet, it is cheap, and one per room is the
 whole point of a synchronized multi-room protocol. Installing on one is
-[Getting Started on Linux](Getting-Started-on-Linux) — a Pi is an arm64 Linux box and takes
-the same `linux-arm64` archive an arm64 server does — plus the five things on this page.
+[Getting Started on Linux](Getting-Started-on-Linux) — a Pi is an ordinary Linux box and takes
+whichever archive its architecture names — plus the five things on this page.
 
-## 1. You need a 64-bit OS. This is not negotiable
+## 1. Check which build your OS wants
 
-**The builds are `arm64` only. There is no 32-bit ARM build, and none is coming from CI.**
-The matrix has no armv7 or 32-bit Pi leg, which is recorded in
-[`docs/ROADMAP.md`](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/docs/ROADMAP.md),
-item 12.
-
-Check what you are running before anything else:
+Two archives serve a Pi, and it is the **userland** that picks between them — not
+`uname -m`, which names the kernel:
 
 ```console
-$ uname -m
-aarch64
+$ dpkg --print-architecture
+arm64
 ```
 
-| It says | Where you are |
+| It says | What installs |
 |---|---|
-| `aarch64` | Good. Carry on. |
-| `armv7l`, `armv6l` | A 32-bit userland. No archive will install. |
+| `arm64` | `linux-arm64`, the 64-bit build. |
+| `armhf` | `linux-armv7`, the 32-bit build — unless the board is ARMv6; see below. |
 
-A 32-bit answer on 64-bit hardware is the common case — Raspberry Pi OS shipped a 32-bit
-userland by default for years, and plenty of installed cards still run it. The fix is to
-reimage with **Raspberry Pi OS (64-bit)**, or *Raspberry Pi OS Lite (64-bit)* for a headless
-player, which is what a Sendspin endpoint wants anyway. In Raspberry Pi Imager the 64-bit
-builds are under **Raspberry Pi OS (other)**.
+**Do not use `uname -m` for this.** `arm_64bit` defaults to on for a Pi 4, a Pi 400 and a
+CM4, so a **32-bit** Raspberry Pi OS install on one of those boots a 64-bit kernel and
+reports `aarch64` — while every library on the disk is armhf. Choosing on that answer
+installs the arm64 archive, whose loader is not there, and the binary fails with a "No such
+file or directory" naming a file that plainly exists.
+
+`uname -m` is still the right question for one thing, because ARMv6 boards cannot run a
+64-bit kernel at all: if it says `armv6l`, that is the CPU speaking, and there is no build.
+
+Either archive gets you a working player, and the getting-started script chooses for you. A
+64-bit OS is still the better answer on hardware that can run one: `linux-arm64` is built and
+run on a real arm64 machine, systemd unit and all, where `linux-armv7` is cross-compiled and
+its suite run under emulation. In Raspberry Pi Imager the 64-bit builds are under **Raspberry
+Pi OS (other)**.
 
 | Model | 64-bit capable |
 |---|---|
 | Pi 5, Pi 4, Pi 400, Pi 3, Pi Zero 2 W, CM3/CM4/CM5 | Yes |
-| Pi 1, Pi Zero, Pi Zero W, and Pi 2 boards before v1.2 | **No** — build from source, or use other hardware |
+| Pi 1, Pi Zero, Pi Zero W, and Pi 2 boards before v1.2 | **No** |
 
-If your board is not on either row, do not go looking it up: install a 64-bit image and run
-`uname -m`. That answer is the only one that decides anything here.
-
-The getting-started script refuses a 32-bit userland with this whole answer rather than an
-"unsupported architecture", because it is the single most common way a Pi install goes
-wrong.
+**`armv6l` has no build.** A Pi Zero, a Pi Zero W and an original Pi are ARMv6, and the
+32-bit archive is compiled for ARMv7 — its instructions are illegal on those cores, so there
+is nothing to install and the getting-started script says so rather than handing you a binary
+that traps.
+[`docs/ROADMAP.md`](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/docs/ROADMAP.md)
+item 12 records what an ARMv6 leg would take. Building from source on the Pi itself works in
+the meantime.
 
 ## 2. Install
 

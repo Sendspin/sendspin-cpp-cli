@@ -125,7 +125,8 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
 # @system-service covers every syscall libasound imports, ioctl, mmap, mlock and the SysV IPC
 # calls dmix uses included -- checked against the shipped library's own import table, so the
-# audio path is not what this is gambling on. Native ABI only, since nothing here is 32-bit.
+# audio path is not what this is gambling on. Native ABI only: every archive installs a player
+# built for the machine it runs on, 32-bit and 64-bit alike, so there is no second ABI to want.
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 

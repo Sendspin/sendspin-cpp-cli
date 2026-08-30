@@ -1176,7 +1176,7 @@ operator to choose between `Type=simple` and `Type=forking` and write the unit t
   publishing nothing* — `Upload` is `if: matrix.publish`, and `if-no-files-found: error`
   catches an empty upload rather than an absent one, while `download-artifact` matching nothing
   is an empty directory rather than an error. So the release job names the assets it expects and
-  diffs the set, in the shape the payload assertions already use — three tarballs and, since the
+  diffs the set, in the shape the payload assertions already use — four tarballs and, since the
   third slice below, the macOS `.pkg`. Only the set: each
   archive's own file list was diffed twice inside the build, and re-opening them here would be
   the duplication this split exists to avoid.
@@ -1216,10 +1216,10 @@ operator to choose between `Type=simple` and `Type=forking` and write the unit t
 - **`SHA256SUMS` is generated from inside the directory** so its entries are bare filenames:
   `sha256sum -c` resolves paths relative to the working directory, and a file naming `dist/…`
   is one a downloader cannot use without knowing that. The notes give the macOS spelling
-  (`shasum -a 256 -c`) beside the Linux one, two of the four assets being macOS-only, and
+  (`shasum -a 256 -c`) beside the Linux one, two of the five assets being macOS-only, and
   say out loud that the checksums do not cover the `Source code` archives GitHub attaches on
   its own. Both are given with `--ignore-missing`, which is not a detail: `SHA256SUMS` lists
-  all four and a reader has almost certainly taken one, so the bare form reports the
+  all five and a reader has almost certainly taken one, so the bare form reports the
   rest as failures and exits non-zero on a file that is perfectly good. Supported by GNU
   coreutils and by macOS's Perl `shasum` alike, both checked rather than assumed.
 - **The notes are written by hand, not `--generate-notes`.** On a first tag that emits every
@@ -1494,10 +1494,11 @@ unproven is what the paragraph above already says only a real tag can answer.
 
 Optional, later. Upstream's `examples/tui_client` shows the shape.
 
-### 12. CI and tests — *shipped (matrix and smoke test; sink contract still owed)*
+### 12. CI and tests — *shipped (matrix and smoke test; ARMv6 and the sink contract still owed)*
 
 `.github/workflows/ci.yml` builds and tests every branch push and pull request on
-`ubuntu-24.04`, `ubuntu-24.04-arm` and `macos-14`, plus a fourth `ubuntu-24.04` leg configured
+`ubuntu-24.04`, `ubuntu-24.04-arm` and `macos-14`, a fourth cross-compiled for 32-bit ARM on
+`ubuntu-24.04`, and a fifth configured
 `-DSENDSPIN_CLI_WITH_MDNS=OFF` — which compiles `src/mdns_null.cpp` instead of
 `src/mdns_dnssd.cpp`, so that translation unit is built rather than assumed. Every leg
 configures `-DSENDSPIN_CLI_WERROR=ON` and runs the CTest suite, the no-mDNS leg included:
@@ -1505,7 +1506,7 @@ configures `-DSENDSPIN_CLI_WERROR=ON` and runs the CTest suite, the no-mDNS leg 
 other coverage. Each leg also asserts against its own configure output that it found the
 backends it expects — a missing `-dev` package does not fail a configure, since every
 backend is optional and auto-detected, so without that assertion the matrix would go green
-on a null-sink-only, mDNS-less binary. The three platform legs additionally run the smoke
+on a null-sink-only, mDNS-less binary. The four platform legs additionally run the smoke
 test and upload the binary they built, kept 14 days.
 
 The matrix itself lives in `.github/workflows/build.yml`, called by `ci.yml` and by item 10's
@@ -1558,11 +1559,31 @@ macOS. A leg that configures `-DCMAKE_CXX_FLAGS=-fsanitize=thread` and runs
 reasoning into a check. It is cheap: the smoke test already drives the whole boot, socket and
 shutdown path, and produced zero reports when run that way by hand.
 
-The matrix also has no armv7 or 32-bit Pi leg, and no macOS x86_64 leg. Artifacts are per-commit
-workflow artifacts only; the tagged release that does not expire is item 10's, and shipped. The hand-rolled tar this
-entry used to describe is gone: item 10 shipped the `install()` rules, and the archive is now a
+**The 32-bit Pi leg is there.** `linux-armv7` cross-compiles on `ubuntu-24.04` against the
+armhf multiarch tree — `scripts/build_arm32.sh` owns the configure — and runs the whole unit
+suite and `scripts/smoke_test.sh` under `qemu-user` rather than skipping them, so it holds the
+same rule every other leg does. A cross build is the only shape available: GitHub has no armv7
+runner, and its arm64 runners are Neoverse N1 with no AArch32 at EL0, so no `runs-on` value
+reaches the target at all. What keeps the leg's name honest is a `readelf` of the linked
+binary: the linker merges build attributes across every object in the link and reports the
+highest, so one read covers the FetchContent tree as well as our own sources, and a dependency
+compiled for the wrong architecture fails the leg instead of shipping.
+
+**ARMv6 is still owed, and it is not the same job.** A Pi Zero, a Pi Zero W and an original Pi
+are ARM1176 cores, and Debian and Ubuntu armhf are an ARMv7-A port — which is where a cross
+toolchain's own `crt1.o`, `crtbegin.o` and `libgcc.a` come from. Compiling our sources
+`-march=armv6` therefore does not produce an ARMv6 archive: the startup and helper objects
+linked in beside them are ARMv7, and the merged `Tag_CPU_arch` says so. It needs a Raspberry Pi
+OS armhf sysroot, whose libgcc and startup objects really are ARMv6, and that sysroot is the
+work. `scripts/build_arm32.sh` refuses `armv6` outright rather than building something that
+would trap, and `scripts/get_started_linux.sh` refuses an `armv6l` host for the same reason.
+
+There is no macOS x86_64 leg. Artifacts are per-commit workflow artifacts only; the tagged
+release that does not expire is item 10's, and shipped. The hand-rolled tar this entry used to
+describe is gone: item 10 shipped the `install()` rules, and the archive is now a
 `DESTDIR`-staged `cmake --install` payload whose file list this workflow asserts — plus, on the
-Linux legs, a `systemd-analyze verify` of the unit it installs.
+legs that run on the architecture they built for, a `systemd-analyze verify` of the unit it
+installs.
 
 ### 13. `PlayerRoleConfig` wiring — *shipped*
 

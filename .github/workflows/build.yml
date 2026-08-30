@@ -39,19 +39,22 @@ jobs:
       # Every leg's result is wanted rather than only the first failure's: a break that shows
       # on one architecture and not another is precisely what the matrix is here to tell apart.
       fail-fast: false
-      # `publish` and `avahi` are spelled out on every leg, false included: an `if:` reads a
-      # missing key as false, so a leg that simply omitted one would quietly stop publishing
-      # and still go green. `with_pulse` and `with_pipewire` are spelled out for the sibling
-      # reason: an omitted key reaches cmake as `-DSENDSPIN_CLI_WITH_PULSE=`, which is falsy,
-      # so a leg meaning to build the backend would silently not. A new leg owes all four --
-      # and a `publish: true` leg owes a fifth thing in another file: an entry in the asset
-      # set release.yml asserts before it publishes, which otherwise fails the release with a
-      # diff rather than a reason. A publishing *macOS* leg owes two entries there, its
-      # tarball and the installer .pkg built further down.
+      # `publish`, `avahi` and `systemd` are spelled out on every leg, false included: an `if:`
+      # reads a missing key as false, so a leg that simply omitted one would quietly stop
+      # publishing, or stop proving the unit it installs, and still go green. `with_pulse` and
+      # `with_pipewire` are spelled out for the sibling reason: an omitted key reaches cmake as
+      # `-DSENDSPIN_CLI_WITH_PULSE=`, which is falsy, so a leg meaning to build the backend
+      # would silently not. `arm32` names the architecture a leg cross-compiles for and is
+      # empty on every leg that builds for the runner it is on. A new leg owes all six -- and a
+      # `publish: true` leg owes a seventh thing in another file: an entry in each of the two
+      # asset sets release.yml diffs before it publishes, which otherwise fails the release
+      # with a diff rather than a reason. A publishing *macOS* leg owes two entries in each,
+      # its tarball and the installer .pkg built further down.
       matrix:
         include:
           - name: linux-x86_64
             runner: ubuntu-24.04
+            arm32: ''
             with_mdns: 'ON'
             with_pulse: 'ON'
             with_pipewire: 'ON'
@@ -61,9 +64,11 @@ jobs:
             runtime_packages: 'libasound2t64 libportaudio2 libpulse0 libpipewire-0.3-0 libavahi-compat-libdnssd1'
             publish: true
             avahi: true
+            systemd: true
 
           - name: linux-arm64
             runner: ubuntu-24.04-arm
+            arm32: ''
             with_mdns: 'ON'
             with_pulse: 'ON'
             with_pipewire: 'ON'
@@ -73,6 +78,39 @@ jobs:
             runtime_packages: 'libasound2t64 libportaudio2 libpulse0 libpipewire-0.3-0 libavahi-compat-libdnssd1'
             publish: true
             avahi: false
+            systemd: true
+
+          # The 32-bit Raspberry Pi leg, cross-compiled because no runner can build it any other
+          # way: GitHub offers no armv7 image, and its arm64 images are Neoverse N1, which has no
+          # AArch32 at EL0 -- so there is no `runs-on` value that reaches this target. Emulating
+          # the whole build is the other route, and it would pay for every compile in the
+          # FetchContent tree to arrive somewhere this already is: compiling at native speed and
+          # emulating only what has to be executed puts configure, build and suite inside a
+          # minute of runner time.
+          #
+          # `expect_mdns` is anchored on the multiarch library path rather than left as the
+          # `.*libdns_sd\.so.*` the native legs use, and that is the leg's own cross-check: a
+          # find_library that answered with the runner's x86_64 copy would configure cleanly,
+          # report mDNS as found, link nothing usable, and satisfy the looser pattern.
+          #
+          # `runtime_packages` names Raspberry Pi OS trixie's spellings, not this runner's.
+          # Debian renamed both of the ones that moved in its 64-bit time_t transition, so
+          # `libasound2` and `libpipewire-0.3-0` are bookworm's names and wrong for what ships
+          # today -- and this string is copied verbatim into the BUILD-INFO.txt inside the
+          # archive, so it is read by someone on the target rather than by someone here.
+          - name: linux-armv7
+            runner: ubuntu-24.04
+            arm32: 'armv7'
+            with_mdns: 'ON'
+            with_pulse: 'ON'
+            with_pipewire: 'ON'
+            expect_probe: 'Failed'
+            expect_backends: '^-- sendspin-cli audio backends: null, stdout, alsa, portaudio, pulse, pipewire$'
+            expect_mdns: '^-- sendspin-cli mDNS: dns_sd \(/usr/lib/arm-linux-gnueabihf/libdns_sd\.so\)$'
+            runtime_packages: 'libasound2t64 libportaudio2 libpulse0 libpipewire-0.3-0t64 libavahi-compat-libdnssd1'
+            publish: true
+            avahi: false
+            systemd: false
 
           # Both sound-server backends are pinned OFF here rather than left to auto-detection.
           # libpulse is brew-installable on macOS and could arrive on the image as some other
@@ -80,6 +118,7 @@ jobs:
           # PipeWire for macOS at all. CoreAudio through PortAudio is the macOS path either way.
           - name: macos-arm64
             runner: macos-14
+            arm32: ''
             with_mdns: 'ON'
             with_pulse: 'OFF'
             with_pipewire: 'OFF'
@@ -89,6 +128,7 @@ jobs:
             runtime_packages: 'portaudio (brew). Bonjour is part of macOS.'
             publish: true
             avahi: false
+            systemd: false
 
           # Compile coverage only, and the reason it is a leg of its own: turning mDNS off
           # swaps which translation unit is built -- src/mdns_null.cpp instead of
@@ -102,6 +142,7 @@ jobs:
           # for `pulse:<sink>` names the alsa: route as well as the CMake flag.
           - name: linux-x86_64-nomdns
             runner: ubuntu-24.04
+            arm32: ''
             with_mdns: 'OFF'
             with_pulse: 'OFF'
             with_pipewire: 'OFF'
@@ -109,6 +150,7 @@ jobs:
             expect_mdns: '^-- sendspin-cli mDNS: none$'
             publish: false
             avahi: false
+            systemd: true
 
     steps:
       # Every third-party action here is pinned to a commit rather than a tag, because a tag
@@ -118,7 +160,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Install build dependencies (Linux)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && !matrix.arm32
         run: |
           sudo apt-get update
           # pkg-config is named even though the image already has it: it is what finds
@@ -131,6 +173,111 @@ jobs:
             libpulse-dev \
             libpipewire-0.3-dev \
             libavahi-compat-libdnssd-dev
+
+      # In place of the step above rather than beside it, and that is the point: with none of
+      # the runner's own -dev packages installed there is no libdns_sd.so or libasound.so of
+      # the wrong architecture for find_library to answer with at all. The anchored expect_mdns
+      # below is the check that it did not; this is what leaves it nothing to catch.
+      - name: Install the cross toolchain and armhf dependencies (32-bit ARM)
+        if: matrix.arm32
+        run: |
+          sudo dpkg --add-architecture armhf
+
+          # Both read off the runner rather than written down, because nothing else here binds
+          # them to it. A leg moved to a newer image would otherwise keep asking for this
+          # release's armhf packages and link them with the newer image's cross toolchain, and
+          # go green doing it -- the same failure the `pipewire-minimum` job's "Assert this
+          # image still ships the minimum" step exists to refuse.
+          host_arch="$(dpkg --print-architecture)"
+          . /etc/os-release
+          [ -n "${VERSION_CODENAME:-}" ] || {
+            echo '::error::/etc/os-release names no VERSION_CODENAME, so there is no suite to point the armhf source at'
+            exit 1
+          }
+          echo "Cross-building on $host_arch/$VERSION_CODENAME."
+
+          # armhf is a *port*: archive.ubuntu.com carries amd64 and i386 and nothing else. So
+          # every source already on this image is pinned to the host architecture -- the
+          # third-party ones included, which would otherwise 404 on an armhf index nobody asked
+          # them for and fail the update before a single :armhf package is looked at -- and one
+          # ports.ubuntu.com source is added carrying armhf alone.
+          sources=/etc/apt/sources.list.d/ubuntu.sources
+          [ -f "$sources" ] || {
+            echo "::error::this image has no $sources; its apt layout has changed and the armhf constraint below no longer lands anywhere"
+            exit 1
+          }
+
+          # `Types:` opens every deb822 stanza, so that is where the constraint goes. A file
+          # that already names its architectures is left alone rather than given a second,
+          # contradictory line.
+          for f in /etc/apt/sources.list.d/*.sources; do
+            [ -e "$f" ] || continue
+            grep -q '^Architectures:' "$f" ||
+              sudo sed -i "/^Types:/a Architectures: $host_arch" "$f"
+          done
+
+          # The one-line format, which third-party repositories on this image still use. Both
+          # substitutions skip a line that already names an architecture and nothing else, which
+          # is the same question the loop above asks: an entry carrying `signed-by=` alone is
+          # unconstrained despite having a bracket, and skipping it on the strength of the
+          # bracket is how this whole step would come to pass while doing half its job.
+          for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list; do
+            [ -e "$f" ] || continue
+            sudo sed -i -E \
+              -e "/^deb(-src)? .*arch=/! s|^(deb(-src)?) \[|\1 [arch=$host_arch |" \
+              -e "/^deb(-src)? .*arch=/! s|^(deb(-src)?) ([^[])|\1 [arch=$host_arch] \3|" \
+              "$f"
+          done
+
+          sudo tee /etc/apt/sources.list.d/ubuntu-ports-armhf.sources >/dev/null <<SOURCES
+          Types: deb
+          URIs: http://ports.ubuntu.com/ubuntu-ports/
+          Suites: $VERSION_CODENAME $VERSION_CODENAME-updates $VERSION_CODENAME-backports $VERSION_CODENAME-security
+          Components: main restricted universe multiverse
+          Architectures: armhf
+          Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+          SOURCES
+
+          # Both formats, because the one-line files are the fragile half and showing only the
+          # deb822 ones would print the part that cannot go wrong.
+          echo 'What apt will read:'
+          cat /etc/apt/sources.list.d/*.sources
+          for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list; do
+            [ -e "$f" ] || continue
+            printf '%s:\n' "$f"
+            cat "$f"
+          done
+
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            crossbuild-essential-armhf \
+            qemu-user-static \
+            pkg-config \
+            libasound2-dev:armhf \
+            portaudio19-dev:armhf \
+            libpulse-dev:armhf \
+            libpipewire-0.3-dev:armhf \
+            libavahi-compat-libdnssd-dev:armhf
+
+          # qemu-user-static ships its handlers as systemd-binfmt drop-ins under
+          # /usr/lib/binfmt.d rather than registering them itself, so this is what puts
+          # qemu-arm into the kernel.
+          sudo systemctl restart systemd-binfmt
+
+          # Proven here, where the message can say what is wrong, rather than left to surface
+          # further down wearing someone else's name: gtest_discover_tests runs the test binary
+          # at build time to enumerate its cases and the Package step reads the version off the
+          # player, so an unregistered handler breaks `cmake --build` rather than `ctest`.
+          printf 'int main(void) { return 0; }\n' >binfmt-probe.c
+          arm-linux-gnueabihf-gcc -o binfmt-probe binfmt-probe.c
+          ./binfmt-probe || {
+            echo '::error::this kernel will not execute a 32-bit ARM binary -- qemu-arm is not registered, so nothing below can run what it builds'
+            systemctl status systemd-binfmt --no-pager --full || true
+            ls /proc/sys/fs/binfmt_misc || true
+            exit 1
+          }
+          echo 'A 32-bit ARM binary runs on this host.'
+          rm -f binfmt-probe binfmt-probe.c
 
       - name: Install build dependencies (macOS)
         if: runner.os == 'macOS'
@@ -161,15 +308,26 @@ jobs:
           WITH_PULSE: ${{ matrix.with_pulse }}
           WITH_PIPEWIRE: ${{ matrix.with_pipewire }}
           DEPS_DIR: ${{ github.workspace }}/.deps
+          ARM32: ${{ matrix.arm32 }}
         run: |
-          cmake -B build \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DSENDSPIN_CLI_WERROR=ON \
-            -DSENDSPIN_CLI_WITH_MDNS="$WITH_MDNS" \
-            -DSENDSPIN_CLI_WITH_PULSE="$WITH_PULSE" \
-            -DSENDSPIN_CLI_WITH_PIPEWIRE="$WITH_PIPEWIRE" \
-            -DFETCHCONTENT_BASE_DIR="$DEPS_DIR" \
-            2>&1 | tee configure.log
+          # Held in one array rather than written out on both sides of the branch below. What a
+          # cross leg changes is the compiler and the flags naming the target, which
+          # scripts/build_arm32.sh owns; not one of these options, and a second copy of them is
+          # a second place for the two paths to stop agreeing about how this project builds.
+          options=(
+            -DCMAKE_BUILD_TYPE=Release
+            -DSENDSPIN_CLI_WERROR=ON
+            -DSENDSPIN_CLI_WITH_MDNS="$WITH_MDNS"
+            -DSENDSPIN_CLI_WITH_PULSE="$WITH_PULSE"
+            -DSENDSPIN_CLI_WITH_PIPEWIRE="$WITH_PIPEWIRE"
+            -DFETCHCONTENT_BASE_DIR="$DEPS_DIR"
+          )
+
+          if [ -n "$ARM32" ]; then
+            scripts/build_arm32.sh "$ARM32" build "${options[@]}" 2>&1 | tee configure.log
+          else
+            cmake -B build "${options[@]}" 2>&1 | tee configure.log
+          fi
 
       # The check that stops a leg passing while quietly building something else. A missing
       # -dev package does not fail the configure -- every backend here is optional and
@@ -211,6 +369,82 @@ jobs:
 
       - name: Build
         run: cmake --build build
+
+      # What makes this leg's name mean something. Every dependency arrives through
+      # FetchContent and so through add_subdirectory, in the one cmake invocation, which is why
+      # scripts/build_arm32.sh puts the target flags in CMAKE_C_FLAGS/CMAKE_CXX_FLAGS rather
+      # than on our own targets -- and this is the check that says it worked. A flag that
+      # reached sendspin-cli and missed a dependency still links, still passes the suite under
+      # an emulator permissive enough to run anything, and then traps on the hardware the
+      # archive is built for. The linker merges build attributes across every object in the
+      # link and reports the highest, so one read covers the whole tree.
+      #
+      # It covers what is *in* the file and nothing further. The shared libraries the loader
+      # pulls in on a Pi are that machine's own, built by whoever built its distribution, and
+      # are not this build's to make claims about.
+      #
+      # Ahead of the suite rather than after it: a binary of the wrong architecture is a fact
+      # about the build, and reading it off costs a `readelf` rather than the whole suite run
+      # under an emulator.
+      - name: Assert the binary is built for the architecture this leg claims
+        if: matrix.arm32
+        env:
+          ARM32: ${{ matrix.arm32 }}
+        run: |
+          binary=build/sendspin-cli
+
+          case "$ARM32" in
+            armv7) want_arch='v7' ;;
+            *)
+              echo "::error::no expected CPU architecture is recorded here for '$ARM32'"
+              exit 1
+              ;;
+          esac
+
+          # Read into files rather than piped into each check, so that `grep -q` matching early
+          # cannot take the writer down with SIGPIPE -- `defaults.run.shell` is `bash -eo
+          # pipefail`, where that reads as a failed pipeline. The same reason the systemd step
+          # below uses `case` throughout.
+          readelf -h "$binary" >elf-header.txt
+          readelf -A "$binary" >elf-attributes.txt
+          echo 'What the linked binary reports:'
+          file "$binary"
+          cat elf-header.txt elf-attributes.txt
+
+          field() {
+            sed -n "/^[[:space:]]*$1:/ { s/^[[:space:]]*$1:[[:space:]]*//p; q; }" "$2"
+          }
+
+          status=0
+          expect() {
+            [ "$2" = "$3" ] || {
+              echo "::error::$1 is '$2', not '$3'"
+              status=1
+            }
+          }
+
+          expect 'the ELF class' "$(field Class elf-header.txt)" 'ELF32'
+          expect 'the ELF machine' "$(field Machine elf-header.txt)" 'ARM'
+          expect 'Tag_CPU_arch' "$(field Tag_CPU_arch elf-attributes.txt)" "$want_arch"
+          # The calling convention, taken from the attribute that records it rather than from
+          # the -mfloat-abi this build passed. A soft-float object and a hard-float one disagree
+          # about how every function taking a double is called, and nothing refuses the mixture
+          # at load time -- it is the arithmetic that comes out wrong.
+          expect 'Tag_ABI_VFP_args' "$(field Tag_ABI_VFP_args elf-attributes.txt)" 'VFP registers'
+
+          # Substring-matched, alone among these: the flags word is printed alongside its
+          # numeric value, which carries bits that have nothing to do with the ABI being named.
+          flags="$(field Flags elf-header.txt)"
+          case "$flags" in
+            *'hard-float ABI'*) ;;
+            *)
+              echo "::error::the ELF header flags are '$flags', which do not declare the hard-float EABI"
+              status=1
+              ;;
+          esac
+
+          rm -f elf-header.txt elf-attributes.txt
+          exit "$status"
 
       # Run on every leg, the no-mDNS one included: the suite links sendspin-cli-core, so
       # discovery_test.cpp is compiled against whichever MdnsService went in. That
@@ -343,6 +577,7 @@ jobs:
         env:
           RUNTIME_PACKAGES: ${{ matrix.runtime_packages }}
           LEG: ${{ matrix.name }}
+          ARM32: ${{ matrix.arm32 }}
         run: |
           reported="$(./build/sendspin-cli --version)"
           version="$(printf '%s\n' "$reported" | awk 'NR == 1 { print $2 }')"
@@ -414,6 +649,27 @@ jobs:
           under usr/local/share/doc/sendspin-cli. Its ExecStart names /usr/local/bin/sendspin-cli
           absolutely, so a binary put anywhere else needs the unit changed to match.
           LINUX
+          fi
+
+          # Said inside the archive, because the lines above it are read on the machine this was
+          # built *for* while naming the machine it was built *on*: "Built from commit ... on
+          # Linux/X64", under a heading that says linux-armv7, is accurate and baffling at once
+          # until something accounts for it.
+          if [ -n "$ARM32" ]; then
+            cat >>"stage/$name/BUILD-INFO.txt" <<CROSS
+
+          This is a cross build. It was compiled for $ARM32 on the runner named above, and its
+          unit suite and smoke test were run there under qemu-user rather than on a Raspberry
+          Pi -- so what is proven is that the code builds and behaves, not that it was tried on
+          the hardware. The build attributes of the binary are asserted to be $ARM32,
+          hard-float EABI, before this archive is made.
+
+          It is built for Raspberry Pi OS trixie, and the runtime packages above are spelled
+          the way trixie spells them. On bookworm they are libasound2 and libpipewire-0.3-0,
+          without the t64 -- but that is the smaller problem: this binary needs glibc 2.38 and
+          bookworm has 2.36, so its loader refuses it outright with "version \`GLIBC_2.38' not
+          found". Move that Pi to trixie, or build from source on it.
+          CROSS
           fi
 
           tar -czf "$name.tar.gz" -C stage "$name"
@@ -493,8 +749,16 @@ jobs:
       # `verify` is only a parse, so the step below runs the thing as well. What it cannot cover
       # is the audio path: a runner has no sound card, which is why `output = null` goes in the
       # config and why the unit ships no directive that gates /dev/snd.
+      #
+      # Gated on `systemd` rather than on `runner.os == 'Linux'`, which is what a cross leg
+      # would also satisfy while having nothing to offer here. Running the unit against a
+      # binary the runner can only reach through an emulator tests the emulator: qemu-user
+      # translates guest code into buffers it writes and then executes, which the unit's
+      # `MemoryDenyWriteExecute=yes` forbids outright, so the leg would fail on a directive the
+      # player itself has no quarrel with. The unit in the arm32 archive is the same file these
+      # legs verify, installed by the same rules.
       - name: Install at the real prefix and verify the systemd unit
-        if: runner.os == 'Linux'
+        if: matrix.systemd
         run: |
           sudo cmake --install build --component sendspin-cli
           unit=/usr/local/lib/systemd/system/sendspin-cli.service
@@ -516,7 +780,7 @@ jobs:
       # reading the fragment the install rules just put in /usr/local/lib/sysusers.d -- so this
       # covers the search path holding for /usr/local as well as the fragment's own content.
       - name: Run the unit as its own user, with the hardening block
-        if: runner.os == 'Linux'
+        if: matrix.systemd
         env:
           AVAHI: ${{ matrix.avahi }}
         run: |
@@ -773,16 +1037,18 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
-  # A job of its own rather than a fifth matrix leg. The matrix is built for hosted runners --
+  # A job of its own rather than a sixth matrix leg. The matrix is built for hosted runners --
   # its steps use `sudo apt-get` and Ubuntu's package names, and every leg owes `publish`,
-  # `avahi` and `runtime_packages` keys that mean nothing in a container. This has one question
-  # to answer and no binary to hand anybody, so it stays clear of those invariants entirely.
+  # `avahi`, `systemd`, `arm32` and `runtime_packages` keys that mean nothing in a container.
+  # This has one question to answer and no binary to hand anybody, so it stays clear of those
+  # invariants entirely.
   pipewire-minimum:
     name: linux-x86_64-pipewire-min
     runs-on: ubuntu-24.04
     # Debian 12 is the whole reason this exists: it ships libpipewire 0.3.65, the oldest release
     # that satisfies SENDSPIN_CLI_PIPEWIRE_MIN_VERSION, and it is what Raspberry Pi OS bookworm
-    # is. Every hosted image carries 1.x, where a pw_core_events member added after 0.3.65
+    # is -- which is the floor still in the field rather than the current release, Raspberry Pi
+    # OS having moved to trixie. Every hosted image carries 1.x, where a pw_core_events member added after 0.3.65
     # initialises cleanly -- so with only those legs the floor the README advertises goes
     # untested until somebody on bookworm tries to build and finds a designated initialiser
     # naming a member their header does not declare. That is a compile error, not a warning.

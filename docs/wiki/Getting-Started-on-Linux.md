@@ -4,7 +4,8 @@ From nothing to a player your Sendspin server can find. On a Raspberry Pi, read
 [Getting Started on a Raspberry Pi](Getting-Started-on-a-Raspberry-Pi) instead — it is this
 page plus the handful of things a Pi does differently.
 
-**You need:** a 64-bit Linux host (`x86_64` or `arm64`), systemd, a sound card, and root.
+**You need:** a Linux host (`x86_64`, `arm64`, or `armv7` on a 32-bit Raspberry Pi OS),
+systemd, a sound card, and root.
 
 ## The short way
 
@@ -38,8 +39,11 @@ instead of the newest.
 
 ### What it actually does
 
-1. **Checks the architecture.** `x86_64` and `aarch64` have builds. 32-bit ARM does not, and
-   is refused with the reason and the fix rather than an "unsupported" shrug.
+1. **Checks the architecture** — the userland's, read from `dpkg --print-architecture`
+   rather than from `uname -m`, which names the kernel and disagrees with the userland on a
+   32-bit Raspberry Pi OS. `amd64`, `arm64` and `armhf` have builds. ARMv6 — a Pi Zero, a Pi
+   Zero W, an original Pi — does not, and is refused with the reason rather than an
+   "unsupported" shrug.
 2. **Finds the newest release** and downloads that archive plus `SHA256SUMS`.
 3. **Verifies the checksum**, and stops without installing anything if it does not match.
 4. **Unpacks it into `/`** with the member-selected `tar` form, so `BUILD-INFO.txt` stays in

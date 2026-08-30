@@ -16,9 +16,10 @@
 #
 # Installs a released sendspin-cli on a Linux host and sets its systemd unit up.
 #
-# One script for every Linux host, a Raspberry Pi included, because a Pi *is* an arm64
-# Linux box here: it takes the same `linux-arm64` archive an arm64 server takes and
-# installs it the same way. What is genuinely Pi-specific is advice -- the `audio` group,
+# One script for every Linux host, a Raspberry Pi included, because a Pi *is* an ordinary
+# Linux box here: it takes whichever archive its architecture names -- `linux-arm64` on a
+# 64-bit OS, `linux-armv7` on a 32-bit one -- and installs it the way a server takes
+# `linux-x86_64`. What is genuinely Pi-specific is advice -- the `audio` group,
 # and that the headphone jack and HDMI are separate cards -- and that is printed at the end
 # when a Pi is what this is running on. A second script would have been this one with two
 # paragraphs changed, and the two would have drifted.
@@ -50,11 +51,12 @@
 # full, and then either confirmed at a terminal or authorised up front with --yes.
 #
 # One asymmetry worth naming, in the spirit of the one .github/workflows/ci.yml names about
-# itself: the `shellcheck` job there lints every script under scripts/, and the other two are
-# also *run* on every build -- smoke_test.sh on each publishing leg, build_macos_pkg.sh on the
-# macOS one. This is the first script CI lints but never executes. A CI leg for it would want
-# a runner willing to take a payload into `/` and a sound card to then not find, so what it
-# has instead is the container run recorded in the pull request that added it.
+# itself: the `shellcheck` job there lints every script under scripts/, and the other three are
+# also *run* on every build -- smoke_test.sh on each publishing leg, build_arm32.sh on the
+# 32-bit ARM one, build_macos_pkg.sh on the macOS one. This is the one script CI lints but
+# never executes. A CI leg for it would want a runner willing to take a payload into `/` and a
+# sound card to then not find, so what it has instead is the container run recorded in the
+# pull request that added it.
 #
 # Usage: scripts/get_started_linux.sh [--version <tag>] [--yes]
 #
@@ -145,34 +147,79 @@ for tool in tar sed grep; do
         fail "'$tool' is not on \$PATH, and this cannot install anything without it"
 done
 
-# The release archives are named for the CI leg that built them rather than for `uname -m`,
-# so both spellings of 64-bit ARM map onto the one leg that exists.
+# `uname -m` names the *kernel*, and on a Raspberry Pi the kernel and the userland routinely
+# disagree: `arm_64bit` defaults to 1 on a Pi 4, a Pi 400 and a CM4, so a 32-bit armhf install
+# on one of those boots a 64-bit kernel and reports `aarch64` with not a single 64-bit library
+# on the disk. Choosing on that answer hands it the arm64 archive, whose loader
+# (/lib/ld-linux-aarch64.so.1) is not there -- and the binary dies with a "No such file or
+# directory" naming a file that plainly exists.
+#
+# So the archive is chosen by the *userland*, and `uname -m` is kept for the one question the
+# userland cannot answer: which ARM instruction set the CPU has.
 MACHINE="$(uname -m)"
-case "$MACHINE" in
-    x86_64 | amd64)
+
+# dpkg answers it outright, and it is on every distribution these archives are built against.
+# Where it is absent, the width of a userland binary paired with the kernel's family is the
+# same answer arrived at the long way -- `getconf` is part of libc, so one of the two is here.
+if command -v dpkg >/dev/null 2>&1; then
+    USERLAND="$(dpkg --print-architecture)"
+elif command -v getconf >/dev/null 2>&1; then
+    case "$(getconf LONG_BIT):$MACHINE" in
+        64:x86_64 | 64:amd64) USERLAND='amd64' ;;
+        64:aarch64 | 64:arm64) USERLAND='arm64' ;;
+        32:aarch64 | 32:arm64 | 32:arm*) USERLAND='armhf' ;;
+        # Left empty rather than filled in from `$MACHINE`, which would be this block's own
+        # mistake made twice: a 32-bit x86 userland under an x86-64 kernel reports `x86_64`,
+        # and passing that on hands it the 64-bit archive. What cannot be identified is
+        # refused below.
+        *) USERLAND='' ;;
+    esac
+else
+    fail "neither dpkg nor getconf is on \$PATH, and one of them is needed to tell a 32-bit
+    userland from the 64-bit kernel it may be running under"
+fi
+
+# The release archives are named for the CI leg that built them rather than for the userland,
+# so every spelling of an architecture maps onto the one leg that serves it.
+case "$USERLAND" in
+    amd64 | x86_64)
         LEG='linux-x86_64'
         ;;
-    aarch64 | arm64)
+    arm64 | aarch64)
         LEG='linux-arm64'
         ;;
-    armv6l | armv7l | armhf | arm)
-        # The single most common way a Pi install goes wrong, so it gets the whole answer
-        # rather than "unsupported architecture". There is no 32-bit build to fall back to --
-        # docs/ROADMAP.md item 12 records that the matrix has no armv7 or 32-bit Pi leg -- and
-        # the fix is a 64-bit OS on hardware that is almost certainly already 64-bit capable.
-        fail "this is a 32-bit ARM userland ($MACHINE), and the builds are arm64 only.
-    docs/ROADMAP.md item 12 records why: the CI matrix has no armv7 or 32-bit Pi leg, so no
-    such archive exists to install. A Raspberry Pi 3 or newer is 64-bit hardware, so the fix
-    is a 64-bit OS: install Raspberry Pi OS (64-bit), or 'Raspberry Pi OS Lite (64-bit)' for
-    a headless player, and check with 'uname -m' after -- it must say aarch64. A Pi Zero (the
-    original), a Pi 1 or a Pi 2 cannot run 64-bit at all, and needs a build from source"
+    armhf)
+        # 32-bit ARM, where which archive to take is a question about the CPU rather than the
+        # userland -- and this is the one `uname -m` answers well. An ARMv6 board cannot run a
+        # 64-bit kernel at all, so `armv6l` here is the CPU speaking rather than a 32-bit kernel
+        # on newer hardware.
+        #
+        # A Pi Zero, a Pi Zero W or an original Pi. The 32-bit archive is built for ARMv7 and
+        # would trap here, so this is a refusal rather than a near-enough match -- and it gets
+        # the whole answer, because "unsupported architecture" on a Pi sends people looking for
+        # a download that does not exist. docs/ROADMAP.md item 12 records what it would take.
+        case "$MACHINE" in
+            armv6l | armv5* | arm)
+                fail "this is an ARMv6 or older machine ($MACHINE) -- a Pi Zero, a Pi Zero W or
+    an original Pi. The 32-bit archive is built for ARMv7 and its instructions would be illegal
+    here, so there is nothing to install: docs/ROADMAP.md item 12 records that an ARMv6 leg
+    needs a Raspberry Pi OS sysroot the CI matrix does not have. Build from source instead:
+    https://github.com/$REPO#build"
+                ;;
+        esac
+        LEG='linux-armv7'
+        ;;
+    '')
+        fail "this host's userland could not be identified from a $MACHINE kernel alone, and
+    guessing at it is how a 32-bit userland ends up with a 64-bit binary. Install dpkg, or
+    build from source: https://github.com/$REPO#build"
         ;;
     *)
-        fail "no release is built for '$MACHINE' -- the archives are linux-x86_64 and
-    linux-arm64. Build from source instead: https://github.com/$REPO#build"
+        fail "no release is built for a '$USERLAND' userland -- the archives are linux-x86_64,
+    linux-arm64 and linux-armv7. Build from source instead: https://github.com/$REPO#build"
         ;;
 esac
-readonly MACHINE LEG
+readonly MACHINE USERLAND LEG
 
 # systemd being *booted* rather than merely installed, which is what decides whether there is
 # anything to enable. A container or a chroot without it still gets the binary.
@@ -222,7 +269,7 @@ readonly WORK_DIR
 trap 'rm -rf "$WORK_DIR"' EXIT
 
 say 'sendspin-cli getting started'
-say "  host:         Linux $MACHINE${PI_MODEL:+  ($PI_MODEL)}"
+say "  host:         Linux $MACHINE, $USERLAND userland${PI_MODEL:+  ($PI_MODEL)}"
 say "  release leg:  $LEG"
 if [ "$HAVE_SYSTEMD" = 'yes' ]; then
     say '  systemd:      yes'
