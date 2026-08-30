@@ -1394,6 +1394,22 @@ all — the release is drafted, its assets are checked against the set the tag i
 supposed to carry, and only then is it published, so a half-finished upload leaves a
 draft rather than a release missing an architecture.
 
+The body of a release is assembled from two halves. The half that changes is
+`docs/release-notes/<version>.md` — `docs/release-notes/0.1.6.md` for `v0.1.6`, keyed
+off the same `CMakeLists.txt` version the tag is checked against — and it is written in
+the pull request that bumps that version, so what a release says about itself is
+reviewed alongside the change it describes. The half that does not is a short tail in
+`.github/workflows/release.yml`: what `sendspin-cli --version` prints, and links to the
+wiki, the README and the roadmap. Installing and verifying are not restated per release;
+they live in the [wiki](https://github.com/Sendspin/sendspin-cpp-cli/wiki) and below.
+
+Write the notes file before pushing the tag. `preflight` refuses a tag whose file is
+missing, empty, or leaves a ``` fence open, and refuses one whose sections start at `#`
+or `##` — the release page supplies its own title, so those render as banner text
+underneath it. Sections start at `###`; see `docs/release-notes/0.1.6.md` for the shape. `@VERSION@`, `@REPO@` and
+`@TAG@` are substituted in both halves, so a compare link is written as
+`https://github.com/@REPO@/compare/v0.1.5...@TAG@`.
+
 The archives are the same staged payload described above, so they install the same
 way, and the `.pkg` wraps the macOS one. Verify whichever you took first:
 

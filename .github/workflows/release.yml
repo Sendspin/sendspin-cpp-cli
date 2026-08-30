@@ -37,6 +37,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       version: ${{ steps.version.outputs.version }}
+      notes: ${{ steps.notes.outputs.notes }}
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -78,6 +79,85 @@ jobs:
             exit 1
           }
           echo "version=$version" >>"$GITHUB_OUTPUT"
+
+      # Refused here for the reason the version check above is: a tag whose notes nobody wrote
+      # publishes a release that says nothing about itself, and finding that out costs seconds
+      # here against half an hour of runners afterwards. Ordered before the API call below, so
+      # the answer the tree already holds costs no round trip.
+      #
+      # What it reads is the half of the release body that changes per release:
+      # `docs/release-notes/<version>.md`, written in the pull request that bumps the version
+      # CMakeLists.txt carries, so what a release says about itself is reviewed alongside the
+      # change it describes. The other half is the fixed tail in the release job below. This is
+      # the job that reads it because this is the job with a checkout -- the release job
+      # deliberately has none.
+      - name: Check the tag carries the release notes it will publish
+        id: notes
+        env:
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          notes="docs/release-notes/$VERSION.md"
+          [ -f "$notes" ] || {
+            echo "::error::$notes does not exist; add it and re-cut $TAG"
+            exit 1
+          }
+          # Not `[ -s ]`, which passes a file holding nothing but a newline.
+          grep -q '[^[:space:]]' "$notes" || {
+            echo "::error::$notes has no content; write it and re-cut $TAG"
+            exit 1
+          }
+
+          # Counted before the scan below reads them, because that scan is fence-aware and an
+          # unpaired fence would leave it skipping the rest of the file -- a guard that quietly
+          # stops guarding. It is also a defect on its own: an unclosed fence swallows everything
+          # after it into a code block. `|| true` because `grep -c` exits 1 on a count of zero
+          # and this shell runs under `-e`, the same reason the VERSION count above needs it.
+          fences="$(grep -c '^```' "$notes" || true)"
+          [ $((fences % 2)) -eq 0 ] || {
+            echo "::error::$notes leaves a \`\`\` fence open -- $fences fence lines, an odd count; close it at column 0 and re-cut $TAG"
+            exit 1
+          }
+
+          # A release page renders the release's own title, so a `#` or `##` inside the body
+          # comes out as banner text beneath it, outranking the heading the page already has.
+          # Sections start at `###`.
+          #
+          # Fence-aware, rather than one grep over the whole file: the docs here write shell
+          # walkthroughs with a comment at column 0, `docs/wiki/Installation.md` among them, and
+          # inside a fenced block that is a comment rather than a heading. A guard that refuses
+          # one is a guard people learn to work around. `##? ` rather than an interval, which not
+          # every awk on a runner image reads the same way.
+          banners="$(awk '/^```/ { fence = !fence; next }
+                          !fence && /^##? / { printf "%d: %s\n", NR, $0 }' "$notes")"
+          [ -z "$banners" ] || {
+            echo "$banners"
+            echo "::error::those lines in $notes are ## or shallower; start the sections at ### and re-cut $TAG"
+            exit 1
+          }
+
+          # A job output rather than an artifact. The release job asks download-artifact for
+          # whatever the build produced with no name and no pattern on purpose, and the step
+          # after it diffs the whole of dist/ against the exact set the tag publishes, so a
+          # seventh file arriving there would have to be excepted from the assertion that makes
+          # the release atomic. The other alternative is a checkout in the release job, and that
+          # is one more action running under `contents: write` for a file this job already holds.
+          # An output caps at 1 MB against a notes body of a few KB.
+          #
+          # Random delimiter, because a heredoc into $GITHUB_OUTPUT ends at the first line equal
+          # to it and what is being fenced is exactly the text somebody wrote in the tree. The
+          # bare `echo` puts the delimiter on a line of its own whether or not the file ends in a
+          # newline, which is the other way that fence breaks.
+          delimiter="NOTES_$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+          {
+            echo "notes<<$delimiter"
+            cat "$notes"
+            echo
+            echo "$delimiter"
+          } >>"$GITHUB_OUTPUT"
+
+          echo "--- $notes ---"
+          cat "$notes"
 
       # The second likeliest way to reach this workflow with nothing publishable at the end of
       # it: a tag that something already claims. `gh release create` will not refuse it -- a
@@ -200,103 +280,54 @@ jobs:
           cat SHA256SUMS
 
       - name: Write the release notes
+        env:
+          # The per-release half of the body, read from the tagged tree by preflight. Step-scoped
+          # like RELEASE_ID below, one step needing it; and carried in the environment rather
+          # than interpolated into the script, so nothing somebody wrote in a notes file is ever
+          # parsed as a workflow expression or as shell.
+          NOTES: ${{ needs.preflight.outputs.notes }}
         run: |
+          # An output that did not arrive -- a renamed step id, a typo in the output name --
+          # expands to the empty string and reports nothing, which would publish a release
+          # carrying only the tail below and call it a success. Preflight proved the file was
+          # there; this proves what it read got here.
+          [ -n "$NOTES" ] || {
+            echo "::error::the notes preflight read did not reach this job; refusing to publish $TAG with a body it did not write"
+            exit 1
+          }
+
+          # The per-release sections first, then the fixed tail below. Quoted argument to
+          # `printf`, so this half reaches the file exactly as it was written -- it is somebody's
+          # prose, and none of it is shell. The blank line it ends on is what keeps the tail's
+          # heading off the last line of the notes.
+          printf '%s\n\n' "$NOTES" >notes.md
+
           # Heredoc quoted, so the only interpolation is the one done explicitly below: this
           # text is full of backticks and $ that belong to the reader, not to the shell.
-          cat >notes.md <<'NOTES'
-          Binaries for Linux (x86-64, arm64 and 32-bit ARM) and macOS (Apple silicon), plus a
-          macOS installer `.pkg`, built and published by `.github/workflows/release.yml` from
-          the tag alone.
-
-          `linux-armv7` and `linux-armv6` are the two 32-bit Raspberry Pi builds, and which one
-          a board takes is a question about its CPU. `linux-armv7` is for a Pi 2, a Pi 3, a Pi 4
-          or a Pi Zero 2 running a 32-bit Raspberry Pi OS; `linux-armv6` is for a Pi Zero, a Pi
-          Zero W or an original Pi, which are ARM1176 and would meet an illegal instruction in
-          the other. `scripts/get_started_linux.sh` picks between them for you. Neither is built
-          on a Pi — the unit suite and smoke test of both are run under emulation on the runner
-          that built them — and `linux-armv6` is the only archive here that loads on Raspberry
-          Pi OS bookworm as well as trixie.
-
-          ## Install
-
-          Each archive is a staged `cmake --install` payload, so every path under its `usr/` is
-          the path the file installs to:
-
-          ```bash
-          sudo tar -xzf sendspin-cli-@VERSION@-linux-x86_64.tar.gz --strip-components=1 -C / \
-            sendspin-cli-@VERSION@-linux-x86_64/usr
-          sudo systemd-sysusers
-          sudo systemctl daemon-reload
-          ```
-
-          `systemd-sysusers` creates the unprivileged account the unit runs as, from the
-          declaration the payload installs alongside it; a tarball has no `postinst` to run it
-          for you, and without it `systemctl start` reports `217/USER`.
-
-          Naming the `usr` member is what leaves `BUILD-INFO.txt` in the archive rather than
-          unpacking it at `/`. Each archive carries its own `BUILD-INFO.txt` at the root with
-          that command already filled in for its platform, the runtime packages it needs, and
-          what the systemd unit does. Or run it where you unpacked it, at
-          `./<name>/usr/local/bin/sendspin-cli`.
-
-          On macOS the `.pkg` is the shorter path to the same place. It is built from the very
-          payload the macOS archive holds, so the two put identical files on disk:
-
-          ```bash
-          sudo installer -pkg sendspin-cli-@VERSION@-macos-arm64.pkg -target /
-          sendspin-cli --version
-          ```
-
-          There is no uninstaller: remove those files and run
-          `sudo pkgutil --forget io.github.chrisuthe.sendspin-cli`.
-
-          ## macOS is unsigned, archive and `.pkg` alike
-
-          The macOS binary is **ad-hoc signed** — the minimum an arm64 Mach-O needs to execute
-          at all, applied by the linker. It carries no developer identity, `spctl` rejects it,
-          and the `.pkg` around it is unsigned in the same way. Unpack the archive from a
-          terminal rather than in Finder, whose Archive Utility sets the quarantine flag where
-          `tar` does not; if macOS refuses the binary anyway:
-
-          ```bash
-          xattr -d com.apple.quarantine \
-            ./sendspin-cli-@VERSION@-macos-arm64/usr/local/bin/sendspin-cli
-          ```
-
-          A `.pkg` downloaded from this page is quarantined too, and Gatekeeper refuses it on a
-          double-click — allow it once under **System Settings → Privacy & Security**, or use the
-          `installer` command above, which makes no Gatekeeper assessment at all whatever the
-          file is flagged with.
-
-          All of that is a workaround, not a fix, and the `.pkg` is not the fix either. What it
-          changes is narrower: `xcrun stapler` staples a notarization ticket to a `.pkg` and
-          refuses a bare executable, so this is the shape that makes notarization possible at
-          all. A Developer ID signature and notarization need a paid Apple enrolment and are
-          still owed. Said plainly here because it is worth knowing before you download: these
-          are unsigned builds from a public CI runner. The full account is under **macOS, and
-          Gatekeeper** in the README linked below.
-
-          ## Checksums
-
-          `SHA256SUMS` covers the six files above. It does not cover the `Source code`
-          archives GitHub attaches on its own, which are generated by GitHub rather than built
-          here.
-
-          ```bash
-          sha256sum --ignore-missing -c SHA256SUMS      # Linux
-          shasum -a 256 --ignore-missing -c SHA256SUMS  # macOS
-          ```
-
-          Run that from the directory you downloaded into. `--ignore-missing` is there because
-          `SHA256SUMS` lists all six and you have almost certainly taken one: without it, the
-          ones you did not download are reported as failures and the command exits non-zero on a
-          perfectly good file.
-
-          ## What this build is
+          #
+          # Only what is true of every release belongs here. Installing, verifying SHA256SUMS
+          # and the Gatekeeper procedure are linked rather than restated: a release body is
+          # frozen at the tag and a wiki page is not, so a copy of one in the other drifts with
+          # no way for a reader to tell which is current -- and someone reading a release wants
+          # to know what changed in it, not to scroll past a page of what did not.
+          cat >>notes.md <<'NOTES'
+          ### What this build is
 
           sendspin-cli @VERSION@. The version of the sendspin-cpp library it is linked against
           is pinned at build time and printed on the second line of `sendspin-cli --version`,
           alongside this one on the first.
+
+          Installing, verifying `SHA256SUMS` and the macOS Gatekeeper situation are in the
+          [wiki](https://github.com/@REPO@/wiki) — [Installation](https://github.com/@REPO@/wiki/Installation),
+          or [Getting Started on a Raspberry Pi](https://github.com/@REPO@/wiki/Getting-Started-on-a-Raspberry-Pi)
+          for the two 32-bit ARM archives. Each archive also carries its own `BUILD-INFO.txt`,
+          with the install command already filled in for its platform.
+
+          The macOS binary and the `.pkg` around it are **unsigned** — ad-hoc signed, which is
+          the minimum an arm64 Mach-O needs to execute at all, and carries no developer identity
+          — so Gatekeeper refuses them until you say otherwise. Said here rather than only behind
+          a link because it is worth knowing before you download; what to do about it is under
+          [macOS, and Gatekeeper](https://github.com/@REPO@/blob/@TAG@/README.md#macos-and-gatekeeper).
 
           - [README](https://github.com/@REPO@/blob/@TAG@/README.md) — build, install, run,
             [macOS, and Gatekeeper](https://github.com/@REPO@/blob/@TAG@/README.md#macos-and-gatekeeper),
@@ -305,12 +336,16 @@ jobs:
             what is owed, item by item
           NOTES
 
-          # One quoted heredoc and one substitution pass, rather than a second unquoted heredoc
+          # One substitution pass over the assembled body, rather than a second unquoted heredoc
           # for the parts that need a value: nothing in this text is then subject to shell
           # expansion, so a backtick added to it later cannot become a command substitution in a
           # published release body. `|` as the delimiter because the repository name holds a `/`,
           # and every value substituted here is one the preflight already matched against a
           # pattern with no delimiter in it.
+          #
+          # It runs over the per-release half too, which is what lets a notes file write its
+          # compare link as `https://github.com/@REPO@/compare/v0.1.5...@TAG@` rather than
+          # spelling the repository and tag out by hand.
           #
           # The README and roadmap links are pinned to the tag: a relative link in a release body
           # resolves against the default branch, where the text it points at is free to move
