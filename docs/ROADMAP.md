@@ -1501,8 +1501,8 @@ Optional, later. Upstream's `examples/tui_client` shows the shape.
 `ubuntu-24.04`, a fifth built natively for ARMv6 inside an emulated Raspbian container on that
 same runner, and a sixth configured `-DSENDSPIN_CLI_WITH_MDNS=OFF` — which compiles
 `src/mdns_null.cpp` instead of `src/mdns_dnssd.cpp`, so that translation unit is built rather
-than assumed. Every leg but the ARMv6 one configures `-DSENDSPIN_CLI_WERROR=ON`, for the reason
-recorded below, and every leg runs the CTest suite, the no-mDNS leg included:
+than assumed. Every leg configures `-DSENDSPIN_CLI_WERROR=ON` and runs the CTest suite, the
+no-mDNS leg included:
 `discovery_test.cpp` links whichever `MdnsService` went in, and that configuration has no
 other coverage. Each leg also asserts against its own configure output that it found the
 backends it expects — a missing `-dev` package does not fail a configure, since every
@@ -1603,11 +1603,14 @@ sendspin-cpp's own `connection_manager.cpp` become libatomic calls. It goes in
 `CMAKE_CXX_STANDARD_LIBRARIES` rather than `CMAKE_EXE_LINKER_FLAGS`, which places it ahead of
 the objects that need it and leaves the linker to discard it.
 
-`-DSENDSPIN_CLI_WERROR=ON` is absent on that leg alone among the matrix, for the same reason the
-`pipewire-minimum` job drops it: Raspbian's gcc 12.2.0 has a `-Wrestrict` false positive on
-`line += " " + std::to_string(...)` in `src/control_common.cpp`. The narrower fix does not
-exist here — `-Wno-restrict` can only be passed through `CMAKE_CXX_FLAGS`, and the `-Wall` that
-`target_compile_options` adds lands after it on the command line and turns the warning back on.
+That leg holds the warning line like the rest, with one diagnostic exempted: Raspbian's gcc
+12.2.0 has a `-Wrestrict` false positive on `line += " " + std::to_string(...)`, at
+`src/control_common.cpp:391` and `:401` and at `tests/cli_test.cpp:1133`. It passes
+`-Wno-error=restrict`, which is not interchangeable with `-Wno-restrict`: `CMAKE_CXX_FLAGS`
+lands before the `-Wall` `target_compile_options` adds, and a later `-Wall` turns a *disabled*
+warning back on — where a later blanket `-Werror` does not re-promote a diagnostic an earlier
+`-Wno-error=` has already exempted. So an ARMv6-only warning nobody has met yet still fails the
+leg.
 
 One thing improves for free. The published archives need `GLIBC_2.38`, which Raspberry Pi OS
 bookworm's 2.36 refuses at load; the ARMv6 binary references nothing newer than bookworm's own

@@ -54,8 +54,9 @@
 #   configure  configure <build-dir> in the container; remaining arguments reach cmake verbatim,
 #              which is how the caller keeps owning the options that are not about this target
 #   run        run one command in the container, in the same directory, as the same user
-#   stop       remove the container. The runner is discarded either way; this is for a developer
-#              who ran `start` on a machine that is not
+#   stop       remove the container, reporting rather than failing when there is none. A runner
+#              is discarded whole, so this is for a developer's own machine, which is not -- and
+#              for the workflow to call with `if: always()` without a failed run failing twice
 
 set -euo pipefail
 
@@ -245,17 +246,32 @@ case "$VERB" in
         shift
         readonly BUILD_DIR
 
-        # -latomic is this target's one link-line fact, and it belongs here for the reason
-        # build_arm32.sh owns the armv7 -march: it is a property of the machine rather than of
-        # this project. ARMv6 has no LDREXD, so every 64-bit atomic becomes a libatomic call --
-        # from src/pulse_sink.cpp, src/player_listener.cpp and sendspin-cpp's own
-        # connection_manager.cpp -- and the link fails on __atomic_load_8 without it. The ARMv7
-        # leg needs nothing of the kind because ARMv7 has LDREXD.
+        # Two facts about this toolchain, both of them properties of the machine and its
+        # compiler rather than of this project -- which is why they belong here, for the reason
+        # build_arm32.sh owns the armv7 -march rather than leaving it to the caller.
         #
+        # -latomic: ARMv6 has no LDREXD, so every 64-bit atomic becomes a libatomic call -- from
+        # src/pulse_sink.cpp, src/player_listener.cpp and sendspin-cpp's own
+        # connection_manager.cpp -- and the link fails on __atomic_load_8 without it. The ARMv7
+        # leg needs nothing of the kind because ARMv7 has LDREXD. It goes in
         # CMAKE_CXX_STANDARD_LIBRARIES rather than CMAKE_EXE_LINKER_FLAGS, which places it ahead
         # of the objects that reference it and leaves the linker to discard it as unused.
+        #
+        # -Wno-error=restrict: Raspbian's gcc 12.2.0 has a -Wrestrict false positive on
+        # `line += " " + std::to_string(...)`, at src/control_common.cpp:391 and :401 and at
+        # tests/cli_test.cpp:1133 -- the third site 32-bit-specific, the warning turning on a
+        # memcpy size the compiler folds differently where size_t is `unsigned int`. This
+        # demotes that one diagnostic and leaves -Werror standing over everything else, so an
+        # ARMv6-only warning nobody has met yet still fails the leg.
+        #
+        # The `-Wno-error=` form is what makes that possible, and it is not interchangeable with
+        # `-Wno-restrict`. CMAKE_CXX_FLAGS lands before the `-Wall -Wextra -Wpedantic -Werror`
+        # CMakeLists.txt adds with target_compile_options, and a later -Wall turns a warning
+        # disabled earlier back on -- where a later blanket -Werror does not re-promote a
+        # diagnostic an earlier -Wno-error= has already exempted.
         in_container cmake -B "$BUILD_DIR" \
             -DCMAKE_CXX_STANDARD_LIBRARIES=-latomic \
+            -DCMAKE_CXX_FLAGS=-Wno-error=restrict \
             "$@"
 
         printf 'build_armv6_container: configured %s for armv6 in %s\n' "$BUILD_DIR" "$CONTAINER"

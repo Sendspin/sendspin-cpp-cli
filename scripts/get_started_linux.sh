@@ -201,17 +201,20 @@ case "$USERLAND" in
         #
         # Below ARMv6 there is still nothing, and that stays a refusal with the whole answer in
         # it: "unsupported architecture" on a Pi sends people looking for a download that does
-        # not exist. Bare `arm` is refused with them because it names no instruction set at all,
-        # and an ARMv5 board answering to it would take a binary that traps.
+        # not exist. Every pre-v6 spelling is named rather than left to the `armv7` fallback
+        # below, because that fallback is what an unrecognised machine reaches -- and `armv4l`
+        # falling into it would install a binary that traps. Bare `arm` is refused with them
+        # because it names no instruction set at all, which the getconf branch above can
+        # produce for any 32-bit ARM kernel.
         case "$MACHINE" in
             armv6*)
                 LEG='linux-armv6'
                 ;;
-            armv5* | arm)
-                fail "'$MACHINE' is ARMv5 or names no ARM architecture at all, and the oldest
-    archive built is linux-armv6 -- an ARM1176, which is a Pi Zero, a Pi Zero W or an original
-    Pi. Its instructions would be illegal on an ARMv5 machine, so there is nothing here to
-    install. Build from source instead: https://github.com/$REPO#build"
+            armv[0-5]* | arm)
+                fail "'$MACHINE' is older than ARMv6, or names no ARM architecture at all, and
+    the oldest archive built is linux-armv6 -- an ARM1176, which is a Pi Zero, a Pi Zero W or an
+    original Pi. Its instructions would be illegal here, so there is nothing to install. Build
+    from source instead: https://github.com/$REPO#build"
                 ;;
             *)
                 LEG='linux-armv7'

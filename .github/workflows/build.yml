@@ -50,10 +50,10 @@ jobs:
       fail-fast: false
       # `publish`, `avahi` and `systemd` are spelled out on every leg, false included: an `if:`
       # reads a missing key as false, so a leg that simply omitted one would quietly stop
-      # publishing, or stop proving the unit it installs, and still go green. `with_pulse`,
-      # `with_pipewire` and `werror` are spelled out for the sibling reason: an omitted key
+      # publishing, or stop proving the unit it installs, and still go green. `with_mdns`,
+      # `with_pulse` and `with_pipewire` are spelled out for the sibling reason: an omitted key
       # reaches cmake as `-DSENDSPIN_CLI_WITH_PULSE=`, which is falsy, so a leg meaning to
-      # build the backend -- or meaning to hold the warning line -- would silently not.
+      # build the backend would silently not.
       #
       # `arm32` names the 32-bit ARM architecture a leg targets, and `container` says a leg
       # builds inside one rather than on the runner: what and how, and both empty on every leg
@@ -63,10 +63,9 @@ jobs:
       # scripts/build_arm32.sh refuses by name, and publishes an archive that traps on an
       # ARM1176.
       #
-      # A new leg owes all nine, `with_mdns` included -- it has the same failure mode as its
-      # two siblings -- and a `publish: true` leg owes a tenth thing in another file: an entry
-      # in each of the two asset sets release.yml diffs before it publishes, which otherwise
-      # fails the release with a diff rather than a reason. A publishing
+      # A new leg owes all eight -- and a `publish: true` leg owes a ninth thing in another
+      # file: an entry in each of the two asset sets release.yml diffs before it publishes,
+      # which otherwise fails the release with a diff rather than a reason. A publishing
       # *macOS* leg owes two entries in each, its tarball and the installer .pkg built further
       # down.
       matrix:
@@ -75,7 +74,6 @@ jobs:
             runner: ubuntu-24.04
             arm32: ''
             container: ''
-            werror: 'ON'
             with_mdns: 'ON'
             with_pulse: 'ON'
             with_pipewire: 'ON'
@@ -91,7 +89,6 @@ jobs:
             runner: ubuntu-24.04-arm
             arm32: ''
             container: ''
-            werror: 'ON'
             with_mdns: 'ON'
             with_pulse: 'ON'
             with_pipewire: 'ON'
@@ -129,7 +126,6 @@ jobs:
             runner: ubuntu-24.04
             arm32: 'armv7'
             container: ''
-            werror: 'ON'
             with_mdns: 'ON'
             with_pulse: 'ON'
             with_pipewire: 'ON'
@@ -166,16 +162,11 @@ jobs:
           # bookworm rather than trixie deliberately: building against the older glibc is what
           # keeps the archive loadable on both, which the assertion below the build holds it to.
           #
-          # `werror` is OFF here alone among the matrix, for the reason the `pipewire-minimum`
-          # job below states: Raspbian's gcc 12.2.0 has a -Wrestrict false positive on
-          # `line += " " + std::to_string(...)`, which has nothing to do with this architecture
-          # and would fail the leg for a question it is not here to ask. It fires at
-          # src/control_common.cpp:391 and :401 as it does there, and at
-          # tests/cli_test.cpp:1133 as well -- that third site being 32-bit-specific, the
-          # warning turning on a memcpy size the compiler folds differently where size_t is
-          # `unsigned int`. `-Wno-restrict` is not the narrower fix it looks like: it can only
-          # be passed through CMAKE_CXX_FLAGS, and the `-Wall` CMakeLists.txt adds with
-          # target_compile_options lands after it and turns the warning back on.
+          # This leg holds the warning line like every other, which takes one exemption:
+          # Raspbian's gcc 12.2.0 has a -Wrestrict false positive that would otherwise fail it
+          # for a question it is not here to ask. scripts/build_armv6_container.sh passes
+          # `-Wno-error=restrict` and says why there, including why the `-Wno-error=` form is
+          # the one that works.
           #
           # `runtime_packages` names bookworm's spellings, where the ARMv7 leg above names
           # trixie's, and adds libatomic1: ARMv6 has no LDREXD, so the 64-bit atomics become
@@ -184,7 +175,6 @@ jobs:
             runner: ubuntu-24.04
             arm32: 'armv6'
             container: 'balenalib/rpi-raspbian:bookworm@sha256:0f3c33faa9d7b1dac778e8afb5854080dcfbddeac7437265598c6076bb0ffc82'
-            werror: 'OFF'
             with_mdns: 'ON'
             with_pulse: 'ON'
             with_pipewire: 'ON'
@@ -204,7 +194,6 @@ jobs:
             runner: macos-14
             arm32: ''
             container: ''
-            werror: 'ON'
             with_mdns: 'ON'
             with_pulse: 'OFF'
             with_pipewire: 'OFF'
@@ -230,7 +219,6 @@ jobs:
             runner: ubuntu-24.04
             arm32: ''
             container: ''
-            werror: 'ON'
             with_mdns: 'OFF'
             with_pulse: 'OFF'
             with_pipewire: 'OFF'
@@ -380,9 +368,22 @@ jobs:
       # container below -- gcc and cmake among them, this being a native build rather than a
       # cross one -- can run at all. The cross leg above registers its own handler by hand from
       # qemu-user-static, which is the same mechanism arrived at from the other direction.
+      #
+      # `image` is pinned by digest as well as the action by commit, and it is the one that
+      # matters most in this file: the action's default is the mutable
+      # `tonistiigi/binfmt:latest`, and what it does with it is run it `--privileged` to edit
+      # the kernel's binfmt handlers. A tag that can be repointed is a worse thing to hand that
+      # than write access to a workspace.
+      #
+      # `arm` rather than the default `all`, because that is the only handler anything here
+      # uses -- registering riscv64, ppc64le and the rest is emulators this job will never
+      # execute, installed by a privileged container.
       - name: Register the ARM emulator (containerised 32-bit ARM)
         if: matrix.container
         uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8  # v4.2.0
+        with:
+          image: docker.io/tonistiigi/binfmt@sha256:1b804311fe87047a4c96d38b4b3ef6f62fca8cd125265917a9e3dc3c996c39e6  # qemu-v9.2.2
+          platforms: arm
 
       # Everything from Configure down runs in here. The container is started once and kept,
       # rather than a fresh `docker run` per step: cmake records the directory it was configured
@@ -417,7 +418,6 @@ jobs:
           WITH_MDNS: ${{ matrix.with_mdns }}
           WITH_PULSE: ${{ matrix.with_pulse }}
           WITH_PIPEWIRE: ${{ matrix.with_pipewire }}
-          WERROR: ${{ matrix.werror }}
           DEPS_DIR: ${{ github.workspace }}/.deps
           ARM32: ${{ matrix.arm32 }}
           IMAGE: ${{ matrix.container }}
@@ -431,7 +431,7 @@ jobs:
           # builds.
           options=(
             -DCMAKE_BUILD_TYPE=Release
-            -DSENDSPIN_CLI_WERROR="$WERROR"
+            -DSENDSPIN_CLI_WERROR=ON
             -DSENDSPIN_CLI_WITH_MDNS="$WITH_MDNS"
             -DSENDSPIN_CLI_WITH_PULSE="$WITH_PULSE"
             -DSENDSPIN_CLI_WITH_PIPEWIRE="$WITH_PIPEWIRE"
@@ -1321,14 +1321,14 @@ jobs:
             exit 1
           fi
 
-      # -Werror is off here, as it is on the linux-armv6 leg above and for the same reason --
-      # absent altogether in this job, spelled `werror: 'OFF'` there because a matrix key an
-      # omitted leg would read as falsy has to be written down. gcc 12 has a -Wrestrict false
-      # positive on `line += " " + std::to_string(...)` in src/control_common.cpp, which has
-      # nothing to do with either sound-server backend and would fail this job for a reason it
-      # ask about. The warning line is held on every leg with a newer compiler; what is held
-      # here is that the code compiles at all against the oldest libpipewire this project
-      # claims to support.
+      # SENDSPIN_CLI_WERROR is deliberately absent, alone among the builds in this file -- the
+      # linux-armv6 leg above meets the same gcc 12 -Wrestrict false positive on
+      # `line += " " + std::to_string(...)` in src/control_common.cpp and exempts that one
+      # diagnostic rather than all of them. Here the whole option is dropped, because the
+      # warning has nothing to do with either sound-server backend and this job is not the
+      # place the warning line is held. The matrix above holds it; what is held here is that
+      # the code compiles at all against the oldest libpipewire this project claims to
+      # support.
       - name: Configure
         run: |
           cmake -B build             -DCMAKE_BUILD_TYPE=Release             -DSENDSPIN_CLI_WITH_PORTAUDIO=OFF             -DSENDSPIN_CLI_WITH_MDNS=OFF             2>&1 | tee configure.log

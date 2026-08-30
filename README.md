@@ -1330,11 +1330,11 @@ and `macos-14`, a fourth leg cross-compiled for ARMv7 on `ubuntu-24.04`, a fifth
 built for ARMv6 inside an emulated Raspbian container on the same runner, and a
 sixth configured `-DSENDSPIN_CLI_WITH_MDNS=OFF` — which compiles
 `src/mdns_null.cpp` in place of `src/mdns_dnssd.cpp`, so that configuration is
-built rather than assumed. Every leg but the ARMv6 one builds with
-`-DSENDSPIN_CLI_WERROR=ON`, every leg runs the unit suite, and each asserts from
-its own configure output that it found the backends it expects: a missing `-dev`
-package does not fail a configure, so without that check the matrix would happily
-go green on a deaf, undiscoverable binary.
+built rather than assumed. Every leg builds with `-DSENDSPIN_CLI_WERROR=ON` and
+runs the unit suite, and each asserts from its own configure output that it found
+the backends it expects: a missing `-dev` package does not fail a configure, so
+without that check the matrix would happily go green on a deaf, undiscoverable
+binary.
 
 The ARMv7 leg is cross-compiled because no runner can build it natively: GitHub
 has no armv7 runner, and its arm64 runners cannot execute 32-bit ARM at all.
@@ -1349,10 +1349,10 @@ runner: Debian and Ubuntu `armhf` are an ARMv7-A port, so a cross toolchain's ow
 Raspbian's are genuinely ARMv6, so that leg runs an ordinary native build inside a
 digest-pinned Raspbian container under `qemu-user` — with its suite and smoke test
 under `QEMU_CPU=arm1176`, so the emulator is no more permissive than an ARM1176 —
-and asserts ARMv6, hard-float EABI off the finished binary the same way. It is the
-one leg without `-Werror`: Raspbian's gcc 12 has the same `-Wrestrict` false
-positive on `src/control_common.cpp` that the `pipewire-minimum` job already
-documents.
+and asserts ARMv6, hard-float EABI off the finished binary the same way. It holds
+the warning line with one exemption: Raspbian's gcc 12 has the same `-Wrestrict`
+false positive the `pipewire-minimum` job documents, so that leg passes
+`-Wno-error=restrict` and leaves `-Werror` standing over everything else.
 
 The matrix lives in `.github/workflows/build.yml`, which both `ci.yml` and
 `release.yml` call, so a release is built and gated exactly the way a push is.
