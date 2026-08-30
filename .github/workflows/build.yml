@@ -32,10 +32,12 @@ jobs:
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
-    # Well clear of a cold cache on the slowest leg -- which is linux-armv6, the one that
-    # emulates every compile in the FetchContent tree where the others compile at native speed
-    # -- and far under the six-hour default: the point is that a player which ignores SIGTERM
-    # fails rather than holds a runner all day.
+    # Sized for the slowest leg and far under the six-hour default: the point is that a player
+    # which ignores SIGTERM fails rather than holds a runner all day. linux-armv6 is that leg by
+    # a wide margin and the only one this number is really about -- it emulates every compile in
+    # the FetchContent tree where the others compile at native speed, which is minutes against
+    # seconds. The headroom is real but it is not vast, so a leg that starts running long is
+    # worth a look at rather than a larger number here.
     timeout-minutes: 30
     strategy:
       # Every leg's result is wanted rather than only the first failure's: a break that shows
@@ -486,7 +488,15 @@ jobs:
           IMAGE: ${{ matrix.container }}
         run: |
           if [ -n "$IMAGE" ]; then
-            scripts/build_armv6_container.sh run cmake --build build
+            # The one leg that overrides the workflow-level parallelism, because it is the only
+            # one where the difference is worth anything: every compile here is emulated, and
+            # the build is most of a job that has to fit the timeout above. The 3 set at the top
+            # of this file is a floor -- the three-core macOS image is what sets it -- and this
+            # leg runs on a four-core one. Read off the runner rather than written down, the way
+            # the cross leg reads its own architecture and suite, so an image with more cores is
+            # a faster build rather than an edit nobody remembers to make.
+            CMAKE_BUILD_PARALLEL_LEVEL="$(nproc)" \
+              scripts/build_armv6_container.sh run cmake --build build
           else
             cmake --build build
           fi
