@@ -19,6 +19,7 @@
 
 #include "audio_sink.h"
 #include "pcm_volume.h"
+#include "sink_recovery.h"
 
 #include <alsa/asoundlib.h>
 
@@ -46,6 +47,16 @@ namespace sendspin_cli {
 /// takes to drain, so write() never blocks unboundedly while holding it: it waits for
 /// room in short slices (snd_pcm_wait) and re-checks the abort flag between them. That is
 /// the write_mutex_ + abort_write_ pairing upstream's PortAudio sink uses.
+///
+/// **write() never reopens the device**, which is that same rule reaching recovery. A device
+/// that dies mid-stream is closed where it is found and handed to poll(), because the reopen is
+/// snd_pcm_open() and there is no way to bound one: the sound-server sinks make their inline
+/// attempt only because PULSE_RECOVERY_TIMEOUT_MS lets them put a deadline on it, and ALSA has
+/// no such knob. On a plugin PCM -- `default` on a PipeWire host, or the `alsa:pulse` route --
+/// it parses config and waits on a daemon socket with no timeout at all, on the sync task's
+/// thread and under device_mutex_. So AlsaAudioSink spends SinkRecovery's inline attempt
+/// without making it, which is what escalates to the delayed one; see recover_(). That delay is
+/// also what the case wants, a replugged DAC taking seconds to enumerate.
 ///
 /// Volume is applied in software, through the shared Q32 fixed-point scaling in pcm_volume.h,
 /// so a stream sounds the same here as through PortAudio. Scaling happens on the way *into*
@@ -79,6 +90,21 @@ public:
     void set_volume(uint8_t volume) override;
     void set_muted(bool muted) override;
 
+    /// @brief Reopens a device that died mid-stream, once the delay SinkRecovery imposes is up.
+    ///
+    /// Does nothing on an ordinary tick and takes no lock to establish that, like
+    /// PulseAudioSink::poll(). What it does when there is work is the whole of this sink's
+    /// recovery, write() having only closed the device and escalated -- a fresh
+    /// snd_pcm_open() at last_format_, which re-resolves `hw:CARD=NAME` and so can find a card
+    /// that has come back on a different index.
+    ///
+    /// Up to SINK_RESCAN_ATTEMPTS of them per configured stream, behind a delay that doubles.
+    /// The outcome is reported to SinkRecovery rather than assumed, because this attempt is the
+    /// repeatable kind: a device absent now may be present four seconds later, which is exactly
+    /// what a replug is. Reporting success unconditionally, as PortAudioSink's one-shot device
+    /// rescan does, would collapse the budget to a single attempt.
+    void poll(int64_t now_ms) override;
+
     /// @brief What this PCM will take, probed through the same ladder -l reports.
     ///
     /// Opens the device briefly, so it follows AudioSink::capabilities()'s contract: main
@@ -103,9 +129,23 @@ private:
     bool open_device_(uint32_t sample_rate, uint8_t channels, uint8_t bits_per_sample);
     /// Closes the device if open. Caller holds device_mutex_. Idempotent.
     void close_device_();
-    /// Handles -EPIPE/-ESTRPIPE/-EINTR from a PCM call. Caller holds device_mutex_.
-    /// @return true if the stream was recovered and the operation can be retried.
+    /// Handles an error from a PCM call made on a live stream. Caller holds device_mutex_.
+    ///
+    /// -EINTR/-EAGAIN are retried as they are; -EPIPE and -ESTRPIPE are recovered in place, by a
+    /// prepare() and by a resume() respectively -- with a prepare() as the suspend fallback,
+    /// which restarts the stream where the resume would have kept its position. Every other
+    /// error, and a prepare() that will not take either, is taken to mean the device itself is
+    /// gone -- that being the device answering rather than the ring -- and goes to
+    /// handle_device_loss_().
+    /// @return true if the stream was recovered and the operation can be retried. **A false
+    /// return may mean the handle is now closed**, so a caller must not touch pcm_ after one
+    /// without re-reading it.
     bool recover_(int err);
+    /// Retires a device that is gone and arms poll() to get it back. Caller holds device_mutex_.
+    ///
+    /// The caller says what happened, at whatever level suits it; this only acts on it.
+    /// @return false always, so recover_()'s failure paths can `return` it directly.
+    bool handle_device_loss_();
     /// Recomputes target_multiplier_ from volume_ and muted_.
     void update_target_multiplier_();
 
@@ -120,6 +160,14 @@ private:
     uint8_t channels_{0};
     uint8_t bits_{0};
     size_t bytes_per_frame_{0};
+    /// The format the player last announced, which outlives the handle that was open for it.
+    ///
+    /// rate_/channels_/bits_ above describe the *open stream* and are zeroed with it by
+    /// close_device_(), so they are gone by the time a reopen needs them. This is the other
+    /// question -- what the player is sending, whether or not a device is currently taking it --
+    /// and it is what poll() reopens at. Set by configure() before anything can fail, for the
+    /// same reason the other three sinks set theirs there.
+    StreamFormat last_format_{};
     /// Scratch for volume-scaled samples, since write()'s input buffer is const. Grown to
     /// the largest write seen and reused, so steady-state playback does not allocate.
     std::vector<uint8_t> scaled_;
@@ -130,6 +178,10 @@ private:
     /// Latches once the device is unusable, so write() discards instead of returning 0
     /// forever and spinning the sync task. Same degrade-don't-stall rule as NullAudioSink.
     std::atomic<bool> failed_{false};
+
+    /// Whether to try to get a dead device back, and when. Guarded by device_mutex_ except for
+    /// SinkRecovery::pending().
+    SinkRecovery recovery_;
 
     std::atomic<uint8_t> volume_{DEFAULT_SINK_VOLUME};
     std::atomic<bool> muted_{false};
