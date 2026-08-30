@@ -68,12 +68,20 @@ readonly TRIPLE='arm-linux-gnueabihf'
 
 case "$TARGET" in
     armv7)
-        # A Pi 2, a Pi 3, a Pi 4 or a Pi Zero 2 running a 32-bit userland. -mfloat-abi is spelled
-        # out even though the triplet above implies it, because build.yml asserts the hard-float
-        # EABI off the finished binary and an assertion is worth more against a declared fact
-        # than against an implied one. NEON and VFPv4 are the Pi's, not Debian armhf's baseline
-        # of vfpv3-d16 -- every machine this archive is for has both.
-        ARCH_FLAGS=(-march=armv7-a -mfpu=neon-vfpv4 -mfloat-abi=hard)
+        # A Pi 2, a Pi 3, a Pi 4 or a Pi Zero 2 running a 32-bit userland -- and any other
+        # ARMv7-A machine, which is what the archive's name promises and so what these flags
+        # have to hold to.
+        #
+        # -mfpu is the armhf ABI's own baseline rather than the Cortex-A7's NEON and VFPv4.
+        # `armv7l` says nothing about either: a Cortex-A8 or a Cortex-A9 is ARMv7-A with VFPv3
+        # and NEON that is optional, so a binary built for the Pi's FPU would meet an
+        # instruction those machines do not have. The decoders this links are fixed-point, so
+        # the baseline costs nothing on the path that matters.
+        #
+        # -mfloat-abi is spelled out even though the triplet above implies it, because build.yml
+        # asserts the hard-float EABI off the finished binary and an assertion is worth more
+        # against a declared fact than against an implied one.
+        ARCH_FLAGS=(-march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard)
         ;;
     armv6)
         # Refused rather than quietly built, because what comes out is not what it says. Debian

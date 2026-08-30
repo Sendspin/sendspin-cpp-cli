@@ -7,18 +7,27 @@ whichever archive its architecture names — plus the five things on this page.
 
 ## 1. Check which build your OS wants
 
-Two archives serve a Pi, and `uname -m` is what picks between them:
+Two archives serve a Pi, and it is the **userland** that picks between them — not
+`uname -m`, which names the kernel:
 
 ```console
-$ uname -m
-aarch64
+$ dpkg --print-architecture
+arm64
 ```
 
 | It says | What installs |
 |---|---|
-| `aarch64` | `linux-arm64`, the 64-bit build. |
-| `armv7l` | `linux-armv7`, the 32-bit build. |
-| `armv6l` | Nothing. See below. |
+| `arm64` | `linux-arm64`, the 64-bit build. |
+| `armhf` | `linux-armv7`, the 32-bit build — unless the board is ARMv6; see below. |
+
+**Do not use `uname -m` for this.** `arm_64bit` defaults to on for a Pi 4, a Pi 400 and a
+CM4, so a **32-bit** Raspberry Pi OS install on one of those boots a 64-bit kernel and
+reports `aarch64` — while every library on the disk is armhf. Choosing on that answer
+installs the arm64 archive, whose loader is not there, and the binary fails with a "No such
+file or directory" naming a file that plainly exists.
+
+`uname -m` is still the right question for one thing, because ARMv6 boards cannot run a
+64-bit kernel at all: if it says `armv6l`, that is the CPU speaking, and there is no build.
 
 Either archive gets you a working player, and the getting-started script chooses for you. A
 64-bit OS is still the better answer on hardware that can run one: `linux-arm64` is built and

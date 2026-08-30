@@ -41,10 +41,13 @@ nothing. Read `BUILD-INFO.txt` first; it names the runtime packages that build n
 ```bash
 # 1. Take the archive for this machine's architecture, and the checksums
 VERSION=0.1.0
-case "$(uname -m)" in
-  aarch64) LEG=linux-arm64  ;;
-  armv7l)  LEG=linux-armv7  ;;
-  *)       LEG=linux-x86_64 ;;
+# The *userland*, not `uname -m`: a 32-bit Raspberry Pi OS on a Pi 4 runs a 64-bit kernel
+# and reports aarch64, and the arm64 archive will not load there.
+case "$(dpkg --print-architecture)" in
+  amd64) LEG=linux-x86_64 ;;
+  arm64) LEG=linux-arm64  ;;
+  armhf) LEG=linux-armv7  ;;   # not on an ARMv6 board -- see Raspberry Pi below
+  *)     echo 'no release is built for this architecture'; exit 1 ;;
 esac
 BASE=https://github.com/Sendspin/sendspin-cpp-cli/releases/download/v$VERSION
 curl -fLO "$BASE/sendspin-cli-$VERSION-$LEG.tar.gz"
