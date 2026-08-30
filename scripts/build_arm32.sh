@@ -41,7 +41,7 @@
 # Usage: scripts/build_arm32.sh <armv6|armv7> <build-dir> [cmake option ...]
 #
 #   armv6|armv7  the target architecture. armv7 is what builds; armv6 is refused, and the case
-#                label below says why rather than leaving it to look unsupported
+#                label below says why and where it is built instead
 #   build-dir    the directory to configure into, as `cmake -B` takes it
 #   cmake option every remaining argument, passed through to cmake verbatim -- which is how the
 #                caller keeps owning the options that have nothing to do with cross-compiling
@@ -90,11 +90,15 @@ case "$TARGET" in
         # them linked into the binary. Our objects would be armv6 and the archive would not be,
         # and the merged Tag_CPU_arch build.yml reads back says so.
         #
-        # An armv6 build needs a Raspberry Pi OS armhf sysroot, which carries an armv6 libgcc
-        # and armv6 startup objects. docs/ROADMAP.md item 12 records it as owed.
+        # An armv6 build needs an armv6 libgcc and armv6 startup objects, which is Raspbian
+        # rather than a flag. The linux-armv6 leg of .github/workflows/build.yml has them: it
+        # builds natively inside an emulated Raspbian container instead of cross-compiling, so
+        # this script is not on that path at all and there is nothing here to extend.
         fail "armv6 cannot be built against a Debian/Ubuntu armhf toolchain: its libgcc and
     startup objects are armv7-a, so the result would trap on an ARM1176 (a Pi Zero, a Pi Zero W
-    or an original Pi). That target needs a Raspberry Pi OS sysroot; see docs/ROADMAP.md item 12"
+    or an original Pi). armv6 is built a different way -- natively inside an emulated Raspbian
+    container, which has an armv6 libgcc; see the linux-armv6 leg of
+    .github/workflows/build.yml"
         ;;
     *)
         fail "unknown target '$TARGET' -- this builds armv7"

@@ -166,7 +166,7 @@ jobs:
           # `…-macos-arm64-installer` and merge-multiple lays its one file out flat here.
           expected=$(mktemp)
           {
-            for leg in linux-x86_64 linux-arm64 linux-armv7 macos-arm64; do
+            for leg in linux-x86_64 linux-arm64 linux-armv7 linux-armv6 macos-arm64; do
               echo "sendspin-cli-$VERSION-$leg.tar.gz"
             done
             echo "sendspin-cli-$VERSION-macos-arm64.pkg"
@@ -387,7 +387,7 @@ jobs:
           expected=$(mktemp)
           {
             echo SHA256SUMS
-            for leg in linux-x86_64 linux-arm64 linux-armv7 macos-arm64; do
+            for leg in linux-x86_64 linux-arm64 linux-armv7 linux-armv6 macos-arm64; do
               echo "sendspin-cli-$VERSION-$leg.tar.gz"
             done
             echo "sendspin-cli-$VERSION-macos-arm64.pkg"

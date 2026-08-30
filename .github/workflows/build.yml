@@ -32,8 +32,10 @@ jobs:
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
-    # Well clear of a cold cache on the slowest leg, and far under the six-hour default: the
-    # point is that a player which ignores SIGTERM fails rather than holds a runner all day.
+    # Well clear of a cold cache on the slowest leg -- which is linux-armv6, the one that
+    # emulates every compile in the FetchContent tree where the others compile at native speed
+    # -- and far under the six-hour default: the point is that a player which ignores SIGTERM
+    # fails rather than holds a runner all day.
     timeout-minutes: 30
     strategy:
       # Every leg's result is wanted rather than only the first failure's: a break that shows
@@ -41,20 +43,31 @@ jobs:
       fail-fast: false
       # `publish`, `avahi` and `systemd` are spelled out on every leg, false included: an `if:`
       # reads a missing key as false, so a leg that simply omitted one would quietly stop
-      # publishing, or stop proving the unit it installs, and still go green. `with_pulse` and
-      # `with_pipewire` are spelled out for the sibling reason: an omitted key reaches cmake as
-      # `-DSENDSPIN_CLI_WITH_PULSE=`, which is falsy, so a leg meaning to build the backend
-      # would silently not. `arm32` names the architecture a leg cross-compiles for and is
-      # empty on every leg that builds for the runner it is on. A new leg owes all six -- and a
-      # `publish: true` leg owes a seventh thing in another file: an entry in each of the two
-      # asset sets release.yml diffs before it publishes, which otherwise fails the release
-      # with a diff rather than a reason. A publishing *macOS* leg owes two entries in each,
-      # its tarball and the installer .pkg built further down.
+      # publishing, or stop proving the unit it installs, and still go green. `with_pulse`,
+      # `with_pipewire` and `werror` are spelled out for the sibling reason: an omitted key
+      # reaches cmake as `-DSENDSPIN_CLI_WITH_PULSE=`, which is falsy, so a leg meaning to
+      # build the backend -- or meaning to hold the warning line -- would silently not.
+      #
+      # `arm32` names the 32-bit ARM architecture a leg targets, and `container` says a leg
+      # builds inside one rather than on the runner: what and how, and both empty on every leg
+      # that builds for the runner it is on. `container` earns its place by the same test as
+      # the rest and more sharply than any of them -- omit it on the ARMv6 leg and the build
+      # happens on the Ubuntu host, against the ARMv7 `libgcc` and `crt1.o` that
+      # scripts/build_arm32.sh refuses by name, and publishes an archive that traps on an
+      # ARM1176.
+      #
+      # A new leg owes all eight -- and a `publish: true` leg owes a ninth thing in another
+      # file: an entry in each of the two asset sets release.yml diffs before it publishes,
+      # which otherwise fails the release with a diff rather than a reason. A publishing
+      # *macOS* leg owes two entries in each, its tarball and the installer .pkg built further
+      # down.
       matrix:
         include:
           - name: linux-x86_64
             runner: ubuntu-24.04
             arm32: ''
+            container: ''
+            werror: 'ON'
             with_mdns: 'ON'
             with_pulse: 'ON'
             with_pipewire: 'ON'
@@ -69,6 +82,8 @@ jobs:
           - name: linux-arm64
             runner: ubuntu-24.04-arm
             arm32: ''
+            container: ''
+            werror: 'ON'
             with_mdns: 'ON'
             with_pulse: 'ON'
             with_pipewire: 'ON'
@@ -88,6 +103,10 @@ jobs:
           # emulating only what has to be executed puts configure, build and suite inside a
           # minute of runner time.
           #
+          # That trade is available here and nowhere else in this matrix. The ARMv6 leg below
+          # has no cross toolchain to take the other side of it, which is what its own comment
+          # is about -- so it pays the emulation this leg declines.
+          #
           # `expect_mdns` is anchored on the multiarch library path rather than left as the
           # `.*libdns_sd\.so.*` the native legs use, and that is the leg's own cross-check: a
           # find_library that answered with the runner's x86_64 copy would configure cleanly,
@@ -101,6 +120,8 @@ jobs:
           - name: linux-armv7
             runner: ubuntu-24.04
             arm32: 'armv7'
+            container: ''
+            werror: 'ON'
             with_mdns: 'ON'
             with_pulse: 'ON'
             with_pipewire: 'ON'
@@ -112,6 +133,54 @@ jobs:
             avahi: false
             systemd: false
 
+          # The ARMv6 Raspberry Pi leg -- a Pi Zero, a Pi Zero W, an original Pi -- and the one
+          # leg here that is not built the way its neighbour above is. The cross route is not
+          # slower for this target, it is unavailable: Debian and Ubuntu armhf are an ARMv7-A
+          # port, so a cross toolchain's own crt1.o, crtbegin.o and every member of libgcc.a
+          # are ARMv7 and are linked into the binary whatever `-march` said. Raspbian's really
+          # are ARMv6 and Raspbian publishes no cross toolchain, so the only way to an ARMv6
+          # archive is an ordinary native build run inside an emulated Raspbian container.
+          # scripts/build_armv6_container.sh owns it, for the reason build_arm32.sh is a script.
+          #
+          # balenalib's rather than an official Raspberry Pi image, because there is no official
+          # one: Raspberry Pi publishes OS images, not container images. What matters is that
+          # this one installs from archive.raspbian.org -- the ARMv6 port -- rather than from
+          # Debian's ARMv7-A armhf, and its gcc is configured `--with-arch=armv6
+          # --with-float=hard`, which is why nothing on this leg passes `-march` at all. Pinned
+          # by digest for the reason every action in this file is pinned to a commit, and
+          # bookworm rather than trixie deliberately: it is what fixes the archive's glibc floor
+          # at 2.34, low enough to load on both.
+          #
+          # `werror` is OFF here alone among the matrix, for the reason the `pipewire-minimum`
+          # job below states: Raspbian's gcc 12.2.0 has a -Wrestrict false positive on
+          # `line += " " + std::to_string(...)`, which has nothing to do with this architecture
+          # and would fail the leg for a question it is not here to ask. It fires at
+          # src/control_common.cpp:391 and :401 as it does there, and at
+          # tests/cli_test.cpp:1133 as well -- that third site being 32-bit-specific, the
+          # warning turning on a memcpy size the compiler folds differently where size_t is
+          # `unsigned int`. `-Wno-restrict` is not the narrower fix it looks like: it can only
+          # be passed through CMAKE_CXX_FLAGS, and the `-Wall` CMakeLists.txt adds with
+          # target_compile_options lands after it and turns the warning back on.
+          #
+          # `runtime_packages` names bookworm's spellings, where the ARMv7 leg above names
+          # trixie's, and adds libatomic1: ARMv6 has no LDREXD, so the 64-bit atomics become
+          # libatomic calls and the binary carries NEEDED libatomic.so.1.
+          - name: linux-armv6
+            runner: ubuntu-24.04
+            arm32: 'armv6'
+            container: 'balenalib/rpi-raspbian:bookworm@sha256:0f3c33faa9d7b1dac778e8afb5854080dcfbddeac7437265598c6076bb0ffc82'
+            werror: 'OFF'
+            with_mdns: 'ON'
+            with_pulse: 'ON'
+            with_pipewire: 'ON'
+            expect_probe: 'Failed'
+            expect_backends: '^-- sendspin-cli audio backends: null, stdout, alsa, portaudio, pulse, pipewire$'
+            expect_mdns: '^-- sendspin-cli mDNS: dns_sd \(/usr/lib/arm-linux-gnueabihf/libdns_sd\.so\)$'
+            runtime_packages: 'libasound2 libportaudio2 libpulse0 libpipewire-0.3-0 libavahi-compat-libdnssd1 libatomic1'
+            publish: true
+            avahi: false
+            systemd: false
+
           # Both sound-server backends are pinned OFF here rather than left to auto-detection.
           # libpulse is brew-installable on macOS and could arrive on the image as some other
           # formula's dependency, which would change this line without a commit -- and there is no
@@ -119,6 +188,8 @@ jobs:
           - name: macos-arm64
             runner: macos-14
             arm32: ''
+            container: ''
+            werror: 'ON'
             with_mdns: 'ON'
             with_pulse: 'OFF'
             with_pipewire: 'OFF'
@@ -143,6 +214,8 @@ jobs:
           - name: linux-x86_64-nomdns
             runner: ubuntu-24.04
             arm32: ''
+            container: ''
+            werror: 'ON'
             with_mdns: 'OFF'
             with_pulse: 'OFF'
             with_pipewire: 'OFF'
@@ -178,8 +251,13 @@ jobs:
       # the runner's own -dev packages installed there is no libdns_sd.so or libasound.so of
       # the wrong architecture for find_library to answer with at all. The anchored expect_mdns
       # below is the check that it did not; this is what leaves it nothing to catch.
-      - name: Install the cross toolchain and armhf dependencies (32-bit ARM)
-        if: matrix.arm32
+      #
+      # `!matrix.container` as well as `matrix.arm32`: the ARMv6 leg targets 32-bit ARM too and
+      # wants none of this. Its toolchain and its :armhf libraries are the container's own, and
+      # installing this runner's cross toolchain beside them would put an ARMv7 libgcc within
+      # reach of a build whose whole point is not having one.
+      - name: Install the cross toolchain and armhf dependencies (cross-compiled 32-bit ARM)
+        if: matrix.arm32 && !matrix.container
         run: |
           sudo dpkg --add-architecture armhf
 
@@ -279,6 +357,23 @@ jobs:
           echo 'A 32-bit ARM binary runs on this host.'
           rm -f binfmt-probe binfmt-probe.c
 
+      # What puts qemu-arm into the kernel's binfmt_misc, so that the ARM processes in the
+      # container below -- gcc and cmake among them, this being a native build rather than a
+      # cross one -- can run at all. The cross leg above registers its own handler by hand from
+      # qemu-user-static, which is the same mechanism arrived at from the other direction.
+      - name: Register the ARM emulator (containerised 32-bit ARM)
+        if: matrix.container
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8  # v4.2.0
+
+      # Everything from Configure down runs in here. The container is started once and kept,
+      # rather than a fresh `docker run` per step: cmake records the directory it was configured
+      # in, and the build tree, the suite and the staged payload all have to be the same one.
+      - name: Start the Raspbian build container (containerised 32-bit ARM)
+        if: matrix.container
+        env:
+          CONTAINER: ${{ matrix.container }}
+        run: scripts/build_armv6_container.sh start "$CONTAINER"
+
       - name: Install build dependencies (macOS)
         if: runner.os == 'macOS'
         run: brew install portaudio pkgconf
@@ -307,23 +402,34 @@ jobs:
           WITH_MDNS: ${{ matrix.with_mdns }}
           WITH_PULSE: ${{ matrix.with_pulse }}
           WITH_PIPEWIRE: ${{ matrix.with_pipewire }}
+          WERROR: ${{ matrix.werror }}
           DEPS_DIR: ${{ github.workspace }}/.deps
           ARM32: ${{ matrix.arm32 }}
+          CONTAINER: ${{ matrix.container }}
         run: |
-          # Held in one array rather than written out on both sides of the branch below. What a
+          # Held in one array rather than written out on each side of the branch below. What a
           # cross leg changes is the compiler and the flags naming the target, which
-          # scripts/build_arm32.sh owns; not one of these options, and a second copy of them is
-          # a second place for the two paths to stop agreeing about how this project builds.
+          # scripts/build_arm32.sh owns, and what a containerised leg changes is where cmake
+          # runs and the one library that target's atomics need, which
+          # scripts/build_armv6_container.sh owns; not one of these options, and a second copy
+          # of them is a second place for the paths to stop agreeing about how this project
+          # builds.
           options=(
             -DCMAKE_BUILD_TYPE=Release
-            -DSENDSPIN_CLI_WERROR=ON
+            -DSENDSPIN_CLI_WERROR="$WERROR"
             -DSENDSPIN_CLI_WITH_MDNS="$WITH_MDNS"
             -DSENDSPIN_CLI_WITH_PULSE="$WITH_PULSE"
             -DSENDSPIN_CLI_WITH_PIPEWIRE="$WITH_PIPEWIRE"
             -DFETCHCONTENT_BASE_DIR="$DEPS_DIR"
           )
 
-          if [ -n "$ARM32" ]; then
+          # `$CONTAINER` is asked about first, and the order is load-bearing rather than
+          # stylistic: the ARMv6 leg carries both keys, and scripts/build_arm32.sh refuses
+          # `armv6` by design -- so an `$ARM32` test reached first would fail the leg with a
+          # message about a toolchain it never meant to use.
+          if [ -n "$CONTAINER" ]; then
+            scripts/build_armv6_container.sh configure build "${options[@]}" 2>&1 | tee configure.log
+          elif [ -n "$ARM32" ]; then
             scripts/build_arm32.sh "$ARM32" build "${options[@]}" 2>&1 | tee configure.log
           else
             cmake -B build "${options[@]}" 2>&1 | tee configure.log
@@ -368,9 +474,16 @@ jobs:
           exit "$status"
 
       - name: Build
-        run: cmake --build build
+        env:
+          CONTAINER: ${{ matrix.container }}
+        run: |
+          if [ -n "$CONTAINER" ]; then
+            scripts/build_armv6_container.sh run cmake --build build
+          else
+            cmake --build build
+          fi
 
-      # What makes this leg's name mean something. Every dependency arrives through
+      # What makes these legs' names mean something. Every dependency arrives through
       # FetchContent and so through add_subdirectory, in the one cmake invocation, which is why
       # scripts/build_arm32.sh puts the target flags in CMAKE_C_FLAGS/CMAKE_CXX_FLAGS rather
       # than on our own targets -- and this is the check that says it worked. A flag that
@@ -378,6 +491,11 @@ jobs:
       # an emulator permissive enough to run anything, and then traps on the hardware the
       # archive is built for. The linker merges build attributes across every object in the
       # link and reports the highest, so one read covers the whole tree.
+      #
+      # The ARMv6 leg passes no such flag -- its compiler targets ARMv6 by configuration -- and
+      # that is why it needs this read just as much: what it is claiming is a property of a
+      # container's whole toolchain, and a dependency that found some other compiler would
+      # answer here rather than on a Pi Zero.
       #
       # It covers what is *in* the file and nothing further. The shared libraries the loader
       # pulls in on a Pi are that machine's own, built by whoever built its distribution, and
@@ -395,6 +513,7 @@ jobs:
 
           case "$ARM32" in
             armv7) want_arch='v7' ;;
+            armv6) want_arch='v6' ;;
             *)
               echo "::error::no expected CPU architecture is recorded here for '$ARM32'"
               exit 1
@@ -453,14 +572,28 @@ jobs:
       # Serial deliberately: daemon_test.cpp exercises flock paths and last_server_test writes
       # real files, neither of which is obviously safe to run against itself in parallel.
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        env:
+          CONTAINER: ${{ matrix.container }}
+        run: |
+          if [ -n "$CONTAINER" ]; then
+            scripts/build_armv6_container.sh run ctest --test-dir build --output-on-failure
+          else
+            ctest --test-dir build --output-on-failure
+          fi
 
       # Deliberately before avahi-daemon is installed below. With no daemon to register with,
       # this is what exercises the non-fatal advertise-failure path in src/main.cpp -- the
       # player has to come up and warn rather than exit.
       - name: Smoke test
         if: matrix.publish
-        run: scripts/smoke_test.sh build/sendspin-cli
+        env:
+          CONTAINER: ${{ matrix.container }}
+        run: |
+          if [ -n "$CONTAINER" ]; then
+            scripts/build_armv6_container.sh run scripts/smoke_test.sh build/sendspin-cli
+          else
+            scripts/smoke_test.sh build/sendspin-cli
+          fi
 
       # The one *runtime* claim this matrix owes roadmap item 5, which was built and exercised
       # against Bonjour only: that libavahi-compat-libdnssd really implements the calls
@@ -578,14 +711,29 @@ jobs:
           RUNTIME_PACKAGES: ${{ matrix.runtime_packages }}
           LEG: ${{ matrix.name }}
           ARM32: ${{ matrix.arm32 }}
+          CONTAINER: ${{ matrix.container }}
         run: |
-          reported="$(./build/sendspin-cli --version)"
+          # Both the version read and the install below go through the container on the leg that
+          # has one. The binary is the obvious half; the install is the less obvious one, and it
+          # is not about executing anything -- cmake_install.cmake was written by the container's
+          # cmake 3.25 and is read back by whichever cmake runs it, and the files it lays down
+          # have to arrive owned the way everything else in this workspace is.
+          if [ -n "$CONTAINER" ]; then
+            reported="$(scripts/build_armv6_container.sh run ./build/sendspin-cli --version)"
+          else
+            reported="$(./build/sendspin-cli --version)"
+          fi
           version="$(printf '%s\n' "$reported" | awk 'NR == 1 { print $2 }')"
           lib_tag="$(printf '%s\n' "$reported" | awk 'NR == 2 { print $2 }')"
           name="sendspin-cli-$version-$LEG"
 
           mkdir -p "stage/$name"
-          DESTDIR="$PWD/stage/$name" cmake --install build --component sendspin-cli
+          if [ -n "$CONTAINER" ]; then
+            scripts/build_armv6_container.sh run \
+              env DESTDIR="$PWD/stage/$name" cmake --install build --component sendspin-cli
+          else
+            DESTDIR="$PWD/stage/$name" cmake --install build --component sendspin-cli
+          fi
 
           cat >"stage/$name/BUILD-INFO.txt" <<INFO
           sendspin-cli $version for $LEG
@@ -655,7 +803,32 @@ jobs:
           # built *for* while naming the machine it was built *on*: "Built from commit ... on
           # Linux/X64", under a heading that says linux-armv7, is accurate and baffling at once
           # until something accounts for it.
-          if [ -n "$ARM32" ]; then
+          #
+          # Two blocks rather than one with the differences papered over, and the ARMv6 one is
+          # asked about first for the reason the Configure step's branch is: that leg carries
+          # both keys. Nothing the cross block says is true of it. It is not a cross build; its
+          # runtime package names are bookworm's rather than trixie's; and the glibc paragraph
+          # is exactly inverted, bookworm being what this one is *built on* rather than what it
+          # refuses to load on. This text is read on a Pi, which is the whole reason it is
+          # carried inside the archive.
+          if [ -n "$CONTAINER" ]; then
+            cat >>"stage/$name/BUILD-INFO.txt" <<'EMULATED'
+
+          This was built for an ARM1176 -- a Pi Zero, a Pi Zero W or an original Pi -- inside a
+          Raspbian container on the runner named above, and not on a Pi. It is a native build
+          rather than a cross build: Raspbian's own gcc, libgcc and startup objects are ARMv6,
+          which is what makes this archive ARMv6, and the build attributes of the binary are
+          asserted to say ARMv6, hard-float EABI before the archive is made. Its unit suite and
+          smoke test ran there under qemu-user pinned to an ARM1176, so the emulator was no more
+          permissive than your hardware -- but what is proven is that the code builds and
+          behaves, not that it was tried on a Pi.
+
+          The runtime packages above are spelled the way Raspberry Pi OS bookworm spells them;
+          on trixie they are libasound2t64 and libpipewire-0.3-0t64. This binary needs no more
+          than glibc 2.34, which is below what either release carries, so it loads on both --
+          which the linux-armv7 archive does not.
+          EMULATED
+          elif [ -n "$ARM32" ]; then
             cat >>"stage/$name/BUILD-INFO.txt" <<CROSS
 
           This is a cross build. It was compiled for $ARM32 on the runner named above, and its
@@ -1037,11 +1210,12 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
-  # A job of its own rather than a sixth matrix leg. The matrix is built for hosted runners --
-  # its steps use `sudo apt-get` and Ubuntu's package names, and every leg owes `publish`,
-  # `avahi`, `systemd`, `arm32` and `runtime_packages` keys that mean nothing in a container.
-  # This has one question to answer and no binary to hand anybody, so it stays clear of those
-  # invariants entirely.
+  # A job of its own rather than a seventh matrix leg -- and not because a matrix leg cannot run
+  # its build in a container, since the linux-armv6 one does. What keeps this out is that it
+  # publishes nothing: it has one question to answer and no binary to hand anybody, so
+  # `publish`, `avahi`, `systemd`, `arm32`, `container` and `runtime_packages` would all be keys
+  # it owed and none of them would mean anything. The matrix's own steps are built for hosted
+  # runners besides, using `sudo apt-get` and Ubuntu's package names.
   pipewire-minimum:
     name: linux-x86_64-pipewire-min
     runs-on: ubuntu-24.04
@@ -1083,12 +1257,13 @@ jobs:
             exit 1
           fi
 
-      # SENDSPIN_CLI_WERROR is deliberately absent, alone among the builds in this file. gcc 12
-      # has a -Wrestrict false positive on `line += " " + std::to_string(...)` in
-      # src/control_common.cpp, which has nothing to do with either sound-server backend and
-      # would fail this job for a reason it is not here to ask about. The warning line is held
-      # on the hosted legs; what is held here is that the code compiles at all against the
-      # oldest libpipewire this project claims to support.
+      # SENDSPIN_CLI_WERROR is deliberately absent, as it is on the linux-armv6 leg above and
+      # for the same reason. gcc 12 has a -Wrestrict false positive on
+      # `line += " " + std::to_string(...)` in src/control_common.cpp, which has nothing to do
+      # with either sound-server backend and would fail this job for a reason it is not here to
+      # ask about. The warning line is held on every leg with a newer compiler; what is held
+      # here is that the code compiles at all against the oldest libpipewire this project
+      # claims to support.
       - name: Configure
         run: |
           cmake -B build             -DCMAKE_BUILD_TYPE=Release             -DSENDSPIN_CLI_WITH_PORTAUDIO=OFF             -DSENDSPIN_CLI_WITH_MDNS=OFF             2>&1 | tee configure.log

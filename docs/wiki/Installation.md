@@ -5,7 +5,7 @@ Four ways in, depending on what you have. If you are on Linux and want the short
 
 | You have | Take |
 |---|---|
-| A Linux box or a Raspberry Pi | The `linux-x86_64`, `linux-arm64` or `linux-armv7` tarball |
+| A Linux box or a Raspberry Pi | The `linux-x86_64`, `linux-arm64`, `linux-armv7` or `linux-armv6` tarball |
 | An Apple-silicon Mac | The `macos-arm64` installer `.pkg`, or the tarball |
 | Anything else | [Build from source](#build-from-source) |
 
@@ -47,11 +47,9 @@ case "$(dpkg --print-architecture)" in
   amd64) LEG=linux-x86_64 ;;
   arm64) LEG=linux-arm64  ;;
   armhf)
-    # An ARMv6 board reports armhf too, and the archive is built for ARMv7.
-    if [ "$(uname -m)" = armv6l ]; then
-      echo 'ARMv6 (Pi Zero, Pi Zero W, Pi 1) has no build -- build from source'; exit 1
-    fi
-    LEG=linux-armv7 ;;
+    # An ARMv6 board reports armhf too, and it takes an archive of its own: the ARMv7 one's
+    # instructions are illegal on an ARM1176.
+    if [ "$(uname -m)" = armv6l ]; then LEG=linux-armv6; else LEG=linux-armv7; fi ;;
   *) echo 'no release is built for this architecture'; exit 1 ;;
 esac
 BASE=https://github.com/Sendspin/sendspin-cpp-cli/releases/download/v$VERSION
@@ -142,14 +140,15 @@ launch agent you write.
 ## Raspberry Pi
 
 The Pi takes the `linux-arm64` archive on a 64-bit OS and the `linux-armv7` one on a 32-bit
-OS, like any other Linux host. An ARMv6 board — a Pi Zero, a Pi Zero W, an original Pi — has
-neither and builds from source. See
+OS, like any other Linux host. An ARMv6 board — a Pi Zero, a Pi Zero W, an original Pi — takes
+`linux-armv6`, which is built for an ARM1176 and, unlike the others, loads on bookworm as well
+as trixie. See
 [Getting Started on a Raspberry Pi](Getting-Started-on-a-Raspberry-Pi).
 
 ## Build from source
 
-For an architecture with no release — ARMv6, an Intel Mac, anything not in the matrix — or
-to build against a different version of the library.
+For an architecture with no release — an Intel Mac, anything not in the matrix — or to build
+against a different version of the library.
 
 ```bash
 sudo apt install pkg-config libasound2-dev portaudio19-dev libavahi-compat-libdnssd-dev  # Debian / Ubuntu

@@ -7,7 +7,7 @@ whichever archive its architecture names — plus the five things on this page.
 
 ## 1. Check which build your OS wants
 
-Two archives serve a Pi, and it is the **userland** that picks between them — not
+Three archives serve a Pi, and it is the **userland** that picks first between them — not
 `uname -m`, which names the kernel:
 
 ```console
@@ -18,7 +18,7 @@ arm64
 | It says | What installs |
 |---|---|
 | `arm64` | `linux-arm64`, the 64-bit build. |
-| `armhf` | `linux-armv7`, the 32-bit build — unless the board is ARMv6; see below. |
+| `armhf` | `linux-armv7`, the 32-bit build — or `linux-armv6` on an ARMv6 board; see below. |
 
 **Do not use `uname -m` for this.** `arm_64bit` defaults to on for a Pi 4, a Pi 400 and a
 CM4, so a **32-bit** Raspberry Pi OS install on one of those boots a 64-bit kernel and
@@ -27,12 +27,13 @@ installs the arm64 archive, whose loader is not there, and the binary fails with
 file or directory" naming a file that plainly exists.
 
 `uname -m` is still the right question for one thing, because ARMv6 boards cannot run a
-64-bit kernel at all: if it says `armv6l`, that is the CPU speaking, and there is no build.
+64-bit kernel at all: on an `armhf` userland, `armv6l` is the CPU speaking, and it picks
+`linux-armv6` over `linux-armv7`.
 
-Either archive gets you a working player, and the getting-started script chooses for you. A
+Any of them gets you a working player, and the getting-started script chooses for you. A
 64-bit OS is still the better answer on hardware that can run one: `linux-arm64` is built and
-run on a real arm64 machine, systemd unit and all, where `linux-armv7` is cross-compiled and
-its suite run under emulation. In Raspberry Pi Imager the 64-bit builds are under **Raspberry
+run on a real arm64 machine, systemd unit and all, where the two 32-bit archives have their
+suites run under emulation. In Raspberry Pi Imager the 64-bit builds are under **Raspberry
 Pi OS (other)**.
 
 | Model | 64-bit capable |
@@ -40,13 +41,16 @@ Pi OS (other)**.
 | Pi 5, Pi 4, Pi 400, Pi 3, Pi Zero 2 W, CM3/CM4/CM5 | Yes |
 | Pi 1, Pi Zero, Pi Zero W, and Pi 2 boards before v1.2 | **No** |
 
-**`armv6l` has no build.** A Pi Zero, a Pi Zero W and an original Pi are ARMv6, and the
-32-bit archive is compiled for ARMv7 — its instructions are illegal on those cores, so there
-is nothing to install and the getting-started script says so rather than handing you a binary
-that traps.
-[`docs/ROADMAP.md`](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/docs/ROADMAP.md)
-item 12 records what an ARMv6 leg would take. Building from source on the Pi itself works in
-the meantime.
+**`armv6l` takes `linux-armv6`, not `linux-armv7`.** A Pi Zero, a Pi Zero W and an original
+Pi are ARM1176 cores, and the ARMv7 archive's instructions are illegal on them — so they get
+an archive of their own, and the getting-started script picks it. It is built inside an
+emulated Raspbian container rather than cross-compiled, because Debian and Ubuntu `armhf` are
+an ARMv7-A port whose startup objects and `libgcc` would end up in the binary and make it
+ARMv7 whatever the compiler was told.
+
+One practical consequence, in your favour: `linux-armv6` needs only `GLIBC_2.34`, where the
+other archives need `2.38`. So it loads on Raspberry Pi OS **bookworm** as well as trixie,
+which the 32-bit ARMv7 archive does not.
 
 ## 2. Install
 

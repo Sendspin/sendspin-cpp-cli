@@ -1326,21 +1326,33 @@ path. CI runs it on every platform leg; run it yourself against any build.
 ## CI
 
 Every branch push and pull request builds on `ubuntu-24.04`, `ubuntu-24.04-arm`
-and `macos-14`, a fourth leg cross-compiled for 32-bit ARM on `ubuntu-24.04`, and a
-fifth configured `-DSENDSPIN_CLI_WITH_MDNS=OFF` — which compiles
+and `macos-14`, a fourth leg cross-compiled for ARMv7 on `ubuntu-24.04`, a fifth
+built for ARMv6 inside an emulated Raspbian container on the same runner, and a
+sixth configured `-DSENDSPIN_CLI_WITH_MDNS=OFF` — which compiles
 `src/mdns_null.cpp` in place of `src/mdns_dnssd.cpp`, so that configuration is
-built rather than assumed. Every leg builds with `-DSENDSPIN_CLI_WERROR=ON` and
-runs the unit suite, and each asserts from its own configure output that it found
-the backends it expects: a missing `-dev` package does not fail a configure, so
-without that check the matrix would happily go green on a deaf, undiscoverable
-binary.
+built rather than assumed. Every leg but the ARMv6 one builds with
+`-DSENDSPIN_CLI_WERROR=ON`, every leg runs the unit suite, and each asserts from
+its own configure output that it found the backends it expects: a missing `-dev`
+package does not fail a configure, so without that check the matrix would happily
+go green on a deaf, undiscoverable binary.
 
-The 32-bit ARM leg is cross-compiled because nothing else can build it: GitHub has
+The ARMv7 leg is cross-compiled because nothing else can build it: GitHub has
 no armv7 runner, and its arm64 runners cannot execute 32-bit ARM at all.
 `scripts/build_arm32.sh` owns the cross configure, the suite and the smoke test run
 under `qemu-user`, and the linked binary's own ELF build attributes are asserted to
 say ARMv7, hard-float EABI before an archive is made — which is what catches a
 dependency quietly compiled for something else.
+
+The ARMv6 leg cannot be that, and the difference is the toolchain rather than the
+runner: Debian and Ubuntu `armhf` are an ARMv7-A port, so a cross toolchain's own
+`crt1.o` and `libgcc.a` are ARMv7 and end up in the binary whatever `-march` said.
+Raspbian's are genuinely ARMv6, so that leg runs an ordinary native build inside a
+digest-pinned Raspbian container under `qemu-user` — with its suite and smoke test
+under `QEMU_CPU=arm1176`, so the emulator is no more permissive than an ARM1176 —
+and asserts ARMv6, hard-float EABI off the finished binary the same way. It is the
+one leg without `-Werror`: Raspbian's gcc 12 has the same `-Wrestrict` false
+positive on `src/control_common.cpp` that the `pipewire-minimum` job already
+documents.
 
 The matrix lives in `.github/workflows/build.yml`, which both `ci.yml` and
 `release.yml` call, so a release is built and gated exactly the way a push is.

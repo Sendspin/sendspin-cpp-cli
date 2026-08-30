@@ -18,7 +18,8 @@
 #
 # One script for every Linux host, a Raspberry Pi included, because a Pi *is* an ordinary
 # Linux box here: it takes whichever archive its architecture names -- `linux-arm64` on a
-# 64-bit OS, `linux-armv7` on a 32-bit one -- and installs it the way a server takes
+# 64-bit OS, `linux-armv7` or `linux-armv6` on a 32-bit one -- and installs it the way a
+# server takes
 # `linux-x86_64`. What is genuinely Pi-specific is advice -- the `audio` group,
 # and that the headphone jack and HDMI are separate cards -- and that is printed at the end
 # when a Pi is what this is running on. A second script would have been this one with two
@@ -194,20 +195,28 @@ case "$USERLAND" in
         # 64-bit kernel at all, so `armv6l` here is the CPU speaking rather than a 32-bit kernel
         # on newer hardware.
         #
-        # A Pi Zero, a Pi Zero W or an original Pi. The 32-bit archive is built for ARMv7 and
-        # would trap here, so this is a refusal rather than a near-enough match -- and it gets
-        # the whole answer, because "unsupported architecture" on a Pi sends people looking for
-        # a download that does not exist. docs/ROADMAP.md item 12 records what it would take.
+        # A Pi Zero, a Pi Zero W or an original Pi is an ARM1176, and the ARMv7 archive's
+        # instructions would be illegal there, so those boards take an archive of their own
+        # rather than the nearest one.
+        #
+        # Below ARMv6 there is still nothing, and that stays a refusal with the whole answer in
+        # it: "unsupported architecture" on a Pi sends people looking for a download that does
+        # not exist. Bare `arm` is refused with them because it names no instruction set at all,
+        # and an ARMv5 board answering to it would take a binary that traps.
         case "$MACHINE" in
-            armv6l | armv5* | arm)
-                fail "this is an ARMv6 or older machine ($MACHINE) -- a Pi Zero, a Pi Zero W or
-    an original Pi. The 32-bit archive is built for ARMv7 and its instructions would be illegal
-    here, so there is nothing to install: docs/ROADMAP.md item 12 records that an ARMv6 leg
-    needs a Raspberry Pi OS sysroot the CI matrix does not have. Build from source instead:
-    https://github.com/$REPO#build"
+            armv6*)
+                LEG='linux-armv6'
+                ;;
+            armv5* | arm)
+                fail "'$MACHINE' is ARMv5 or names no ARM architecture at all, and the oldest
+    archive built is linux-armv6 -- an ARM1176, which is a Pi Zero, a Pi Zero W or an original
+    Pi. Its instructions would be illegal on an ARMv5 machine, so there is nothing here to
+    install. Build from source instead: https://github.com/$REPO#build"
+                ;;
+            *)
+                LEG='linux-armv7'
                 ;;
         esac
-        LEG='linux-armv7'
         ;;
     '')
         fail "this host's userland could not be identified from a $MACHINE kernel alone, and
@@ -216,7 +225,8 @@ case "$USERLAND" in
         ;;
     *)
         fail "no release is built for a '$USERLAND' userland -- the archives are linux-x86_64,
-    linux-arm64 and linux-armv7. Build from source instead: https://github.com/$REPO#build"
+    linux-arm64, linux-armv7 and linux-armv6. Build from source instead:
+    https://github.com/$REPO#build"
         ;;
 esac
 readonly MACHINE USERLAND LEG
