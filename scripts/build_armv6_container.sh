@@ -14,8 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# Builds sendspin-cli for ARMv6 inside an emulated Raspbian container, for the linux-armv6 leg
-# of .github/workflows/build.yml. A Pi Zero, a Pi Zero W and an original Pi are ARM1176.
+# Builds sendspin-cli for ARMv6 inside an emulated Raspbian container, for the job
+# in .github/workflows/build-armv6.yml. A Pi Zero, a Pi Zero W and an original Pi are ARM1176.
 #
 # Not a cross build, and that is not a preference. Debian and Ubuntu armhf are an ARMv7-A port,
 # so a cross toolchain's own crt1.o, crtbegin.o and every member of libgcc.a are ARMv7 and are
@@ -41,8 +41,9 @@
 # What this needs on the host:
 #
 #   docker
-#   a registered binfmt handler for 32-bit ARM, which .github/workflows/build.yml installs with
-#     docker/setup-qemu-action -- without it the container starts and nothing in it can run
+#   a registered binfmt handler for 32-bit ARM, which .github/workflows/build-armv6.yml
+#     installs with docker/setup-qemu-action -- without it the container starts and nothing
+#     in it can run
 #
 # Usage: scripts/build_armv6_container.sh start <image>
 #        scripts/build_armv6_container.sh configure <build-dir> [cmake option ...]
@@ -109,8 +110,8 @@ in_container() {
     )
 
     # Forwarded explicitly because `docker exec` inherits nothing from the caller. This one is
-    # workflow-level `env:` in build.yml, so losing it silently would leave an already emulated
-    # build compiling one translation unit at a time.
+    # workflow-level `env:` in build-armv6.yml, so losing it silently would leave an already
+    # emulated build compiling one translation unit at a time.
     if [ -n "${CMAKE_BUILD_PARALLEL_LEVEL:-}" ]; then
         env_args+=(--env "CMAKE_BUILD_PARALLEL_LEVEL=$CMAKE_BUILD_PARALLEL_LEVEL")
     fi
@@ -175,7 +176,7 @@ case "$VERB" in
         running || {
             docker logs "$CONTAINER" 2>&1 || true
             fail "the container exited as soon as it started. The usual cause is no binfmt
-    handler for 32-bit ARM: .github/workflows/build.yml registers one with
+    handler for 32-bit ARM: .github/workflows/build-armv6.yml registers one with
     docker/setup-qemu-action, and on a developer's own machine 'docker run --privileged --rm
     tonistiigi/binfmt --install arm' does the same"
         }
@@ -286,9 +287,9 @@ case "$VERB" in
         [ "$#" -eq 0 ] || fail "usage: $0 stop"
 
         # Nothing to remove is reported rather than refused. This is the one verb a caller runs
-        # unconditionally to tidy up -- .github/workflows/build.yml runs it with `if: always()`
-        # -- so a run that failed before the container existed must not fail again here, wearing
-        # a message about the wrong thing.
+        # unconditionally to tidy up -- .github/workflows/build-armv6.yml runs it with
+        # `if: always()` -- so a run that failed before the container existed must not fail
+        # again here, wearing a message about the wrong thing.
         if docker inspect "$CONTAINER" >/dev/null 2>&1; then
             docker rm --force "$CONTAINER" >/dev/null
             printf 'build_armv6_container: removed %s\n' "$CONTAINER"

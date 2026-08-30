@@ -1326,9 +1326,8 @@ path. CI runs it on every platform leg; run it yourself against any build.
 ## CI
 
 Every branch push and pull request builds on `ubuntu-24.04`, `ubuntu-24.04-arm`
-and `macos-14`, a fourth leg cross-compiled for ARMv7 on `ubuntu-24.04`, a fifth
-built for ARMv6 inside an emulated Raspbian container on the same runner, and a
-sixth configured `-DSENDSPIN_CLI_WITH_MDNS=OFF` — which compiles
+and `macos-14`, a fourth leg cross-compiled for ARMv7 on `ubuntu-24.04`, and a
+fifth configured `-DSENDSPIN_CLI_WITH_MDNS=OFF` — which compiles
 `src/mdns_null.cpp` in place of `src/mdns_dnssd.cpp`, so that configuration is
 built rather than assumed. Every leg builds with `-DSENDSPIN_CLI_WERROR=ON` and
 runs the unit suite, and each asserts from its own configure output that it found
@@ -1343,20 +1342,35 @@ under `qemu-user`, and the linked binary's own ELF build attributes are asserted
 say ARMv7, hard-float EABI before an archive is made — which is what catches a
 dependency quietly compiled for something else.
 
-The ARMv6 leg cannot be that, and the difference is the toolchain rather than the
+The ARMv6 build cannot be that, and the difference is the toolchain rather than the
 runner: Debian and Ubuntu `armhf` are an ARMv7-A port, so a cross toolchain's own
 `crt1.o` and `libgcc.a` are ARMv7 and end up in the binary whatever `-march` said.
-Raspbian's are genuinely ARMv6, so that leg runs an ordinary native build inside a
+Raspbian's are genuinely ARMv6, so it runs an ordinary native build inside a
 digest-pinned Raspbian container under `qemu-user` — with its suite and smoke test
 under `QEMU_CPU=arm1176`, so the emulator is no more permissive than an ARM1176 —
 and asserts ARMv6, hard-float EABI off the finished binary the same way. It holds
 the warning line with one exemption: Raspbian's gcc 12 has the same `-Wrestrict`
-false positive the `pipewire-minimum` job documents, so that leg passes
+false positive the `pipewire-minimum` job documents, so it passes
 `-Wno-error=restrict` and leaves `-Werror` standing over everything else.
 
-The matrix lives in `.github/workflows/build.yml`, which both `ci.yml` and
-`release.yml` call, so a release is built and gated exactly the way a push is.
-`ci.yml` ignores tags for that reason — otherwise a tag would build twice.
+Emulating every compile is what that costs, and it measures 23 minutes against the
+two or three every other leg takes — so ARMv6 is not in the matrix. It has a
+workflow of its own, `.github/workflows/build-armv6.yml`, which runs on a push to
+`main`, on a pull request touching that workflow, `scripts/build_armv6_container.sh`
+or `CMakeLists.txt`, on a manual dispatch, and on a tag. Not on every branch push,
+which is the whole point: a push no longer waits half an hour on it.
+
+The five-leg matrix lives in `.github/workflows/build.yml`, and both `ci.yml` and
+`release.yml` call it. `ci.yml` ignores tags — otherwise a tag would build twice.
+
+A tag therefore builds one thing a push does not, which is the trade this split
+buys and worth stating rather than leaving to be discovered. What limits it is that
+`release.yml` calls the ARMv6 workflow beside the matrix and blocks the release on
+both, so an ARMv6 break can delay a tag but cannot publish a release the archive is
+missing from — and a merge to `main` gets an ARMv6 build within half an hour either
+way. A pull request that expects to break ARMv6 alone, which in practice means the
+`-Wrestrict` and `-latomic` classes rather than anything in the workflow files, can
+be opted in with a manual dispatch.
 
 To try a commit without building it, open its run under the repository's Actions
 tab and take `sendspin-cli-<version>-<os>-<arch>` from the run summary. Inside is a
@@ -1376,15 +1390,24 @@ unpacking it at `/`. Or run it where you unpacked it, at
 of `/usr/local` leaves the unit naming a path with nothing at it. The macOS leg
 publishes a second artifact beside that tarball,
 `sendspin-cli-<version>-macos-arm64-installer`, holding the
-[`.pkg`](#the-macos-installer-pkg) described below. These are per-commit builds
-kept for 14 days. For something that does not expire, take a
-[release](../../releases) instead.
+[`.pkg`](#the-macos-installer-pkg) described below.
+
+Five of the six archives are built on every commit that way. The sixth,
+`linux-armv6`, is on its own workflow's runs instead — a push to `main`, a pull
+request touching one of the three paths above, a manual dispatch, or a tag — so on
+an arbitrary branch commit there is no ARMv6 tarball to take. Dispatch the ARMv6
+workflow against that branch if you need one.
+
+All of these are kept for 14 days. For something that does not expire, take a
+[release](../../releases) instead, which carries all six.
 
 ## Releases
 
-Pushing a `vMAJOR.MINOR.PATCH` tag builds the same matrix and publishes the five
-platform archives and the macOS installer `.pkg`, plus a `SHA256SUMS` covering all
-six, as a GitHub Release. The workflow triggers on `v*` but refuses anything else
+Pushing a `vMAJOR.MINOR.PATCH` tag builds the same matrix, and the ARMv6 workflow
+beside it, and publishes the five platform archives and the macOS installer `.pkg`,
+plus a `SHA256SUMS` covering all six, as a GitHub Release. Both builds have to go
+green: the release job needs them both, so a red ARMv6 build fails the release
+rather than publishing without its archive. The workflow triggers on `v*` but refuses anything else
 that matches — a prerelease like `v0.2.0-rc1` is rejected rather than quietly
 published as the latest release, until somebody decides what it should mean.
 Nothing else publishes, and the workflow never creates a tag: a release exists
