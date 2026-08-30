@@ -47,9 +47,10 @@ jobs:
   # Stays here rather than moving into build.yml with the rest, and the asymmetry is worth being
   # honest about now that build_macos_pkg.sh shapes a released artifact: what this job adds is
   # *lint*, and a tag push runs release.yml alone, so it is lint that a tag does not get. What a
-  # tag does get is both scripts being run -- smoke_test.sh on every publishing leg,
-  # build_macos_pkg.sh on the macOS one, whose .pkg is then installed and its receipt asserted --
-  # so a release is gated on the scripts working whether or not it is gated on their style.
+  # tag does get is three of them being run -- smoke_test.sh on every publishing leg,
+  # build_arm32.sh on the 32-bit ARM one, and build_macos_pkg.sh on the macOS one, whose .pkg is
+  # then installed and its receipt asserted -- so a release is gated on the scripts working
+  # whether or not it is gated on their style.
   shellcheck:
     name: shellcheck
     runs-on: ubuntu-24.04

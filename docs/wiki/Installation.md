@@ -5,7 +5,7 @@ Four ways in, depending on what you have. If you are on Linux and want the short
 
 | You have | Take |
 |---|---|
-| A Linux box or a Raspberry Pi | The `linux-x86_64` or `linux-arm64` tarball |
+| A Linux box or a Raspberry Pi | The `linux-x86_64`, `linux-arm64` or `linux-armv7` tarball |
 | An Apple-silicon Mac | The `macos-arm64` installer `.pkg`, or the tarball |
 | Anything else | [Build from source](#build-from-source) |
 
@@ -41,7 +41,11 @@ nothing. Read `BUILD-INFO.txt` first; it names the runtime packages that build n
 ```bash
 # 1. Take the archive for this machine's architecture, and the checksums
 VERSION=0.1.0
-ARCH=$(uname -m); [ "$ARCH" = aarch64 ] && LEG=linux-arm64 || LEG=linux-x86_64
+case "$(uname -m)" in
+  aarch64) LEG=linux-arm64  ;;
+  armv7l)  LEG=linux-armv7  ;;
+  *)       LEG=linux-x86_64 ;;
+esac
 BASE=https://github.com/Sendspin/sendspin-cpp-cli/releases/download/v$VERSION
 curl -fLO "$BASE/sendspin-cli-$VERSION-$LEG.tar.gz"
 curl -fLO "$BASE/SHA256SUMS"
@@ -63,7 +67,7 @@ the other. It is idempotent, and without it the unit reports `217/USER` rather t
 See [Running as a Service](Running-as-a-Service#it-runs-as-its-own-account).
 
 `--ignore-missing` because `SHA256SUMS` covers every archive the release carries and you
-have taken one of them; without it the other three are reported as failures. It is not a
+have taken one of them; without it the other four are reported as failures. It is not a
 way of passing with nothing checked — `sha256sum` still exits non-zero if the flag leaves
 it with no file to verify.
 
@@ -129,14 +133,15 @@ launch agent you write.
 
 ## Raspberry Pi
 
-The Pi takes the `linux-arm64` archive like any other arm64 Linux host, with one hard
-requirement: **a 64-bit OS**. See
+The Pi takes the `linux-arm64` archive on a 64-bit OS and the `linux-armv7` one on a 32-bit
+OS, like any other Linux host. An ARMv6 board — a Pi Zero, a Pi Zero W, an original Pi — has
+neither and builds from source. See
 [Getting Started on a Raspberry Pi](Getting-Started-on-a-Raspberry-Pi).
 
 ## Build from source
 
-For an architecture with no release — 32-bit ARM, an Intel Mac, anything not in the matrix
-— or to build against a different version of the library.
+For an architecture with no release — ARMv6, an Intel Mac, anything not in the matrix — or
+to build against a different version of the library.
 
 ```bash
 sudo apt install pkg-config libasound2-dev portaudio19-dev libavahi-compat-libdnssd-dev  # Debian / Ubuntu

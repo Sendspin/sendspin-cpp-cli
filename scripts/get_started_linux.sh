@@ -16,9 +16,10 @@
 #
 # Installs a released sendspin-cli on a Linux host and sets its systemd unit up.
 #
-# One script for every Linux host, a Raspberry Pi included, because a Pi *is* an arm64
-# Linux box here: it takes the same `linux-arm64` archive an arm64 server takes and
-# installs it the same way. What is genuinely Pi-specific is advice -- the `audio` group,
+# One script for every Linux host, a Raspberry Pi included, because a Pi *is* an ordinary
+# Linux box here: it takes whichever archive its architecture names -- `linux-arm64` on a
+# 64-bit OS, `linux-armv7` on a 32-bit one -- and installs it the way a server takes
+# `linux-x86_64`. What is genuinely Pi-specific is advice -- the `audio` group,
 # and that the headphone jack and HDMI are separate cards -- and that is printed at the end
 # when a Pi is what this is running on. A second script would have been this one with two
 # paragraphs changed, and the two would have drifted.
@@ -50,11 +51,12 @@
 # full, and then either confirmed at a terminal or authorised up front with --yes.
 #
 # One asymmetry worth naming, in the spirit of the one .github/workflows/ci.yml names about
-# itself: the `shellcheck` job there lints every script under scripts/, and the other two are
-# also *run* on every build -- smoke_test.sh on each publishing leg, build_macos_pkg.sh on the
-# macOS one. This is the first script CI lints but never executes. A CI leg for it would want
-# a runner willing to take a payload into `/` and a sound card to then not find, so what it
-# has instead is the container run recorded in the pull request that added it.
+# itself: the `shellcheck` job there lints every script under scripts/, and the other three are
+# also *run* on every build -- smoke_test.sh on each publishing leg, build_arm32.sh on the
+# 32-bit ARM one, build_macos_pkg.sh on the macOS one. This is the one script CI lints but
+# never executes. A CI leg for it would want a runner willing to take a payload into `/` and a
+# sound card to then not find, so what it has instead is the container run recorded in the
+# pull request that added it.
 #
 # Usage: scripts/get_started_linux.sh [--version <tag>] [--yes]
 #
@@ -146,7 +148,7 @@ for tool in tar sed grep; do
 done
 
 # The release archives are named for the CI leg that built them rather than for `uname -m`,
-# so both spellings of 64-bit ARM map onto the one leg that exists.
+# so every spelling of an architecture maps onto the one leg that serves it.
 MACHINE="$(uname -m)"
 case "$MACHINE" in
     x86_64 | amd64)
@@ -155,21 +157,26 @@ case "$MACHINE" in
     aarch64 | arm64)
         LEG='linux-arm64'
         ;;
-    armv6l | armv7l | armhf | arm)
-        # The single most common way a Pi install goes wrong, so it gets the whole answer
-        # rather than "unsupported architecture". There is no 32-bit build to fall back to --
-        # docs/ROADMAP.md item 12 records that the matrix has no armv7 or 32-bit Pi leg -- and
-        # the fix is a 64-bit OS on hardware that is almost certainly already 64-bit capable.
-        fail "this is a 32-bit ARM userland ($MACHINE), and the builds are arm64 only.
-    docs/ROADMAP.md item 12 records why: the CI matrix has no armv7 or 32-bit Pi leg, so no
-    such archive exists to install. A Raspberry Pi 3 or newer is 64-bit hardware, so the fix
-    is a 64-bit OS: install Raspberry Pi OS (64-bit), or 'Raspberry Pi OS Lite (64-bit)' for
-    a headless player, and check with 'uname -m' after -- it must say aarch64. A Pi Zero (the
-    original), a Pi 1 or a Pi 2 cannot run 64-bit at all, and needs a build from source"
+    armv7l | armhf | arm)
+        # `armhf` and a bare `arm` are grouped with `armv7l` rather than left to the catch-all
+        # because both are 32-bit ARM spellings a kernel can report, and armv7 is the only
+        # 32-bit archive there is: an ARMv6 machine reports `armv6l` and is caught below.
+        LEG='linux-armv7'
+        ;;
+    armv6l)
+        # A Pi Zero, a Pi Zero W or an original Pi. The 32-bit archive is built for ARMv7 and
+        # would trap here, so this is a refusal rather than a near-enough match -- and it gets
+        # the whole answer, because "unsupported architecture" on a Pi sends people looking for
+        # a download that does not exist. docs/ROADMAP.md item 12 records what it would take.
+        fail "this is an ARMv6 machine ($MACHINE) -- a Pi Zero, a Pi Zero W or an original Pi.
+    The 32-bit archive is built for ARMv7 and its instructions would be illegal here, so there
+    is nothing to install: docs/ROADMAP.md item 12 records that an ARMv6 leg needs a Raspberry
+    Pi OS sysroot the CI matrix does not have. Build from source instead:
+    https://github.com/$REPO#build"
         ;;
     *)
-        fail "no release is built for '$MACHINE' -- the archives are linux-x86_64 and
-    linux-arm64. Build from source instead: https://github.com/$REPO#build"
+        fail "no release is built for '$MACHINE' -- the archives are linux-x86_64, linux-arm64
+    and linux-armv7. Build from source instead: https://github.com/$REPO#build"
         ;;
 esac
 readonly MACHINE LEG

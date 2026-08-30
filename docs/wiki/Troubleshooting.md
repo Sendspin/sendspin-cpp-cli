@@ -306,6 +306,26 @@ raised to the floor and says so at `debug`. See
 If it is one speaker out of sync with the others rather than dropping out, that is
 `delay`, not `buffer-ms` — see [Controlling the Player](Controlling-the-Player).
 
+## Raspberry Pi: it will not start at all
+
+Two answers, and they are different problems.
+
+**`version 'GLIBC_2.38' not found`, from the loader.** The archive is built on a newer
+distribution than the one you are running. Raspberry Pi OS **trixie** carries glibc 2.41 and
+takes it; **bookworm** carries 2.36 and refuses it before a line of the player runs. Move that
+Pi to trixie, or build from source on it.
+
+**`Illegal instruction`.** The `linux-armv7` archive is compiled for ARMv7, and a Pi Zero, a
+Pi Zero W or an original Pi is ARMv6. `uname -m` says `armv6l` on those, and
+`scripts/get_started_linux.sh` refuses them rather than installing something that traps — so
+seeing this means the archive was fetched by hand. Build from source instead;
+[`docs/ROADMAP.md`](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/docs/ROADMAP.md)
+item 12 records what an ARMv6 build would take.
+
+Neither applies to `E: Unable to locate package libasound2t64`: that is `apt` on bookworm,
+where the same libraries are spelled `libasound2` and `libpipewire-0.3-0`. The names in
+`BUILD-INFO.txt` are trixie's.
+
 ## macOS: "cannot be opened because the developer cannot be verified"
 
 Clear the quarantine flag:
