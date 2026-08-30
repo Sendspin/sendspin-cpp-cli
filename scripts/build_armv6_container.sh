@@ -28,8 +28,9 @@
 # A script rather than lines of YAML for the reason scripts/build_arm32.sh and
 # scripts/build_macos_pkg.sh are: the archive this leg publishes is the only build of this
 # project a Pi Zero owner will ever run, and a developer has to be able to reproduce it without
-# a runner -- which takes the image digest, --init, the uid and QEMU_CPU, none of which YAML can
-# hand anybody. It is also what puts them under ci.yml's `shellcheck scripts/*.sh` job.
+# a runner -- which takes the image digest, --init, the uid and QEMU_CPU together, and a
+# workflow file is not somewhere anybody can run. It is also what puts them under ci.yml's
+# `shellcheck scripts/*.sh` job.
 #
 # Four verbs where build_arm32.sh has none, and the difference is what each owns. A cross build
 # is a *configuration*: once cmake has the flags, `cmake --build` over the directory is an

@@ -1499,11 +1499,10 @@ Optional, later. Upstream's `examples/tui_client` shows the shape.
 `.github/workflows/ci.yml` builds and tests every branch push and pull request on
 `ubuntu-24.04`, `ubuntu-24.04-arm` and `macos-14`, a fourth cross-compiled for ARMv7 on
 `ubuntu-24.04`, a fifth built natively for ARMv6 inside an emulated Raspbian container on that
-same runner, and a sixth configured
-`-DSENDSPIN_CLI_WITH_MDNS=OFF` — which compiles `src/mdns_null.cpp` instead of
-`src/mdns_dnssd.cpp`, so that translation unit is built rather than assumed. Every leg but the
-ARMv6 one configures `-DSENDSPIN_CLI_WERROR=ON`, for the reason recorded below, and every leg
-runs the CTest suite, the no-mDNS leg included:
+same runner, and a sixth configured `-DSENDSPIN_CLI_WITH_MDNS=OFF` — which compiles
+`src/mdns_null.cpp` instead of `src/mdns_dnssd.cpp`, so that translation unit is built rather
+than assumed. Every leg but the ARMv6 one configures `-DSENDSPIN_CLI_WERROR=ON`, for the reason
+recorded below, and every leg runs the CTest suite, the no-mDNS leg included:
 `discovery_test.cpp` links whichever `MdnsService` went in, and that configuration has no
 other coverage. Each leg also asserts against its own configure output that it found the
 backends it expects — a missing `-dev` package does not fail a configure, since every
@@ -1566,10 +1565,11 @@ armhf multiarch tree — `scripts/build_arm32.sh` owns the configure — and run
 suite and `scripts/smoke_test.sh` under `qemu-user` rather than skipping them, so it holds the
 same rule every other leg does. Nothing builds it natively: GitHub has no armv7 runner, and its
 arm64 runners are Neoverse N1 with no AArch32 at EL0, so no `runs-on` value reaches the target
-at all — and a cross build is what buys back everything the ARMv6 leg below has to emulate. What keeps the leg's name honest is a `readelf` of the linked
-binary: the linker merges build attributes across every object in the link and reports the
-highest, so one read covers the FetchContent tree as well as our own sources, and a dependency
-compiled for the wrong architecture fails the leg instead of shipping.
+at all — and a cross build is what buys back everything the ARMv6 leg below has to emulate.
+What keeps the leg's name honest is a `readelf` of the linked binary: the linker merges build
+attributes across every object in the link and reports the highest, so one read covers the
+FetchContent tree as well as our own sources, and a dependency compiled for the wrong
+architecture fails the leg instead of shipping.
 
 **The ARMv6 leg is there as well, and it is not the same job.** A Pi Zero, a Pi Zero W and an
 original Pi are ARM1176 cores, and Debian and Ubuntu armhf are an ARMv7-A port — which is where
@@ -1610,8 +1610,9 @@ exist here — `-Wno-restrict` can only be passed through `CMAKE_CXX_FLAGS`, and
 `target_compile_options` adds lands after it on the command line and turns the warning back on.
 
 One thing improves for free. The published archives need `GLIBC_2.38`, which Raspberry Pi OS
-bookworm's 2.36 refuses at load; the ARMv6 binary tops out at `GLIBC_2.34`, lower than
-Raspbian bookworm's own, so it loads on bookworm and trixie alike. The bookworm caveat the
+bookworm's 2.36 refuses at load; the ARMv6 binary references nothing newer than bookworm's own
+2.36, so it loads on bookworm and trixie alike. That is asserted off the finished binary rather
+than assumed, and its `BUILD-INFO.txt` names the version it actually came out at. The bookworm caveat the
 ARMv7 archive's `BUILD-INFO.txt` carries therefore does not apply to this one, and it does not
 say it. Raising the floor for `linux-x86_64`, `linux-arm64` and `linux-armv7` is a separate
 piece of work and still owed.

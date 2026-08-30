@@ -48,9 +48,9 @@ emulated Raspbian container rather than cross-compiled, because Debian and Ubunt
 an ARMv7-A port whose startup objects and `libgcc` would end up in the binary and make it
 ARMv7 whatever the compiler was told.
 
-One practical consequence, in your favour: `linux-armv6` needs only `GLIBC_2.34`, where the
-other archives need `2.38`. So it loads on Raspberry Pi OS **bookworm** as well as trixie,
-which the 32-bit ARMv7 archive does not.
+One practical consequence, in your favour: `linux-armv6` needs no glibc newer than bookworm
+itself carries, where the other archives need `2.38`. So it loads on Raspberry Pi OS
+**bookworm** as well as trixie, which the 32-bit ARMv7 archive does not.
 
 ## 2. Install
 

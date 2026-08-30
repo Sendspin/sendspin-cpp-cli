@@ -314,7 +314,8 @@ Two answers, and they are different problems.
 distribution than the one you are running. Raspberry Pi OS **trixie** carries glibc 2.41 and
 takes it; **bookworm** carries 2.36 and refuses it before a line of the player runs. Move that
 Pi to trixie, or build from source on it. The one exception is `linux-armv6`, which is built on
-Raspbian bookworm and needs no more than `GLIBC_2.34`.
+Raspbian bookworm and so needs no glibc newer than bookworm's own — its `BUILD-INFO.txt` names
+the version it was built against.
 
 **`Illegal instruction`.** The `linux-armv7` archive is compiled for ARMv7, and a Pi Zero, a
 Pi Zero W or an original Pi is ARMv6. `uname -m` says `armv6l` on those, and both
