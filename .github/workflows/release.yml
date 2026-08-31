@@ -13,6 +13,12 @@ on:
 # would be free to cancel this run midway through uploading assets, which is the exact partial
 # state the release below is arranged to make impossible. A superseded tag push is not a thing
 # that happens anyway: a tag is pushed once.
+#
+# The single trigger above is load-bearing for a second reason, in another file. build-armv6.yml
+# does carry a `concurrency` block, and what stops it reaching into a run started here is that its
+# `cancel-in-progress` is false on a tag ref -- which holds only while every run of this workflow
+# has one. Giving this workflow a `workflow_dispatch` or any branch trigger would hand a Release
+# run a branch ref and quietly re-open the window this comment exists to keep shut.
 
 permissions:
   contents: read
@@ -191,15 +197,29 @@ jobs:
           }
           echo "no release claims $TAG yet"
 
-  # The same build ci.yml runs, matrix and assertions and all. `needs: preflight` is what keeps
-  # a bad tag from starting it.
+  # The same five legs ci.yml runs, matrix and assertions and all. `needs: preflight` is what
+  # keeps a bad tag from starting it.
   build:
     needs: preflight
     uses: ./.github/workflows/build.yml
 
+  # The sixth archive, and the one thing a tag builds that a push does not. It is a workflow of
+  # its own because it emulates every compile and costs 23 minutes against the two or three the
+  # legs above take, so it carries triggers that keep it off the per-push path -- `main` after a
+  # merge, a narrow path filter on pull requests, and a dispatch. build-armv6.yml's header sets
+  # that trade out in full.
+  #
+  # Called here rather than left to those triggers, and blocking rather than advisory: `release`
+  # needs it below, so an ARMv6 build that goes red fails the release. The seam that leaves is
+  # that a break can reach a tag having gone unnoticed since the last merge to main; what it
+  # cannot do is publish a release the archive is missing from.
+  build-armv6:
+    needs: preflight
+    uses: ./.github/workflows/build-armv6.yml
+
   release:
     name: release
-    needs: [preflight, build]
+    needs: [preflight, build, build-armv6]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     # Scoped to this job alone, the workflow default above staying read-only. The only other
@@ -217,21 +237,24 @@ jobs:
     steps:
       # `merge-multiple`, or each artifact arrives in a directory named after itself and every
       # path below gains a redundant level. No `name:` or `pattern:`, so this asks for whatever
-      # the build produced -- which is the point: the assertion that follows is what says
-      # whether that was the right set, and a pattern here would pre-filter the evidence.
-      - name: Download what the build produced
+      # the two builds produced between them -- which is the point: the assertion that follows is
+      # what says whether that was the right set, and a pattern here would pre-filter the
+      # evidence.
+      - name: Download what the builds produced
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           path: dist
           merge-multiple: true
 
-      # The check that makes the release atomic on the way in. `needs: build` already covers a
-      # leg that went red; what it does not cover is a leg that went *green while publishing
-      # nothing* -- `Upload` is `if: matrix.publish`, and a leg that lost that key would skip
-      # the upload and still succeed. `if-no-files-found: error` catches an empty upload, not an
-      # absent one, and download-artifact matching nothing is not an error either: it is an
-      # empty directory. So the set is named here and diffed, in the shape build.yml already
-      # uses on the payload.
+      # The check that makes the release atomic on the way in. The two `needs` above already cover
+      # a build that went red; what they do not cover is one that went *green while publishing
+      # nothing* -- build.yml's `Upload` is `if: matrix.publish`, and a leg that lost that key
+      # would skip the upload and still succeed. Nor do they cover a `needs:` that stopped naming
+      # one of the two builds, which is the failure two build jobs make possible where one did
+      # not. `if-no-files-found: error` catches an empty upload, not an absent one, and
+      # download-artifact matching nothing is not an error either: it is an empty directory. So
+      # the set is named here and diffed, in the shape build.yml already uses on the payload --
+      # which is what makes an archive nobody built a diff rather than a quietly smaller release.
       #
       # Only the set, not the contents: every archive had its own file list diffed twice inside
       # the build, and the .pkg was installed there and its receipt diffed as well, so re-opening

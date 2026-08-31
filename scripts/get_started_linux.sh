@@ -52,9 +52,10 @@
 #
 # One asymmetry worth naming, in the spirit of the one .github/workflows/ci.yml names about
 # itself: the `shellcheck` job there lints every script under scripts/, and the other four are
-# also *run* on every build -- smoke_test.sh on each publishing leg, build_arm32.sh on the
-# cross-compiled 32-bit ARM one, build_armv6_container.sh on the containerised one,
-# build_macos_pkg.sh on the macOS one. This is the one script CI lints but never executes. A CI
+# also *run* by a build -- smoke_test.sh on each publishing leg, build_arm32.sh on the
+# cross-compiled 32-bit ARM one, build_macos_pkg.sh on the macOS one, and
+# build_armv6_container.sh throughout .github/workflows/build-armv6.yml. This is the one script
+# CI lints but never executes. A CI
 # leg for it would want a runner willing to take a payload into `/` and a sound card to then
 # not find, so what it has instead is the container run recorded in the pull request that
 # added it.

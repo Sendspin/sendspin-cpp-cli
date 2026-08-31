@@ -5,9 +5,9 @@ name: CI
 # if every branch push produces them -- not just the ones that have a pull request open. The
 # cost is that a PR raised from a branch in this repo builds twice.
 #
-# Except tags, which belong to release.yml. Both workflows call the same build, and the
-# `concurrency` group below is keyed by workflow name, so nothing would collapse the pair: a
-# `v*` push would otherwise run the matrix twice over and report two statuses for one tag.
+# Except tags, which belong to release.yml. Both workflows call build.yml, and the `concurrency`
+# group below is keyed by workflow name, so nothing would collapse the pair: a `v*` push would
+# otherwise run the matrix twice over and report two statuses for one tag.
 #
 # The `branches` filter is what excludes them, and the rule behind it cuts both ways. A `push`
 # naming only branch filters does not fire for tags at all -- that is the whole of how a tag is
@@ -47,9 +47,9 @@ jobs:
   # Stays here rather than moving into build.yml with the rest, and the asymmetry is worth being
   # honest about now that build_macos_pkg.sh shapes a released artifact: what this job adds is
   # *lint*, and a tag push runs release.yml alone, so it is lint that a tag does not get. What a
-  # tag does get is four of them being run -- smoke_test.sh on every publishing leg,
-  # build_arm32.sh on the cross-compiled 32-bit ARM one, build_armv6_container.sh on the
-  # containerised one, and build_macos_pkg.sh on the macOS one, whose .pkg is then installed and
+  # tag does get is four of them being run -- smoke_test.sh on every publishing build,
+  # build_arm32.sh on the cross-compiled 32-bit ARM leg, build_armv6_container.sh throughout
+  # build-armv6.yml, and build_macos_pkg.sh on the macOS leg, whose .pkg is then installed and
   # its receipt asserted -- so a release is gated on the scripts working whether or not it is
   # gated on their style.
   shellcheck:
@@ -63,7 +63,14 @@ jobs:
       - name: Lint the shell scripts
         run: shellcheck scripts/*.sh
 
-  # The matrix itself lives in build.yml, which release.yml calls too, so a change to how this
-  # project builds reaches both paths rather than one of them.
+  # The matrix itself lives in build.yml, which release.yml calls too, so a change to how these
+  # five legs build reaches both paths rather than one of them.
+  #
+  # There is a sixth archive and it is deliberately not here. build-armv6.yml builds linux-armv6
+  # inside an emulated Raspbian container -- 23 minutes against the two or three these legs take
+  # -- so it carries its own triggers rather than running on every push: `main` after a merge, a
+  # narrow path filter on pull requests, and a dispatch. release.yml calls it beside build.yml and
+  # blocks the release on both, so what a tag is gated on is a superset of this. That file's
+  # header sets the trade out in full.
   build:
     uses: ./.github/workflows/build.yml

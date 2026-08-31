@@ -91,14 +91,13 @@ case "$TARGET" in
         # and the merged Tag_CPU_arch build.yml reads back says so.
         #
         # An armv6 build needs an armv6 libgcc and armv6 startup objects, which is Raspbian
-        # rather than a flag. The linux-armv6 leg of .github/workflows/build.yml has them: it
-        # builds natively inside an emulated Raspbian container instead of cross-compiling, so
+        # rather than a flag. The job in .github/workflows/build-armv6.yml has them: it builds
+        # natively inside an emulated Raspbian container instead of cross-compiling, so
         # this script is not on that path at all and there is nothing here to extend.
         fail "armv6 cannot be built against a Debian/Ubuntu armhf toolchain: its libgcc and
     startup objects are armv7-a, so the result would trap on an ARM1176 (a Pi Zero, a Pi Zero W
     or an original Pi). armv6 is built a different way -- natively inside an emulated Raspbian
-    container, which has an armv6 libgcc; see the linux-armv6 leg of
-    .github/workflows/build.yml"
+    container, which has an armv6 libgcc; see .github/workflows/build-armv6.yml"
         ;;
     *)
         fail "unknown target '$TARGET' -- this builds armv7"

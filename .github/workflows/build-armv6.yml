@@ -1,0 +1,537 @@
+name: Build ARMv6
+
+# The ARMv6 Raspberry Pi archive -- a Pi Zero, a Pi Zero W, an original Pi -- built the only way
+# there is to build one, and in a file of its own because of what that costs. Debian and Ubuntu
+# armhf are an ARMv7-A port, so a cross toolchain's own crt1.o, crtbegin.o and every member of
+# libgcc.a are ARMv7 and are linked into the binary whatever `-march` said. Raspbian's really are
+# ARMv6 and Raspbian publishes no cross toolchain, so the only route to an ARMv6 archive is an
+# ordinary native build run inside an emulated Raspbian container -- which pays for every compile
+# in the FetchContent tree under qemu-user. That measures 23 minutes against the two or three
+# every leg in build.yml takes.
+#
+# Its own file rather than a sixth leg of that matrix, because a matrix leg runs whenever the
+# matrix does -- on every branch push and again on every pull request, so twice per in-repo PR.
+# That is half an hour of waiting, per push, on the one build that almost never has anything new
+# to say. Its own file, too, rather than a leg left in the matrix behind `continue-on-error`: what
+# it proves is real, and a leg that gates nothing stops meaning anything.
+#
+# So it carries its own triggers below, and release.yml calls it alongside build.yml -- which is
+# what leaves a tag gated on a green ARMv6 build.
+#
+# The seam that opens is worth naming rather than leaving to be discovered: a tag builds one thing
+# a push does not. What stands in for per-push coverage is the trigger set -- the tip of `main` is
+# covered within half an hour of a merge, the path filter below catches an infrastructure change,
+# and `workflow_dispatch` opts a branch in on demand. So a break here can delay a tag. It cannot
+# ship an archive nothing built.
+on:
+  # release.yml, on a tag.
+  workflow_call:
+
+  # Post-merge rather than per-push, that per-push cost being the whole of what this file removes.
+  # Naming only `branches` is also what leaves a tag to release.yml: a `push` carrying branch
+  # filters alone does not fire for tags at all, which is the same rule ci.yml's header sets out.
+  push:
+    branches:
+      - main
+
+  # The pull-request opt-in, and it is worth being exact about what it does and does not catch,
+  # because a paths list reads like a claim of coverage. These three are the *infrastructure*: the
+  # workflow itself, so the pull request that changes it runs it; the script that owns the
+  # container, the emulator pinning and the configure inside it; and CMakeLists.txt, which pins
+  # both dependency tags and so decides what has to compile under the emulator at all.
+  #
+  # The ARMv6-only breaks this project has actually met are none of those. They are in the source:
+  # Raspbian's gcc 12 `-Wrestrict` false positive, and the 64-bit atomics that become libatomic
+  # calls because ARMv6 has no LDREXD. `src/**` and `tests/**` would catch them and are pointedly
+  # not here -- they match nearly every pull request, and a filter that fires on nearly every pull
+  # request is the per-push cost arriving back under another name.
+  #
+  # So those breaks are caught after the merge rather than before it, by the `push` above, and
+  # `workflow_dispatch` is how a pull request that expects to meet one opts in early. What they
+  # cannot do is reach a release: release.yml calls this workflow and its release job needs the
+  # result, so a broken ARMv6 delays a tag rather than publishing without one.
+  pull_request:
+    paths:
+      - .github/workflows/build-armv6.yml
+      - scripts/build_armv6_container.sh
+      - CMakeLists.txt
+
+  # For a branch the path filter above does not catch. Offered only for workflows that exist on
+  # the default branch, which is a property of `workflow_dispatch` rather than of this file: until
+  # this workflow is on main there is no dispatch to run, and the path filter is what covers the
+  # pull request that puts it there.
+  workflow_dispatch:
+
+# Keyed like ci.yml's and cancelling for the same reason -- a superseded push has nothing left to
+# say -- which is worth more here than anywhere else in this repository, this being the run that
+# holds a runner for 25 minutes while saying it.
+#
+# `cancel-in-progress` is conditional, alone among this repository's concurrency blocks, because
+# release.yml calls this workflow and release.yml deliberately carries no `concurrency` block of
+# its own -- precisely so that nothing can cancel it midway through uploading assets. A group here
+# is free to reach into that run, so this is what keeps the decision made there true from this
+# side of the call.
+#
+# The condition is on the *ref* rather than on the workflow name, and that is what makes it hold
+# rather than nearly hold. Two runs share a group only if they share a ref, a release run's ref is
+# always a tag, and no run on a tag ref cancels anything -- so the guard stands whatever
+# `github.workflow` resolves to inside a called workflow, which is the caller's name and is not a
+# thing this repository can test without cutting a release.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+# Restated here rather than inherited: a called workflow gets none of the caller's workflow-level
+# `permissions`, `defaults` or `env`. The one that matters is the shell. The default is `bash -e`
+# with no pipefail, which would let the `| tee` in the configure step below swallow a configure
+# failure -- leaving the assertion after it grepping a truncated log and both callers green on a
+# build that never configured.
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  # A floor, and the Build step below reads the runner's own core count over the top of it -- so
+  # what this covers is any later cmake invocation that builds without saying how wide. It is set
+  # here rather than left out because scripts/build_armv6_container.sh forwards this variable by
+  # name across the `docker exec` boundary and says so: unset, an already emulated build compiles
+  # one translation unit at a time.
+  CMAKE_BUILD_PARALLEL_LEVEL: 3
+
+jobs:
+  build:
+    # The LEG below is the one that is not free to drift: release.yml diffs
+    # `sendspin-cli-$VERSION-linux-armv6.tar.gz` by name in two places, and download-artifact's
+    # `merge-multiple` lays the archive out where that diff looks for it. This name matches it so
+    # that the check reads as the archive it produces, which is a courtesy to a reader rather than
+    # a constraint -- nothing in this repository requires a status check by name.
+    name: linux-armv6
+    runs-on: ubuntu-24.04
+    # 23 minutes of emulated compiles measured, plus room for a slow runner. 40 rather than 30
+    # because at 30 the margin was under a quarter, which on shared hardware is the run that goes
+    # red for the weather rather than for a defect -- and a flaky run teaches people to re-run
+    # rather than to read. Far under the six-hour default either way: the point of any number here
+    # is that a player which ignores SIGTERM fails rather than holds a runner all day.
+    timeout-minutes: 40
+    env:
+      # balenalib's rather than an official Raspberry Pi image, because there is no official one:
+      # Raspberry Pi publishes OS images, not container images. What matters is that this one
+      # installs from archive.raspbian.org -- the ARMv6 port -- rather than from Debian's ARMv7-A
+      # armhf, and that its gcc is configured `--with-arch=armv6 --with-float=hard`, which is why
+      # nothing here passes `-march` at all. Pinned by digest for the reason every action in this
+      # file is pinned to a commit, and bookworm rather than trixie deliberately: building against
+      # the older glibc is what keeps the archive loadable on both, which the assertion below the
+      # build holds it to.
+      IMAGE: 'balenalib/rpi-raspbian:bookworm@sha256:0f3c33faa9d7b1dac778e8afb5854080dcfbddeac7437265598c6076bb0ffc82'
+      LEG: linux-armv6
+    steps:
+      # Every third-party action here is pinned to a commit rather than a tag, because a tag can be
+      # repointed at any time and these run with write access to the workspace. The trailing
+      # comment is the version that commit was, for a reader bumping it.
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      # What puts qemu-arm into the kernel's binfmt_misc, so that the ARM processes in the
+      # container below -- gcc and cmake among them, this being a native build rather than a cross
+      # one -- can run at all.
+      #
+      # `image` is pinned by digest as well as the action by commit, and it is the one that matters
+      # most in this file: the action's default is the mutable `tonistiigi/binfmt:latest`, and what
+      # it does with it is run it `--privileged` to edit the kernel's binfmt handlers. A tag that
+      # can be repointed is a worse thing to hand that than write access to a workspace.
+      #
+      # `arm` rather than the default `all`, because that is the only handler anything here uses --
+      # registering riscv64, ppc64le and the rest is emulators this job will never execute,
+      # installed by a privileged container.
+      - name: Register the ARM emulator
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8  # v4.2.0
+        with:
+          image: docker.io/tonistiigi/binfmt@sha256:1b804311fe87047a4c96d38b4b3ef6f62fca8cd125265917a9e3dc3c996c39e6  # qemu-v9.2.2
+          platforms: arm
+
+      # Everything from Configure down runs in here. The container is started once and kept, rather
+      # than a fresh `docker run` per step: cmake records the directory it was configured in, and
+      # the build tree, the suite and the staged payload all have to be the same one.
+      #
+      # Started by hand rather than named in a job-level `container:`, and the difference is
+      # ordering, not taste. That key creates the container before the first step runs, and the
+      # emulator has to be registered on the *host* before an ARM container can execute anything at
+      # all; there would be nowhere left to put docker/setup-qemu-action. Its steps would also run
+      # as root, which the non-root build user scripts/build_armv6_container.sh insists on is about.
+      - name: Start the Raspbian build container
+        run: scripts/build_armv6_container.sh start "$IMAGE"
+
+      # The fetched sources and the populate stamps that record they were fetched -- the stamps
+      # live in `-subbuild`, which is a generated CMake tree rather than a download, and without
+      # them every run refetches. What is deliberately *not* in here is anything compiled: `-build`
+      # is excluded and `build/` is outside this path entirely, so no object file ever survives a
+      # compiler upgrade on the runner image. Restoring the downloads is where the time goes anyway
+      # -- sendspin-cpp pulls its own dependencies (ixwebsocket, opus, FLAC) through FetchContent
+      # in turn.
+      #
+      # Keyed by CMakeLists.txt's hash because it holds both pinned tags, and spelled
+      # `linux-armv6` to the letter, which is what keeps the caches already on the repository
+      # hitting. A subbuild left stale by a cmake upgrade on the image is the residual risk, and
+      # dropping the cache is its remedy.
+      - name: Cache the fetched sources
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: |
+            .deps/*-src
+            .deps/*-subbuild
+          key: deps-linux-armv6-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Configure
+        env:
+          DEPS_DIR: ${{ github.workspace }}/.deps
+        run: |
+          # The same options build.yml configures every leg with, spelled out rather than shared,
+          # there being no mechanism that could share them across two workflow files. What this
+          # build changes is where cmake runs and the one library ARMv6's atomics need, and
+          # scripts/build_armv6_container.sh owns both -- not one of these options.
+          options=(
+            -DCMAKE_BUILD_TYPE=Release
+            -DSENDSPIN_CLI_WERROR=ON
+            -DSENDSPIN_CLI_WITH_MDNS=ON
+            -DSENDSPIN_CLI_WITH_PULSE=ON
+            -DSENDSPIN_CLI_WITH_PIPEWIRE=ON
+            -DFETCHCONTENT_BASE_DIR="$DEPS_DIR"
+          )
+
+          scripts/build_armv6_container.sh configure build "${options[@]}" 2>&1 | tee configure.log
+
+      # The check that stops this going green while quietly building something else. A missing -dev
+      # package does not fail the configure -- every backend here is optional and auto-detected by
+      # design -- so without this the job would happily ship a null-sink-only, mDNS-less binary and
+      # call it built.
+      #
+      # Whole-line matches, anchored: `audio backends:` on its own is also satisfied by the
+      # degraded `null, stdout` line, which is the exact failure being guarded against. The mDNS
+      # pattern is anchored on the multiarch library path rather than left as a loose
+      # `.*libdns_sd\.so.*`, so a find_library that answered with a library of the wrong
+      # architecture is a failure here rather than a binary that links nothing usable.
+      - name: Assert the configure output found what this leg expects
+        run: |
+          patterns=(
+            '^-- sendspin-cli audio backends: null, stdout, alsa, portaudio, pulse, pipewire$'
+            '^-- sendspin-cli mDNS: dns_sd \(/usr/lib/arm-linux-gnueabihf/libdns_sd\.so\)$'
+            # The dns_sd probes are pinned to the answer this host owes, because they fail open:
+            # one that reported Failed for an unrelated reason would silently cost two case labels
+            # in describe_error(), and nothing else would complain.
+            '^-- Performing Test SENDSPIN_CLI_HAVE_ERR_SERVICE_NOT_RUNNING - Failed$'
+            '^-- Performing Test SENDSPIN_CLI_HAVE_ERR_TIMEOUT - Failed$'
+          )
+
+          status=0
+          for expected in "${patterns[@]}"; do
+            if ! grep -Eq -e "$expected" configure.log; then
+              echo "::error::configure output has no line matching: $expected"
+              status=1
+            fi
+          done
+          echo 'What configure actually reported:'
+          grep -E -- '^-- (sendspin-cli|Performing Test SENDSPIN_CLI)' configure.log ||
+            echo '(configure.log has no sendspin-cli lines at all)'
+          exit "$status"
+
+      - name: Build
+        run: |
+          # The workflow-level 3 above is a floor; this runner has four cores, and every compile
+          # here is emulated, so the difference is worth reading off. Read off the runner rather
+          # than written down, so an image with more cores is a faster build rather than an edit
+          # nobody remembers to make.
+          CMAKE_BUILD_PARALLEL_LEVEL="$(nproc)" \
+            scripts/build_armv6_container.sh run cmake --build build
+
+      # What makes this job's name mean something. Every dependency arrives through FetchContent
+      # and so through add_subdirectory, in the one cmake invocation -- and this build passes no
+      # `-march` at all, its compiler targeting ARMv6 by configuration, which is exactly why it
+      # needs this read. What is being claimed is a property of a container's whole toolchain, and
+      # a dependency that found some other compiler would answer here rather than on a Pi Zero. The
+      # linker merges build attributes across every object in the link and reports the highest, so
+      # one read covers the whole tree.
+      #
+      # It covers what is *in* the file and nothing further. The shared libraries the loader pulls
+      # in on a Pi are that machine's own, built by whoever built its distribution, and are not
+      # this build's to make claims about.
+      #
+      # Ahead of the suite rather than after it: a binary of the wrong architecture is a fact about
+      # the build, and reading it off costs a `readelf` rather than the whole suite run under an
+      # emulator.
+      - name: Assert the binary is built for the architecture this leg claims
+        run: |
+          binary=build/sendspin-cli
+
+          # Read into files rather than piped into each check, so that `grep -q` matching early
+          # cannot take the writer down with SIGPIPE -- `defaults.run.shell` is `bash -eo
+          # pipefail`, where that reads as a failed pipeline. The same reason the flags check below
+          # uses `case`.
+          readelf -h "$binary" >elf-header.txt
+          readelf -A "$binary" >elf-attributes.txt
+          echo 'What the linked binary reports:'
+          file "$binary"
+          cat elf-header.txt elf-attributes.txt
+
+          field() {
+            sed -n "/^[[:space:]]*$1:/ { s/^[[:space:]]*$1:[[:space:]]*//p; q; }" "$2"
+          }
+
+          status=0
+          expect() {
+            [ "$2" = "$3" ] || {
+              echo "::error::$1 is '$2', not '$3'"
+              status=1
+            }
+          }
+
+          expect 'the ELF class' "$(field Class elf-header.txt)" 'ELF32'
+          expect 'the ELF machine' "$(field Machine elf-header.txt)" 'ARM'
+          expect 'Tag_CPU_arch' "$(field Tag_CPU_arch elf-attributes.txt)" 'v6'
+          # The calling convention, taken from the attribute that records it rather than from the
+          # -mfloat-abi this build passed. A soft-float object and a hard-float one disagree about
+          # how every function taking a double is called, and nothing refuses the mixture at load
+          # time -- it is the arithmetic that comes out wrong.
+          expect 'Tag_ABI_VFP_args' "$(field Tag_ABI_VFP_args elf-attributes.txt)" 'VFP registers'
+
+          # Substring-matched, alone among these: the flags word is printed alongside its numeric
+          # value, which carries bits that have nothing to do with the ABI being named.
+          flags="$(field Flags elf-header.txt)"
+          case "$flags" in
+            *'hard-float ABI'*) ;;
+            *)
+              echo "::error::the ELF header flags are '$flags', which do not declare the hard-float EABI"
+              status=1
+              ;;
+          esac
+
+          # The one thing BUILD-INFO.txt claims that is not about the instruction set: that this
+          # archive loads on Raspberry Pi OS bookworm as well as trixie. It rests on the highest
+          # glibc symbol version the binary references, so it is read off the file the way
+          # everything else here is -- and a container digest that moved off bookworm would raise it
+          # silently, leaving the text inside the archive promising a Pi Zero owner something their
+          # loader would refuse. Bookworm's own 2.36 is the bound, rather than the lower number this
+          # happens to come out at, because that is the claim being made.
+          bookworm_glibc=GLIBC_2.36
+          readelf --version-info "$binary" >elf-versions.txt
+          floor="$(grep -oE 'GLIBC_[0-9]+(\.[0-9]+)+' elf-versions.txt | sort -uV | tail -1 || true)"
+          rm -f elf-versions.txt
+
+          if [ -z "$floor" ]; then
+            echo '::error::no GLIBC_ symbol version could be read off the binary, so the claim BUILD-INFO.txt makes about bookworm cannot be checked'
+            status=1
+          else
+            echo "The highest glibc symbol version this binary references: $floor"
+            # The higher of the two, compared against the bound: equal is fine, above is not.
+            if [ "$(printf '%s\n%s\n' "$floor" "$bookworm_glibc" | sort -V | tail -1)" != "$bookworm_glibc" ]; then
+              echo "::error::this binary references $floor, above the $bookworm_glibc Raspberry Pi OS bookworm carries -- its loader would refuse the archive this job is about to publish"
+              status=1
+            fi
+          fi
+
+          rm -f elf-header.txt elf-attributes.txt
+          exit "$status"
+
+      # Serial deliberately: daemon_test.cpp exercises flock paths and last_server_test writes real
+      # files, neither of which is obviously safe to run against itself in parallel.
+      - name: Test
+        run: scripts/build_armv6_container.sh run ctest --test-dir build --output-on-failure
+
+      # No avahi-daemon is installed here and none could be: the binary under test runs under an
+      # emulator inside the container. So this is what exercises the non-fatal advertise-failure
+      # path in src/main.cpp -- the player has to come up and warn rather than exit.
+      - name: Smoke test
+        run: scripts/build_armv6_container.sh run scripts/smoke_test.sh build/sendspin-cli
+
+      # A build output for trying a commit on real hardware, staged by the same `install()` rules an
+      # operator would use. DESTDIR rather than `--prefix`, so every path in the archive is the path
+      # the file installs to: the unit's ExecStart is absolute and names the configure-time prefix,
+      # and `--prefix` would relocate the payload around it without changing what it says -- leaving
+      # a unit pointing at a binary the archive does not hold.
+      #
+      # `--component sendspin-cli` is what keeps the payload ours. Fetched dependencies declare
+      # install() rules of their own that no option turns off, and CMakeLists.txt says which.
+      #
+      # Tarred rather than handed to upload-artifact loose because the artifact is served as a zip,
+      # and zip does not carry the executable bit -- an untarred binary would arrive chmod-less.
+      - name: Package
+        id: package
+        env:
+          # bookworm's spellings, where build.yml's linux-armv7 leg names trixie's, and libatomic1
+          # besides: ARMv6 has no LDREXD, so the 64-bit atomics become libatomic calls and the
+          # binary carries NEEDED libatomic.so.1. This string is copied verbatim into the
+          # BUILD-INFO.txt inside the archive, so it is read by someone on the target rather than
+          # by someone here.
+          RUNTIME_PACKAGES: 'libasound2 libportaudio2 libpulse0 libpipewire-0.3-0 libavahi-compat-libdnssd1 libatomic1'
+        run: |
+          # Both the version read and the install below go through the container. The binary is the
+          # obvious half; the install is the less obvious one, and it is not about executing
+          # anything -- cmake_install.cmake was written by the container's cmake 3.25 and is read
+          # back by whichever cmake runs it, and the files it lays down have to arrive owned the way
+          # everything else in this workspace is.
+          reported="$(scripts/build_armv6_container.sh run ./build/sendspin-cli --version)"
+          version="$(printf '%s\n' "$reported" | awk 'NR == 1 { print $2 }')"
+          lib_tag="$(printf '%s\n' "$reported" | awk 'NR == 2 { print $2 }')"
+          name="sendspin-cli-$version-$LEG"
+
+          mkdir -p "stage/$name"
+          scripts/build_armv6_container.sh run \
+            env DESTDIR="$PWD/stage/$name" cmake --install build --component sendspin-cli
+
+          cat >"stage/$name/BUILD-INFO.txt" <<INFO
+          sendspin-cli $version for $LEG
+          Built from commit $GITHUB_SHA on $RUNNER_OS/$RUNNER_ARCH
+          Linked against sendspin-cpp $lib_tag
+
+          Runtime packages this binary needs:
+            $RUNTIME_PACKAGES
+
+          Every path under usr/ here is where the file installs to, so it goes in with one
+          command from the directory holding the tarball:
+
+            sudo tar -xzf $name.tar.gz --strip-components=1 -C / $name/usr
+
+          Naming $name/usr is what leaves this file behind rather than unpacking it at /.
+
+          Or run it where you unpacked it: ./$name/usr/local/bin/sendspin-cli --help
+
+          This build is configured for the /usr/local prefix, which is why those paths are
+          what they are.
+          INFO
+
+          cat >>"stage/$name/BUILD-INFO.txt" <<'LINUX'
+
+          The systemd unit is at usr/local/lib/systemd/system/sendspin-cli.service, which is
+          on systemd's own search path, so installing as above needs no copying. The one
+          command a tarball cannot run for itself creates the account the unit runs as,
+          declared beside it in usr/local/lib/sysusers.d/sendspin-cli.conf:
+
+            sudo systemd-sysusers
+            sudo systemctl daemon-reload
+            sudo systemctl enable --now sendspin-cli
+
+          Skip the first line and the unit will not start: systemctl reports 217/USER.
+
+          It runs the player as an unprivileged sendspin-cli user, in the foreground, with its
+          state in /var/lib/sendspin-cli and its control socket in /run/sendspin-cli. An
+          existing /var/lib/sendspin-cli left behind by an earlier root-run version needs
+          nothing done to it -- systemd chowns it. Configure it in
+          /etc/sendspin-cli.conf; there is an annotated example beside the installed README,
+          under usr/local/share/doc/sendspin-cli. Its ExecStart names /usr/local/bin/sendspin-cli
+          absolutely, so a binary put anywhere else needs the unit changed to match.
+          LINUX
+
+          # Said inside the archive, because the lines above it are read on the machine this was
+          # built *for* while naming the machine it was built *on*: "Built from commit ... on
+          # Linux/X64", under a heading that says linux-armv6, is accurate and baffling at once
+          # until something accounts for it.
+          #
+          # Read off the binary rather than written down, so the glibc line below cannot drift from
+          # what was actually built. The assertion further up has already refused anything above the
+          # 2.36 bookworm itself carries; this is what says how far below it came in.
+          glibc_floor="$(readelf --version-info build/sendspin-cli |
+            grep -oE 'GLIBC_[0-9]+(\.[0-9]+)+' | sort -uV | tail -1)"
+
+          cat >>"stage/$name/BUILD-INFO.txt" <<EMULATED
+
+          This was built for an ARM1176 -- a Pi Zero, a Pi Zero W or an original Pi -- inside a
+          Raspbian container on the runner named above, and not on a Pi. It is a native build
+          rather than a cross build: Raspbian's own gcc, libgcc and startup objects are ARMv6,
+          which is what makes this archive ARMv6, and the build attributes of the binary are
+          asserted to say ARMv6, hard-float EABI before the archive is made. Its unit suite and
+          smoke test ran there under qemu-user pinned to an ARM1176, so the emulator was no more
+          permissive than your hardware -- but what is proven is that the code builds and
+          behaves, not that it was tried on a Pi.
+
+          The runtime packages above are spelled the way Raspberry Pi OS bookworm spells them;
+          on trixie they are libasound2t64 and libpipewire-0.3-0t64. This binary needs no glibc
+          symbol newer than ${glibc_floor#GLIBC_}, which is below what either release carries.
+          So it loads on both -- which the linux-armv7 archive does not.
+          EMULATED
+
+          tar -czf "$name.tar.gz" -C stage "$name"
+          echo "name=$name" >>"$GITHUB_OUTPUT"
+
+      # What the payload holds, asserted rather than assumed -- the same check the configure output
+      # gets above, and for the same reason. Two things go wrong silently otherwise: a dependency
+      # that starts declaring install() rules on a SENDSPIN_GIT_TAG bump adds a static library and a
+      # tree of headers to a tarball nobody reads the manifest of, and a file dropped from our own
+      # install() rules leaves an archive that is merely smaller.
+      #
+      # The expected list below is one of two. build.yml's "Assert the payload holds exactly what
+      # it should" holds the other, for the legs that live there, and a change to the install()
+      # rules has to land in both or one of these two workflows fails on a diff. Two workflow files
+      # cannot share a step, and this list is short enough that a script to hold it would be more
+      # indirection than it removes -- so the price is this cross-reference.
+      - name: Assert the payload holds exactly what it should
+        env:
+          NAME: ${{ steps.package.outputs.name }}
+        run: |
+          expected=$(mktemp)
+          {
+            echo BUILD-INFO.txt
+            echo usr/local/bin/sendspin-cli
+            echo usr/local/lib/sysusers.d/sendspin-cli.conf
+            echo usr/local/lib/systemd/system/sendspin-cli.service
+            echo usr/local/share/doc/sendspin-cli/LICENSE
+            echo usr/local/share/doc/sendspin-cli/README.md
+            echo usr/local/share/doc/sendspin-cli/sendspin-cli.conf.example
+          } | sort >"$expected"
+
+          # `! -type d` rather than `-type f`, so a symlink into the payload is a difference rather
+          # than an invisible one.
+          actual=$(mktemp)
+          (cd "stage/$NAME" && find . ! -type d | sed 's|^\./||') | sort >"$actual"
+
+          echo 'What the payload holds:'
+          cat "$actual"
+          diff -u "$expected" "$actual" || {
+            echo '::error::the staged payload is not the file list this workflow expects'
+            exit 1
+          }
+
+          # And again from inside the archive that actually ships, since that is one `tar` away from
+          # the directory checked above and it is the artifact anybody downloads. The executable bit
+          # is asserted here too: it is the reason this is a tarball at all, the artifact being
+          # served as a zip that does not carry one.
+          # Directory entries dropped before the prefix is stripped, since both tars list them with
+          # a trailing slash -- including the archive's own top-level one, which would otherwise
+          # strip down to an empty line and read as a difference.
+          tar -tzf "$NAME.tar.gz" | grep -v '/$' | sed -n "s|^$NAME/||p" | sort >"$actual"
+          diff -u "$expected" "$actual" || {
+            echo '::error::the tarball does not hold what the staged payload does'
+            exit 1
+          }
+          [ -x "stage/$NAME/usr/local/bin/sendspin-cli" ] || {
+            echo '::error::the staged sendspin-cli is not executable'
+            exit 1
+          }
+
+      # Nothing here installs the payload at the real prefix or runs the systemd unit it carries,
+      # where build.yml's native Linux legs do both. That is deliberate, not an oversight: running
+      # the unit against a binary this runner can only reach through an emulator tests the
+      # emulator. qemu-user translates guest code into buffers it writes and
+      # then executes, which the unit's `MemoryDenyWriteExecute=yes` forbids outright, so this job
+      # would go red on a directive the player itself has no quarrel with. The unit in this archive
+      # is the same file those legs verify, installed by the same rules.
+      - name: Upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: ${{ steps.package.outputs.name }}.tar.gz
+          # Long enough to bisect a regression against, short enough that per-commit builds do not
+          # accumulate. This artifact is never itself a release: on a tag it is how the tarball
+          # reaches release.yml's release job, which attaches it to a release of its own and leaves
+          # this copy to expire on the same clock.
+          retention-days: 14
+          if-no-files-found: error
+
+      # `always()` because a failed run still leaves a container behind, and because this is what
+      # keeps `stop` a verb the script's own usage can promise -- exercised by the file that
+      # documents it rather than only on a developer's machine. The runner is discarded either way,
+      # so nothing here depends on it having run.
+      - name: Stop the build container
+        if: always()
+        run: scripts/build_armv6_container.sh stop

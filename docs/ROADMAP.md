@@ -1247,8 +1247,8 @@ operator to choose between `Type=simple` and `Type=forking` and write the unit t
   gated by `ci.yml`'s `shellcheck` job, so the file arrives linted with no workflow change.
 - **It lives in `build.yml`, the shared build, not in `ci.yml`.** That is the whole of the
   re-homing this slice owes the second one, and it falls out of what the reusable workflow is
-  for: `build.yml` takes no inputs precisely so a release is gated on what a push is gated on,
-  and an installer that only a push produced would be the seam that claim warns about. One
+  for: `build.yml` takes no inputs precisely so both callers get the same legs, and an installer
+  that only a push produced would be the seam that rationale warns about. One
   definition therefore builds it, installs it and asserts it on both paths, and `release.yml`
   attaches what that build hands it.
 - **`pkgbuild --root <payload>/usr/local --install-location /usr/local`,** not a root one level
@@ -1498,8 +1498,7 @@ Optional, later. Upstream's `examples/tui_client` shows the shape.
 
 `.github/workflows/ci.yml` builds and tests every branch push and pull request on
 `ubuntu-24.04`, `ubuntu-24.04-arm` and `macos-14`, a fourth cross-compiled for ARMv7 on
-`ubuntu-24.04`, a fifth built natively for ARMv6 inside an emulated Raspbian container on that
-same runner, and a sixth configured `-DSENDSPIN_CLI_WITH_MDNS=OFF` — which compiles
+`ubuntu-24.04`, and a fifth configured `-DSENDSPIN_CLI_WITH_MDNS=OFF` — which compiles
 `src/mdns_null.cpp` instead of `src/mdns_dnssd.cpp`, so that translation unit is built rather
 than assumed. Every leg configures `-DSENDSPIN_CLI_WERROR=ON` and runs the CTest suite, the
 no-mDNS leg included:
@@ -1507,13 +1506,39 @@ no-mDNS leg included:
 other coverage. Each leg also asserts against its own configure output that it found the
 backends it expects — a missing `-dev` package does not fail a configure, since every
 backend is optional and auto-detected, so without that assertion the matrix would go green
-on a null-sink-only, mDNS-less binary. The five platform legs additionally run the smoke
+on a null-sink-only, mDNS-less binary. The four platform legs additionally run the smoke
 test and upload the binary they built, kept 14 days.
 
 The matrix itself lives in `.github/workflows/build.yml`, called by `ci.yml` and by item 10's
 `release.yml` alike, so one definition answers for both paths; `ci.yml` filters its `push` to
 `branches: ['**']`, which excludes tags, so a tag push builds once rather than twice. See item
 10 for why that split is a reusable workflow rather than a composite action.
+
+**The sixth archive is not in that matrix, and its absence is deliberate.** `linux-armv6` builds
+natively inside an emulated Raspbian container, which pays for every compile in the FetchContent
+tree under `qemu-user`: 23 minutes measured, against the two or three every leg above takes. As a
+matrix leg it ran whenever the matrix ran — every branch push, and again on every pull request —
+so every push waited half an hour on the one leg that almost never had anything new to say.
+
+It is now `.github/workflows/build-armv6.yml`, one job carrying its own triggers: `workflow_call`,
+so `release.yml` calls it beside `build.yml`; `push: branches: [main]`, so a merge is covered
+within half an hour of a merge; a `pull_request` filtered to that workflow,
+`scripts/build_armv6_container.sh` and `CMakeLists.txt`; and `workflow_dispatch`. Deliberately no
+unfiltered branch `push` — that is the cost being removed. The alternative considered and rejected
+was leaving the leg in the matrix behind `continue-on-error`, which would still hold a runner for
+25 minutes twice per pull request and would turn a red leg into one that gates nothing.
+
+What that buys is a seam, and it is worth naming: **a tag now builds one thing a push does not.**
+The `pull_request` path filter is honest about its own reach — it catches infrastructure changes,
+not the ARMv6-only source breaks this project has actually met, which are the gcc 12 `-Wrestrict`
+false positive and the `-latomic` class described below. Those are caught after the merge instead.
+Two things bound the cost. `release.yml` needs both build jobs, so a red ARMv6 build fails the
+release rather than publishing an incomplete one, and the release's expected asset set still names
+`sendspin-cli-<version>-linux-armv6.tar.gz` — so an archive nobody built is a diff rather than a
+quietly smaller release. And `push: branches: [main]` means a break can delay a tag but has at most
+one merge in which to go unnoticed. Raising the ARMv6 leg's coverage back towards per-push without
+paying for it per push — a nightly, or a merge-queue check — is a separate piece of work and is not
+owed by anything today.
 
 The unit harness is item 1's and unchanged: GoogleTest via `FetchContent` pinned to a tag,
 wired to CTest with `gtest_discover_tests()`, defaulting ON only when this is the top-level
@@ -1565,31 +1590,31 @@ armhf multiarch tree — `scripts/build_arm32.sh` owns the configure — and run
 suite and `scripts/smoke_test.sh` under `qemu-user` rather than skipping them, so it holds the
 same rule every other leg does. Nothing builds it natively: GitHub has no armv7 runner, and its
 arm64 runners are Neoverse N1 with no AArch32 at EL0, so no `runs-on` value reaches the target
-at all — and a cross build is what buys back everything the ARMv6 leg below has to emulate.
+at all — and a cross build is what buys back everything the ARMv6 build below has to emulate.
 What keeps the leg's name honest is a `readelf` of the linked binary: the linker merges build
 attributes across every object in the link and reports the highest, so one read covers the
 FetchContent tree as well as our own sources, and a dependency compiled for the wrong
 architecture fails the leg instead of shipping.
 
-**The ARMv6 leg is there as well, and it is not the same job.** A Pi Zero, a Pi Zero W and an
+**The ARMv6 archive is there as well, and it is not the same job.** A Pi Zero, a Pi Zero W and an
 original Pi are ARM1176 cores, and Debian and Ubuntu armhf are an ARMv7-A port — which is where
 a cross toolchain's own `crt1.o`, `crtbegin.o` and `libgcc.a` come from. Compiling our sources
 `-march=armv6` therefore does not produce an ARMv6 archive: the startup and helper objects
 linked in beside them are ARMv7, and the merged `Tag_CPU_arch` says so. What an ARMv6 build
 needs is an ARMv6 `libgcc` and ARMv6 startup objects, which is a *distribution* rather than a
 flag — and Raspbian is one. Its gcc is configured `--with-arch=armv6 --with-float=hard`, and
-every one of `libgcc.a`'s members reads `Tag_CPU_arch: v6`, so the leg passes no `-march` at
+every one of `libgcc.a`'s members reads `Tag_CPU_arch: v6`, so the build passes no `-march` at
 all.
 
 So `linux-armv6` is not a cross build at all: it is an ordinary native build run inside a
-digest-pinned Raspbian bookworm container under `qemu-user`, which is why it is the one leg
+digest-pinned Raspbian bookworm container under `qemu-user`, which is why it is the one archive
 `scripts/build_arm32.sh` has nothing to do with. That script still refuses `armv6`, and its
 reasoning is untouched — it cross-compiles against the *host* distribution's armhf tree, which
 is still ARMv7. `scripts/get_started_linux.sh` now maps an `armv6l` host onto the new archive
 instead of refusing it; ARMv5 and a bare `arm` are still refused, the ARMv6 archive being the
 oldest one built.
 
-Three things about that leg are load-bearing and none of them are about ARMv6 the instruction
+Three things about that build are load-bearing and none of them are about ARMv6 the instruction
 set. Everything it runs in the container runs under `QEMU_CPU=arm1176`, because `qemu-arm`
 defaults to a Cortex-A15-class core and would happily execute the ARMv7 instructions the
 hardware cannot — an emulator more permissive than the target proves nothing. That covers the

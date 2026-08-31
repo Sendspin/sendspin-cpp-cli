@@ -10,8 +10,10 @@ Four ways in, depending on what you have. If you are on Linux and want the short
 | Anything else | [Build from source](#build-from-source) |
 
 Everything published is on the
-[Releases page](https://github.com/Sendspin/sendspin-cpp-cli/releases). Per-commit builds
-of unreleased work are under the repository's Actions tab and expire after 14 days — see
+[Releases page](https://github.com/Sendspin/sendspin-cpp-cli/releases), and every release
+carries all six archives. Per-commit builds of unreleased work are under the repository's
+Actions tab and expire after 14 days — five archives per commit there, `linux-armv6` being
+built by a workflow of its own rather than on every push. See
 [CI](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/README.md#ci).
 
 ## What is in the archive
@@ -147,7 +149,7 @@ as trixie. See
 
 ## Build from source
 
-For an architecture with no release — an Intel Mac, anything not in the matrix — or to build
+For an architecture with no release — an Intel Mac, anything CI does not build — or to build
 against a different version of the library.
 
 ```bash
