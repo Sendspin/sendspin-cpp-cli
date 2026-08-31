@@ -13,6 +13,12 @@ on:
 # would be free to cancel this run midway through uploading assets, which is the exact partial
 # state the release below is arranged to make impossible. A superseded tag push is not a thing
 # that happens anyway: a tag is pushed once.
+#
+# The single trigger above is load-bearing for a second reason, in another file. build-armv6.yml
+# does carry a `concurrency` block, and what stops it reaching into a run started here is that its
+# `cancel-in-progress` is false on a tag ref -- which holds only while every run of this workflow
+# has one. Giving this workflow a `workflow_dispatch` or any branch trigger would hand a Release
+# run a branch ref and quietly re-open the window this comment exists to keep shut.
 
 permissions:
   contents: read
@@ -124,7 +130,7 @@ jobs:
   # that trade out in full.
   #
   # Called here rather than left to those triggers, and blocking rather than advisory: `release`
-  # needs it below, so an ARMv6 build that goes red fails the release. The seam the split opens is
+  # needs it below, so an ARMv6 build that goes red fails the release. The seam that leaves is
   # that a break can reach a tag having gone unnoticed since the last merge to main; what it
   # cannot do is publish a release the archive is missing from.
   build-armv6:

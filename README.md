@@ -1367,10 +1367,10 @@ A tag therefore builds one thing a push does not, which is the trade this split
 buys and worth stating rather than leaving to be discovered. What limits it is that
 `release.yml` calls the ARMv6 workflow beside the matrix and blocks the release on
 both, so an ARMv6 break can delay a tag but cannot publish a release the archive is
-missing from — and a merge to `main` gets an ARMv6 build within half an hour either
-way. A pull request that expects to break ARMv6 alone, which in practice means the
-`-Wrestrict` and `-latomic` classes rather than anything in the workflow files, can
-be opted in with a manual dispatch.
+missing from — and the tip of `main` gets an ARMv6 build within half an hour of a
+merge either way. A pull request that expects to break ARMv6 alone, which in
+practice means the `-Wrestrict` and `-latomic` classes rather than anything in the
+workflow files, can be opted in with a manual dispatch.
 
 To try a commit without building it, open its run under the repository's Actions
 tab and take `sendspin-cli-<version>-<os>-<arch>` from the run summary. Inside is a
@@ -1407,9 +1407,10 @@ Pushing a `vMAJOR.MINOR.PATCH` tag builds the same matrix, and the ARMv6 workflo
 beside it, and publishes the five platform archives and the macOS installer `.pkg`,
 plus a `SHA256SUMS` covering all six, as a GitHub Release. Both builds have to go
 green: the release job needs them both, so a red ARMv6 build fails the release
-rather than publishing without its archive. The workflow triggers on `v*` but refuses anything else
-that matches — a prerelease like `v0.2.0-rc1` is rejected rather than quietly
-published as the latest release, until somebody decides what it should mean.
+rather than publishing without its archive. The workflow triggers on `v*` but
+refuses anything else that matches — a prerelease like `v0.2.0-rc1` is rejected
+rather than quietly published as the latest release, until somebody decides what it
+should mean.
 Nothing else publishes, and the workflow never creates a tag: a release exists
 because a human tagged a commit
 whose version `CMakeLists.txt` already agreed with. It is attached whole or not at

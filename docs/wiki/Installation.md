@@ -149,7 +149,7 @@ as trixie. See
 
 ## Build from source
 
-For an architecture with no release — an Intel Mac, anything not in the matrix — or to build
+For an architecture with no release — an Intel Mac, anything CI does not build — or to build
 against a different version of the library.
 
 ```bash

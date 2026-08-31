@@ -40,12 +40,16 @@ jobs:
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
-    # Every leg here compiles at native speed and finishes inside three minutes, so this is not
-    # sized for a build at all: it is what stops a player which ignores SIGTERM from holding a
-    # runner all day, the suite and the smoke test both starting one. Far under the six-hour
-    # default, and far enough above three minutes that a slow runner is not a red leg -- a leg that
-    # goes red for the weather teaches people to re-run rather than to read. build-armv6.yml sizes
-    # its own against a build instead, that one emulating every compile it makes.
+    # Not sized for a build. Every leg here compiles at native speed and the slowest of them,
+    # linux-armv7, measures a little over three minutes; macos-arm64, the one that brews, packages
+    # a .pkg, installs it and runs the smoke suite twice, comes in under two. What this number is
+    # for is a player which ignores SIGTERM: the suite and the smoke test both start one, and the
+    # point is that it fails rather than holding a runner all day.
+    #
+    # 20 leaves better than five times the slowest measurement, which is the margin that keeps a
+    # slow runner from being a red leg -- a leg that goes red for the weather teaches people to
+    # re-run rather than to read. build-armv6.yml sizes its own against a build instead, that one
+    # emulating every compile it makes.
     timeout-minutes: 20
     strategy:
       # Every leg's result is wanted rather than only the first failure's: a break that shows
@@ -199,7 +203,6 @@ jobs:
       # the runner's own -dev packages installed there is no libdns_sd.so or libasound.so of
       # the wrong architecture for find_library to answer with at all. The anchored expect_mdns
       # below is the check that it did not; this is what leaves it nothing to catch.
-      #
       - name: Install the cross toolchain and armhf dependencies (cross-compiled 32-bit ARM)
         if: matrix.arm32
         run: |
@@ -336,6 +339,11 @@ jobs:
           # cross leg changes is the compiler and the flags naming the target, which
           # scripts/build_arm32.sh owns; not one of these options, and a second copy of them is
           # a second place for the two paths to stop agreeing about how this project builds.
+          #
+          # There is a third copy, and it is in another file: build-armv6.yml configures the same
+          # six options for the archive it builds. Nothing mechanical holds the two together the
+          # way the payload assertion below is held, so an option added here has to be added there
+          # or the ARMv6 archive quietly stops matching what every other leg was built with.
           options=(
             -DCMAKE_BUILD_TYPE=Release
             -DSENDSPIN_CLI_WERROR=ON

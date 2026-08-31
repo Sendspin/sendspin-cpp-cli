@@ -19,10 +19,10 @@ name: Build ARMv6
 # what leaves a tag gated on a green ARMv6 build.
 #
 # The seam that opens is worth naming rather than leaving to be discovered: a tag builds one thing
-# a push does not. What stands in for per-push coverage is the trigger set -- `main` is covered
-# within half an hour of every merge, the path filter below catches an infrastructure change, and
-# `workflow_dispatch` opts a branch in on demand. So a break here can delay a tag. It cannot ship
-# an archive nothing built.
+# a push does not. What stands in for per-push coverage is the trigger set -- the tip of `main` is
+# covered within half an hour of a merge, the path filter below catches an infrastructure change,
+# and `workflow_dispatch` opts a branch in on demand. So a break here can delay a tag. It cannot
+# ship an archive nothing built.
 on:
   # release.yml, on a tag.
   workflow_call:
@@ -103,9 +103,11 @@ env:
 
 jobs:
   build:
-    # The job's name and the LEG below are both exactly `linux-armv6`, and neither is free to
-    # drift: release.yml diffs `sendspin-cli-$VERSION-linux-armv6.tar.gz` by name in two places,
-    # and download-artifact's `merge-multiple` lays the archive out where that diff looks for it.
+    # The LEG below is the one that is not free to drift: release.yml diffs
+    # `sendspin-cli-$VERSION-linux-armv6.tar.gz` by name in two places, and download-artifact's
+    # `merge-multiple` lays the archive out where that diff looks for it. This name matches it so
+    # that the check reads as the archive it produces, which is a courtesy to a reader rather than
+    # a constraint -- nothing in this repository requires a status check by name.
     name: linux-armv6
     runs-on: ubuntu-24.04
     # 23 minutes of emulated compiles measured, plus room for a slow runner. 40 rather than 30
@@ -170,10 +172,10 @@ jobs:
       # -- sendspin-cpp pulls its own dependencies (ixwebsocket, opus, FLAC) through FetchContent
       # in turn.
       #
-      # Keyed by CMakeLists.txt's hash because it holds both pinned tags, and spelled `linux-armv6`
-      # to the letter: this is the key build.yml's matrix wrote while this leg lived there, so the
-      # caches already on the repository still hit. A subbuild left stale by a cmake upgrade on the
-      # image is the residual risk, and dropping the cache is its remedy.
+      # Keyed by CMakeLists.txt's hash because it holds both pinned tags, and spelled
+      # `linux-armv6` to the letter, which is what keeps the caches already on the repository
+      # hitting. A subbuild left stale by a cmake upgrade on the image is the residual risk, and
+      # dropping the cache is its remedy.
       - name: Cache the fetched sources
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
@@ -508,9 +510,9 @@ jobs:
           }
 
       # Nothing here installs the payload at the real prefix or runs the systemd unit it carries,
-      # where build.yml's native Linux legs do both, and that is deliberate rather than an omission
-      # the split introduced: running the unit against a binary this runner can only reach through
-      # an emulator tests the emulator. qemu-user translates guest code into buffers it writes and
+      # where build.yml's native Linux legs do both. That is deliberate, not an oversight: running
+      # the unit against a binary this runner can only reach through an emulator tests the
+      # emulator. qemu-user translates guest code into buffers it writes and
       # then executes, which the unit's `MemoryDenyWriteExecute=yes` forbids outright, so this job
       # would go red on a directive the player itself has no quarrel with. The unit in this archive
       # is the same file those legs verify, installed by the same rules.

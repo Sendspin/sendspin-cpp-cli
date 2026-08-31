@@ -1247,8 +1247,8 @@ operator to choose between `Type=simple` and `Type=forking` and write the unit t
   gated by `ci.yml`'s `shellcheck` job, so the file arrives linted with no workflow change.
 - **It lives in `build.yml`, the shared build, not in `ci.yml`.** That is the whole of the
   re-homing this slice owes the second one, and it falls out of what the reusable workflow is
-  for: `build.yml` takes no inputs precisely so a release is gated on what a push is gated on,
-  and an installer that only a push produced would be the seam that claim warns about. One
+  for: `build.yml` takes no inputs precisely so both callers get the same legs, and an installer
+  that only a push produced would be the seam that rationale warns about. One
   definition therefore builds it, installs it and asserts it on both paths, and `release.yml`
   attaches what that build hands it.
 - **`pkgbuild --root <payload>/usr/local --install-location /usr/local`,** not a root one level
@@ -1522,7 +1522,7 @@ so every push waited half an hour on the one leg that almost never had anything 
 
 It is now `.github/workflows/build-armv6.yml`, one job carrying its own triggers: `workflow_call`,
 so `release.yml` calls it beside `build.yml`; `push: branches: [main]`, so a merge is covered
-within half an hour of landing; a `pull_request` filtered to that workflow,
+within half an hour of a merge; a `pull_request` filtered to that workflow,
 `scripts/build_armv6_container.sh` and `CMakeLists.txt`; and `workflow_dispatch`. Deliberately no
 unfiltered branch `push` — that is the cost being removed. The alternative considered and rejected
 was leaving the leg in the matrix behind `continue-on-error`, which would still hold a runner for

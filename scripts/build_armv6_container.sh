@@ -66,9 +66,9 @@ fail() {
     exit 1
 }
 
-# One container per checkout is enough -- the legs of a matrix run on runners of their own, and a
-# developer builds one thing at a time -- so the name is a constant rather than an argument to
-# thread through every verb.
+# One container per checkout is enough -- the workflow that calls this runs one job on a runner of
+# its own, and a developer builds one thing at a time -- so the name is a constant rather than an
+# argument to thread through every verb.
 readonly CONTAINER='sendspin-cli-armv6'
 
 # Written rather than left to the image's own environment, which happens to set it too. The
