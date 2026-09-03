@@ -48,6 +48,29 @@ It advertises itself on the local network and waits for a Sendspin server to con
 For a Linux system-service installation, the quick-start guide explains how to enable
 and check the service.
 
+The options most people need beyond a name:
+
+```bash
+# Pick a sound card -- run `sendspin-cli -l` to list what this host has
+sendspin-cli -n living-room -o hw:1,0
+
+# Pin a format, for a DAC that is only happy in one shape
+sendspin-cli -n living-room --audio-format flac:48000:24:2
+
+# Connect out to a specific server, instead of waiting to be found
+sendspin-cli -n living-room -s music.local
+```
+
+| Option | What it does |
+|---|---|
+| `-n, --name <name>` | The friendly name a server displays. Defaults to this host's name. |
+| `-o, --output <device>` | Which sound card to play through. `-l` lists this host's devices and what they accept. |
+| `--audio-format <codec:rate:depth:channels>` | Offers this format first, e.g. `flac:48000:24:2`. Everything else the device takes is still offered behind it. |
+| `-s, --server <host[:port]>` | Connect out to a server rather than waiting to be discovered. Turns off the mDNS advertisement. |
+
+Any of these can go in a config file instead of on the command line — see
+[Configuration](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Configuration).
+
 Common local controls are available from the same host:
 
 ```bash
@@ -72,4 +95,4 @@ layout, CI, and release process. Wiki pages are authored in this repository unde
 
 ## License
 
-[MIT](LICENSE)
+[Apache 2.0](LICENSE)
