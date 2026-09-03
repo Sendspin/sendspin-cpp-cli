@@ -477,6 +477,7 @@ jobs:
             echo usr/local/lib/systemd/system/sendspin-cli.service
             echo usr/local/share/doc/sendspin-cli/LICENSE
             echo usr/local/share/doc/sendspin-cli/README.md
+            echo usr/local/share/doc/sendspin-cli/contributors.md
             echo usr/local/share/doc/sendspin-cli/sendspin-cli.conf.example
           } | sort >"$expected"
 

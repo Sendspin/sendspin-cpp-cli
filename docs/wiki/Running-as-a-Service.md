@@ -35,6 +35,7 @@ the unit runs as, out of a declaration installed beside the unit, and a tarball 
 | `/usr/local/lib/systemd/system/sendspin-cli.service` | the unit |
 | `/usr/local/lib/sysusers.d/sendspin-cli.conf` | the account the unit runs as, declared |
 | `/usr/local/share/doc/sendspin-cli/README.md` | quick-start and wiki links |
+| `/usr/local/share/doc/sendspin-cli/contributors.md` | how to build and contribute |
 | `/usr/local/share/doc/sendspin-cli/LICENSE` | Apache 2.0 |
 | `/usr/local/share/doc/sendspin-cli/sendspin-cli.conf.example` | an annotated config |
 
