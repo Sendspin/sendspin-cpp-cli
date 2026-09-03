@@ -288,7 +288,7 @@ bool resolve_device_spec(const std::string& spec, DeviceSpec& out, std::string& 
         return false;
     }
 
-    // 3. Anything else is an ALSA PCM name, which is how squeezelite's -o behaves: there
+    // 3. Anything else is an ALSA PCM name, which is how a conventional `-o` behaves: there
     //    is no fixed device list to keep in sync with the host's hardware. PortAudio is
     //    deliberately not reachable this way -- it *does* enumerate its devices, so the
     //    justification does not carry over, and a bare name resolving per host is exactly

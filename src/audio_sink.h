@@ -228,7 +228,7 @@ struct DeviceSpec {
 ///  2. The string contains a colon and the text before the **first** colon names a
 ///     backend -- first colon only, because ALSA device names carry their own, so
 ///     `alsa:hw:2,0` is the ALSA backend playing `hw:2,0`.
-///  3. Otherwise it is an ALSA PCM name, which is squeezelite's `-o` model. `hw:2,0` and
+///  3. Otherwise it is an ALSA PCM name, the conventional `-o` model. `hw:2,0` and
 ///     `default` keep working with no prefix at all. This stays ALSA-only on purpose:
 ///     PortAudio *does* have an enumerable device list, so reaching one of its devices
 ///     without the prefix would make the same `-o` mean different things per host.

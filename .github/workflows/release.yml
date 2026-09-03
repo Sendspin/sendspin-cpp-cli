@@ -350,11 +350,12 @@ jobs:
           the minimum an arm64 Mach-O needs to execute at all, and carries no developer identity
           — so Gatekeeper refuses them until you say otherwise. Said here rather than only behind
           a link because it is worth knowing before you download; what to do about it is under
-          [macOS, and Gatekeeper](https://github.com/@REPO@/blob/@TAG@/README.md#macos-and-gatekeeper).
+          [the macOS installation guide](https://github.com/@REPO@/wiki/Installation#macos).
 
-          - [README](https://github.com/@REPO@/blob/@TAG@/README.md) — build, install, run,
-            [macOS, and Gatekeeper](https://github.com/@REPO@/blob/@TAG@/README.md#macos-and-gatekeeper),
-            and [the installer `.pkg`](https://github.com/@REPO@/blob/@TAG@/README.md#the-macos-installer-pkg)
+          - [README](https://github.com/@REPO@/blob/@TAG@/README.md) — what it is, how to run
+            it, and how to contribute
+          - [Contributors](https://github.com/@REPO@/blob/@TAG@/contributors.md) — development,
+            testing, CI, and release guidance
           - [Roadmap](https://github.com/@REPO@/blob/@TAG@/docs/ROADMAP.md) — what shipped and
             what is owed, item by item
           NOTES

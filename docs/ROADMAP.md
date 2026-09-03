@@ -4,9 +4,9 @@
 boots a real [sendspin-cpp](https://github.com/Sendspin/sendspin-cpp) client, and each
 item below is a follow-up task that fills in one part of the player.
 
-The shape to aim for is [squeezelite](https://github.com/ralph-irving/squeezelite): a
-headless endpoint that advertises itself, is discovered, and is driven remotely, with a
-small flag set for identity, output, discovery, logging, and daemonization.
+The goal is a headless endpoint that advertises itself, is discovered, and is driven
+remotely, with a small flag set for identity, output, discovery, logging, and
+daemonization.
 
 ## What the scaffold already does
 
@@ -21,7 +21,7 @@ small flag set for identity, output, discovery, logging, and daemonization.
   auto-detected ALSA (item 2), PortAudio (item 3), PulseAudio (item 18) and PipeWire
   (item 19) backends, with the device-less null/stdout sink as the fallback, so the
   binary still runs where there is no sound card.
-- Parses the squeezelite-style flag surface: `-o -l -n -s -z -P -d -f --port --buffer-ms
+- Parses the command-line flag surface: `-o -l -n -s -z -P -d -f --port --buffer-ms
   --no-mdns --mdns-name --help --version`, validating every value at parse time and
   refusing to start on a bad one (item 1).
 - Runs as a real daemon: `-z` forks and detaches, `-P` holds a locked pidfile that refuses a
@@ -111,8 +111,8 @@ The default Linux and Docker backend. In a container this needs only
 - Underrun (`-EPIPE`) recovery via `snd_pcm_prepare()`, and suspend (`-ESTRPIPE`) via
   `snd_pcm_resume()` with a `prepare()` fallback. Anything either of those cannot clear is
   device loss, handled through `SinkRecovery` — see item 14.
-- Device enumeration for `-l` through `snd_device_name_hint()`, and `-o <any PCM name>`
-  — squeezelite's model, with `null` / `stdout` / `-` still reserved. `-o` defaults to
+- Device enumeration for `-l` through `snd_device_name_hint()`, and `-o <any PCM name>`,
+  with `null` / `stdout` / `-` still reserved. `-o` defaults to
   `default` wherever the backend is compiled in.
 - Software volume: Q32 fixed-point sample scaling. The taper started as upstream's quadratic
   one and is now the spec's `(volume/100)^1.5` (item 7). Item 3 moved it to `src/pcm_volume.{h,cpp}`
@@ -122,7 +122,7 @@ The default Linux and Docker backend. In a container this needs only
 **Not in this slice.** Three things were deliberately left out; each is now tracked on
 the item that owns it, rather than as a loose follow-up here:
 
-- The **ALSA hardware mixer** (`snd_mixer_*`, squeezelite's `-V`) → item 15. Software
+- The **ALSA hardware mixer** (`snd_mixer_*`) → item 15. Software
   scaling was chosen first because the usual `default` device here is PipeWire's ALSA
   plugin, where a hardware mixer element either does not exist or moves something other
   than this stream. A hardware path is worth having for `hw:` output, where it is the
@@ -239,7 +239,7 @@ were unreachable by construction.
   periods (so the default is the 100 ms ring / 20 ms period it has always been); PortAudio
   makes it the ring, where the 3× `outputLatency` and 1024-frame floors still win and say
   at `debug` which of the two did. Validated at parse time and hard-failing, per item 1.
-  Deliberately **not** squeezelite's `-a`: that flag's `<b>:<p>:<f>:<m>` grammar is
+  Deliberately not using an ALSA-specific `<b>:<p>:<f>:<m>` buffer grammar: it is
   ALSA-only, and two of its four subfields are already fixed here — the format is
   negotiated from the stream and the access mode is pinned to interleaved. One flag with
   two grammars per backend is the failure `src/audio_sink.h` already refuses for `-o`, so
@@ -633,7 +633,7 @@ The player could only be driven by a remote controller, and `CMakeLists.txt` pin
 clients, which this daemon does not do". That was wrong, and it was the thing blocking this
 item: `controller@v1` carries the transport verbs for the group this client is *part of*, and
 the `player` role has none of them — only this endpoint's own volume, mute and static delay.
-So the role is now on, and the deliberate addition to the squeezelite model lands here.
+So the role is now on, and local control lands here.
 
 **Shipped** in `src/control.h`, `src/control_common.cpp`, `src/control_socket.cpp`,
 `src/control_client.cpp`, `src/cli.{h,cpp}`, `src/main.cpp`, `src/player_listener.{h,cpp}`,
@@ -648,8 +648,8 @@ So the role is now on, and the deliberate addition to the squeezelite model land
   a protocol command with no subcommand behind it fails the suite.
 - **`vol` is *group* volume**, and `status` prints `group volume` and `player volume` as two
   named lines rather than one `volume:`. The server spreads a group volume across the group and
-  clamps per player, so a squeezelite refugee's expectation that `vol 50` moves *this* box is
-  wrong, and one ambiguous line would leave them unable to see that. `switch` is documented for
+  clamps per player, so `vol 50` does not move only this box. One ambiguous line would leave
+  that unclear. `switch` is documented for
   what the spec's switch cycle does — re-home this client between groups — not as the "switch
   playback source" its library comment suggests.
 - **No thread and no command queue.** `ControlSocket::poll(now_ms)` runs from the main loop
@@ -2413,7 +2413,7 @@ this, and two things commonly assumed about it are wrong — the flag checked in
   is the outbound discovery path, not the inbound listener.
 
 **The flag, settled.** `--interface <name-or-address>` (config key `interface`), long-only
-like the other non-squeezelite flags. **One value has to yield both halves** — the bind
+like the other long-only flags. **One value has to yield both halves** — the bind
 needs an *address*, `DNSServiceRegister` needs an *index* — and a name is what an operator
 on a Pi actually knows, while the address is the thing a DHCP lease changes underneath
 them. That makes this a deliberate superset of Python's address-only flag rather than a

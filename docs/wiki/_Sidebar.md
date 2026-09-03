@@ -13,6 +13,7 @@
 - [Configuration](Configuration)
 - [Controlling the Player](Controlling-the-Player)
 - [Running as a Service](Running-as-a-Service)
+- [Advanced Usage](Advanced-Usage)
 
 **When it misbehaves**
 
@@ -21,6 +22,6 @@
 ---
 
 - [Repository](https://github.com/Sendspin/sendspin-cpp-cli)
-- [README](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/README.md)
+- [Contributing](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/contributors.md)
 - [Roadmap](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/docs/ROADMAP.md)
 - [Releases](https://github.com/Sendspin/sendspin-cpp-cli/releases)

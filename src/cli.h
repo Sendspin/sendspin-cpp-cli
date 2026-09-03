@@ -13,7 +13,7 @@
 // limitations under the License.
 
 /// @file cli.h
-/// @brief squeezelite-style command line surface for sendspin-cli
+/// @brief Command line surface for sendspin-cli
 
 #pragma once
 
@@ -125,8 +125,8 @@ enum class Opt : unsigned {
 
 /// @brief Everything the flag surface configures.
 ///
-/// The short flags deliberately mirror squeezelite's, so anyone who runs a Lyrion
-/// endpoint can drive this one from muscle memory.
+/// The short flags follow the conventions of common headless players, so anyone who
+/// runs one can drive this one from muscle memory.
 struct Options {
     std::string device{DEFAULT_OUTPUT_DEVICE};  ///< -o <device>: audio output backend
     bool list_devices{false};    ///< -l: list output devices and exit
@@ -152,17 +152,17 @@ struct Options {
     std::string logfile;         ///< -f <path>: send log output to this file
     sendspin::LogLevel log_level{sendspin::LogLevel::INFO};  ///< -d [<category>=]<level>
 
-    /// --port <port>: the port our own WebSocket server listens on. Not a squeezelite
-    /// flag -- a sendspin player is dialled *by* the server, so the listen port is part
-    /// of its identity. Long-only, to leave -p free for squeezelite's priority flag.
+    /// --port <port>: the port our own WebSocket server listens on. Not a conventional
+    /// player flag -- a sendspin player is dialled *by* the server, so the listen port is part
+    /// of its identity. Long-only, to leave -p free.
     uint16_t port{sendspin::SendspinClientConfig::DEFAULT_SERVER_PORT};
 
     /// --buffer-ms <ms>: how much audio the output backend keeps buffered, MIN_BUFFER_MS to
-    /// MAX_BUFFER_MS. One figure for every backend, which is why it is not squeezelite's
-    /// `-a`: that flag's `<b>:<p>:<f>:<m>` grammar is ALSA-only, and two of its four
+    /// MAX_BUFFER_MS. One figure for every backend, which is why it is not an ALSA-specific
+    /// `<b>:<p>:<f>:<m>` grammar: that shape is ALSA-only, and two of its four
     /// subfields are already fixed here -- the format is negotiated from the stream and the
     /// access mode is pinned to interleaved. Long-only for the same reason as --port, so no
-    /// squeezelite letter is squatted.
+    /// short letter is squatted.
     ///
     /// A request rather than a promise: a device-less sink (`null`, `stdout`) has nothing to
     /// size and ignores it, and PortAudio's device-latency floor overrides a figure too

@@ -156,7 +156,7 @@ nothing for a player running as you.
   entirely, and a fixed endpoint deserves a cable.
 - **Underruns on a busy Pi** show as clicks or dropouts. Raise the buffer:
   `buffer-ms = 250` in the config. The default is 100 ms and the range is 10–2000; see
-  [Buffering, and what gets advertised](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/README.md#buffering-and-what-gets-advertised).
+  [Advanced usage](Advanced-Usage#buffering-and-stream-hooks).
 - **`avahi-daemon` is what provides mDNS on a Pi**, and Raspberry Pi OS ships it running. If
   you have turned it off, the player warns and retries rather than failing — but nothing will
   discover it until it is back.

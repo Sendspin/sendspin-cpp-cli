@@ -440,6 +440,7 @@ if(SENDSPIN_CLI_IS_TOP_LEVEL)
     # of it.
     install(FILES
         README.md
+        contributors.md
         LICENSE
         packaging/sendspin-cli.conf.example
         DESTINATION ${SENDSPIN_CLI_DOC_DIR}

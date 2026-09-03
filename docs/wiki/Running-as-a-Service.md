@@ -34,7 +34,7 @@ the unit runs as, out of a declaration installed beside the unit, and a tarball 
 | `/usr/local/bin/sendspin-cli` | the binary |
 | `/usr/local/lib/systemd/system/sendspin-cli.service` | the unit |
 | `/usr/local/lib/sysusers.d/sendspin-cli.conf` | the account the unit runs as, declared |
-| `/usr/local/share/doc/sendspin-cli/README.md` | the reference |
+| `/usr/local/share/doc/sendspin-cli/README.md` | quick-start and wiki links |
 | `/usr/local/share/doc/sendspin-cli/LICENSE` | Apache 2.0 |
 | `/usr/local/share/doc/sendspin-cli/sendspin-cli.conf.example` | an annotated config |
 
@@ -180,8 +180,8 @@ Read the installed unit for the full block. Three operator-visible edges:
   [`docs/ROADMAP.md`](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/docs/ROADMAP.md)
   item 10.
 
-The full argument for every directive, and the `systemd-analyze security` figures, are in
-[The systemd unit](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/README.md#the-systemd-unit).
+Every directive the unit sets is listed above; `systemd-analyze security sendspin-cli`
+reports what your own systemd version makes of it.
 
 ### Changing any of it
 
@@ -225,7 +225,7 @@ saying why".
 
 Lines are not timestamped by the player under systemd, because journald already stamps them
 and a second one would be noise. Only a `-f` logfile gets our own timestamp. See
-[Logging](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/README.md#logging).
+[Advanced usage](Advanced-Usage#logging-and-background-operation).
 
 ## A user unit instead
 
