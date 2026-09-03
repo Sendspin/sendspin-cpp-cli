@@ -4,10 +4,6 @@ A headless **Sendspin audio player** for Linux and macOS. It advertises itself o
 mDNS, waits for a Sendspin server to find it, and plays what it is sent in sync with
 every other player in the group.
 
-> **Status: early scaffold.** The player works; not everything on the roadmap is built.
-> [`docs/ROADMAP.md`](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/docs/ROADMAP.md)
-> is the honest list of what is and is not done.
-
 ## Start here
 
 | | |

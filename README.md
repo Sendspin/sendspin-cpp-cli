@@ -8,9 +8,6 @@ Sendspin server finds it, and it plays synchronized audio with the rest of your 
 
 It runs on Linux and Apple-silicon macOS. On Linux, it can also run as a system service.
 
-> **Status: early scaffold.** The player works, but not every planned feature is
-> available yet. See the [roadmap](docs/ROADMAP.md) for the current status.
-
 ## How can I run it?
 
 ### Linux and Raspberry Pi
