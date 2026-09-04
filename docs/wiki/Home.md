@@ -1,15 +1,8 @@
 # sendspin-cli
 
-A headless **Sendspin audio player** for Linux and macOS — what squeezelite is to
-Lyrion/Logitech Media Server, `sendspin-cli` is to the
-[Sendspin](https://github.com/Sendspin/spec) protocol. It advertises itself over mDNS,
-waits for a Sendspin server to find it, plays what it is sent in sync with every other
-player in the group, and takes its flags and its ergonomics from squeezelite so that
-muscle memory carries over.
-
-> **Status: early scaffold.** The player works; not everything on the roadmap is built.
-> [`docs/ROADMAP.md`](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/docs/ROADMAP.md)
-> is the honest list of what is and is not done.
+A headless **Sendspin audio player** for Linux and macOS. It advertises itself over
+mDNS, waits for a Sendspin server to find it, and plays what it is sent in sync with
+every other player in the group.
 
 ## Start here
 
@@ -21,6 +14,7 @@ muscle memory carries over.
 | [Configuration](Configuration) | The config file, and what the player remembers by itself |
 | [Controlling the Player](Controlling-the-Player) | `sendspin-cli pause` and the other thirteen subcommands |
 | [Running as a Service](Running-as-a-Service) | The systemd unit, the account it runs as, drop-ins, and reading the log |
+| [Advanced Usage](Advanced-Usage) | Connection modes, output selection, logging, buffering, and stream hooks |
 | [Troubleshooting](Troubleshooting) | It starts and makes no sound, and the rest |
 
 ## What it does, in one screen
@@ -34,8 +28,7 @@ I mdns: advertising _sendspin._tcp as "living-room" on port 8928 (path /sendspin
 That is the whole of the usual setup: nothing to configure on either end. A Sendspin
 server discovers the advertisement and dials in. `-s <server>` inverts it and makes this
 player the one dialling, which the protocol treats as the other of two mutually exclusive
-modes — see
-[The two connection modes](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/README.md#the-two-connection-modes).
+modes — see [Connection modes](Advanced-Usage#connection-modes).
 
 Audio goes out through ALSA (the Linux default) or PortAudio (the cross-platform one, and
 the only way to make noise on macOS), with volume applied in software on a curve the spec
@@ -68,12 +61,9 @@ Anything else builds from source.
 
 ## Where things live
 
-- **[`README.md`](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/README.md)** is
-  the reference, and ships inside every archive at
-  `usr/local/share/doc/sendspin-cli/README.md`. It explains *why* the player behaves as it
-  does — the two connection modes, how `-o` resolves its argument, why `vol` is the group's
-  volume and not this box's. These wiki pages link into it rather than restating it, so
-  there is one copy of each argument and it is the copy an offline tarball holder also has.
+- The [wiki](Home) is the complete end-user reference. It covers installation,
+  configuration, local control, services, troubleshooting, and
+  [advanced usage](Advanced-Usage).
 - **[`docs/ROADMAP.md`](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/docs/ROADMAP.md)**
   is what is built, what is not, and what was actually tested rather than reasoned about.
 - **`sendspin-cli --help`** is the flag reference, and the config file's reference too:

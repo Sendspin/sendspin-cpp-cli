@@ -57,7 +57,7 @@ constexpr uint16_t DEFAULT_REMOTE_SERVER_PORT = 8927U;
 constexpr const char* USERINFO_MASK = "***";
 
 /// Long-only option values, picked outside the short-option alphabet so `-V`/`-p` stay
-/// unclaimed for squeezelite's own meanings.
+/// unclaimed for future use.
 enum LongOnly {
     OPT_VERSION = 0x100,
     OPT_PORT,
@@ -210,7 +210,7 @@ std::string offending_option(char* const argv[], int index) {
     return word;
 }
 
-/// Maps a level name onto the library's LogLevel. Accepts squeezelite's vocabulary
+/// Maps a level name onto the library's LogLevel. Accepts the common vocabulary
 /// (info, debug, sdebug) as well as the library's own names.
 bool parse_log_level(const char* str, LogLevel& level) {
     if (std::strcmp(str, "none") == 0 || std::strcmp(str, "off") == 0) {
@@ -231,7 +231,7 @@ bool parse_log_level(const char* str, LogLevel& level) {
     return true;
 }
 
-/// Accepts squeezelite's `-d <category>=<level>` shape.
+/// Accepts a `-d <category>=<level>` shape.
 ///
 /// The category is parsed and ignored, and stays that way: sendspin-cpp logs through
 /// `fprintf(stderr)` macros gated on one global int with no sink or filter hook, so raising
@@ -599,7 +599,7 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
     static const struct option long_opts[] = {
         {"help", no_argument, nullptr, 'h'},
         {"version", no_argument, nullptr, OPT_VERSION},
-        // Long aliases for the six squeezelite letters, routed to the same handlers. They exist so
+        // Long aliases for the six short letters, routed to the same handlers. They exist so
         // every config key is a flag name: one vocabulary, and --help stays the config reference.
         {"output", required_argument, nullptr, 'o'},
         {"name", required_argument, nullptr, 'n'},
@@ -1108,8 +1108,8 @@ void print_usage(std::FILE* out, const char* prog) {
     std::fprintf(out, "  -d, --log-level <level>\n");
     std::fprintf(out, "                Log level: none, error, warn, info, debug, verbose\n");
     std::fprintf(out, "                One level for this player and the sendspin library\n");
-    std::fprintf(out, "                together. Accepts squeezelite's <category>=<level>\n");
-    std::fprintf(out, "                shape, but the category is ignored: every line is\n");
+    std::fprintf(out, "                together. Accepts a <category>=<level> shape, but the\n");
+    std::fprintf(out, "                category is ignored: every line is\n");
     std::fprintf(out, "                '<L> <tag>: <message>', so filter it with grep\n");
     std::fprintf(out, "  -f, --logfile <path>\n");
     std::fprintf(out, "                Write log output to <path> instead of stderr, with a\n");

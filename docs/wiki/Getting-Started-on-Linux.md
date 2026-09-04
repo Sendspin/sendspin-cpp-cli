@@ -121,7 +121,7 @@ output = hw:1,0
 ```
 
 Three forms are worth knowing, and there are more in
-[Choosing an output](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/README.md#choosing-an-output):
+[Choosing an output](Advanced-Usage#choosing-an-output):
 
 | Value | What it means |
 |---|---|
@@ -175,7 +175,7 @@ server = mdns:Music Assistant  # or discover one by its advertised name
 
 Any `server` value turns the mDNS advertisement off. That is the spec's rule rather than a
 preference here, and the two modes are mutually exclusive by design — see
-[The two connection modes](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/README.md#the-two-connection-modes).
+[Connection modes](Advanced-Usage#connection-modes).
 
 ## Next
 

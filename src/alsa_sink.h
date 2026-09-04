@@ -36,7 +36,7 @@ namespace sendspin_cli {
 ///
 /// The device string is an ALSA PCM name exactly as `aplay -L` prints it -- `default`,
 /// `pipewire`, `hw:2,0`, `plughw:1,0`, `hdmi:CARD=NVidia,DEV=0`. Anything `-o` does not
-/// reserve for the device-less sinks is handed here, which is squeezelite's model.
+/// reserve for the device-less sinks is handed here, which is the conventional model.
 ///
 /// THREAD SAFETY: an snd_pcm_t is not thread-safe, so every snd_pcm_* call is made under
 /// device_mutex_. write() runs on the sync task's background thread while configure(),

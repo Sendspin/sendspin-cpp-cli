@@ -1,8 +1,8 @@
 # Controlling the Player
 
-The player listens on a **Unix socket**, and the same binary is its own client. This is the
-deliberate addition to the squeezelite model: `sendspin-cli pause` on the player's own host
-drives it, with no server and no controller app in the loop.
+The player listens on a **Unix socket**, and the same binary is its own client:
+`sendspin-cli pause` on the player's own host drives it, with no server and no controller
+app in the loop.
 
 ```console
 $ sendspin-cli status
@@ -56,9 +56,9 @@ own player role.
 ## Three that are easy to misread
 
 **`vol` is the *group* volume, not this box's output level.** It goes to the server, which
-spreads it across every player in the group and clamps it per player. A squeezelite refugee
-will expect `vol 50` to move *this* box, and it does not — which is why `status` prints
-`group volume` and `player volume` as two named lines rather than one ambiguous `volume:`.
+spreads it across every player in the group and clamps it per player. It does not change
+only this box, which is why `status` prints `group volume` and `player volume` as two named
+lines rather than one ambiguous `volume:`.
 
 **`switch` is not a source selector.** Per the spec's switch cycle it re-homes this client
 between the groups available to it. It sits next to `play` and `pause` and means something
@@ -84,7 +84,8 @@ Changing it mid-stream re-times chunk scheduling, so expect a brief resync — s
 stopped where you can.
 
 The long version of all three is in
-[The local control channel](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/README.md#the-local-control-channel).
+[Every subcommand](Controlling-the-Player#every-subcommand) above, and in
+`sendspin-cli --help`.
 
 ## Reading `status`
 

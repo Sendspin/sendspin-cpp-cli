@@ -729,6 +729,7 @@ jobs:
             echo usr/local/bin/sendspin-cli
             echo usr/local/share/doc/sendspin-cli/LICENSE
             echo usr/local/share/doc/sendspin-cli/README.md
+            echo usr/local/share/doc/sendspin-cli/contributors.md
             echo usr/local/share/doc/sendspin-cli/sendspin-cli.conf.example
             # Installed on Linux alone: a systemd unit, and the account declaration it needs,
             # are both files a Mac can only ignore.
@@ -1015,6 +1016,7 @@ jobs:
             echo bin/sendspin-cli
             echo share/doc/sendspin-cli/LICENSE
             echo share/doc/sendspin-cli/README.md
+            echo share/doc/sendspin-cli/contributors.md
             echo share/doc/sendspin-cli/sendspin-cli.conf.example
           } | sort >"$expected"
 

@@ -412,8 +412,8 @@ TEST(ParseOptions, StaticDelayIsListedByHelpAsAFirstRunDefault) {
 }
 
 TEST(ParseOptions, BufferMsDoesNotClaimDashA) {
-    // squeezelite's -a is deliberately left unclaimed: its <b>:<p>:<f>:<m> grammar is
-    // ALSA-only, and two of its four subfields are already fixed here.
+    // -a is deliberately left unclaimed: an ALSA-only <b>:<p>:<f>:<m> grammar,
+    // and two of its four subfields are already fixed here.
     Parse parse({"-a", "100"});
 
     EXPECT_FALSE(parse.ok());
@@ -432,7 +432,7 @@ TEST(ParseOptions, LogLevelNames) {
         {"warn", LogLevel::WARN},   {"warning", LogLevel::WARN},
         {"info", LogLevel::INFO},   {"debug", LogLevel::DEBUG},
         {"verbose", LogLevel::VERBOSE},
-        // squeezelite's own name for the loudest level.
+        // The conventional name for the loudest level.
         {"sdebug", LogLevel::VERBOSE},
     };
 
@@ -445,7 +445,7 @@ TEST(ParseOptions, LogLevelNames) {
 }
 
 TEST(ParseOptions, LogCategoryIsAcceptedAndWarnedAboutWithSomethingToDoInstead) {
-    // squeezelite's -d <category>=<level> shape. sendspin-cpp gates every line on one global
+    // The -d <category>=<level> shape. sendspin-cpp gates every line on one global
     // int with no sink hook, so the category is parsed, ignored, and said out loud -- and the
     // warning has to leave the user somewhere to go, which is the per-line tag plus grep.
     Parse parse({"-d", "slimproto=info"});

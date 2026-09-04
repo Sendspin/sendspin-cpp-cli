@@ -14,7 +14,7 @@ Everything published is on the
 carries all six archives. Per-commit builds of unreleased work are under the repository's
 Actions tab and expire after 14 days — five archives per commit there, `linux-armv6` being
 built by a workflow of its own rather than on every push. See
-[CI](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/README.md#ci).
+[the Actions tab](https://github.com/Sendspin/sendspin-cpp-cli/actions).
 
 ## What is in the archive
 
@@ -30,6 +30,7 @@ sendspin-cli-0.1.0-linux-arm64/
     ├── lib/sysusers.d/sendspin-cli.conf                    # Linux only
     └── share/doc/sendspin-cli/
         ├── README.md
+        ├── contributors.md
         ├── LICENSE
         └── sendspin-cli.conf.example
 ```
@@ -129,12 +130,8 @@ to check. Whether you notice depends entirely on the quarantine flag, which `tar
 xattr -d com.apple.quarantine ./sendspin-cli-0.1.0-macos-arm64/usr/local/bin/sendspin-cli
 ```
 
-The full picture — including why `sudo installer` is not gated at all, and why the `.pkg`
-exists despite not fixing Gatekeeper — is in
-[macOS, and Gatekeeper](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/README.md#macos-and-gatekeeper)
-and
-[The macOS installer `.pkg`](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/README.md#the-macos-installer-pkg).
-A Developer ID signature and notarization are owed and tracked as roadmap item 10.
+A Developer ID signature and notarization are owed and tracked as roadmap item 10, so
+`sudo installer` and the tarball are both affected until that lands.
 
 There is no launchd job in the payload. On macOS the player runs from a shell or under a
 launch agent you write.
@@ -188,8 +185,8 @@ sudo cmake --install build --component sendspin-cli
 `--component sendspin-cli` is not garnish — without it, `cmake --install` also stages 143
 files belonging to a fetched dependency. The prefix is fixed at *configure* time because
 the unit's `ExecStart` names it absolutely, so reconfigure rather than passing
-`--install --prefix`. Both points, at length, in
-[Install](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/README.md#install).
+`--install --prefix`. Building from source is covered in
+[contributors.md](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/contributors.md).
 
 ## Next
 
