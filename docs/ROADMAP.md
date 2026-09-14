@@ -1090,11 +1090,14 @@ operator to choose between `Type=simple` and `Type=forking` and write the unit t
   `ProtectHome=`, `PrivateTmp=`, `NoNewPrivileges=`, an empty `CapabilityBoundingSet=`,
   `RestrictSUIDSGID=`, the `Protect*=` kernel family, `ProtectProc=invisible`,
   `RestrictNamespaces=`, `LockPersonality=`, `MemoryDenyWriteExecute=`,
-  `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`, `SystemCallArchitectures=native` and
-  `SystemCallFilter=@system-service`. Two of those needed more than "it booted". `AF_NETLINK`
-  is left out because glibc's interface probe falls back when it cannot open one, which was
-  settled by running browse, resolve, the A-record query behind a `ws://` URL and a dial by
-  hostname that really connected — all under the restriction. And `@system-service` covers
+  `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK`,
+  `SystemCallArchitectures=native` and `SystemCallFilter=@system-service`. Two of those needed
+  more than "it booted". `AF_NETLINK` is in the list because glibc's `getifaddrs()` has no way
+  to read the interface list without it, and that list is where the library finds the MAC it
+  derives the default client id from: without the family a player with no `id` says hello with
+  an empty `client_id`, which Music Assistant refuses with `No key provided`. Booting, browse,
+  resolve and a dial all succeed either way, so CI asserts the hello itself — a connection to
+  the hardened unit has to be greeted with a non-empty `client_id`. And `@system-service` covers
   every syscall `libasound` imports, `ioctl`, `mmap`, `mlock` and the SysV IPC calls `dmix`
   uses included, read off the shipped library's own import table rather than assumed, which is
   what keeps the audio path from being the thing that directive is gambling on.
