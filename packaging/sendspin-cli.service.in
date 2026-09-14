@@ -73,10 +73,11 @@ Type=simple
 User=sendspin-cli
 
 # Hardening. Every directive below was run rather than copied: with it in place the unit starts,
-# the control socket answers `status`, the WebSocket port accepts a connection, the mDNS
-# advertisement reaches avahi-daemon, `delay` lands in a 0600 state file that survives a restart,
-# the unit comes back after SIGKILL, and `systemctl stop` leaves Result=success. What could not
-# be tried is named at the end of this block instead of guessed at.
+# the control socket answers `status`, the WebSocket port greets a connection with a client/hello
+# whose client_id is the MAC-derived default, the mDNS advertisement reaches avahi-daemon, `delay`
+# lands in a 0600 state file that survives a restart, the unit comes back after SIGKILL, and
+# `systemctl stop` leaves Result=success. What could not be tried is named at the end of this
+# block instead of guessed at.
 #
 # No privilege to gain, none to keep, and none to hand on: an unprivileged service starts with
 # an empty capability set anyway, and these make that the kernel's rule rather than a
@@ -117,11 +118,15 @@ LockPersonality=yes
 MemoryDenyWriteExecute=yes
 
 # AF_UNIX for the control socket and for the avahi socket the mDNS compatibility layer dials,
-# AF_INET and AF_INET6 for the WebSocket server and for an -s dial. AF_NETLINK is deliberately
-# absent: glibc probes the interface list over it and falls back cleanly when it cannot, which
-# was checked rather than assumed -- browse, resolve, the A-record query behind a ws:// URL, and
-# a dial by hostname that really connected all work without it.
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# AF_INET and AF_INET6 for the WebSocket server and for an -s dial. AF_NETLINK because glibc's
+# getifaddrs() reads the interface list over it and has no other way to: without it the call
+# fails outright, and that list is where the library finds the MAC it derives the default client
+# id from. A player with no `id` then says hello with an empty one, which a server has nothing to
+# file it under. rtnetlink, the protocol getifaddrs() speaks, refuses every change to an interface
+# or a route without CAP_NET_ADMIN, which the empty bounding set above rules out. The family admits
+# the other netlink protocols as well -- socket diagnostics and device events among them -- and
+# no directive narrows it to NETLINK_ROUTE.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 
 # @system-service covers every syscall libasound imports, ioctl, mmap, mlock and the SysV IPC
 # calls dmix uses included -- checked against the shipped library's own import table, so the

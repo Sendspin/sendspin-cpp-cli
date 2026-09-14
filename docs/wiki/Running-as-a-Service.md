@@ -165,7 +165,7 @@ Two things are worth checking before the upgrade, and both come from the hardeni
 ### What is hardened
 
 The unit carries `ProtectSystem=strict`, `NoNewPrivileges=`, an empty
-`CapabilityBoundingSet=`, `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`,
+`CapabilityBoundingSet=`, `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK`,
 `SystemCallFilter=@system-service` and the `Protect*=` family, each commented where it sits.
 Read the installed unit for the full block. Three operator-visible edges:
 

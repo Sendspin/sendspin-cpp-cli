@@ -890,15 +890,110 @@ jobs:
           state=$(stat -c '%U %a' /var/lib/sendspin-cli/state 2>/dev/null)
           [ "$state" = 'sendspin-cli 600' ] || fail "the state file is '$state', not 'sendspin-cli 600'"
 
+          # Scoped to this invocation rather than `-u sendspin-cli`, which prints every start the
+          # unit has ever had: a run that failed would otherwise be judged by the lines an earlier
+          # one logged. A fail-open gate is worse than no gate.
+          invocation=$(systemctl show -p InvocationID --value sendspin-cli)
+          [ -n "$invocation" ] || fail 'the unit reports no invocation id to scope the journal to'
+
+          # The identity a server files this player under. With no `id` in the config -- and the
+          # one above sets none, which is what this depends on -- the library derives client_id
+          # from the interface MAC, read through getifaddrs(), which needs AF_NETLINK. It does that
+          # only while building client/hello, and only when a connection arrives, so nothing
+          # before this point has exercised it: booting, the socket and mDNS all work without the
+          # family. An inbound connection is sent its hello straight after the upgrade, unasked,
+          # so a bare WebSocket handshake is enough to get one.
+          #
+          # Two gates, because each is blind where the other is not. An empty client_id is what
+          # Music Assistant refuses, and checking for it survives a library that rewords its log;
+          # the journal line survives a library that answers a failed detection with some other
+          # non-empty id, which the first gate would wave through. Port 8928 is the default, and
+          # the config sets no other.
+          python3 - <<'EOF' || fail 'the hardened unit did not greet a connection with a non-empty client_id'
+          import base64, json, os, socket, sys, time
+
+          # The control socket appearing says nothing about the WebSocket port, so the connect
+          # is retried rather than assumed.
+          deadline = time.monotonic() + 20
+          while True:
+              try:
+                  sock = socket.create_connection(("127.0.0.1", 8928), timeout=5)
+                  break
+              except OSError as err:
+                  if time.monotonic() > deadline:
+                      sys.exit(f"nothing accepted a connection on port 8928: {err}")
+                  time.sleep(0.2)
+          sock.settimeout(10)
+
+          buffered = b""
+
+          def read(count):
+              global buffered
+              while len(buffered) < count:
+                  chunk = sock.recv(65536)
+                  if not chunk:
+                      sys.exit("the player closed the connection before sending client/hello")
+                  buffered += chunk
+              out, buffered = buffered[:count], buffered[count:]
+              return out
+
+          key = base64.b64encode(os.urandom(16)).decode()
+          sock.sendall(
+              "GET /sendspin HTTP/1.1\r\nHost: 127.0.0.1:8928\r\nUpgrade: websocket\r\n"
+              f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+              .encode()
+          )
+          response = b""
+          while not response.endswith(b"\r\n\r\n"):
+              response += read(1)
+          status = response.split(b"\r\n", 1)[0].decode(errors="replace")
+          if status.split()[1:2] != ["101"]:
+              sys.exit(f"the WebSocket upgrade was refused: {status}")
+
+          # The first complete text message. Frames from a server are unmasked; control and
+          # binary frames are skipped rather than mistaken for it.
+          message = b""
+          while True:
+              first, second = read(2)
+              length = second & 0x7F
+              if length == 126:
+                  length = int.from_bytes(read(2), "big")
+              elif length == 127:
+                  length = int.from_bytes(read(8), "big")
+              payload = read(length)
+              opcode = first & 0x0F
+              if opcode == 0x8:
+                  sys.exit("the player sent a close frame before client/hello")
+              if opcode in (0x0, 0x1):
+                  message += payload
+                  if first & 0x80:
+                      break
+
+          hello = json.loads(message)
+          if hello.get("type") != "client/hello":
+              sys.exit(f"the first message was {hello.get('type')!r}, not client/hello")
+          client_id = hello.get("payload", {}).get("client_id")
+          if not client_id:
+              sys.exit("client/hello carried an empty client_id")
+          print(f"client/hello carried client_id {client_id}")
+          EOF
+
+          # --sync returns only once everything logged before it is in the journal, so a line
+          # still on its way from the player's stderr cannot slip past the grep. An absence proves
+          # nothing about a journal that came back empty, so the startup line has to be there
+          # first.
+          sudo journalctl --sync
+          journalctl "_SYSTEMD_INVOCATION_ID=$invocation" --no-pager >journal.log
+          grep -q 'listening on port 8928' journal.log ||
+            fail "this invocation's journal is missing the player's startup line, so its silence proves nothing"
+          if grep -q 'getifaddrs failed' journal.log; then
+            fail 'getifaddrs() failed under the hardening block, so the client id was not MAC-derived'
+          fi
+
           # Only on the leg that started a real avahi-daemon above, and the one claim the rest of
-          # this step cannot make: that RestrictAddressFamilies= without AF_NETLINK still reaches
-          # the daemon over AF_UNIX. Registration is asynchronous, so it is waited for.
+          # this step cannot make: that RestrictAddressFamilies= still lets the player reach the
+          # daemon over AF_UNIX. Registration is asynchronous, so it is waited for.
           if [ "$AVAHI" = 'true' ]; then
-            # Scoped to this invocation rather than `-u sendspin-cli`, which prints every start
-            # the unit has ever had: a run that failed to advertise would otherwise match the
-            # line an earlier one logged and pass. A fail-open gate is worse than no gate.
-            invocation=$(systemctl show -p InvocationID --value sendspin-cli)
-            [ -n "$invocation" ] || fail 'the unit reports no invocation id to scope the journal to'
             for _ in $(seq 1 100); do
               journalctl "_SYSTEMD_INVOCATION_ID=$invocation" --no-pager >journal.log
               if grep -q 'mdns: advertising _sendspin\._tcp' journal.log; then break; fi

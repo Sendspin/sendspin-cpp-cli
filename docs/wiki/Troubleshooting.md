@@ -134,6 +134,43 @@ regardless, a drop-in with `ReadWritePaths=/var/log` is the way back.
 
 **A device that will not open.** See above.
 
+## The server finds it and will not take it
+
+Under the system unit, and not when you run the player from your own shell:
+
+```
+W sendspin.network_info: getifaddrs failed; cannot auto-detect MAC address
+```
+
+with the server failing on the new player in its own log — Music Assistant reports
+`No key provided` from `_handle_client_added`.
+
+With no `id` in the config, the player's identity is the MAC address of its network interface,
+and glibc reads the interface list over a netlink socket. The unit in 0.1.6 and earlier does not
+allow one, so the player says hello with an empty id and the server has nothing to file it
+under. Add the family with a drop-in:
+
+```bash
+sudo systemctl edit sendspin-cli
+```
+
+```ini
+[Service]
+RestrictAddressFamilies=AF_NETLINK
+```
+
+```bash
+sudo systemctl restart sendspin-cli
+```
+
+A repeated `RestrictAddressFamilies=` adds to the unit's list rather than replacing it, so that
+one family is the whole of the drop-in, and it stays harmless once an upgrade's unit carries
+the family itself.
+
+Setting `id = living-room` in `/etc/sendspin-cli.conf` also gets the player taken, but as a
+different player from the one a run from your shell registers: the server files it under that
+id rather than under the MAC.
+
 ## Nothing discovers it
 
 ### Check it is advertising
