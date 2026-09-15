@@ -666,8 +666,10 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
             fail("a subcommand has to come first: '" + std::string(argv[0]) + " " + word +
                  " [flags]', not after the flags");
         } else {
-            fail("unexpected argument '" + word + "' -- this player takes flags and one optional "
-                 "subcommand (" + control_subcommand_list() + ")");
+            fail("unexpected argument '" + word +
+                 "' -- this player takes flags and one optional "
+                 "subcommand (" +
+                 control_subcommand_list() + ")");
         }
     }
 
@@ -721,7 +723,8 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
                      "discover a server. Rebuild with dns_sd.h available "
                      "(libavahi-compat-libdnssd-dev on Debian/Ubuntu, "
                      "avahi-compat-libdns_sd-devel on Fedora), or drop -s and point a server at "
-                     "ws://<this-host>:" + std::to_string(out.port) + SENDSPIN_PATH + ".");
+                     "ws://<this-host>:" +
+                         std::to_string(out.port) + SENDSPIN_PATH + ".");
 #endif
         }
     }

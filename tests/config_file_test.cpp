@@ -38,8 +38,8 @@ using sendspin::LogLevel;
 class ScratchDir {
 public:
     ScratchDir() {
-        this->path_ = "config-test-" + std::to_string(getpid()) + "-" +
-                      std::to_string(ScratchDir::next_id());
+        this->path_ =
+            "config-test-" + std::to_string(getpid()) + "-" + std::to_string(ScratchDir::next_id());
         this->created_ = ::mkdir(this->path_.c_str(), 0700) == 0;
     }
 
@@ -306,8 +306,8 @@ TEST(ConfigPrecedence, AcceptsEveryBooleanSpelling) {
 // The long aliases, so every config key is a flag name
 
 TEST(LongAliases, EachBehavesExactlyLikeItsLetter) {
-    std::vector<std::string> args = {"--output",  "null",           "--name",      "kitchen",
-                                     "--pidfile", "/run/x.pid",     "--logfile",   "/var/log/x.log",
+    std::vector<std::string> args = {"--output",    "null",       "--name",    "kitchen",
+                                     "--pidfile",   "/run/x.pid", "--logfile", "/var/log/x.log",
                                      "--log-level", "debug"};
 #ifdef SENDSPIN_CLI_HAVE_MDNS
     // --server only parses in a build that can discover a server.

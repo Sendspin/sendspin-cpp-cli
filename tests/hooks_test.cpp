@@ -88,8 +88,7 @@ TEST(HookFlags, AWarnedAboutAsDaemonOnlyOnASubcommandRun) {
 
 /// Polls `runner` until every spawned hook is reaped; false after `timeout_ms`.
 bool drain(HookRunner& runner, int timeout_ms = 5000) {
-    const auto deadline =
-        std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
     while (true) {
         runner.poll();
         if (runner.running() == 0) {
@@ -181,9 +180,10 @@ TEST(HookRunner, AnUnknownFieldIsAbsentRatherThanEmpty) {
     context.client_name = "kitchen";
 
     HookRunner runner;
-    runner.run("printf '%s|%s' \"${SENDSPIN_SERVER_ID-unset}\" \"${SENDSPIN_SERVER_URL-unset}\" > " +
-                   out.path(),
-               "stop", context);
+    runner.run(
+        "printf '%s|%s' \"${SENDSPIN_SERVER_ID-unset}\" \"${SENDSPIN_SERVER_URL-unset}\" > " +
+            out.path(),
+        "stop", context);
 
     ASSERT_TRUE(drain(runner));
     EXPECT_EQ(slurp(out.path()), "unset|unset");
@@ -320,9 +320,9 @@ TEST(HookRunner, DoesNotHandTheHookThePlayersOpenDescriptors) {
 
     HookRunner runner;
     // stderr first, so the shell's complaint about a closed descriptor is discarded.
-    runner.run("echo held 2>/dev/null >&" + std::to_string(held) + " || echo closed > " +
-                   out.path(),
-               "start", HookContext{});
+    runner.run(
+        "echo held 2>/dev/null >&" + std::to_string(held) + " || echo closed > " + out.path(),
+        "start", HookContext{});
 
     const bool drained = drain(runner);
     ::close(held);

@@ -498,12 +498,12 @@ void PipeWireSink::poll(int64_t now_ms) {
                         this->name().c_str(), quantum, this->buffer_ms_, ring_frames,
                         fit.recommended_buffer_ms);
             } else {
-                cli_log(LogLevel::DEBUG,
-                        "pipewire: the graph is running %u-frame quanta; --buffer-ms %u is a "
-                        "%zu-frame ring%s",
-                        quantum, this->buffer_ms_, ring_frames,
-                        fit.tight ? " -- under three quanta, so it may starve on a busy graph"
-                                  : "");
+                cli_log(
+                    LogLevel::DEBUG,
+                    "pipewire: the graph is running %u-frame quanta; --buffer-ms %u is a "
+                    "%zu-frame ring%s",
+                    quantum, this->buffer_ms_, ring_frames,
+                    fit.tight ? " -- under three quanta, so it may starve on a busy graph" : "");
             }
         }
     }
@@ -609,8 +609,8 @@ void PipeWireSink::stream_process_cb(void* userdata) {
     bool have_timing = false;
     if (real_bytes > 0 && self->on_frames_played &&
         pw_stream_get_time_n(self->stream_, &time, sizeof(time)) == 0 && time.rate.denom != 0) {
-        const double rate_s = static_cast<double>(time.rate.num) /
-                              static_cast<double>(time.rate.denom);
+        const double rate_s =
+            static_cast<double>(time.rate.num) / static_cast<double>(time.rate.denom);
         double ahead_s = static_cast<double>(time.delay) * rate_s;
         if (self->rate_ != 0) {
             ahead_s += static_cast<double>(time.queued + time.buffered + (real_bytes / stride)) /
@@ -663,8 +663,8 @@ void PipeWireSink::stop_loop_() {
     this->loop_ = nullptr;
 }
 
-bool PipeWireSink::open_stream_(uint32_t sample_rate, uint8_t channels,
-                                uint8_t bits_per_sample, int timeout_ms) {
+bool PipeWireSink::open_stream_(uint32_t sample_rate, uint8_t channels, uint8_t bits_per_sample,
+                                int timeout_ms) {
     spa_audio_format format = SPA_AUDIO_FORMAT_UNKNOWN;
     if (!spa_format_for(bits_per_sample, format)) {
         cli_log(LogLevel::ERROR, "pipewire: unsupported bit depth %u", bits_per_sample);
@@ -695,10 +695,9 @@ bool PipeWireSink::open_stream_(uint32_t sample_rate, uint8_t channels,
     this->quantum_frames_.store(0, std::memory_order_relaxed);
     this->quantum_logged_.store(false, std::memory_order_relaxed);
 
-    pw_properties* props =
-        pw_properties_new(PW_KEY_MEDIA_TYPE, "Audio", PW_KEY_MEDIA_CATEGORY, "Playback",
-                          PW_KEY_MEDIA_ROLE, "Music", PW_KEY_APP_NAME, PIPEWIRE_APP_NAME,
-                          PW_KEY_NODE_NAME, PIPEWIRE_APP_NAME, nullptr);
+    pw_properties* props = pw_properties_new(
+        PW_KEY_MEDIA_TYPE, "Audio", PW_KEY_MEDIA_CATEGORY, "Playback", PW_KEY_MEDIA_ROLE, "Music",
+        PW_KEY_APP_NAME, PIPEWIRE_APP_NAME, PW_KEY_NODE_NAME, PIPEWIRE_APP_NAME, nullptr);
     if (props == nullptr) {
         cli_log(LogLevel::ERROR, "pipewire: cannot describe the stream to the graph");
         return false;
@@ -708,10 +707,9 @@ bool PipeWireSink::open_stream_(uint32_t sample_rate, uint8_t channels,
         pw_properties_set(props, PW_KEY_TARGET_OBJECT, this->device_.c_str());
     }
     // Ask for a quantum of a third of the ring, so RING_QUANTUM_MULTIPLE quanta fit.
-    const std::string latency =
-        std::to_string(pipewire_ring_frames(sample_rate, this->buffer_ms_) /
-                       RING_QUANTUM_MULTIPLE) +
-        "/" + std::to_string(sample_rate);
+    const std::string latency = std::to_string(pipewire_ring_frames(sample_rate, this->buffer_ms_) /
+                                               RING_QUANTUM_MULTIPLE) +
+                                "/" + std::to_string(sample_rate);
     pw_properties_set(props, PW_KEY_NODE_LATENCY, latency.c_str());
 
     uint8_t pod_storage[1024];
