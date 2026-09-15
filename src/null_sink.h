@@ -12,8 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-/// @file null_sink.h
-/// @brief Device-less AudioSink: discards PCM, or forwards it raw to stdout
+/// Device-less AudioSink: discards PCM, or forwards it raw to stdout.
 
 #pragma once
 
@@ -26,24 +25,13 @@
 
 namespace sendspin_cli {
 
-/// @brief Where NullAudioSink puts the PCM it is handed.
+/// Where NullAudioSink puts the PCM it is handed.
 enum class NullSinkOutput {
     Discard,  ///< Count the bytes and drop them (-o null)
     Stdout,   ///< Write raw interleaved PCM to stdout (-o stdout), e.g. for `| aplay`
 };
 
-/// @brief An AudioSink that needs no audio device.
-///
-/// The point of this sink is that `sendspin-cli` runs, and can be verified end to end,
-/// on a host or container with no sound card at all. It is also the reference
-/// implementation of the AudioSink contract for the real backends to follow.
-///
-/// Timing: this sink consumes everything immediately rather than at the stream's real
-/// rate, so it does not pace playback and deliberately leaves on_frames_played unset.
-///
-/// Volume and mute: mute is honoured by emitting zeroed samples, which is silence for
-/// the signed-integer PCM the player advertises. Volume is only recorded and logged --
-/// scaling samples correctly per bit depth is a real backend's job.
+/// An AudioSink that needs no device; consumes instantly, and honours mute but not volume.
 class NullAudioSink final : public AudioSink {
 public:
     explicit NullAudioSink(NullSinkOutput output);
@@ -56,17 +44,15 @@ public:
     void set_volume(uint8_t volume) override;
     void set_muted(bool muted) override;
 
-    /// @brief Total bytes consumed since construction. Reported at shutdown.
+    /// Total bytes consumed since construction.
     size_t total_bytes() const;
 
 private:
     NullSinkOutput output_;
     std::atomic<size_t> total_bytes_{0};
-    /// Frame size for the active stream, so a short stdout write can be rounded down to
-    /// a frame boundary as the AudioSink::write() contract requires.
+    /// Frame size, so a short stdout write rounds down to a frame boundary.
     std::atomic<size_t> bytes_per_frame_{0};
-    /// Latches once stdout goes bad (a closed downstream pipe): the sink then behaves
-    /// like Discard instead of stalling the sync task on every write.
+    /// Latches once stdout goes bad; the sink then discards.
     std::atomic<bool> stdout_failed_{false};
     std::atomic<uint8_t> volume_{DEFAULT_SINK_VOLUME};
     std::atomic<bool> muted_{false};

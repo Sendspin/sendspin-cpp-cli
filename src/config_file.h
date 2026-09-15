@@ -12,17 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-/// @file config_file.h
-/// @brief The operator's config file, so a daemon does not need a long flag line
-///
-/// Read-only: the daemon never writes here. What it remembers for itself goes in
-/// `src/state_store.h` instead, and the split is deliberate -- a daemon that rewrote its own
-/// config would destroy the comments and the ordering someone put there.
-///
-/// Keys are the long flag names minus the dashes, and a value is byte-for-byte what getopt would
-/// have handed that flag, so `--help` is the config reference rather than a second document to
-/// keep in step. Turning an entry into an option, and layering it under the command line, is
-/// `parse_options()`'s (see src/cli.cpp) -- this file only finds the file and reads it.
+/// Read-only operator config: long flag names as keys, values exactly as getopt would see them.
 
 #pragma once
 
@@ -33,50 +23,25 @@
 
 namespace sendspin_cli {
 
-/// @brief The system-wide config, the last place looked.
-///
-/// Named here so `--help`, README.md and the search below cannot drift apart.
+/// The system-wide config, the last place looked.
 inline constexpr const char* SYSTEM_CONFIG_PATH = "/etc/sendspin-cli.conf";
 
-/// @brief A config file that was found, and what was in it.
+/// A config file that was found, and what was in it.
 struct ConfigFile {
-    /// The file that was read, empty when there was none to read.
+    /// Empty when there was no file to read.
     std::string path;
 
-    /// Its entries in file order, empty when no file was found.
+    /// Entries in file order.
     std::vector<KeyValueEntry> entries;
 };
 
-/// @brief Where a config file is looked for, in order, for --help to name and load to walk.
-///
-/// `$XDG_CONFIG_HOME/sendspin-cli/config`, then `$HOME/.config/sendspin-cli/config`, then
-/// SYSTEM_CONFIG_PATH. A variable that is unset or empty contributes nothing -- the XDG spec
-/// treats an empty variable as unset, and so does this.
-///
-/// Deliberately no `$XDG_CONFIG_DIRS` traversal: it is exactly where this surface's scope would
-/// inflate, and a player has no use for a config assembled out of several directories.
+/// Where a config file is looked for, in order; empty variables contribute nothing.
 std::vector<std::string> config_search_paths();
 
-/// @brief Finds and reads the config file, or explains why it cannot be used.
-///
-/// The first file found is used **whole**. There is no merging across layers: a `/etc` config and
-/// a user one do not combine, because a half-overridden config is far harder to reason about than
-/// one file you can read top to bottom.
-///
-/// Finding nothing is silent and normal, and leaves `out.path` empty. There is deliberately no
-/// `--no-config` flag: the asymmetry below already gives the same effect, since a run that must
-/// not read one can name `/dev/null`.
-///
-/// @param explicit_path `--config`'s value, empty when it was not given. **Fatal when it cannot be
-/// read**, because the operator named that file and silently falling back to the search order
-/// would run a player on options nobody chose.
-/// @param search_paths Where to look when `explicit_path` is empty, normally
-/// config_search_paths(). Injected so tests can walk a list that does not include a real
-/// `/etc/sendspin-cli.conf` on the machine running them.
-/// @param error Set to a diagnostic naming the file, and the line where a line is at fault.
-/// @return false when there is an error to report. A file that exists and does not parse is
-/// refused rather than skipped -- an operator's config that is quietly ignored is the failure mode
-/// this whole surface has to avoid.
+/// Finds and reads the first config file, used whole; finding none is not an error.
+/// @param explicit_path `--config`'s value, or empty; fatal when it cannot be read.
+/// @param search_paths Where to look when `explicit_path` is empty.
+/// @return false on an unreadable explicit file or a line that does not parse.
 bool load_config_file(const std::string& explicit_path,
                       const std::vector<std::string>& search_paths, ConfigFile& out,
                       std::string& error);
