@@ -12,18 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-/// @file main.cpp
-/// @brief sendspin-cli: a headless Sendspin player endpoint
-///
-/// Boots a SendspinClient in the `player` role, points it at an AudioSink, and pumps
-/// client.loop() until a signal arrives. A Sendspin server drives everything else.
-///
-/// Two connection modes, which the spec makes mutually exclusive: by default the player
-/// advertises `_sendspin._tcp` and waits to be dialled, and -s mdns: instead makes it
-/// discover a server over mDNS and dial out to it, with the advertisement suppressed.
-///
-/// The same binary is also its own client: `sendspin-cli <subcommand>` talks to a running
-/// player over that player's control socket and exits, without opening a device or a port.
+/// sendspin-cli: a headless Sendspin player, and its own control-socket client.
 
 #include "audio_sink.h"
 #include "cli.h"
@@ -57,8 +46,6 @@
 #include <thread>
 #include <vector>
 
-/// The entry point drives several subsystems in turn, so most of its lines say `cli` and the
-/// ones speaking for another subsystem call log_line() with that tag explicitly.
 static constexpr const char* LOG_TAG = sendspin_cli::LOG_TAG_CLI;
 
 namespace {
@@ -66,17 +53,10 @@ namespace {
 using namespace sendspin_cli;  // NOLINT(google-build-using-namespace) -- this is the app itself
 using sendspin::LogLevel;
 
-/// How long to sleep between client.loop() calls. The library does its own timing on a
-/// background thread, so this only bounds how quickly the main loop reacts to events.
+/// Sleep between client.loop() calls; bounds main-loop reaction time only.
 constexpr int LOOP_INTERVAL_MS = 10;
 
-/// How long the shutdown below keeps pumping client.loop() for the stream's end.
-///
-/// The wait it covers is about 50 ms: one tick for the goodbye's close event to reach
-/// drop_connection() and enqueue the stream's end, up to the library's 20 ms audio-write
-/// timeout for its sync task to notice and go idle, and one more tick for the drain to see
-/// that and deliver the callback. The rest is headroom, and it is still nothing beside
-/// systemd's stop timeout.
+/// How long shutdown keeps pumping client.loop() for the stream's end (~50 ms needed).
 constexpr int SHUTDOWN_DRAIN_MS = 500;
 
 std::atomic<bool> g_running{true};
@@ -85,37 +65,21 @@ void handle_signal(int /*sig*/) {
     g_running.store(false);
 }
 
-/// A monotonic millisecond count, for pacing redials and the mDNS retry.
-///
-/// steady_clock rather than system_clock so neither schedule is disturbed by the host's
-/// wall clock being stepped, which on a small player is most likely to happen at boot --
-/// exactly when the retry loop is busiest.
+/// Monotonic milliseconds, immune to wall-clock steps at boot.
 int64_t monotonic_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
                std::chrono::steady_clock::now().time_since_epoch())
         .count();
 }
 
-/// The library asks the platform whether the network is usable before it starts serving.
-/// On a host it always is: if the interface were down, bind() would be the thing to fail.
+/// On a host the network is always usable; bind() fails if it is not.
 struct HostNetworkProvider : sendspin::SendspinNetworkProvider {
     bool is_network_ready() override {
         return true;
     }
 };
 
-/// The library's own persistence hook, answered out of the state store.
-///
-/// Both pairs are the library's to drive rather than ours. The last-server hash is produced by
-/// `ConnectionManager::fnv1_hash()`, which is not installed, so this stores the number it is
-/// handed and hands it straight back -- the library uses it to prefer the last-played server among
-/// *inbound* connections. The static delay it reads at `start_server()` and writes on every
-/// change, which is what closes the spec's requirement that clients persist `static_delay_ms`
-/// across reboots and server reconnections. Applying that delay to the audio path is a separate
-/// want, and is docs/ROADMAP.md item 13's.
-///
-/// Volume and mute are deliberately absent: the provider has no hook for either, so that half is
-/// PlayerListener's.
+/// The library's persistence hook (server hash, static delay), backed by the state store.
 class CliPersistenceProvider final : public sendspin::SendspinPersistenceProvider {
 public:
     /// `store` must outlive this provider, which must in turn outlive the client.
@@ -141,16 +105,7 @@ private:
     StateStore& store_;
 };
 
-/// Logs what the server says is playing, and keeps the last of it for `status` to read.
-///
-/// The object is cached rather than only logged because `status` needs the track and the
-/// transport speed, and the role itself keeps neither: `MetadataRole` exposes the interpolated
-/// progress and duration but not the artist, the title or the `playback_speed` they arrived
-/// with.
-///
-/// THREAD SAFETY: both callbacks fire on the main loop thread via `drain_events()`, and
-/// `state()` is read from the control socket's poll on that same thread, so the cache needs no
-/// synchronisation.
+/// Logs server metadata and caches the latest for `status`. Main loop only.
 struct MetadataLogger : sendspin::MetadataRoleListener {
     void on_metadata(const sendspin::ServerMetadataStateObject& metadata) override {
         this->state_ = metadata;
@@ -162,8 +117,7 @@ struct MetadataLogger : sendspin::MetadataRoleListener {
     }
 
     void on_metadata_clear() override {
-        // Cleared rather than kept: the server has said this metadata no longer describes
-        // anything, so leaving it would have `status` reporting a track that has gone.
+        // Cleared so `status` does not report a track that has gone.
         this->state_.reset();
         log_line(LogLevel::INFO, LOG_TAG_METADATA, "Metadata cleared");
     }
@@ -177,18 +131,12 @@ private:
     std::optional<sendspin::ServerMetadataStateObject> state_;
 };
 
-/// The formats to advertise for `sink`, derived from what its device will actually take.
-///
-/// Logged as well as returned: a field report on "the server never sent me anything I could
-/// play" starts with what went out in `client/hello`, and on a derived list that is a
-/// property of the host rather than of this binary.
+/// The formats to advertise for `sink`, derived from its device and logged.
 std::vector<sendspin::AudioSupportedFormatObject> advertised_formats(const AudioSink& sink) {
     std::vector<sendspin::AudioSupportedFormatObject> formats =
         supported_formats(sink.capabilities());
     if (formats.empty()) {
-        // The device opens but takes nothing this player emits. Advertising an empty list
-        // would leave the server unable to send anything at all, so fall back to the
-        // permissive set and let the refusal path report per stream what really happens.
+        // Advertise the permissive set rather than nothing; refusals are reported per stream.
         log_line(LogLevel::WARN, LOG_TAG_AUDIO,
                  "Output device '%s' reports no format sendspin-cli can emit -- advertising "
                  "everything and letting the device refuse per stream",
@@ -198,20 +146,14 @@ std::vector<sendspin::AudioSupportedFormatObject> advertised_formats(const Audio
 
     log_line(LogLevel::INFO, LOG_TAG_AUDIO, "Advertising %zu formats for '%s': %s", formats.size(),
              sink.name().c_str(), describe_formats(formats).c_str());
-    // The digest above groups the axes, which cannot show which combinations really went
-    // out. At debug the entries are listed one per line, exactly as the server sees them.
+    // Every entry at debug, exactly as the server sees it.
     for (const sendspin::AudioSupportedFormatObject& format : formats) {
         log_line(LogLevel::DEBUG, LOG_TAG_AUDIO, "  %s", describe_formats({format}).c_str());
     }
     return formats;
 }
 
-/// The outbound half of the daemon: choose a server, dial it, and keep dialling.
-///
-/// Only used when -s was given. The library deliberately does not do this for us --
-/// `ConnectionManager::connect_to()` turns auto-reconnect off, and there is no connect or
-/// disconnect callback on `SendspinClientListener` -- and in this direction nothing else
-/// re-establishes the link: per the spec, "servers cannot reclaim clients by reconnecting".
+/// The outbound (-s) mode: choose a discovered server, dial it, and keep redialling.
 class OutboundMode {
 public:
     /// `store` must outlive this mode, and is where the chosen server is remembered.
@@ -224,22 +166,17 @@ public:
         }
     }
 
-    /// @brief One main-loop tick: reconnect if it is time to, and remember what answered.
-    ///
-    /// Must run on the main loop thread, which is what makes the connect_to() below legal.
+    /// One main-loop tick: redial if due, and remember what answered. Main loop only.
     void tick(sendspin::SendspinClient& client, int64_t now_ms) {
         const bool connected = client.is_connected();
         if (this->pacer_.note_connection_state(connected, now_ms)) {
             log_line(LogLevel::WARN, LOG_TAG_OUTBOUND, "Connection lost -- reconnecting in %u ms",
                      this->pacer_.delay_ms());
-            // The next connection may be to a different server, so it is owed its own look.
             this->remembered_this_connection_ = false;
-            // Whatever the last dial produced -- or failed to produce -- went with the
-            // connection, so its URL must not describe whatever connects next.
+            // The lost connection takes its dial's URL with it.
             this->last_dial_.note_lost();
         }
-        // Covers an inbound connection too: a server that dialled us first is a connection,
-        // and dialling out over the top of it would only fight with it.
+        // Includes inbound connections: never dial over one.
         if (connected) {
             this->remember(client);
             return;
@@ -254,29 +191,19 @@ public:
             return;
         }
 
-        // Stamped before the dial rather than after, so the backoff measures from when the
-        // attempt started -- which is the whole point of pacing from the dial.
+        // Stamped before dialling, so the backoff measures from the attempt's start.
         this->pacer_.note_dial(now_ms);
         this->last_dial_.note_dial(url, server_id);
         client.connect_to(url);
     }
 
-    /// The URL to export as SENDSPIN_SERVER_URL for a stream arriving from `server_id`,
-    /// empty when no dial of this run's plausibly produced that connection.
-    ///
-    /// What was dialled, never a claim about what answered: a lost connection forgets the
-    /// dial, and a dial is answered only for the server_id it dialled. -s leaves the inbound
-    /// listener up, and the library does not say where a live connection came from, so the
-    /// server_id is the only thing that tells our own dial from a server that dialled in.
+    /// SENDSPIN_SERVER_URL for a stream from `server_id`; empty unless our dial reached it.
     std::string url_for(const std::string& server_id) const {
         return this->last_dial_.url_for(server_id);
     }
 
 private:
-    /// Picks a discovered server, or reports that there is nothing to dial yet.
-    ///
-    /// `server_id` is the chosen instance label, which is the protocol server_id -- the
-    /// equality the remembered-server preference already stands on.
+    /// Picks a discovered server; `server_id` is its instance label.
     bool choose(std::string& url, std::string& server_id) {
         const std::vector<DiscoveredServer> servers = this->mdns_.servers();
         std::string reason;
@@ -287,7 +214,6 @@ private:
         }
         std::string error;
         if (!discovered_server_url(*chosen, url, error)) {
-            // Discovery already said why, at debug, when the instance first resolved.
             return false;
         }
         server_id = chosen->instance;
@@ -297,14 +223,9 @@ private:
         return true;
     }
 
-    /// Records the server a handshake just completed with, so a later run can prefer it.
-    ///
-    /// The spec's own concept is the last *playback* server, but v0.7.0 has neither
-    /// `activities` nor `server/activate`, so a completed handshake is the strongest signal
-    /// available here. Named for what it actually is rather than for what the spec means.
+    /// Remembers the server a handshake completed with, for a later run to prefer.
     void remember(sendspin::SendspinClient& client) {
-        // Once per connection, not once per tick: this runs at the main loop's rate, and
-        // get_server_information() builds a fresh object with its strings on every call.
+        // Once per connection: this runs every tick.
         if (this->remembered_this_connection_) {
             return;
         }
@@ -316,7 +237,6 @@ private:
         this->remembered_this_connection_ = true;
         this->remembered_ = info->server_id;
         if (this->store_.path().empty()) {
-            // Already said once at startup, where it covers everything else the store holds.
             return;
         }
         if (this->store_.set_last_server(this->remembered_)) {
@@ -338,13 +258,7 @@ private:
     RetryPacer pacer_;
 };
 
-/// Answers one control request out of the daemon's own state.
-///
-/// THREAD SAFETY: every member below is reached only from handle_control_request(), which
-/// ControlSocket::poll() calls on the main loop. That is the whole reason the control channel
-/// has no thread of its own: `send_command()` reaches `SendspinClient::send_text()` and
-/// `ConnectionManager::current()`, documented main-thread-only, and `get_controller_state()`
-/// returns a reference to a vector `drain_events()` move-assigns from inside `client.loop()`.
+/// Answers control requests from the daemon's state. Main loop only.
 class ControlDispatcher final : public ControlHandler {
 public:
     /// Every reference must outlive this dispatcher, which in main() they all do.
@@ -366,8 +280,7 @@ public:
 
         ControlRequest request;
         std::string error;
-        // Parsed again on this side rather than trusted: the peer is whatever can reach the
-        // socket, and the subcommand's own parse says nothing about what actually arrived.
+        // Re-parsed: the peer is whatever can reach the socket.
         if (!parse_control_request(name, args, request, error)) {
             return encode_control_reply(ControlStatus::Usage, error, "");
         }
@@ -382,23 +295,11 @@ public:
             return encode_control_reply(ControlStatus::Ok, "", format_status(this->status()));
         }
 
-        // Above send_command(), because this one is not a command to send: the static delay is this
-        // endpoint's own player-role state. update_static_delay() persists it through
-        // CliPersistenceProvider and republishes `client/state` itself, so the server learns the
-        // new value without a controller command carrying it. The parser has already bounded the
-        // value, so nothing here can reach the library's silent clamp.
-        //
-        // Safe from this thread, which is worth stating because it is the only place this daemon
-        // writes into the player role from the control channel: the delay the sync task subtracts
-        // is an atomic it re-reads per chunk, and the persistence write and `publish_state()` that
-        // follow are both main-loop work, which is where this dispatcher runs. A change mid-stream
-        // therefore lands on the next chunk and re-times its scheduling -- expect a brief resync.
+        // Handled locally: update_static_delay() persists and republishes; safe on the main loop.
         if (request.command == ControlCommand::Delay) {
             const uint16_t delay_ms = request.delay_ms.value_or(0);
             this->player_.update_static_delay(delay_ms);
-            // Logged here rather than left to the listener, which the library invokes only for a
-            // server's own `set_static_delay` -- so a locally set delay would otherwise be the one
-            // change to this value that left no trace in the log.
+            // The listener only logs server-set delays, so log this one here.
             log_line(LogLevel::INFO, LOG_TAG_PLAYER, "Static delay set to %u ms locally",
                      static_cast<unsigned>(delay_ms));
             return encode_control_reply(ControlStatus::Ok, "", "");
@@ -439,26 +340,20 @@ private:
             snapshot.artist = metadata->artist.value_or("");
             snapshot.title = metadata->title.value_or("");
             if (metadata->progress.has_value()) {
-                // The presence of a progress object is what makes the transport state and the
-                // position knowable at all; the role's own getters return 0 either way, which
-                // is indistinguishable from the start of a track.
+                // Only a progress object makes transport state and position knowable.
                 snapshot.playback_speed = metadata->progress->playback_speed;
                 snapshot.progress_ms = this->metadata_.get_track_progress_ms();
                 snapshot.duration_ms = this->metadata_.get_track_duration_ms();
             }
         }
 
-        // Two separate facts, read separately. A stream whose format the device refused is
-        // streaming with no format, and inferring one from the other would report the case the
-        // player complains loudest about as `stream: idle`.
+        // Read separately: a refused format is still streaming.
         snapshot.streaming = this->player_listener_.streaming();
         snapshot.format = this->player_listener_.stream_format();
 
         const sendspin::ServerStateControllerObject& controller =
             this->controller_.get_controller_state();
-        // An empty supported_commands is how "no server/state has arrived" and "the connection
-        // dropped" both look, since on_controller_state_clear() empties it -- so it is the
-        // right test for whether the group figures below mean anything.
+        // Empty supported_commands means no state yet, or a dropped connection.
         snapshot.group_state_known =
             snapshot.connected && !controller.supported_commands.empty();
         snapshot.group_volume = controller.volume;
@@ -466,15 +361,11 @@ private:
         snapshot.group_repeat = controller.repeat;
         snapshot.group_shuffle = controller.shuffle;
 
-        // From the listener rather than from PlayerRole: the listener is the only caller of
-        // `AudioSink::set_volume()`, so it is the only thing that knows what the sink was told --
-        // and `VolumeSource` has no equivalent in the role at all.
+        // From the listener, the only thing that knows what the sink was told.
         snapshot.player_volume = this->player_listener_.applied_volume();
         snapshot.player_muted = this->player_listener_.applied_muted();
         snapshot.player_volume_source = this->player_listener_.volume_source();
-        // The other way round for the delay, and for the mirror-image reason: the role is the
-        // authority, and it is changed by a path -- `delay` on the control socket -- that does not
-        // invoke the listener. Any shadow here would be stale the moment that ran.
+        // From the role: `delay` changes it without invoking the listener.
         snapshot.static_delay_ms = this->player_.get_static_delay_ms();
         snapshot.output = this->sink_.name();
         return snapshot;
@@ -486,22 +377,13 @@ private:
     sendspin::MetadataRole& metadata_;
     const MetadataLogger& metadata_logger_;
     const PlayerListener& player_listener_;
-    /// Non-const: `delay` reaches update_static_delay() through it. Every other member here is
-    /// read-only, which is what makes this the one request that changes the player's own state.
+    /// Non-const only for `delay`.
     sendspin::PlayerRole& player_;
     const AudioSink& sink_;
 };
 
-/// Binds the control socket, or explains why this run has none.
-///
-/// Mirrors start_advertising(), and for the same reason: a player with no control channel is
-/// still a player, so a socket that cannot be bound names its reason and the run carries on
-/// rather than leaving a silence that reads like a bug.
-///
-/// One failure is not like that. A lock already held means the operator started a *second*
-/// instance, which is what `-P` refuses outright -- so it is reported here and refused by the
-/// caller.
-/// @return false only when this run must stop.
+/// Binds the control socket, or logs why this run has none.
+/// @return false only when another instance holds the lock and this run must stop.
 bool start_control_socket(ControlSocket& socket, const Options& opts) {
     if (opts.no_control) {
         log_line(LogLevel::INFO, LOG_TAG_CONTROL,
@@ -509,9 +391,7 @@ bool start_control_socket(ControlSocket& socket, const Options& opts) {
         return true;
     }
     if (opts.control_socket.empty()) {
-        // No source produced a usable directory -- neither $XDG_RUNTIME_DIR nor, where the
-        // platform has one, its own. Never a /tmp fallback: a world-writable directory would let
-        // any local account pause playback and switch this endpoint out of its group.
+        // Never a /tmp fallback: any local account could control the player.
         log_line(LogLevel::WARN, LOG_TAG_CONTROL, "No control socket: %s",
                  opts.control_absent_reason.c_str());
         return true;
@@ -536,11 +416,7 @@ bool start_control_socket(ControlSocket& socket, const Options& opts) {
     return true;
 }
 
-/// Starts the mDNS advertisement, or explains why this run has none.
-///
-/// The suppression rule is the spec's: "Do not advertise `_sendspin._tcp` if the client
-/// plans to initiate the connection", which is what stops both ends dialling each other.
-/// So it names the flag that caused it -- "not advertising" on its own reads like a bug.
+/// Starts the mDNS advertisement, or logs why this run has none.
 void start_advertising(MdnsService& mdns, const Options& opts) {
     if (!opts.advertises()) {
         if (opts.was_given(Opt::Server)) {
@@ -565,8 +441,7 @@ void start_advertising(MdnsService& mdns, const Options& opts) {
 
     std::string error;
     if (!mdns.advertise(opts.mdns_name, opts.port, SENDSPIN_PATH, opts.name, error)) {
-        // Not fatal: the player still serves on its port, so a server that is told the URL
-        // can still reach it. The retry inside MdnsService keeps trying meanwhile.
+        // Not fatal: MdnsService keeps retrying.
         log_line(LogLevel::WARN, LOG_TAG_MDNS,
                  "%s -- retrying; until it succeeds, point a server at ws://<this-host>:%u%s",
                  error.c_str(), opts.port, SENDSPIN_PATH);
@@ -594,15 +469,10 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    // Above every line below, and that is the whole contract: a subcommand run must not open an
-    // audio device, take a pidfile, start a WebSocket server or touch mDNS. It talks to a player
-    // that has already done all of that.
+    // First: a subcommand run must not open a device, pidfile, server or mDNS.
     if (!opts.subcommand.empty()) {
         ControlRequest request;
         std::string error;
-        // Cannot fail here in practice -- parse_options() already ran the same parse to validate
-        // the line -- but the request is built once, where it is used, rather than carried
-        // through Options as a second representation of the same words.
         if (!parse_control_request(opts.subcommand, opts.subcommand_args, request, error)) {
             std::fprintf(stderr, "error: %s\n", error.c_str());
             return static_cast<int>(ControlStatus::Usage);
@@ -611,9 +481,7 @@ int main(int argc, char* argv[]) {
                                                        opts.control_absent_reason, stdout));
     }
 
-    // Probed here, above -f, purely so "already running" reaches the terminal: -f replaces
-    // stderr, so nothing after it can be said to the shell that is still watching. The child
-    // takes the lock for real after the fork, and that acquisition is the authoritative one.
+    // Probed above -f so "already running" reaches the terminal; the child takes the real lock.
     if (opts.daemonize && !opts.pidfile.empty()) {
         std::string error;
         if (probe_pidfile(opts.pidfile, error) != PidFileStatus::Ok) {
@@ -622,10 +490,7 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // Probed here for exactly the same reason, and only the *lock* is: the socket itself has to
-    // be bound after the fork, so its own "already running" refusal would land in a log the
-    // shell has already stopped watching. Refused only when the lock is held -- every other
-    // failure is one the run carries on past, so it is left to the child to report.
+    // Likewise only the socket's lock: the socket itself is bound after the fork.
     if (opts.daemonize && !opts.control_socket.empty()) {
         std::string error;
         if (probe_control_socket(opts.control_socket, error) ==
@@ -635,25 +500,15 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // Opened before -z forks, so an unopenable path still fails at the terminal, and so the
-    // child inherits an fd 2 that already points at the logfile.
+    // Before -z forks, so an unopenable path fails at the terminal.
     if (!opts.logfile.empty() && !log_to_file(opts.logfile)) {
         return 1;
     }
 
-    // Set once, and never again: the library's own level is a plain non-atomic int read from
-    // its background threads, so changing it on a running player would be a data race.
+    // Set once: the library reads this non-atomic level from its threads.
     sendspin::SendspinClient::set_log_level(opts.log_level);
 
-    // Which file the options came from, said even when there is nothing to say: it is the first
-    // thing any support question needs, and "no config file" is as useful an answer as a path.
-    //
-    // **Above everything a configured value can kill the run with** -- the pidfile, the control
-    // socket, the output device -- because those are exactly the failures where knowing which file
-    // supplied the offending value is the whole diagnosis. A config with `output = hw:9,0` dies in
-    // make_audio_sink() naming only the device, so this line has to already be in the log. It is
-    // still below log_to_file(), so under -z it lands in the daemon's own log rather than on a
-    // terminal that is about to be detached.
+    // Logged before anything a configured value can fail on.
     if (opts.config_path.empty()) {
         cli_log(LogLevel::INFO, "No config file found; every option came from the command line "
                                 "or a built-in default");
@@ -661,12 +516,8 @@ int main(int argc, char* argv[]) {
         cli_log(LogLevel::INFO, "Config file: %s", opts.config_path.c_str());
     }
 
-    // Returns only in the child. Everything cheap and fallible has been hoisted above it; from
-    // here a failure reports into the log, which README.md says out loud -- so from here the
-    // reports go through log_fatal(), which puts them in the log's own format.
+    // Returns only in the child; from here failures go to the log via log_fatal().
     if (opts.daemonize) {
-        // Named rather than passed inline: at the call site a bare boolean says nothing about
-        // which way round it reads.
         const bool discard_stderr = opts.logfile.empty();
         std::string error;
         if (!daemonize(discard_stderr, error)) {
@@ -675,21 +526,12 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // A closed downstream pipe on -o stdout must not kill the daemon: the sink notices
-    // the short write and degrades to discarding.
+    // A closed pipe on -o stdout must not kill the daemon.
     std::signal(SIGPIPE, SIG_IGN);
     std::signal(SIGINT, handle_signal);
     std::signal(SIGTERM, handle_signal);
     if (!opts.logfile.empty()) {
-        // Only with -f. SIGHUP's default disposition is terminate, which is what a foreground
-        // run should keep doing when its terminal closes -- staying alive with stderr on a
-        // dead pty is worse than exiting.
-        //
-        // sigaction() rather than the std::signal() above, because this is the one handler
-        // expected to fire again and again: a rotation arrives every day for the life of the
-        // daemon. Only sigaction() *guarantees* the handler survives its own delivery -- if it
-        // were reset, the second rotation would kill the player instead of reopening its log.
-        // SA_RESTART matches what BSD-semantics signal() already gives the handlers above.
+        // Only with -f. sigaction() so the handler survives repeated rotations.
         struct sigaction hup = {};
         hup.sa_handler = log_handle_sighup;
         sigemptyset(&hup.sa_mask);
@@ -697,9 +539,7 @@ int main(int argc, char* argv[]) {
         sigaction(SIGHUP, &hup, nullptr);
     }
 
-    // Above make_audio_sink() on purpose: two instances racing should collide on the pidfile,
-    // not on the sound card. A lost race that has already opened ALSA exclusively is a worse
-    // failure than one that has opened nothing.
+    // Above make_audio_sink(), so racing instances collide on the pidfile, not the sound card.
     PidFile pidfile;
     if (!opts.pidfile.empty()) {
         std::string error;
@@ -709,13 +549,7 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // Above make_audio_sink() for the reason the pidfile is: two instances racing should collide
-    // on a lock, not on the sound card or on the WebSocket port. Below daemonize() because a
-    // socket is exactly what that fork invariant forbids opening above it -- and because bind()
-    // has to apply the 0600 umask daemonize() would otherwise have replaced with 0022.
-    //
-    // Only the listener is opened here. Nothing is answered until the main loop polls it, which
-    // is after start_server(), so a `status` can never describe a player that is not up yet.
+    // After daemonize() (fork invariant, umask) and before make_audio_sink(), like the pidfile.
     ControlSocket control_socket;
     if (!start_control_socket(control_socket, opts)) {
         return 1;
@@ -728,9 +562,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // What this daemon remembers about itself: the server it last handshook with, the static delay
-    // a server set, and the volume and mute it was last applying. Loaded before the client exists,
-    // because every one of those has to be in place before anything can be published or dialled.
+    // Loaded before the client, since its values must be in place before anything is published.
     StateStore state_store(state_store_path(opts.state_dir));
     if (state_store.path().empty()) {
         log_line(LogLevel::DEBUG, LOG_TAG,
@@ -741,15 +573,10 @@ int main(int argc, char* argv[]) {
         switch (state_store.load(malformed_line)) {
             case StateLoadResult::Loaded:
             case StateLoadResult::Absent:
-                // Neither is worth a word beyond the path: a first run has no file, and a good one
-                // needs no remark.
                 log_line(LogLevel::DEBUG, LOG_TAG, "State file: %s", state_store.path().c_str());
                 break;
             case StateLoadResult::Corrupt:
-                // Not fatal -- this is a file we wrote ourselves, so refusing to start over it
-                // would strand the player. Said at WARN anyway, because the alternative is a
-                // volume and a static delay silently reverting to defaults, and the next change
-                // overwriting the evidence that anything was ever wrong.
+                // Not fatal, but warned: the next write discards the evidence.
                 log_line(LogLevel::WARN, LOG_TAG,
                          "%s:%zu is not readable state -- starting with nothing remembered, and "
                          "overwriting the file on the next change",
@@ -760,9 +587,7 @@ int main(int argc, char* argv[]) {
     CliPersistenceProvider persistence(state_store);
 
     sendspin::SendspinClientConfig config;
-    // Without --id this is empty, and the library then derives a stable id from the network
-    // interface MAC -- the right identity for one fixed endpoint per host, and exactly wrong
-    // for two, which is what the flag exists for.
+    // Empty lets the library derive an id from the MAC.
     config.client_id = opts.client_id;
     config.name = opts.name;
     config.product_name = opts.product_name;
@@ -772,22 +597,11 @@ int main(int argc, char* argv[]) {
 
     sendspin::SendspinClient client(std::move(config));
 
-    // Above both add_player() and start_server(), and neither is negotiable: the pointer is copied
-    // into PlayerRole at construction, and start_server() is what loads the remembered server hash.
-    // Installed after either, it is a provider the library never asks. `persistence` outlives
-    // `client` by being declared above it.
+    // Before add_player() and start_server(), or the library never asks it.
     client.set_persistence_provider(&persistence);
 
     std::vector<sendspin::AudioSupportedFormatObject> formats = advertised_formats(*sink);
-    // The --audio-format preferences, applied to the derived list because that is the promise
-    // being reordered: an entry moved to the front is one already going out, and nothing behind
-    // it is dropped, so a server may still settle on a later entry. That list can be narrower
-    // than the device's own report -- advertised_channels() collapses the channels axis to one
-    // count -- so a pin missing from it is not necessarily one the device refuses. It is a hard
-    // stop either way: a preference the advertisement cannot carry is a typo or a wrong device,
-    // and every missing entry is named at once so one fix covers them all. Against the
-    // *fallback* list when the device reported nothing, deliberately: that run advertises the
-    // permissive set, so the pins are checked against what actually goes out.
+    // Pins reorder the advertised list; a pin it does not carry stops the run.
     if (!opts.audio_formats.empty()) {
         const std::vector<sendspin::AudioSupportedFormatObject> missing =
             pin_preferred_formats(formats, opts.audio_formats);
@@ -806,33 +620,17 @@ int main(int argc, char* argv[]) {
 
     sendspin::PlayerRoleConfig player_config;
     player_config.audio_formats = std::move(formats);
-    // Explicitly 0, and it must stay 0: both real sinks already report *future* finish timestamps
-    // that include their own buffering -- snd_pcm_delay() on ALSA, outputBufferDacTime on
-    // PortAudio -- so folding device latency in here would count it twice and push playout early
-    // by the ring's worth of audio. The library's own default is 0; it is written out so the
-    // constraint lives beside the field rather than only in the roadmap.
+    // Must stay 0: both sinks' timestamps already include their buffering.
     player_config.fixed_delay_us = 0;
-    // `extra_startup_silence_ms` is deliberately left unassigned, at the library's
-    // DEFAULT_EXTRA_STARTUP_SILENCE_MS of 50. It trades startup latency for decode-pipeline
-    // headroom, and choosing a different figure needs underflow measurements on real hardware
-    // across both backends -- not a guess from here.
+    // extra_startup_silence_ms stays at the library default until measured on hardware.
 
-    // A first-run default only: PlayerRole::load_static_delay() prefers whatever
-    // CliPersistenceProvider hands back and reads this solely when nothing was persisted, so a
-    // remembered delay wins. Set before add_player(), which is where the role loads it.
+    // A first-run default: a persisted delay wins. Set before add_player() loads it.
     player_config.initial_static_delay_ms = opts.static_delay_ms;
     sendspin::PlayerRole& player = client.add_player(std::move(player_config));
-    // Advertises the `static_delay` command, which is also what makes the stored delay *apply*:
-    // the library reports it as 0 in `client/state` and ignores it in sync timing while
-    // adjustability is off, per the spec's rule that a delay not exposed as a knob must not be
-    // applied.
+    // Also what makes the stored delay apply: non-adjustable delays are ignored.
     player.set_static_delay_adjustable(true);
     sendspin::MetadataRole& metadata = client.add_metadata();
-    // Added unconditionally, so `client/hello` always carries `controller@v1` -- including under
-    // --no-control, and including on a host with no $XDG_RUNTIME_DIR to put a socket in. That is
-    // deliberate: which roles this client speaks is a property of the build, not of whether one
-    // particular way of reaching it happens to be available. A server that saw the role appear
-    // and disappear with an environment variable would have no way to plan around it.
+    // Always added: advertised roles are a property of the build, not of --no-control.
     sendspin::ControllerRole& controller = client.add_controller();
 
     PlayerListener player_listener(player, *sink, &state_store);
@@ -843,33 +641,12 @@ int main(int argc, char* argv[]) {
     metadata.set_listener(&metadata_logger);
     client.set_network_provider(&network_provider);
 
-    // Put the remembered gain back, and report the gain the sink is really applying, before
-    // anything can connect. Persisting these is the spec's RECOMMENDED for players; with nothing
-    // remembered the pair falls back to what an untouched sink is already doing.
-    //
-    // Reporting it is not cosmetic and not a preference -- three spec rules make it necessary,
-    // and they apply to a restored figure exactly as they did to the default. `client/state`'s
-    // `volume` MUST be included when a player advertises the `volume` command, which this one
-    // does. Group volume is *derived* from us: "Group volume is the average of the volumes of
-    // players in the group that support the `volume` command", so a player reporting a figure it
-    // is not applying corrupts the group reading for every controller in the group. And setting
-    // group volume works off "delta = requested_volume - current_group_volume", so that wrong
-    // figure then mis-applies every later group volume change by exactly the error -- a player
-    // claiming 0 while playing at full hears a request for 30 as a cut from full, not a rise.
-    //
-    // The library's own default is 0 while every AudioSink starts at DEFAULT_SINK_VOLUME, so
-    // without this the two disagree from the first message. The pair goes to the sink through
-    // restore_volume() and to the role through update_volume()/update_muted(), which is what keeps
-    // all three in step; neither role call invokes the listener's callbacks, which fire only for
-    // server-initiated changes, so `status` still reports this as remembered rather than as
-    // something a server chose.
+    // Restore the remembered gain before connecting, so the role reports what the sink applies.
     const std::optional<uint8_t> remembered_volume = state_store.volume();
     const std::optional<bool> remembered_muted = state_store.muted();
     const uint8_t volume = remembered_volume.value_or(DEFAULT_SINK_VOLUME);
     const bool muted = remembered_muted.value_or(false);
-    // Only when something really was remembered: restore_volume() is also what marks the pair as
-    // restored, and a run that found nothing must still report its volume as the default nobody
-    // chose rather than claiming an earlier run picked it.
+    // Only when something was remembered, since restore_volume() marks the pair as restored.
     if (remembered_volume.has_value() || remembered_muted.has_value()) {
         player_listener.restore_volume(volume, muted);
         log_line(LogLevel::INFO, LOG_TAG_PLAYER, "Restored volume %u%s from %s",
@@ -889,18 +666,13 @@ int main(int argc, char* argv[]) {
             SENDSPIN_CLI_VERSION, opts.port, opts.name.c_str(), sink->name().c_str(),
             mdns_backend_name().c_str());
 
-    // Started after start_server(), so the port being advertised is one that is already
-    // accepting -- a server that discovers us and dials immediately then finds a listener.
+    // After start_server(), so the advertised port is already accepting.
     MdnsService mdns;
     start_advertising(mdns, opts);
 
-    // What answers the socket opened above. Built here rather than there because it holds
-    // references to the client and its roles, all of which outlive it.
     ControlDispatcher control_dispatcher(opts, client, controller, metadata, metadata_logger,
                                         player_listener, player, *sink);
 
-    // Already validated during parsing, so there is nothing left here that can be wrong --
-    // and nothing to fail on after the server is up.
     std::unique_ptr<OutboundMode> outbound;
     if (opts.discover) {
         std::string error;
@@ -913,27 +685,17 @@ int main(int argc, char* argv[]) {
         outbound = std::make_unique<OutboundMode>(opts, mdns, state_store);
     }
 
-    // What --hook-start/--hook-stop run. Wired only when one was given, so a player with no
-    // hooks pays nothing on the stream path. Set below `outbound` because the callback
-    // captures it, and above the loop because the loop's first client.loop() is the first
-    // moment a stream event can fire.
+    // Wired only when a hook was given; declared after `outbound`, which the callback captures.
     HookRunner hooks;
-    // What the stream now running started on. Both of its events describe that one stream, so
-    // both are told the same thing -- and the stop event has no other source for it: a stream
-    // ends because its connection went, and by then get_server_information() has nothing left
-    // to answer with. Never stale, because the library fires on_stream_end() only for a stream
-    // it fired on_stream_start() for, and this is rewritten on every one of those.
+    // The running stream's facts, kept for its stop event, when the server info is already gone.
     HookContext stream_context;
     if (!opts.hook_start.empty() || !opts.hook_stop.empty()) {
         player_listener.on_stream_event = [&opts, &client, &hooks, &outbound,
                                            &stream_context](bool started) {
-            // Above the empty-command return below, so a run that gave only --hook-stop still
-            // has the start's facts to hand it.
+            // Captured even without --hook-start, for the stop hook.
             if (started) {
                 stream_context = HookContext{};
-                // client_id is only exported when --id chose one: the MAC-derived default is
-                // the library's own and is not exposed, so there is no honest value to hand a
-                // hook without the flag.
+                // Only an explicit --id is exported; the MAC-derived id is not exposed.
                 stream_context.client_id = opts.client_id;
                 stream_context.client_name = opts.name;
                 const std::optional<sendspin::ServerInformationObject> info =
@@ -957,44 +719,26 @@ int main(int argc, char* argv[]) {
     while (g_running.load()) {
         const int64_t now_ms = monotonic_ms();
         client.loop();
-        // All three of these run their callbacks on this thread, which is what each of them
-        // requires: dns_sd's and connect_to()'s for the first two, and for the control socket
-        // every read of the roles plus send_command() itself. A round trip is therefore bounded
-        // by LOOP_INTERVAL_MS rather than by the socket -- the right trade, since the
-        // alternative is a thread touching ConnectionManager::current() off the main loop.
+        // All three need their callbacks on the main loop.
         mdns.poll(now_ms);
         control_socket.poll(now_ms, control_dispatcher);
         if (outbound) {
             outbound->tick(client, now_ms);
         }
-        // Here for the same reason the three above are: what a sink does with this tick is work
-        // that may not run on the sync task's thread. PortAudioSink rebuilds its device list in
-        // it after a device has gone away mid-stream, which is why the sink gets the loop's
-        // clock rather than reading one of its own.
+        // Main-loop work a sink cannot do on the sync task's thread.
         sink->poll(now_ms);
-        // Reaps finished hook commands. Cheap when none are running, which is almost always.
         hooks.poll();
-        // Here rather than in the SIGHUP handler: the reopen flushes the old stream and then
-        // logs the result, and neither fflush() nor fprintf() is async-signal-safe -- the
-        // open/dup2 pair on its own would be. This is what hands rotation to logrotate and
-        // newsyslog.
+        // Not in the SIGHUP handler: the reopen is not async-signal-safe.
         log_reopen_if_requested();
         std::this_thread::sleep_for(std::chrono::milliseconds(LOOP_INTERVAL_MS));
     }
 
     cli_log(LogLevel::INFO, "Shutting down");
-    // Withdrawn before the client goes, so a restart does not race a record still naming a
-    // port nothing is listening on. The control socket goes for the same reason and in the same
-    // place: a request accepted after the client has disconnected would be answered out of a
-    // half-torn-down player, and its path must be gone before a restart tries to bind it.
+    // Before the client disconnects, so a restart does not race a stale record or socket.
     mdns.stop();
     control_socket.close();
     client.disconnect(sendspin::SendspinGoodbyeReason::SHUTDOWN);
-    // disconnect() only asks. The stream's end is delivered by client.loop() like every other
-    // callback, so the loop above having exited is not the end of it: without this pump a
-    // player killed mid-stream runs no stop hook at all, which for the amplifier the feature
-    // exists to switch is the whole failure. Pumped rather than fired from here so the one
-    // producer of stream events stays the listener, which also clears the sink on its way past.
+    // Pump until the stream ends so the stop hook runs; disconnect() only asks.
     for (int waited_ms = 0; player_listener.streaming(); waited_ms += LOOP_INTERVAL_MS) {
         if (waited_ms >= SHUTDOWN_DRAIN_MS) {
             cli_log(LogLevel::WARN,
@@ -1007,14 +751,9 @@ int main(int argc, char* argv[]) {
         hooks.poll();
         std::this_thread::sleep_for(std::chrono::milliseconds(LOOP_INTERVAL_MS));
     }
-    // The stop hook may be sitting in the pending slot behind a start hook that never
-    // finished, and no more polls are coming. Spawned now regardless: this is the last
-    // chance to keep the promise that stopping the player switches the amplifier off.
+    // The stop hook may be pending behind a hung start hook; run it anyway.
     hooks.flush();
-    // The lambda holds references to locals declared after the listener, so it outlives them by
-    // exactly the width of this scope's teardown. Nothing calls it there -- stream events only
-    // arrive inside client.loop(), and the last one has run -- and dropping it here is what
-    // keeps that true of any code added below rather than of this ordering.
+    // The lambda references locals destroyed before the listener; drop it first.
     player_listener.on_stream_event = nullptr;
     sink->stop();
     return 0;

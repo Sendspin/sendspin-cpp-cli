@@ -12,13 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-/// @file mdns_null.cpp
-/// @brief MdnsService where `dns_sd.h` was not found at configure time
-///
-/// Built instead of mdns_dnssd.cpp, not alongside it. The daemon still starts and still
-/// plays: it just has to be told where its server is, which is what mdns_available()
-/// reporting false lets main.cpp and the parser say plainly rather than failing obscurely
-/// once nothing is ever discovered.
+/// MdnsService for builds where `dns_sd.h` was not found at configure time.
 
 #include "mdns.h"
 
@@ -28,7 +22,6 @@
 
 namespace sendspin_cli {
 
-/// Nothing to hold: the header only declares this so both builds share one class shape.
 struct MdnsService::Impl {};
 
 MdnsService::MdnsService() : impl_(std::make_unique<Impl>()) {}
