@@ -27,6 +27,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -544,6 +545,9 @@ bool AlsaAudioSink::configure(uint32_t sample_rate, uint8_t channels, uint8_t bi
     // Before anything below can fail: this is the format the player is about to send audio in
     // whether or not a device takes it, which is the question poll() asks when it reopens.
     this->last_format_ = {sample_rate, channels, bits_per_sample};
+    // A new stream starts the producer from zero buffered frames, so an outage gap left over from
+    // the last one is owed to nobody. Here rather than beside reset(), which a failed open skips.
+    this->recovery_.forget_discarded_frames();
 
     if (this->pcm_ != nullptr && this->rate_ == sample_rate && this->channels_ == channels &&
         this->bits_ == bits_per_sample) {
@@ -590,6 +594,7 @@ size_t AlsaAudioSink::write(const uint8_t* data, size_t length, uint32_t timeout
     size_t bytes_per_frame = 0;
     int64_t finish_us = 0;
     bool have_timing = false;
+    uint32_t gap_frames = 0;
 
     {
         const std::lock_guard<std::mutex> lock(this->device_mutex_);
@@ -612,7 +617,11 @@ size_t AlsaAudioSink::write(const uint8_t* data, size_t length, uint32_t timeout
                                      ? this->bytes_per_frame_
                                      : static_cast<size_t>(this->last_format_.channels) *
                                            (static_cast<size_t>(this->last_format_.bit_depth) / 8U);
-            return (frame == 0) ? length : length - (length % frame);
+            const size_t consumed = (frame == 0) ? length : length - (length % frame);
+            if (frame != 0) {
+                this->recovery_.discard_frames(static_cast<uint32_t>(consumed / frame));
+            }
+            return consumed;
         }
 
         bytes_per_frame = this->bytes_per_frame_;
@@ -717,15 +726,31 @@ size_t AlsaAudioSink::write(const uint8_t* data, size_t length, uint32_t timeout
             if (snd_pcm_delay(this->pcm_, &delay) == 0 && delay >= 0) {
                 finish_us = now_us() + ((static_cast<int64_t>(delay) * 1000000) / this->rate_);
                 have_timing = true;
+                // Taken with the timestamp, under the same lock, so no report can land between the
+                // outage being retired and the first real playback being reported.
+                gap_frames = this->recovery_.take_discarded_frames();
             }
+        }
+
+        // recover_() closed the device after the loop had already written part of the buffer.
+        // Those bytes are returned as consumed but no timestamp will report them, so they join
+        // the outage's gap.
+        if (frames_done > 0 && this->pcm_ == nullptr) {
+            this->recovery_.discard_frames(static_cast<uint32_t>(frames_done));
         }
     }
 
     // Fired outside the lock: notify_audio_played() runs the player's own bookkeeping, and
     // holding the device mutex across a callback is how a future callback that touches the
     // sink would deadlock.
+    //
+    // One report for the outage gap and this write together, carrying the device's finish time.
+    // The player sums frames across reports it has not read yet but keeps only the last
+    // timestamp, so a separate gap report could only lose that timestamp or arrive too late.
     if (have_timing && this->on_frames_played) {
-        this->on_frames_played(static_cast<uint32_t>(frames_done), finish_us);
+        const uint64_t played = static_cast<uint64_t>(gap_frames) + frames_done;
+        const uint64_t ceiling = std::numeric_limits<uint32_t>::max();
+        this->on_frames_played(static_cast<uint32_t>(std::min(played, ceiling)), finish_us);
     }
 
     return frames_done * bytes_per_frame;
@@ -743,6 +768,11 @@ void AlsaAudioSink::clear() {
     // callback keeps running through a flush, so the same write would be a data race there. The
     // discriminator is the threading model, not the audio: do not harmonise the two.
     this->current_multiplier_ = this->target_multiplier_.load(std::memory_order_relaxed);
+
+    // Also before the early return: the stream an outage gap belonged to is over, and the player
+    // zeroes its buffered-frame count with it. Only the gap goes -- the recovery budget is
+    // configure()'s to refill.
+    this->recovery_.forget_discarded_frames();
 
     if (this->pcm_ == nullptr) {
         return;
@@ -832,6 +862,8 @@ void AlsaAudioSink::poll(int64_t now_ms) {
         this->close_device_();
         return;
     }
+    // The outage's discarded frames stay pending: write() retires them with its first device
+    // timestamp. Reporting them from here would race that write for the player's bookkeeping.
     this->recovery_.rescan_done(true);
     cli_log(LogLevel::INFO, "alsa: '%s' is back -- recovered without waiting for the next stream",
             this->device_.c_str());
