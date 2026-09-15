@@ -238,15 +238,15 @@ bool split_subcommand(int argc, char* const argv[], ControlInvocation& out, std:
 
     const ControlSubcommand* subcommand = find_control_subcommand(argv[1]);
     if (subcommand == nullptr) {
-        error = "unknown subcommand '" + std::string(argv[1]) + "' -- expected one of: " +
-                control_subcommand_list();
+        error = "unknown subcommand '" + std::string(argv[1]) +
+                "' -- expected one of: " + control_subcommand_list();
         return false;
     }
 
     // Taken by count, since the argument may look like a flag.
     if (static_cast<unsigned>(argc) < 2U + subcommand->arity) {
-        error = std::string("'") + subcommand->name + "' needs an argument: " +
-                subcommand->name + " " + subcommand->argument;
+        error = std::string("'") + subcommand->name + "' needs an argument: " + subcommand->name +
+                " " + subcommand->argument;
         return false;
     }
 
@@ -259,11 +259,11 @@ bool split_subcommand(int argc, char* const argv[], ControlInvocation& out, std:
 }
 
 bool parse_control_request(const std::string& name, const std::vector<std::string>& args,
-                          ControlRequest& out, std::string& error) {
+                           ControlRequest& out, std::string& error) {
     const ControlSubcommand* subcommand = find_control_subcommand(name);
     if (subcommand == nullptr) {
-        error = "unknown subcommand '" + name + "' -- expected one of: " +
-                control_subcommand_list();
+        error =
+            "unknown subcommand '" + name + "' -- expected one of: " + control_subcommand_list();
         return false;
     }
     if (args.size() != subcommand->arity) {
@@ -503,10 +503,11 @@ std::string format_status(const StatusSnapshot& snapshot) {
     if (!snapshot.connected) {
         append_line(out, "server", "not connected");
     } else if (snapshot.server_name.empty()) {
-        append_line(out, "server", "connected (" + (snapshot.server_id.empty()
-                                                        ? std::string("no identity yet")
-                                                        : snapshot.server_id) +
-                                       ")");
+        append_line(
+            out, "server",
+            "connected (" +
+                (snapshot.server_id.empty() ? std::string("no identity yet") : snapshot.server_id) +
+                ")");
     } else {
         append_line(out, "server", snapshot.server_name + " (connected)");
     }
@@ -542,8 +543,8 @@ std::string format_status(const StatusSnapshot& snapshot) {
         const std::string position = format_clock(*snapshot.progress_ms);
         const uint32_t duration = snapshot.duration_ms.value_or(0);
         // A zero duration is a live or unknown-length stream.
-        std::string reading = duration == 0 ? position + " / unknown"
-                                            : position + " / " + format_clock(duration);
+        std::string reading =
+            duration == 0 ? position + " / unknown" : position + " / " + format_clock(duration);
         // Interpolated while playing, and stale after a seek until the server resends progress.
         if (snapshot.playback_speed.value_or(0) != 0) {
             reading += " (estimated)";
@@ -551,14 +552,13 @@ std::string format_status(const StatusSnapshot& snapshot) {
         append_line(out, "position", reading);
     }
 
-    append_line(out, "group volume",
-                format_volume(snapshot.group_state_known, snapshot.group_volume,
-                              snapshot.group_muted));
-    append_line(out, "repeat", snapshot.group_state_known
-                                   ? repeat_mode_name(snapshot.group_repeat)
-                                   : "unknown");
-    append_line(out, "shuffle", snapshot.group_state_known ? (snapshot.group_shuffle ? "on" : "off")
-                                                           : "unknown");
+    append_line(
+        out, "group volume",
+        format_volume(snapshot.group_state_known, snapshot.group_volume, snapshot.group_muted));
+    append_line(out, "repeat",
+                snapshot.group_state_known ? repeat_mode_name(snapshot.group_repeat) : "unknown");
+    append_line(out, "shuffle",
+                snapshot.group_state_known ? (snapshot.group_shuffle ? "on" : "off") : "unknown");
     append_line(out, "player volume",
                 format_volume(true, snapshot.player_volume, snapshot.player_muted) +
                     volume_source_note(snapshot.player_volume_source));
@@ -572,13 +572,11 @@ std::string format_status(const StatusSnapshot& snapshot) {
     }
 
     if (snapshot.format.has_value()) {
-        append_line(out, "output",
-                    snapshot.output + " (" + std::to_string(snapshot.format->sample_rate) +
-                        " Hz / " +
-                        std::to_string(static_cast<unsigned>(snapshot.format->channels)) +
-                        " ch / " +
-                        std::to_string(static_cast<unsigned>(snapshot.format->bit_depth)) +
-                        "-bit)");
+        append_line(
+            out, "output",
+            snapshot.output + " (" + std::to_string(snapshot.format->sample_rate) + " Hz / " +
+                std::to_string(static_cast<unsigned>(snapshot.format->channels)) + " ch / " +
+                std::to_string(static_cast<unsigned>(snapshot.format->bit_depth)) + "-bit)");
     } else {
         append_line(out, "output", snapshot.output);
     }
@@ -587,7 +585,7 @@ std::string format_status(const StatusSnapshot& snapshot) {
 }
 
 std::string encode_control_reply(ControlStatus status, const std::string& reason,
-                                const std::string& payload) {
+                                 const std::string& payload) {
     if (status == ControlStatus::Ok) {
         return "ok\n" + payload;
     }
@@ -767,11 +765,11 @@ std::string control_socket_path(const std::string& runtime_dir, uint16_t port) {
     if (runtime_dir.empty()) {
         return {};
     }
-    return runtime_dir + "/" + CONTROL_SOCKET_PREFIX + std::to_string(port) +
-           CONTROL_SOCKET_SUFFIX;
+    return runtime_dir + "/" + CONTROL_SOCKET_PREFIX + std::to_string(port) + CONTROL_SOCKET_SUFFIX;
 }
 
-std::string control_socket_absent_reason(const ControlRuntimeDir& runtime, const std::string& path) {
+std::string control_socket_absent_reason(const ControlRuntimeDir& runtime,
+                                         const std::string& path) {
     if (runtime.path.empty()) {
         if (!runtime.rejection.empty()) {
             return "this host's own per-user directory cannot hold a control socket: " +

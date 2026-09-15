@@ -626,8 +626,8 @@ void PulseAudioSink::stream_underflow_cb(pa_stream* /*stream*/, void* userdata) 
     cli_log(LogLevel::DEBUG, "pulse: '%s' ran dry", self->name().c_str());
 }
 
-bool PulseAudioSink::open_stream_(uint32_t sample_rate, uint8_t channels,
-                                  uint8_t bits_per_sample, int timeout_ms) {
+bool PulseAudioSink::open_stream_(uint32_t sample_rate, uint8_t channels, uint8_t bits_per_sample,
+                                  int timeout_ms) {
     pa_sample_format_t format = PA_SAMPLE_INVALID;
     if (!pulse_format_for(bits_per_sample, format)) {
         cli_log(LogLevel::ERROR, "pulse: unsupported bit depth %u", bits_per_sample);

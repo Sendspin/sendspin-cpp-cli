@@ -70,8 +70,7 @@ void PlayerListener::on_stream_start() {
         this->stream_refused_.store(true, std::memory_order_relaxed);
         return;
     }
-    this->stream_format_ =
-        StreamFormat{*params.sample_rate, *params.channels, *params.bit_depth};
+    this->stream_format_ = StreamFormat{*params.sample_rate, *params.channels, *params.bit_depth};
 }
 
 void PlayerListener::on_stream_end() {

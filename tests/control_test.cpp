@@ -17,7 +17,6 @@
 #include "control.h"
 
 #include <gtest/gtest.h>
-
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -99,9 +98,8 @@ std::string field(const std::string& block, const std::string& key) {
     size_t position = 0;
     while (position <= block.size()) {
         const size_t line_end = block.find('\n', position);
-        const std::string line = block.substr(position, line_end == std::string::npos
-                                                            ? std::string::npos
-                                                            : line_end - position);
+        const std::string line = block.substr(
+            position, line_end == std::string::npos ? std::string::npos : line_end - position);
         if (line.compare(0, needle.size(), needle) == 0) {
             return line.substr(needle.size());
         }
@@ -421,13 +419,26 @@ TEST(ParseControlRequest, TheWrongNumberOfArgumentsIsRefused) {
 TEST(ControlRequestWire, EveryRequestSurvivesARoundTrip) {
     // Both ends parse with the same code, so encoding must round-trip.
     const std::vector<std::pair<std::string, std::vector<std::string>>> cases = {
-        {"status", {}},         {"play", {}},              {"pause", {}},
-        {"stop", {}},           {"next", {}},              {"prev", {}},
-        {"switch", {}},         {"vol", {"0"}},            {"vol", {"100"}},
-        {"mute", {"on"}},       {"mute", {"off"}},         {"shuffle", {"on"}},
-        {"shuffle", {"off"}},   {"repeat", {"off"}},       {"repeat", {"one"}},
-        {"repeat", {"all"}},    {"seek", {"0"}},           {"seek", {"4294967295"}},
-        {"seek-rel", {"-2147483648"}}, {"seek-rel", {"2147483647"}},
+        {"status", {}},
+        {"play", {}},
+        {"pause", {}},
+        {"stop", {}},
+        {"next", {}},
+        {"prev", {}},
+        {"switch", {}},
+        {"vol", {"0"}},
+        {"vol", {"100"}},
+        {"mute", {"on"}},
+        {"mute", {"off"}},
+        {"shuffle", {"on"}},
+        {"shuffle", {"off"}},
+        {"repeat", {"off"}},
+        {"repeat", {"one"}},
+        {"repeat", {"all"}},
+        {"seek", {"0"}},
+        {"seek", {"4294967295"}},
+        {"seek-rel", {"-2147483648"}},
+        {"seek-rel", {"2147483647"}},
         {"delay", {"0"}},
         {"delay", {"5000"}},
     };
@@ -998,10 +1009,8 @@ ControlRuntimeDir runtime_dir_of(const std::string& path) {
 }
 
 TEST(ControlSocketPath, TheDefaultCarriesThePort) {
-    EXPECT_EQ(control_socket_path("/run/user/1000", 8928),
-              "/run/user/1000/sendspin-cli-8928.sock");
-    EXPECT_EQ(control_socket_path("/run/user/1000", 9000),
-              "/run/user/1000/sendspin-cli-9000.sock");
+    EXPECT_EQ(control_socket_path("/run/user/1000", 8928), "/run/user/1000/sendspin-cli-8928.sock");
+    EXPECT_EQ(control_socket_path("/run/user/1000", 9000), "/run/user/1000/sendspin-cli-9000.sock");
     EXPECT_NE(control_socket_path("/run/user/1000", 8928),
               control_socket_path("/run/user/1000", 8929));
 }
@@ -1084,8 +1093,8 @@ TEST(PrivateRuntimeDir, APrivateDirectoryThisUserOwnsIsAccepted) {
 
 TEST(PrivateRuntimeDir, AGroupOrWorldWritableDirectoryIsRefused) {
     // Group- or world-writable directories are refused: macOS does not check socket permissions.
-    for (mode_t mode : {static_cast<mode_t>(0770), static_cast<mode_t>(0707),
-                        static_cast<mode_t>(0777)}) {
+    for (mode_t mode :
+         {static_cast<mode_t>(0770), static_cast<mode_t>(0707), static_cast<mode_t>(0777)}) {
         const ScratchDir dir(mode);
         ASSERT_TRUE(dir.created()) << "mode " << mode;
 

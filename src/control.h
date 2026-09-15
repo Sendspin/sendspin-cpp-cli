@@ -21,7 +21,8 @@
 #include <sendspin/controller_role.h>
 
 #ifndef SENDSPIN_ENABLE_CONTROLLER
-#error "sendspin-cli's control channel needs the sendspin controller role: do not configure with -DSENDSPIN_ENABLE_CONTROLLER=OFF"
+#error \
+    "sendspin-cli's control channel needs the sendspin controller role: do not configure with -DSENDSPIN_ENABLE_CONTROLLER=OFF"
 #endif
 
 #include <cstdint>
@@ -125,7 +126,7 @@ bool split_subcommand(int argc, char* const argv[], ControlInvocation& out, std:
 
 /// Parses and range-checks a subcommand's arguments; also the daemon's parser for request lines.
 bool parse_control_request(const std::string& name, const std::vector<std::string>& args,
-                          ControlRequest& out, std::string& error);
+                           ControlRequest& out, std::string& error);
 
 /// The request as one line, as parse_control_request() reads it back.
 std::string encode_control_request(const ControlRequest& request);
@@ -205,7 +206,7 @@ std::string format_status(const StatusSnapshot& snapshot);
 
 /// The reply block: `ok` or `error <kind>: <reason>`, then any payload.
 std::string encode_control_reply(ControlStatus status, const std::string& reason,
-                                const std::string& payload);
+                                 const std::string& payload);
 
 /// Reads a reply's first line back into a status and a reason.
 /// @return false when the line is not a reply at all.

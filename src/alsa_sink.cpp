@@ -61,8 +61,8 @@ constexpr std::array<const char*, PROBE_BIT_DEPTHS.size()> PROBE_FORMAT_NAMES{"S
                                                                               "S24_3LE", "S32_LE"};
 
 /// Routes libasound's own diagnostics to our logger at DEBUG instead of raw stderr.
-void alsa_error_handler(const char* file, int line, const char* function, int err,
-                        const char* fmt, ...) {
+void alsa_error_handler(const char* file, int line, const char* function, int err, const char* fmt,
+                        ...) {
     if (sendspin::SendspinClient::get_log_level() < LogLevel::DEBUG) {
         return;
     }
@@ -585,9 +585,8 @@ size_t AlsaAudioSink::write(const uint8_t* data, size_t length, uint32_t timeout
                 continue;
             }
 
-            const snd_pcm_uframes_t chunk =
-                std::min<snd_pcm_uframes_t>(frames_total - frames_done,
-                                            static_cast<snd_pcm_uframes_t>(avail));
+            const snd_pcm_uframes_t chunk = std::min<snd_pcm_uframes_t>(
+                frames_total - frames_done, static_cast<snd_pcm_uframes_t>(avail));
             const snd_pcm_sframes_t written =
                 snd_pcm_writei(this->pcm_, src + (frames_done * bytes_per_frame), chunk);
             if (written < 0) {

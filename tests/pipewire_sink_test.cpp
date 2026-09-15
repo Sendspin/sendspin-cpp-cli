@@ -82,8 +82,8 @@ TEST(PipeWireQuantumFit, RecommendedBufferMsActuallyClearsTheFloor) {
     ASSERT_TRUE(bad.starves);
     ASSERT_GT(bad.recommended_buffer_ms, 0U);
 
-    const PipeWireQuantumFit fixed = pipewire_quantum_fit(
-        pipewire_ring_frames(rate, bad.recommended_buffer_ms), quantum, rate);
+    const PipeWireQuantumFit fixed =
+        pipewire_quantum_fit(pipewire_ring_frames(rate, bad.recommended_buffer_ms), quantum, rate);
     EXPECT_FALSE(fixed.starves);
     EXPECT_FALSE(fixed.tight);
 }

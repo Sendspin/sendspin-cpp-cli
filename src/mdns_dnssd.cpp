@@ -83,7 +83,7 @@ struct MdnsService::Impl {
         std::string path;
         std::string host;  ///< SRV target, the input to the address queries
         uint16_t port{0};
-        uint32_t interface_index{0};  ///< where it resolved, and so where addresses are asked
+        uint32_t interface_index{0};    ///< where it resolved, and so where addresses are asked
         std::set<uint32_t> interfaces;  ///< every interface the browse still reports it on
         std::vector<std::string> addresses;
 

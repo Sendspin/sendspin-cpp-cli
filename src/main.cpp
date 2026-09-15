@@ -264,11 +264,15 @@ public:
     /// Every reference must outlive this dispatcher, which in main() they all do.
     ControlDispatcher(const Options& opts, sendspin::SendspinClient& client,
                       sendspin::ControllerRole& controller, sendspin::MetadataRole& metadata,
-                      const MetadataLogger& metadata_logger,
-                      const PlayerListener& player_listener, sendspin::PlayerRole& player,
-                      const AudioSink& sink)
-        : opts_(opts), client_(client), controller_(controller), metadata_(metadata),
-          metadata_logger_(metadata_logger), player_listener_(player_listener), player_(player),
+                      const MetadataLogger& metadata_logger, const PlayerListener& player_listener,
+                      sendspin::PlayerRole& player, const AudioSink& sink)
+        : opts_(opts),
+          client_(client),
+          controller_(controller),
+          metadata_(metadata),
+          metadata_logger_(metadata_logger),
+          player_listener_(player_listener),
+          player_(player),
           sink_(sink) {}
 
     std::string handle_control_request(const std::string& line) override {
@@ -354,8 +358,7 @@ private:
         const sendspin::ServerStateControllerObject& controller =
             this->controller_.get_controller_state();
         // Empty supported_commands means no state yet, or a dropped connection.
-        snapshot.group_state_known =
-            snapshot.connected && !controller.supported_commands.empty();
+        snapshot.group_state_known = snapshot.connected && !controller.supported_commands.empty();
         snapshot.group_volume = controller.volume;
         snapshot.group_muted = controller.muted;
         snapshot.group_repeat = controller.repeat;
@@ -661,8 +664,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    cli_log(LogLevel::INFO,
-            "sendspin-cli %s listening on port %u as \"%s\" (output: %s, mDNS: %s)",
+    cli_log(LogLevel::INFO, "sendspin-cli %s listening on port %u as \"%s\" (output: %s, mDNS: %s)",
             SENDSPIN_CLI_VERSION, opts.port, opts.name.c_str(), sink->name().c_str(),
             mdns_backend_name().c_str());
 
@@ -671,7 +673,7 @@ int main(int argc, char* argv[]) {
     start_advertising(mdns, opts);
 
     ControlDispatcher control_dispatcher(opts, client, controller, metadata, metadata_logger,
-                                        player_listener, player, *sink);
+                                         player_listener, player, *sink);
 
     std::unique_ptr<OutboundMode> outbound;
     if (opts.discover) {

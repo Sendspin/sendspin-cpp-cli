@@ -19,7 +19,6 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
-
 #include <cstdint>
 #include <vector>
 
@@ -86,9 +85,9 @@ TEST(Q32GainFor, TheTaperIsMonotonicAndNeverAmplifies) {
 TEST(Q32GainFor, AVolumeIsPerceivedLoudnessRatherThanAmplitude) {
     // Inverting the curve must recover the volume ratio: 50 is half as loud as 100.
     const auto perceived = [](uint8_t volume) {
-        return std::pow(static_cast<double>(q32_gain_for(volume, false)) /
-                            static_cast<double>(Q32_ONE),
-                        1.0 / 1.5);
+        return std::pow(
+            static_cast<double>(q32_gain_for(volume, false)) / static_cast<double>(Q32_ONE),
+            1.0 / 1.5);
     };
     EXPECT_NEAR(perceived(50) / perceived(100), 0.5, 0.001);
     EXPECT_NEAR(perceived(25) / perceived(100), 0.25, 0.001);

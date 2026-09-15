@@ -114,8 +114,8 @@ void HookRunner::poll() {
             cli_log(LogLevel::WARN, "The %s hook [%d] exited %d", hook.event.c_str(),
                     static_cast<int>(hook.pid), WEXITSTATUS(status));
         } else if (reaped == hook.pid && WIFSIGNALED(status)) {
-            cli_log(LogLevel::WARN, "The %s hook [%d] was killed by signal %d",
-                    hook.event.c_str(), static_cast<int>(hook.pid), WTERMSIG(status));
+            cli_log(LogLevel::WARN, "The %s hook [%d] was killed by signal %d", hook.event.c_str(),
+                    static_cast<int>(hook.pid), WTERMSIG(status));
         } else if (reaped == hook.pid) {
             cli_log(LogLevel::DEBUG, "The %s hook [%d] finished", hook.event.c_str(),
                     static_cast<int>(hook.pid));
@@ -160,8 +160,7 @@ void HookRunner::spawn(const std::string& command, const char* event, const Hook
 
     const pid_t pid = fork();
     if (pid < 0) {
-        cli_log(LogLevel::WARN, "Could not run the %s hook: fork: %s", event,
-                std::strerror(errno));
+        cli_log(LogLevel::WARN, "Could not run the %s hook: fork: %s", event, std::strerror(errno));
         return;
     }
     if (pid == 0) {

@@ -19,9 +19,8 @@
 
 #include "log.h"
 
-#include <gtest/gtest.h>
-
 #include <fcntl.h>
+#include <gtest/gtest.h>
 #include <sys/stat.h>
 #include <unistd.h>
 

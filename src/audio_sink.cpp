@@ -340,7 +340,8 @@ std::unique_ptr<AudioSink> make_audio_sink(const std::string& device,
 #endif
     }
 
-    error = "internal error: output device '" + device + "' resolved to a backend this build "
+    error = "internal error: output device '" + device +
+            "' resolved to a backend this build "
             "cannot construct";
     return nullptr;
 }
@@ -373,9 +374,8 @@ void print_audio_devices(std::FILE* out) {
                  "  3. anything else is an ALSA PCM name, so -o hw:2,0 and -o default keep\n"
                  "     working with no prefix at all.\n");
 #else
-    std::fprintf(out,
-                 "  3. anything else would be an ALSA PCM name, but this build has no ALSA\n"
-                 "     backend, so only the forms above resolve here.\n");
+    std::fprintf(out, "  3. anything else would be an ALSA PCM name, but this build has no ALSA\n"
+                      "     backend, so only the forms above resolve here.\n");
 #ifdef SENDSPIN_CLI_HAVE_PORTAUDIO
     std::fprintf(out,
                  "     A PortAudio device is reached through its prefix, never bare -- see the\n"
@@ -407,15 +407,14 @@ void print_audio_devices(std::FILE* out) {
 #ifdef SENDSPIN_CLI_HAVE_ALSA
     std::fprintf(out, "\nALSA PCMs on this host (any of these names can follow -o):\n");
     AlsaAudioSink::list_devices(out);
-    std::fprintf(out,
-                 "\nHardware PCMs also accept the short hw:<card>,<device> and\n"
-                 "plughw:<card>,<device> forms -- plughw converts rates and formats the\n"
-                 "device itself will not take.\n"
-                 "\nThe rates, formats and channel counts above are what each PCM accepts\n"
-                 "directly. A plug-style PCM -- default, plughw:, and most named PCMs from a\n"
-                 "sound server -- reports nearly everything because the plug layer converts,\n"
-                 "so its list says little about the hardware behind it. Only the formats\n"
-                 "sendspin-cli can emit are shown: S8, S16_LE, S24_3LE, S32_LE.\n");
+    std::fprintf(out, "\nHardware PCMs also accept the short hw:<card>,<device> and\n"
+                      "plughw:<card>,<device> forms -- plughw converts rates and formats the\n"
+                      "device itself will not take.\n"
+                      "\nThe rates, formats and channel counts above are what each PCM accepts\n"
+                      "directly. A plug-style PCM -- default, plughw:, and most named PCMs from a\n"
+                      "sound server -- reports nearly everything because the plug layer converts,\n"
+                      "so its list says little about the hardware behind it. Only the formats\n"
+                      "sendspin-cli can emit are shown: S8, S16_LE, S24_3LE, S32_LE.\n");
 #else
     std::fprintf(out,
                  "\nThis build has no ALSA backend (libasound was missing, or it was configured\n"

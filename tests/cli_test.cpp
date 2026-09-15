@@ -36,8 +36,9 @@ using sendspin::LogLevel;
 // Every flag reaches its field
 
 TEST(ParseOptions, EachFlagSetsItsField) {
-    std::vector<std::string> args = {"-o", "null", "-n", "kitchen", "-z", "-P", "/run/x.pid",
-                                     "-d", "debug", "-f", "/var/log/x.log", "--port", "9000"};
+    std::vector<std::string> args = {
+        "-o", "null",  "-n", "kitchen",        "-z",     "-P",  "/run/x.pid",
+        "-d", "debug", "-f", "/var/log/x.log", "--port", "9000"};
 #ifdef SENDSPIN_CLI_HAVE_MDNS
     // -s only parses in a build that can discover a server.
     args.insert(args.end(), {"-s", "mdns:hifi"});
@@ -116,12 +117,12 @@ TEST(ParseOptions, VersionWinsOverAnInvalidFlagAfterIt) {
 TEST(ParseOptions, HelpWinsOverAnInvalidFlagBeforeIt) {
     // Appending --help to any wrong line must still print the flag list.
     const std::vector<std::string> bad_prefixes[] = {
-        {"--port", "0"},      // validated inline, as -s is not
-        {"-o", ""},           // an empty value
-        {"-d", "nonsense"},   // an unknown log level
-        {"-Q"},               // an unknown flag entirely
-        {"-s", "::1"},        // an address, refused after the loop
-        {"extra"},            // a positional argument
+        {"--port", "0"},     // validated inline, as -s is not
+        {"-o", ""},          // an empty value
+        {"-d", "nonsense"},  // an unknown log level
+        {"-Q"},              // an unknown flag entirely
+        {"-s", "::1"},       // an address, refused after the loop
+        {"extra"},           // a positional argument
     };
 
     for (const std::vector<std::string>& prefix : bad_prefixes) {
@@ -440,11 +441,9 @@ TEST(ParseOptions, BufferMsDoesNotClaimDashA) {
 
 TEST(ParseOptions, LogLevelNames) {
     const std::pair<const char*, LogLevel> cases[] = {
-        {"none", LogLevel::NONE},   {"off", LogLevel::NONE},
-        {"error", LogLevel::ERROR}, {"err", LogLevel::ERROR},
-        {"warn", LogLevel::WARN},   {"warning", LogLevel::WARN},
-        {"info", LogLevel::INFO},   {"debug", LogLevel::DEBUG},
-        {"verbose", LogLevel::VERBOSE},
+        {"none", LogLevel::NONE},      {"off", LogLevel::NONE},    {"error", LogLevel::ERROR},
+        {"err", LogLevel::ERROR},      {"warn", LogLevel::WARN},   {"warning", LogLevel::WARN},
+        {"info", LogLevel::INFO},      {"debug", LogLevel::DEBUG}, {"verbose", LogLevel::VERBOSE},
         {"sdebug", LogLevel::VERBOSE},
     };
 
@@ -626,8 +625,14 @@ size_t occurrences(const std::string& text, const std::string& needle) {
 
 TEST(ParseOptions, AnAddressIsRefusedWithTheRemoval) {
     const char* addresses[] = {
-        "music.local", "music.local:8927", "ws://host:8927/sendspin", "wss://host/sendspin",
-        "192.168.12.2", "[::1]:8927", "hifi:8927", "",
+        "music.local",
+        "music.local:8927",
+        "ws://host:8927/sendspin",
+        "wss://host/sendspin",
+        "192.168.12.2",
+        "[::1]:8927",
+        "hifi:8927",
+        "",
     };
 
     for (const char* address : addresses) {
@@ -1088,12 +1093,13 @@ TEST(ParseOptions, TracksWhichOptionsWereExplicitlyGiven) {
 }
 
 TEST(ParseOptions, ExplicitlyGivenTracksEveryOption) {
-    std::vector<std::string> args = {"-o", "null", "-l", "-n", "kitchen", "-z", "-P", "/run/x.pid",
-                                     "-d", "debug", "-f", "/var/log/x.log", "--port", "9000",
-                                     "--buffer-ms", "200"};
-    std::vector<Opt> given = {Opt::Device,  Opt::ListDevices, Opt::Name,     Opt::Daemonize,
-                              Opt::Pidfile, Opt::Logfile,     Opt::LogLevel, Opt::Port,
-                              Opt::BufferMs};
+    std::vector<std::string> args = {"-o",      "null",  "-l",          "-n",
+                                     "kitchen", "-z",    "-P",          "/run/x.pid",
+                                     "-d",      "debug", "-f",          "/var/log/x.log",
+                                     "--port",  "9000",  "--buffer-ms", "200"};
+    std::vector<Opt> given = {Opt::Device,    Opt::ListDevices, Opt::Name,
+                              Opt::Daemonize, Opt::Pidfile,     Opt::Logfile,
+                              Opt::LogLevel,  Opt::Port,        Opt::BufferMs};
 #ifdef SENDSPIN_CLI_HAVE_MDNS
     // -s only parses in a build that can discover a server.
     args.insert(args.end(), {"-s", "mdns:"});

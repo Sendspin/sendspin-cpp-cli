@@ -120,8 +120,8 @@ TEST(ResolveDeviceSpec, ABareBackendNameIsRejected) {
 
 TEST(ResolveDeviceSpec, BarePcmNamesStillMeanAlsa) {
     // Not `pulse` or `pipewire`: with native backends those are rule-1 names.
-    for (const char* pcm : {"default", "hw:2,0", "plughw:2,0", "hdmi:CARD=NVidia,DEV=0",
-                            "surround51:CARD=PCH"}) {
+    for (const char* pcm :
+         {"default", "hw:2,0", "plughw:2,0", "hdmi:CARD=NVidia,DEV=0", "surround51:CARD=PCH"}) {
         const DeviceSpec spec = resolved(pcm);
         EXPECT_EQ(spec.backend, SinkBackend::Alsa) << pcm;
         EXPECT_EQ(spec.device, pcm) << pcm;
