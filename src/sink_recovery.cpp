@@ -99,6 +99,10 @@ uint32_t SinkRecovery::take_discarded_frames() {
     return frames;
 }
 
+void SinkRecovery::forget_discarded_frames() {
+    this->discarded_frames_ = 0;
+}
+
 void SinkRecovery::reset() {
     this->reopen_spent_ = false;
     this->rescan_spent_ = false;

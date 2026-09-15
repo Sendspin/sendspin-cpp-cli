@@ -170,12 +170,21 @@ public:
     ///
     /// A sink normally reports playback progress as its device consumes frames. During an
     /// outage it must keep accepting audio so the producer does not spin, but those accepted
-    /// frames still enter the producer's buffered-frame accounting. The count is returned when
-    /// the device comes back so the sink can retire that gap before reporting real playback.
+    /// frames still enter the producer's buffered-frame accounting. The count stays pending --
+    /// through a rescan that recovers, too -- until the sink's first write with a real device
+    /// timestamp takes it and retires it in that same report. A reopen alone has no timestamp to
+    /// retire it against. Saturates rather than wraps.
     void discard_frames(uint32_t frames);
 
     /// Returns and clears the frames accumulated by discard_frames().
     uint32_t take_discarded_frames();
+
+    /// @brief Drops the discarded-frame count without touching the recovery budget.
+    ///
+    /// For a stream that ended or was replaced before its gap could be retired: the producer
+    /// starts the next one from zero buffered frames, so the old gap is owed to nobody. Not
+    /// reset(), because a flush is not a configure() that got a device running.
+    void forget_discarded_frames();
 
     /// @brief Puts both attempts back in hand, for a configure() that really opened a stream.
     void reset();
@@ -208,6 +217,8 @@ private:
     bool rescan_in_flight_{false};
     /// How many second attempts have been handed out for this configured stream.
     int rescan_attempts_{0};
+    /// Frames accepted with no device to play them and not yet retired; see discard_frames().
+    /// Under the sink's lock like the rest, so a write() takes it atomically with its timestamp.
     uint32_t discarded_frames_{0};
     /// Read by the main loop without the sink's lock; see pending().
     std::atomic<bool> rescan_owed_{false};

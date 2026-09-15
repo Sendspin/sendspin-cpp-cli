@@ -109,6 +109,63 @@ TEST(SinkRecovery, DiscardedGapSaturatesInsteadOfWrapping) {
     EXPECT_EQ(recovery.take_discarded_frames(), std::numeric_limits<uint32_t>::max());
 }
 
+TEST(SinkRecovery, TheDiscardedGapOutlivesARecoveredRescanUntilTaken) {
+    SinkRecovery recovery;
+    escalate(recovery);
+    recovery.discard_frames(48'000U);
+    ASSERT_GE(rescan_fires_at(recovery, T0, T0 + 10 * SINK_RESCAN_DELAY_MS), T0);
+
+    // The reopen has no device timestamp to retire the gap against; the first timed write does.
+    recovery.rescan_done(true);
+
+    EXPECT_EQ(recovery.take_discarded_frames(), 48'000U);
+    EXPECT_EQ(recovery.take_discarded_frames(), 0U);
+}
+
+TEST(SinkRecovery, ForgettingTheDiscardedGapLeavesTheBudgetAlone) {
+    SinkRecovery recovery;
+    escalate(recovery);
+    recovery.discard_frames(48'000U);
+
+    // What a flush does with no device open. A flush is not a stream that got a device running,
+    // so the outage it happened in is still owed exactly what it was before.
+    recovery.forget_discarded_frames();
+
+    EXPECT_EQ(recovery.take_discarded_frames(), 0U);
+    EXPECT_TRUE(recovery.pending());
+    EXPECT_FALSE(recovery.reopen_due());
+    EXPECT_EQ(rescan_fires_at(recovery, T0, T0 + 10 * SINK_RESCAN_DELAY_MS),
+              T0 + SINK_RESCAN_DELAY_MS);
+}
+
+TEST(SinkRecovery, ForgettingTheDiscardedGapDoesNotRefillASpentBudget) {
+    SinkRecovery recovery;
+    escalate(recovery);
+    int64_t now = T0;
+    for (int attempt = 0; attempt < SINK_RESCAN_ATTEMPTS; ++attempt) {
+        now = rescan_fires_at(recovery, now, now + 100 * SINK_RESCAN_DELAY_MS);
+        ASSERT_GT(now, 0) << "attempt " << attempt << " never fired";
+        recovery.rescan_done(false);
+    }
+    recovery.discard_frames(48'000U);
+
+    recovery.forget_discarded_frames();
+
+    EXPECT_FALSE(recovery.pending());
+    EXPECT_FALSE(recovery.reopen_due());
+    EXPECT_EQ(rescan_fires_at(recovery, now, now + 100 * SINK_RESCAN_DELAY_MS), -1);
+}
+
+TEST(SinkRecovery, ResetClearsTheDiscardedGap) {
+    SinkRecovery recovery;
+    escalate(recovery);
+    recovery.discard_frames(48'000U);
+
+    recovery.reset();
+
+    EXPECT_EQ(recovery.take_discarded_frames(), 0U);
+}
+
 TEST(SinkRecovery, EveryFurtherWriteOfTheOutageIsToldToDiscard) {
     SinkRecovery recovery;
     escalate(recovery);
