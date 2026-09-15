@@ -2460,3 +2460,30 @@ but `SendspinWsServer` exposes only connection callbacks — there is no transpo
 CLI can reach around it — so the flag cannot be expressed by any other route. Gated on a
 `SENDSPIN_GIT_TAG` bump the same way item 17 is, and likely to arrive with one rather than
 on its own. **Not expected to move soon.**
+
+
+### 26. `-s` takes no address — *shipped*
+
+`-s` used to take a typed-in address — `<host>[:<port>]` or a `ws://` URL — beside its
+`mdns:` discovery form. The spec has exactly two ways to connect: the server discovers the
+client through its `_sendspin._tcp` advertisement, or the client discovers the server on
+`_sendspin-server._tcp` and connects "using the advertised address and path". Dialling a
+hand-entered address is neither, so it went.
+
+**Shipped** in `src/cli.{h,cpp}`, `src/main.cpp`, `src/outbound.{h,cpp}`,
+`tests/cli_test.cpp`, `tests/config_file_test.cpp`, `tests/discovery_test.cpp` and
+`scripts/smoke_test.sh`:
+
+- **`-s mdns:[<name>]` is the only form**, typed or as `server =` in a config file, and it
+  behaves as it did: browse, pick with the last-server tie-break, dial on the retry pacer's
+  backoff, advertisement suppressed.
+- **Anything else is a hard error at parse time**, not a warning, so an install still
+  configured with an address fails loudly rather than quietly changing how it connects. From a
+  config file the error names the file and line, and a bare `mdns` is asked whether it meant
+  `mdns:`.
+- **The error does not quote the value.** An address was where credentials got typed, and
+  `redact_url_userinfo()` went with `parse_server_url()`: a discovered URL is built from a
+  resolved address, a port and a TXT `path`, and has no userinfo to mask. The smoke test's
+  credential-redaction check went with them.
+- **`SENDSPIN_SERVER_URL` is answered only for the server_id the dial chose.** `LastDial` has
+  no "literal URL, taken at its word" case left; a dial with no id answers nothing.

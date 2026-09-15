@@ -364,14 +364,14 @@ TEST(LastDial, StartsWithNothingToExport) {
     EXPECT_EQ(dial.url_for("srv-1"), "");
 }
 
-TEST(LastDial, ALiteralUrlIsTakenAtItsWord) {
-    // A -s URL promises nothing about who answers, so there is nothing to check the
-    // connected server against: the URL is exported as dialled.
+TEST(LastDial, ADialWithNoServerIdAnswersNothing) {
+    // Every dial comes from discovery and names its server. One that does not has nothing to
+    // check the connected server against, so it exports nothing rather than guessing.
     LastDial dial;
     dial.note_dial("ws://hifi:8927/sendspin", "");
 
-    EXPECT_EQ(dial.url_for("srv-1"), "ws://hifi:8927/sendspin");
-    EXPECT_EQ(dial.url_for(""), "ws://hifi:8927/sendspin");
+    EXPECT_EQ(dial.url_for("srv-1"), "");
+    EXPECT_EQ(dial.url_for(""), "");
 }
 
 TEST(LastDial, ADiscoveryDialAnswersOnlyForTheServerItDialled) {
@@ -387,10 +387,10 @@ TEST(LastDial, ADiscoveryDialAnswersOnlyForTheServerItDialled) {
 
 TEST(LastDial, ALostConnectionForgetsTheDial) {
     LastDial dial;
-    dial.note_dial("ws://hifi:8927/sendspin", "");
+    dial.note_dial("ws://hifi:8927/sendspin", "srv-1");
     dial.note_lost();
 
-    EXPECT_EQ(dial.url_for(""), "");
+    EXPECT_EQ(dial.url_for("srv-1"), "");
 }
 
 TEST(LastDial, ARedialAfterALossIsExportedAgain) {

@@ -59,8 +59,9 @@
 # The port this player's own WebSocket server listens on, for a server that connects in.
 #port = 8928
 
-# Dial a server instead of waiting to be found: <host>[:<port>], a ws:// URL, or
-# mdns:<name> to discover one by its advertised name. Any value here turns the mDNS
+# Discover a server and dial it instead of waiting to be found: mdns: takes any server,
+# mdns:<name> the one advertised under that name. There is no address form -- the spec only
+# has a player connect to a server it has discovered. Any value here turns the mDNS
 # advertisement off, as -s does -- the spec forbids advertising while this end dials.
 #server = mdns:Living Room
 

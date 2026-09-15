@@ -166,12 +166,15 @@ The player advertises `_sendspin._tcp` and waits. Open your Sendspin controller 
 should appear under the name it logged — which is `-n`, falling back to this host's name.
 Nothing needs configuring on the server side.
 
-To go the other way and have the player dial the server instead, set `server` in the config:
+To go the other way and have the player discover the server and dial it instead, set
+`server` in the config:
 
 ```ini
-server = 192.168.1.10          # a host, port 8927 assumed
-server = mdns:Music Assistant  # or discover one by its advertised name
+# The server advertised as "Music Assistant"; `server = mdns:` takes any
+server = mdns:Music Assistant
 ```
+
+There is no address form: the spec only has a player connect to a server it has discovered.
 
 Any `server` value turns the mDNS advertisement off. That is the spec's rule rather than a
 preference here, and the two modes are mutually exclusive by design — see
