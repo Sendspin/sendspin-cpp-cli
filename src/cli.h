@@ -22,7 +22,6 @@
 
 #include <cstdint>
 #include <cstdio>
-#include <optional>
 #include <string>
 #include <vector>
 
@@ -209,17 +208,19 @@ struct Options {
     std::string hook_start;
     std::string hook_stop;
 
-    /// --audio-format <codec:rate:depth:channels>: pin a preferred format, e.g.
-    /// `flac:48000:24:2` -- the way to hold a fussy DAC at the one shape it is happy in.
+    /// --audio-format <codec:rate:depth:channels>[,...]: preferred formats in priority order,
+    /// e.g. `flac:48000:24:2,pcm:48000:24:2`. Empty means no preference.
     ///
-    /// A *reorder*, not a narrowing: the pinned entry moves to the front of the advertised
-    /// list, which is what "preferred" means on the wire, and everything the device takes is
-    /// still offered behind it. Parsing settles the shape here; whether the advertisement
-    /// carries it is answered at startup, where a pin the derived advertisement does not
-    /// contain is a hard refusal to start -- playing something else instead is the failure
-    /// this flag exists to prevent. Grammar and behaviour match the Python CLI's flag of the
-    /// same name, extended with `opus`.
-    std::optional<sendspin::AudioSupportedFormatObject> audio_format;
+    /// A *reorder*, not a narrowing: the listed entries move to the front of the advertised
+    /// list in the order given, which is what "preferred" means on the wire, and everything
+    /// else the player advertises is still offered behind them. A server takes the first entry
+    /// it can encode, so it may still pick a later one -- this makes formats preferred, not
+    /// exclusive. Parsing settles the shapes here; whether the advertisement carries them is
+    /// answered at startup, where any entry the derived advertisement does not contain is a
+    /// hard refusal to start. One value like every other option, so a repeated flag or key
+    /// replaces the list rather than extending it. The single-spec grammar is the Python CLI's,
+    /// extended with `opus`.
+    std::vector<sendspin::AudioSupportedFormatObject> audio_formats;
 
     /// --state-dir <dir>: where the daemon keeps what it remembers across restarts.
     ///

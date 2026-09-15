@@ -2316,33 +2316,40 @@ value as its `client_id`, and the start hook exports it as `SENDSPIN_CLIENT_ID`.
 ### 24. `--audio-format` pin — *shipped*
 
 Item 4 made the advertisement device-derived and ranked, and that is the right default —
-but it decides *for* the operator. The case it cannot cover is the fussy DAC: a device
-that opens at many formats and is only actually happy in one, where the fix is to hold
-the player at that shape and refuse to run any other way. The Python CLI's
-`--audio-format` is exactly that, validated against the device at startup with a hard
-exit on failure.
+but it decides *for* the operator. The case it cannot cover is an operator who knows
+which formats they would rather receive: a DAC that sounds best at one shape, or a
+network where FLAC should win over PCM. What they need is to put those formats at the
+front of the advertisement without taking anything else away, since the server picks the
+first entry it can encode and still needs somewhere to fall back. The Python CLI's
+`--audio-format` does that for one format, validated against the device at startup with
+a hard exit on failure. It does not make the player use only that format.
 
 **Shipped** in `src/supported_formats.{h,cpp}`, `src/cli.{h,cpp}`, `src/main.cpp`,
-`tests/supported_formats_test.cpp` and `tests/cli_test.cpp`:
+`tests/supported_formats_test.cpp`, `tests/cli_test.cpp` and `tests/config_file_test.cpp`:
 
-- **`--audio-format <codec:rate:depth:channels>`** (config key `audio-format`), e.g.
-  `flac:48000:24:2`. The grammar is the Python CLI's, extended with `opus` because this
-  player decodes it.
-- **A reorder, not a narrowing.** `pin_preferred_format()` moves the pinned entry to the
-  front of the derived advertisement — the protocol has `supported_formats` in priority
-  order, so the front is the whole of what "preferred" means on the wire — and
-  everything else the device takes is still offered behind it, so a server that cannot
-  encode the pin has the rest of the list to fall back on.
-- **A pin the advertisement does not carry refuses to start**, naming the format, the
-  device, and `-l` as the way to see what the device itself reports — not the same set as
-  what is advertised, which carries a single channel count. Checked against the *derived*
-  list — or the permissive fallback when the device reported nothing, since that is what
-  actually goes out — so the refusal describes the real advertisement.
+- **`--audio-format <codec:rate:depth:channels>[,...]`** (config key `audio-format`), e.g.
+  `flac:48000:24:2` or `flac:48000:24:2,pcm:48000:24:2`. One or more specs, comma-separated
+  in priority order. Each spec's grammar is the Python CLI's, extended with `opus` because
+  this player decodes it. The value is one string like every other option, so a repeated
+  flag or key replaces the list.
+- **A reorder, not a narrowing.** `pin_preferred_formats()` moves the listed entries to
+  the front of the derived advertisement in the order given. The protocol has
+  `supported_formats` in priority order, so the front is the whole of what "preferred"
+  means on the wire. Everything else the player advertises is still offered behind them,
+  in its ranked order, so a server that cannot encode a listed format can still choose a
+  later entry. Preferred, not exclusive.
+- **A listed format the advertisement does not carry refuses to start**, naming every
+  missing format, the device, and `-l` as the way to see what the device itself reports.
+  That is not the same set as what is advertised, which carries a single channel count.
+  Checked against the *derived* list, or the permissive fallback when the device reported
+  nothing, since that is what actually goes out, so the refusal describes the real
+  advertisement. On success the pinned formats are logged in order.
 - **Parse-time shape validation, startup-time advertisement validation.** The grammar, the
   codec names, the four emittable bit depths and the one shape Opus is ever advertised in
-  are settled in `parse_format_spec()` when the flag is read — so a config file is
-  validated without opening a device — and whether the advertisement carries the format is
-  answered where the sink is real.
+  are settled in `parse_format_spec()`, and the list's empty and duplicate entries in
+  `parse_format_list()`, when the flag is read. That way a config file is validated
+  without opening a device, and whether the advertisement carries each format is answered
+  where the sink is real.
 
 Verified against a real `aiosendspin` server: with `pcm:44100:16:2` pinned on a device
 whose ranked head is FLAC 48 kHz, the server encoded and streamed PCM at 44100 Hz.

@@ -19,6 +19,7 @@
 #include <cstddef>
 #include <cstdlib>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace sendspin_cli {
@@ -142,6 +143,21 @@ const char* codec_name(SendspinCodecFormat codec) {
     return "unsupported";
 }
 
+/// How the --audio-format grammar names a codec.
+const char* spec_codec_name(SendspinCodecFormat codec) {
+    switch (codec) {
+        case SendspinCodecFormat::FLAC:
+            return "flac";
+        case SendspinCodecFormat::OPUS:
+            return "opus";
+        case SendspinCodecFormat::PCM:
+            return "pcm";
+        case SendspinCodecFormat::UNSUPPORTED:
+            break;
+    }
+    return "unsupported";
+}
+
 /// Reads one numeric field of a format spec: digits only, non-empty, within `max`.
 ///
 /// Digits-only for the reason cli.cpp's parse_port() gives: strtoul would take " 48000",
@@ -233,19 +249,89 @@ bool parse_format_spec(const std::string& spec, AudioSupportedFormatObject& out,
     return true;
 }
 
-bool pin_preferred_format(std::vector<AudioSupportedFormatObject>& formats,
-                          const AudioSupportedFormatObject& preferred) {
-    for (size_t index = 0; index < formats.size(); ++index) {
-        if (!same_format(formats[index], preferred)) {
-            continue;
+bool parse_format_list(const std::string& list, std::vector<AudioSupportedFormatObject>& out,
+                       std::string& error) {
+    std::vector<std::string> entries;
+    size_t begin = 0;
+    while (true) {
+        const size_t comma = list.find(',', begin);
+        if (comma == std::string::npos) {
+            entries.push_back(list.substr(begin));
+            break;
         }
-        // Rotate rather than swap, so everything else keeps its ranked order and only the
-        // pinned entry moves.
-        std::rotate(formats.begin(), formats.begin() + static_cast<ptrdiff_t>(index),
-                    formats.begin() + static_cast<ptrdiff_t>(index) + 1);
-        return true;
+        entries.push_back(list.substr(begin, comma - begin));
+        begin = comma + 1;
     }
-    return false;
+
+    const bool several = entries.size() > 1;
+    std::vector<AudioSupportedFormatObject> formats;
+    for (size_t index = 0; index < entries.size(); ++index) {
+        const std::string& entry = entries[index];
+        if (several && entry.empty()) {
+            error = "entry " + std::to_string(index + 1) +
+                    " is empty -- separate formats with single commas";
+            return false;
+        }
+        AudioSupportedFormatObject format{};
+        std::string reason;
+        if (!parse_format_spec(entry, format, reason)) {
+            error = several ? "'" + entry + "': " + reason : reason;
+            return false;
+        }
+        const bool repeated = std::any_of(
+            formats.begin(), formats.end(),
+            [&](const AudioSupportedFormatObject& seen) { return same_format(seen, format); });
+        if (repeated) {
+            error = "'" + entry + "' is listed more than once";
+            return false;
+        }
+        formats.push_back(format);
+    }
+
+    out = std::move(formats);
+    return true;
+}
+
+std::vector<AudioSupportedFormatObject> pin_preferred_formats(
+    std::vector<AudioSupportedFormatObject>& formats,
+    const std::vector<AudioSupportedFormatObject>& preferred) {
+    std::vector<AudioSupportedFormatObject> missing;
+    for (const AudioSupportedFormatObject& pin : preferred) {
+        const bool carried = std::any_of(
+            formats.begin(), formats.end(),
+            [&](const AudioSupportedFormatObject& entry) { return same_format(entry, pin); });
+        if (!carried) {
+            missing.push_back(pin);
+        }
+    }
+    if (!missing.empty()) {
+        return missing;
+    }
+
+    // Last pin first, each rotated to the front, so the first pin ends up leading. Rotate rather
+    // than rebuild, so the result is a permutation by construction and everything unpinned keeps
+    // its ranked order.
+    for (auto pin = preferred.rbegin(); pin != preferred.rend(); ++pin) {
+        const auto entry =
+            std::find_if(formats.begin(), formats.end(),
+                         [&](const AudioSupportedFormatObject& f) { return same_format(f, *pin); });
+        std::rotate(formats.begin(), entry, entry + 1);
+    }
+    return missing;
+}
+
+std::string format_list_spec(const std::vector<AudioSupportedFormatObject>& formats) {
+    std::string text;
+    for (const AudioSupportedFormatObject& format : formats) {
+        if (!text.empty()) {
+            text += ',';
+        }
+        text += spec_codec_name(format.codec);
+        text += ':' + std::to_string(format.sample_rate) + ':' +
+                std::to_string(static_cast<unsigned>(format.bit_depth)) + ':' +
+                std::to_string(static_cast<unsigned>(format.channels));
+    }
+    return text;
 }
 
 std::vector<AudioSupportedFormatObject> supported_formats(const SinkCapabilities& caps) {

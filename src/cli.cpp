@@ -415,13 +415,11 @@ bool apply_option(const SettableOption& option, const std::string& value, Option
             out.product_name = value;
             break;
         case Opt::AudioFormat: {
-            sendspin::AudioSupportedFormatObject format;
             std::string reason;
-            if (!parse_format_spec(value, format, reason)) {
+            if (!parse_format_list(value, out.audio_formats, reason)) {
                 error = "invalid --audio-format '" + value + "': " + reason;
                 return false;
             }
-            out.audio_format = format;
             break;
         }
         case Opt::NoMdns:
@@ -1128,12 +1126,13 @@ void print_usage(std::FILE* out, const char* prog) {
                  DEFAULT_BUFFER_MS);
     std::fprintf(out, "                device-less sink ignores it, and a device that needs\n");
     std::fprintf(out, "                more than it asks for gets more\n");
-    std::fprintf(out, "  --audio-format <codec:rate:depth:channels>\n");
-    std::fprintf(out, "                Pin a preferred format, e.g. flac:48000:24:2 -- for the\n");
-    std::fprintf(out, "                DAC that is only happy in one shape. Moves that entry to\n");
-    std::fprintf(out, "                the front of the advertised list, where a server picks\n");
-    std::fprintf(out, "                first; the rest of what the device takes is still\n");
-    std::fprintf(out, "                offered behind it. A format the advertised list does\n");
+    std::fprintf(out, "  --audio-format <codec:rate:depth:channels>[,...]\n");
+    std::fprintf(out, "                Preferred formats, offered first in the order given,\n");
+    std::fprintf(out, "                e.g. flac:48000:24:2,pcm:48000:24:2. Everything else\n");
+    std::fprintf(out, "                the player advertises is still offered behind them,\n");
+    std::fprintf(out, "                and a server uses the first entry it can encode --\n");
+    std::fprintf(out, "                so it may still pick a later one. Preferred, not\n");
+    std::fprintf(out, "                exclusive. A listed format the advertised list does\n");
     std::fprintf(out, "                not carry refuses to start -- run -l to see what the\n");
     std::fprintf(out, "                device reports -- not the same set as what goes out\n");
     std::fprintf(out, "  --static-delay <ms>\n");

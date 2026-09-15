@@ -264,6 +264,28 @@ TEST(ConfigPrecedence, StaticDelayIsSettableAndLosesToTheCommandLine) {
     EXPECT_EQ(overridden.options().static_delay_ms, 120U);
 }
 
+TEST(ConfigPrecedence, AudioFormatTakesTheSameOrderedListAsTheFlag) {
+    ScratchDir scratch;
+    ASSERT_TRUE(scratch.created());
+    const std::string config =
+        scratch.write("config", "audio-format = pcm:44100:16:2,flac:48000:24:2\n");
+
+    Parse from_file({}, config);
+    ASSERT_TRUE(from_file.ok()) << from_file.diagnostics();
+    const std::vector<sendspin::AudioSupportedFormatObject>& formats =
+        from_file.options().audio_formats;
+    ASSERT_EQ(formats.size(), 2U);
+    EXPECT_EQ(formats[0].codec, sendspin::SendspinCodecFormat::PCM);
+    EXPECT_EQ(formats[1].codec, sendspin::SendspinCodecFormat::FLAC);
+
+    // One value, like every other key: the command line replaces the list whole.
+    Parse overridden({"--audio-format", "opus:48000:16:2"}, config);
+    ASSERT_TRUE(overridden.ok()) << overridden.diagnostics();
+    ASSERT_EQ(overridden.options().audio_formats.size(), 1U);
+    EXPECT_EQ(overridden.options().audio_formats.front().codec,
+              sendspin::SendspinCodecFormat::OPUS);
+}
+
 TEST(ConfigPrecedence, ABooleanFlagOnTheCommandLineBeatsAFalseInTheFile) {
     ScratchDir scratch;
     ASSERT_TRUE(scratch.created());

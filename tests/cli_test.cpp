@@ -228,18 +228,40 @@ TEST(ParseOptions, AudioFormatIsParsedAtTheFlag) {
     Parse parse({"--audio-format", "flac:48000:24:2"});
 
     ASSERT_TRUE(parse.ok()) << parse.diagnostics();
-    ASSERT_TRUE(parse.options().audio_format.has_value());
-    EXPECT_EQ(parse.options().audio_format->codec, sendspin::SendspinCodecFormat::FLAC);
-    EXPECT_EQ(parse.options().audio_format->sample_rate, 48000U);
-    EXPECT_EQ(parse.options().audio_format->bit_depth, 24);
-    EXPECT_EQ(parse.options().audio_format->channels, 2);
+    ASSERT_EQ(parse.options().audio_formats.size(), 1U);
+    const sendspin::AudioSupportedFormatObject& format = parse.options().audio_formats.front();
+    EXPECT_EQ(format.codec, sendspin::SendspinCodecFormat::FLAC);
+    EXPECT_EQ(format.sample_rate, 48000U);
+    EXPECT_EQ(format.bit_depth, 24);
+    EXPECT_EQ(format.channels, 2);
+}
+
+TEST(ParseOptions, AudioFormatTakesAnOrderedList) {
+    Parse parse({"--audio-format", "flac:48000:24:2,pcm:48000:24:2,opus:48000:16:2"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    const std::vector<sendspin::AudioSupportedFormatObject>& formats =
+        parse.options().audio_formats;
+    ASSERT_EQ(formats.size(), 3U);
+    EXPECT_EQ(formats[0].codec, sendspin::SendspinCodecFormat::FLAC);
+    EXPECT_EQ(formats[1].codec, sendspin::SendspinCodecFormat::PCM);
+    EXPECT_EQ(formats[2].codec, sendspin::SendspinCodecFormat::OPUS);
+}
+
+TEST(ParseOptions, ARepeatedAudioFormatReplacesTheListRatherThanExtendingIt) {
+    Parse parse(
+        {"--audio-format", "flac:48000:24:2,pcm:48000:24:2", "--audio-format", "pcm:44100:16:2"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    ASSERT_EQ(parse.options().audio_formats.size(), 1U);
+    EXPECT_EQ(parse.options().audio_formats.front().sample_rate, 44100U);
 }
 
 TEST(ParseOptions, AudioFormatDefaultsToNoPin) {
     Parse parse({});
 
     ASSERT_TRUE(parse.ok()) << parse.diagnostics();
-    EXPECT_FALSE(parse.options().audio_format.has_value());
+    EXPECT_TRUE(parse.options().audio_formats.empty());
 }
 
 TEST(ParseOptions, ABadAudioFormatIsRefusedWithTheShapeToCopy) {
@@ -250,6 +272,25 @@ TEST(ParseOptions, ABadAudioFormatIsRefusedWithTheShapeToCopy) {
         << parse.diagnostics();
     EXPECT_NE(parse.diagnostics().find("codec:rate:depth:channels"), std::string::npos)
         << parse.diagnostics();
+}
+
+TEST(ParseOptions, ABadAudioFormatListIsRefusedNamingTheEntry) {
+    const std::pair<const char*, const char*> cases[] = {
+        {"flac:48000:24:2,", "entry 2 is empty"},
+        {",flac:48000:24:2", "entry 1 is empty"},
+        {"flac:48000:24:2,,pcm:48000:16:2", "entry 2 is empty"},
+        {"flac:48000:24:2,flac:48000:24:2", "'flac:48000:24:2' is listed more than once"},
+        {"flac:48000:24:2,pcm:48000:20:2", "'pcm:48000:20:2'"},
+    };
+    for (const auto& [value, named] : cases) {
+        Parse parse({"--audio-format", value});
+
+        EXPECT_FALSE(parse.ok()) << value;
+        EXPECT_NE(parse.diagnostics().find("error: invalid --audio-format"), std::string::npos)
+            << value << ": " << parse.diagnostics();
+        EXPECT_NE(parse.diagnostics().find(named), std::string::npos)
+            << value << ": " << parse.diagnostics();
+    }
 }
 
 // ---------------------------------------------------------------------------
