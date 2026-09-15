@@ -25,6 +25,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <limits>
 
 namespace sendspin_cli {
 namespace {
@@ -86,6 +87,26 @@ TEST(SinkRecovery, AFailedReopenEscalatesToTheRescan) {
     escalate(recovery);
 
     EXPECT_TRUE(recovery.pending());
+}
+
+TEST(SinkRecovery, ReturnsTheDiscardedGapOnceWhenADeviceComesBack) {
+    SinkRecovery recovery;
+    escalate(recovery);
+
+    // Fourteen seconds at the reporter's 48 kHz: these writes were accepted to prevent the
+    // producer spinning, but no DAC played them.
+    recovery.discard_frames(14U * 48'000U);
+
+    EXPECT_EQ(recovery.take_discarded_frames(), 672'000U);
+    EXPECT_EQ(recovery.take_discarded_frames(), 0U);
+}
+
+TEST(SinkRecovery, DiscardedGapSaturatesInsteadOfWrapping) {
+    SinkRecovery recovery;
+    recovery.discard_frames(std::numeric_limits<uint32_t>::max() - 10U);
+    recovery.discard_frames(100U);
+
+    EXPECT_EQ(recovery.take_discarded_frames(), std::numeric_limits<uint32_t>::max());
 }
 
 TEST(SinkRecovery, EveryFurtherWriteOfTheOutageIsToldToDiscard) {

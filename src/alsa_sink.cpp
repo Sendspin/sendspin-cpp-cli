@@ -612,7 +612,11 @@ size_t AlsaAudioSink::write(const uint8_t* data, size_t length, uint32_t timeout
                                      ? this->bytes_per_frame_
                                      : static_cast<size_t>(this->last_format_.channels) *
                                            (static_cast<size_t>(this->last_format_.bit_depth) / 8U);
-            return (frame == 0) ? length : length - (length % frame);
+            const size_t consumed = (frame == 0) ? length : length - (length % frame);
+            if (frame != 0) {
+                this->recovery_.discard_frames(static_cast<uint32_t>(consumed / frame));
+            }
+            return consumed;
         }
 
         bytes_per_frame = this->bytes_per_frame_;
@@ -797,13 +801,15 @@ void AlsaAudioSink::poll(int64_t now_ms) {
         return;
     }
 
-    const std::lock_guard<std::mutex> lock(this->device_mutex_);
-    if (this->last_format_.sample_rate == 0) {
-        return;  // nothing was ever configured, so there is nothing to reopen at
-    }
-    if (!this->recovery_.rescan_due(now_ms)) {
-        return;
-    }
+    uint32_t discarded_frames = 0;
+    {
+        const std::lock_guard<std::mutex> lock(this->device_mutex_);
+        if (this->last_format_.sample_rate == 0) {
+            return;  // nothing was ever configured, so there is nothing to reopen at
+        }
+        if (!this->recovery_.rescan_due(now_ms)) {
+            return;
+        }
 
     // The expensive half of recovery, on the main loop because snd_pcm_open() cannot be bounded
     // and write() has a deadline to keep. It is also the attempt a *replugged* device needs,
@@ -811,28 +817,38 @@ void AlsaAudioSink::poll(int64_t now_ms) {
     // the device name at open, so `hw:CARD=NAME` finds a card that has come back even on a
     // different index -- but only once it has come back, which an immediate retry is too early
     // for.
-    const StreamFormat format = this->last_format_;
-    this->close_device_();  // idempotent; recover_() has normally closed it already
-    if (!this->open_device_(format.sample_rate, format.channels, format.bit_depth)) {
+        const StreamFormat format = this->last_format_;
+        this->close_device_();  // idempotent; recover_() has normally closed it already
+        if (!this->open_device_(format.sample_rate, format.channels, format.bit_depth)) {
         // Reported as a failure, which is what buys another attempt behind a longer delay -- a
         // device still absent now may be back in a few seconds. open_device_() has already said
         // why, so this only has to say what happens next: quiet while more attempts are coming,
         // because each is a normal step of a replug, and loud once when the budget is gone.
-        this->recovery_.rescan_done(false);
-        const bool retrying = this->recovery_.pending();
-        cli_log(retrying ? LogLevel::DEBUG : LogLevel::WARN, "alsa: '%s' is not back%s",
-                this->device_.c_str(),
-                retrying ? " -- trying again shortly" : " -- discarding until the next stream");
-        return;
-    }
-    if (this->stopping_.load()) {
+            this->recovery_.rescan_done(false);
+            const bool retrying = this->recovery_.pending();
+            cli_log(retrying ? LogLevel::DEBUG : LogLevel::WARN, "alsa: '%s' is not back%s",
+                    this->device_.c_str(), retrying ? " -- trying again shortly"
+                                                   : " -- discarding until the next stream");
+            return;
+        }
+        if (this->stopping_.load()) {
         // stop() latches before it takes device_mutex_, so it can arrive while the open above is
         // running. Hand the device straight back rather than leave a live one for the destructor.
-        this->recovery_.rescan_done(true);  // shutting down; there is nothing left to retry for
-        this->close_device_();
-        return;
+            this->recovery_.rescan_done(true);  // shutting down; nothing is left to retry for
+            this->close_device_();
+            return;
+        }
+        this->recovery_.rescan_done(true);
+        discarded_frames = this->recovery_.take_discarded_frames();
     }
-    this->recovery_.rescan_done(true);
+
+    // write() deliberately consumed audio while there was no device, keeping the sync task from
+    // spinning. Retire those frames before its first real post-recovery write: otherwise they
+    // remain in the task's buffered-frame count, and that first device timestamp projects the
+    // playhead ahead by the whole outage. Fire outside device_mutex_, like write()'s callback.
+    if (discarded_frames > 0 && this->on_frames_played) {
+        this->on_frames_played(discarded_frames, now_us());
+    }
     cli_log(LogLevel::INFO, "alsa: '%s' is back -- recovered without waiting for the next stream",
             this->device_.c_str());
 }

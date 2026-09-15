@@ -14,6 +14,8 @@
 
 #include "sink_recovery.h"
 
+#include <limits>
+
 namespace sendspin_cli {
 
 bool SinkRecovery::reopen_due() {
@@ -86,6 +88,17 @@ bool SinkRecovery::pending() const {
     return this->rescan_owed_.load(std::memory_order_relaxed);
 }
 
+void SinkRecovery::discard_frames(uint32_t frames) {
+    const uint32_t room = std::numeric_limits<uint32_t>::max() - this->discarded_frames_;
+    this->discarded_frames_ += (frames < room) ? frames : room;
+}
+
+uint32_t SinkRecovery::take_discarded_frames() {
+    const uint32_t frames = this->discarded_frames_;
+    this->discarded_frames_ = 0;
+    return frames;
+}
+
 void SinkRecovery::reset() {
     this->reopen_spent_ = false;
     this->rescan_spent_ = false;
@@ -93,6 +106,7 @@ void SinkRecovery::reset() {
     this->rescan_attempts_ = 0;
     this->rescan_owed_.store(false, std::memory_order_relaxed);
     this->rescan_at_ms_ = NOT_STAMPED;
+    this->discarded_frames_ = 0;
 }
 
 void SinkRecovery::escalate_() {

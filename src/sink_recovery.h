@@ -166,6 +166,17 @@ public:
     /// as an errand for the main loop.
     bool pending() const;
 
+    /// Records frames the sink accepted only to discard while its device was absent.
+    ///
+    /// A sink normally reports playback progress as its device consumes frames. During an
+    /// outage it must keep accepting audio so the producer does not spin, but those accepted
+    /// frames still enter the producer's buffered-frame accounting. The count is returned when
+    /// the device comes back so the sink can retire that gap before reporting real playback.
+    void discard_frames(uint32_t frames);
+
+    /// Returns and clears the frames accumulated by discard_frames().
+    uint32_t take_discarded_frames();
+
     /// @brief Puts both attempts back in hand, for a configure() that really opened a stream.
     void reset();
 
@@ -197,6 +208,7 @@ private:
     bool rescan_in_flight_{false};
     /// How many second attempts have been handed out for this configured stream.
     int rescan_attempts_{0};
+    uint32_t discarded_frames_{0};
     /// Read by the main loop without the sink's lock; see pending().
     std::atomic<bool> rescan_owed_{false};
     int64_t rescan_at_ms_{NOT_STAMPED};
