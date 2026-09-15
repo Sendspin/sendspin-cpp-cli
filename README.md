@@ -51,8 +51,8 @@ The options most people need beyond a name:
 # Pick a sound card -- run `sendspin-cli -l` to list what this host has
 sendspin-cli -n living-room -o hw:1,0
 
-# Pin a format, for a DAC that is only happy in one shape
-sendspin-cli -n living-room --audio-format flac:48000:24:2
+# Prefer formats, in order -- the server uses the first one it can encode
+sendspin-cli -n living-room --audio-format flac:48000:24:2,pcm:48000:24:2
 
 # Discover a server by its advertised name and connect to it, instead of waiting to be found
 sendspin-cli -n living-room -s "mdns:Music Assistant"
@@ -62,7 +62,7 @@ sendspin-cli -n living-room -s "mdns:Music Assistant"
 |---|---|
 | `-n, --name <name>` | The friendly name a server displays. Defaults to this host's name. |
 | `-o, --output <device>` | Which sound card to play through. `-l` lists this host's devices and what they accept. |
-| `--audio-format <codec:rate:depth:channels>` | Offers this format first, e.g. `flac:48000:24:2`. Everything else the device takes is still offered behind it. |
+| `--audio-format <codec:rate:depth:channels>[,...]` | Formats to offer first, in priority order, e.g. `flac:48000:24:2,pcm:48000:24:2`. Everything else the player normally offers still follows, and a server uses the first format it can encode, so it can still fall back to a later one. This sets a preference, not a restriction. |
 | `-s, --server mdns:[<name>]` | Discover a server over mDNS and connect to it, rather than waiting to be discovered. `mdns:` takes any server. Turns off the mDNS advertisement. |
 
 Any of these can go in a config file instead of on the command line — see

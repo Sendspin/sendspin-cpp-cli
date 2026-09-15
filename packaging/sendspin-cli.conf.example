@@ -48,12 +48,13 @@
 # Audio the output backend keeps buffered, 10-2000 ms. Raise it on a device that stutters.
 #buffer-ms = 100
 
-# Pin a preferred audio format -- codec:rate:depth:channels, codecs flac/opus/pcm -- for
-# the DAC that is only happy in one shape. Moves that entry to the front of the advertised
-# list, where a server picks first; the rest of what the device takes is still offered.
-# A format the advertised list does not carry refuses to start; `sendspin-cli -l` shows what
-# the device itself reports -- not the same set as what goes out.
-#audio-format = flac:48000:24:2
+# Preferred audio formats, comma-separated in priority order -- codec:rate:depth:channels,
+# codecs flac/opus/pcm. They are offered first, in that order, and everything else the
+# player advertises is still offered behind them. A server uses the first entry it can
+# encode, so it may still pick a later one: preferred, not exclusive. A listed format the
+# advertised list does not carry refuses to start; `sendspin-cli -l` shows what the device
+# itself reports -- not the same set as what goes out.
+#audio-format = flac:48000:24:2,pcm:48000:24:2
 
 # The port this player's own WebSocket server listens on, for a server that connects in.
 #port = 8928

@@ -68,7 +68,7 @@ std::vector<sendspin::AudioSupportedFormatObject> supported_formats(const SinkCa
 /// whatever the device would take, so any other is unreachable rather than merely unadvertised.
 ///
 /// Only the *shape* is settled here. Whether the advertisement carries the format is a
-/// property of the host, answered at startup by pin_preferred_format() against the derived
+/// property of the host, answered at startup by pin_preferred_formats() against the derived
 /// advertisement -- the split that lets a config file be validated without opening a device.
 /// @param error Set to the reason when false comes back, without the flag's name -- the
 /// caller prefixes it, because only it knows what the value was typed as.
@@ -76,21 +76,44 @@ std::vector<sendspin::AudioSupportedFormatObject> supported_formats(const SinkCa
 bool parse_format_spec(const std::string& spec, sendspin::AudioSupportedFormatObject& out,
                        std::string& error);
 
-/// @brief Moves `preferred` to the front of `formats`, or reports that it is not there.
+/// @brief Reads a whole --audio-format value: one or more specs joined by commas, in priority
+/// order, e.g. `flac:48000:24:2,pcm:48000:24:2`.
 ///
-/// Mirrors the Python CLI's `--audio-format`: the pin *reorders* the advertisement rather
-/// than narrowing it, so a server that cannot encode the preferred entry still has the rest
+/// Each entry goes through parse_format_spec(). On top of that, an empty entry (a leading,
+/// trailing or doubled comma) and a format listed twice are refused: both are typos, and a
+/// silently collapsed list would not be the order the operator wrote. Whitespace is not
+/// trimmed, for the strict numeric fields' reason.
+/// @param error Set to the reason when false comes back, naming the offending entry when the
+/// list has more than one -- a single spec is already quoted whole by the caller.
+/// @return true when every entry parsed; `out` then holds them in the order given.
+bool parse_format_list(const std::string& list,
+                       std::vector<sendspin::AudioSupportedFormatObject>& out, std::string& error);
+
+/// @brief Moves `preferred` to the front of `formats`, in the order given, or reports which of
+/// them are not there.
+///
+/// Mirrors the Python CLI's `--audio-format`: the pins *reorder* the advertisement rather
+/// than narrowing it, so a server that cannot encode any preferred entry still has the rest
 /// of the list to fall back on. The protocol has `supported_formats` in priority order, so
-/// the front is the whole of what "preferred" means on the wire.
+/// the front is the whole of what "preferred" means on the wire -- a server takes the first
+/// entry it can encode, which may be one behind the pins.
 ///
 /// Absence is the caller's to act on, and the intended action is to refuse to start: an
-/// operator who pinned a format the advertisement does not carry asked for something no
-/// conforming server will send, and playing something else instead is the failure
-/// --audio-format exists to prevent. Absence is not proof the device refuses the format --
-/// the advertisement is narrowed on the channels axis before it gets here.
-/// @return true if `preferred` was found (and is now first).
-bool pin_preferred_format(std::vector<sendspin::AudioSupportedFormatObject>& formats,
-                          const sendspin::AudioSupportedFormatObject& preferred);
+/// operator who listed a format the advertisement does not carry asked for something no
+/// conforming server will send. Absence is not proof the device refuses the format -- the
+/// advertisement is narrowed on the channels axis before it gets here.
+/// @return The entries of `preferred` that `formats` does not carry, in the order given. Empty
+/// means every pin is now at the front; otherwise `formats` is left untouched, so a refusal
+/// describes the list that would have gone out.
+std::vector<sendspin::AudioSupportedFormatObject> pin_preferred_formats(
+    std::vector<sendspin::AudioSupportedFormatObject>& formats,
+    const std::vector<sendspin::AudioSupportedFormatObject>& preferred);
+
+/// @brief Writes formats back in the --audio-format grammar, comma-joined:
+/// `flac:48000:24:2,pcm:48000:24:2`.
+///
+/// For log lines that have to keep the order, which describe_formats() folds per codec.
+std::string format_list_spec(const std::vector<sendspin::AudioSupportedFormatObject>& formats);
 
 /// @brief One-line digest of an advertisement, for the startup log.
 ///

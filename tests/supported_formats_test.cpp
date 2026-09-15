@@ -487,16 +487,93 @@ TEST(ParseFormatSpec, KeepsTheOpusShapesTheDecoderReaches) {
 }
 
 // ---------------------------------------------------------------------------
-// pin_preferred_format(): what the pin does to the advertisement
+// parse_format_list(): the comma-separated --audio-format value
 // ---------------------------------------------------------------------------
 
-TEST(PinPreferredFormat, MovesTheEntryToTheFrontAndKeepsTheRest) {
+TEST(ParseFormatList, ReadsASingleSpecExactlyAsParseFormatSpecDoes) {
+    std::vector<AudioSupportedFormatObject> formats;
+    std::string error;
+
+    ASSERT_TRUE(parse_format_list("flac:48000:24:2", formats, error)) << error;
+    ASSERT_EQ(formats.size(), 1U);
+    EXPECT_EQ(format_list_spec(formats), "flac:48000:24:2");
+}
+
+TEST(ParseFormatList, KeepsSeveralSpecsInTheOrderGiven) {
+    std::vector<AudioSupportedFormatObject> formats;
+    std::string error;
+
+    ASSERT_TRUE(parse_format_list("pcm:44100:16:2,flac:48000:24:2,opus:48000:16:2", formats, error))
+        << error;
+    ASSERT_EQ(formats.size(), 3U);
+    EXPECT_EQ(formats[0].codec, SendspinCodecFormat::PCM);
+    EXPECT_EQ(formats[1].codec, SendspinCodecFormat::FLAC);
+    EXPECT_EQ(formats[2].codec, SendspinCodecFormat::OPUS);
+    EXPECT_EQ(format_list_spec(formats), "pcm:44100:16:2,flac:48000:24:2,opus:48000:16:2");
+}
+
+TEST(ParseFormatList, RefusesAnEmptyEntryAndSaysWhichOne) {
+    const std::pair<const char*, const char*> cases[] = {
+        {"flac:48000:24:2,", "entry 2"},
+        {",flac:48000:24:2", "entry 1"},
+        {"flac:48000:24:2,,pcm:48000:16:2", "entry 2"},
+    };
+    for (const auto& [list, named] : cases) {
+        std::vector<AudioSupportedFormatObject> formats;
+        std::string error;
+
+        EXPECT_FALSE(parse_format_list(list, formats, error)) << list;
+        EXPECT_NE(error.find(named), std::string::npos) << list << ": " << error;
+        EXPECT_NE(error.find("empty"), std::string::npos) << list << ": " << error;
+        EXPECT_TRUE(formats.empty()) << list;
+    }
+}
+
+TEST(ParseFormatList, RefusesAFormatListedTwice) {
+    std::vector<AudioSupportedFormatObject> formats;
+    std::string error;
+
+    EXPECT_FALSE(
+        parse_format_list("flac:48000:24:2,pcm:48000:16:2,flac:48000:24:2", formats, error));
+    EXPECT_NE(error.find("'flac:48000:24:2'"), std::string::npos) << error;
+    EXPECT_NE(error.find("more than once"), std::string::npos) << error;
+}
+
+TEST(ParseFormatList, NamesTheBadEntryAnywhereInTheList) {
+    const std::pair<const char*, const char*> cases[] = {
+        {"mp3:48000:16:2,flac:48000:24:2", "'mp3:48000:16:2'"},
+        {"flac:48000:24:2,flac:48000:20:2", "'flac:48000:20:2'"},
+        // Not trimmed: the space is part of the entry, and the quote shows it.
+        {"flac:48000:24:2, pcm:48000:16:2", "' pcm:48000:16:2'"},
+    };
+    for (const auto& [list, named] : cases) {
+        std::vector<AudioSupportedFormatObject> formats;
+        std::string error;
+
+        EXPECT_FALSE(parse_format_list(list, formats, error)) << list;
+        EXPECT_NE(error.find(named), std::string::npos) << list << ": " << error;
+    }
+}
+
+TEST(ParseFormatList, LeavesTheOutputAloneOnFailure) {
+    std::vector<AudioSupportedFormatObject> formats = {{SendspinCodecFormat::PCM, 2, 44100, 16}};
+    std::string error;
+
+    EXPECT_FALSE(parse_format_list("flac:48000:24:2,bogus", formats, error));
+    EXPECT_EQ(format_list_spec(formats), "pcm:44100:16:2");
+}
+
+// ---------------------------------------------------------------------------
+// pin_preferred_formats(): what the pins do to the advertisement
+// ---------------------------------------------------------------------------
+
+TEST(PinPreferredFormats, MovesOneEntryToTheFrontAndKeepsTheRest) {
     std::vector<AudioSupportedFormatObject> formats =
         supported_formats({{44100, 48000}, {16, 24}, {2}});
     const size_t count = formats.size();
     const AudioSupportedFormatObject pin{SendspinCodecFormat::PCM, 2, 44100, 16};
 
-    ASSERT_TRUE(pin_preferred_format(formats, pin));
+    ASSERT_TRUE(pin_preferred_formats(formats, {pin}).empty());
     EXPECT_EQ(formats.size(), count);
     EXPECT_EQ(formats.front().codec, SendspinCodecFormat::PCM);
     EXPECT_EQ(formats.front().sample_rate, 44100U);
@@ -505,24 +582,56 @@ TEST(PinPreferredFormat, MovesTheEntryToTheFrontAndKeepsTheRest) {
     EXPECT_TRUE(has(formats, SendspinCodecFormat::FLAC, 2, 48000, 16));
 }
 
-TEST(PinPreferredFormat, AnEntryAlreadyFirstStaysPut) {
-    std::vector<AudioSupportedFormatObject> formats =
+TEST(PinPreferredFormats, PutsSeveralPinsFirstInOrderThenTheRestInRankedOrder) {
+    const std::vector<AudioSupportedFormatObject> ranked =
         supported_formats({{44100, 48000}, {16, 24}, {2}});
-    const AudioSupportedFormatObject pin = formats.front();
+    std::vector<AudioSupportedFormatObject> formats = ranked;
+    const std::vector<AudioSupportedFormatObject> pins = {
+        {SendspinCodecFormat::PCM, 2, 44100, 16},
+        {SendspinCodecFormat::OPUS, 2, 48000, 16},
+        {SendspinCodecFormat::FLAC, 2, 44100, 24},
+    };
 
-    ASSERT_TRUE(pin_preferred_format(formats, pin));
-    EXPECT_TRUE(has({formats.front()}, pin.codec, pin.channels, pin.sample_rate, pin.bit_depth));
+    ASSERT_TRUE(pin_preferred_formats(formats, pins).empty());
+
+    // Built independently of the rotate: the pins as given, then every ranked entry that is not
+    // one of them, in the order it was ranked.
+    std::vector<AudioSupportedFormatObject> expected = pins;
+    const std::string pinned = "," + format_list_spec(pins) + ",";
+    for (const AudioSupportedFormatObject& entry : ranked) {
+        if (pinned.find("," + format_list_spec({entry}) + ",") == std::string::npos) {
+            expected.push_back(entry);
+        }
+    }
+    EXPECT_EQ(format_list_spec(formats), format_list_spec(expected));
+    EXPECT_EQ(formats.size(), ranked.size());
+    EXPECT_EQ(as_set(formats), as_set(ranked)) << "no entry lost or duplicated";
 }
 
-TEST(PinPreferredFormat, ReportsAFormatTheDeviceDoesNotTake) {
+TEST(PinPreferredFormats, EntriesAlreadyAtTheFrontStayPut) {
     std::vector<AudioSupportedFormatObject> formats =
         supported_formats({{44100, 48000}, {16, 24}, {2}});
     const std::vector<AudioSupportedFormatObject> before = formats;
-    const AudioSupportedFormatObject pin{SendspinCodecFormat::FLAC, 2, 192000, 24};
 
-    EXPECT_FALSE(pin_preferred_format(formats, pin));
+    ASSERT_TRUE(pin_preferred_formats(formats, {before[0], before[1]}).empty());
+    EXPECT_EQ(format_list_spec(formats), format_list_spec(before));
+}
+
+TEST(PinPreferredFormats, ReportsEveryMissingEntryAndLeavesTheListUntouched) {
+    std::vector<AudioSupportedFormatObject> formats =
+        supported_formats({{44100, 48000}, {16, 24}, {2}});
+    const std::vector<AudioSupportedFormatObject> before = formats;
+    const std::vector<AudioSupportedFormatObject> pins = {
+        {SendspinCodecFormat::FLAC, 2, 192000, 24},
+        {SendspinCodecFormat::PCM, 2, 48000, 16},  // carried, so not reported
+        {SendspinCodecFormat::PCM, 2, 96000, 16},
+    };
+
+    const std::vector<AudioSupportedFormatObject> missing = pin_preferred_formats(formats, pins);
+
+    EXPECT_EQ(format_list_spec(missing), "flac:192000:24:2,pcm:96000:16:2");
     // Left untouched, so the caller's refusal describes the list that would have gone out.
-    EXPECT_EQ(formats.size(), before.size());
+    EXPECT_EQ(format_list_spec(formats), format_list_spec(before));
 }
 
 }  // namespace

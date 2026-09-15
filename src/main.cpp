@@ -779,26 +779,29 @@ int main(int argc, char* argv[]) {
     client.set_persistence_provider(&persistence);
 
     std::vector<sendspin::AudioSupportedFormatObject> formats = advertised_formats(*sink);
-    // The --audio-format pin, applied to the derived list because that is the promise being
-    // reordered: an entry in front of it is one already going out. That list can be narrower
+    // The --audio-format preferences, applied to the derived list because that is the promise
+    // being reordered: an entry moved to the front is one already going out, and nothing behind
+    // it is dropped, so a server may still settle on a later entry. That list can be narrower
     // than the device's own report -- advertised_channels() collapses the channels axis to one
-    // count -- so a pin missing from it is not necessarily one the device refuses. It is a
-    // hard stop either way: the operator asked for the one shape their DAC is happy in, and
-    // starting anyway would play everything except that. Against the *fallback* list when the
-    // device reported nothing, deliberately: that run advertises the permissive set, so the
-    // pin is checked against what actually goes out.
-    if (opts.audio_format.has_value()) {
-        if (!pin_preferred_format(formats, *opts.audio_format)) {
+    // count -- so a pin missing from it is not necessarily one the device refuses. It is a hard
+    // stop either way: a preference the advertisement cannot carry is a typo or a wrong device,
+    // and every missing entry is named at once so one fix covers them all. Against the
+    // *fallback* list when the device reported nothing, deliberately: that run advertises the
+    // permissive set, so the pins are checked against what actually goes out.
+    if (!opts.audio_formats.empty()) {
+        const std::vector<sendspin::AudioSupportedFormatObject> missing =
+            pin_preferred_formats(formats, opts.audio_formats);
+        if (!missing.empty()) {
             log_fatal(LOG_TAG_AUDIO,
-                      "--audio-format asked for %s, which is not among the formats advertised "
-                      "for output device '%s' -- refusing to start rather than play something "
-                      "else. Run with -l to see what the device itself reports -- not the "
-                      "same set as what gets advertised.",
-                      describe_formats({*opts.audio_format}).c_str(), sink->name().c_str());
+                      "--audio-format asked for %s, which %s not among the formats advertised "
+                      "for output device '%s' -- refusing to start. Run with -l to see what the "
+                      "device itself reports -- not the same set as what gets advertised.",
+                      format_list_spec(missing).c_str(), missing.size() == 1 ? "is" : "are",
+                      sink->name().c_str());
             return 1;
         }
-        log_line(LogLevel::INFO, LOG_TAG_AUDIO, "Preferred format pinned first: %s",
-                 describe_formats({*opts.audio_format}).c_str());
+        log_line(LogLevel::INFO, LOG_TAG_AUDIO, "Preferred formats offered first, in order: %s",
+                 format_list_spec(opts.audio_formats).c_str());
     }
 
     sendspin::PlayerRoleConfig player_config;
