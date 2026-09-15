@@ -136,7 +136,6 @@ struct MdnsService::Impl {
         this->teardown();
     }
 
-
     bool start_register(std::string& error) {
         // Byte limits: dns_sd takes lengths as uint8_t, which would wrap on a long -n.
         const std::string instance = truncate_utf8(this->advertise_instance, MDNS_MAX_LABEL_BYTES);
@@ -233,7 +232,6 @@ struct MdnsService::Impl {
             log_line(LogLevel::WARN, LOG_TAG_DISCOVERY, "%s", error.c_str());
         }
     }
-
 
     void poll_once(int64_t now_ms) {
         this->now_ms = now_ms;
@@ -375,7 +373,6 @@ struct MdnsService::Impl {
         out.port = candidate.port;
         out.addresses = candidate.addresses;
     }
-
 
     void release_candidate_refs(Candidate& candidate) {
         Impl::release(candidate.resolve_ref);
@@ -589,7 +586,6 @@ struct MdnsService::Impl {
                      Impl::describe_error(err).c_str());
         }
     }
-
 
     static void release(DNSServiceRef& ref) {
         if (ref != nullptr) {

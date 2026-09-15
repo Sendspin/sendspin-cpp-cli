@@ -186,7 +186,6 @@ std::string default_sink_name(PulseConnection& conn) {
 
 }  // namespace
 
-
 PulseConnection::~PulseConnection() {
     this->disconnect();
 }
@@ -289,7 +288,6 @@ std::string PulseConnection::server_name() const {
     const char* server = pa_context_get_server(this->context_);
     return (server != nullptr) ? server : "(no server)";
 }
-
 
 PulseAudioSink::PulseAudioSink(std::string device, uint32_t buffer_ms)
     : device_(std::move(device)), buffer_ms_(buffer_ms) {

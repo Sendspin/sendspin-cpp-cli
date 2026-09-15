@@ -268,7 +268,6 @@ PipeWireQuantumFit pipewire_quantum_fit(size_t ring_frames, uint32_t quantum, ui
     return fit;
 }
 
-
 PipeWireGuard::PipeWireGuard() {
     pw_init(nullptr, nullptr);
     // Silence libpipewire's own stderr logger except at debug.
@@ -280,7 +279,6 @@ PipeWireGuard::PipeWireGuard() {
 PipeWireGuard::~PipeWireGuard() {
     pw_deinit();
 }
-
 
 PipeWireSink::PipeWireSink(std::string device, uint32_t buffer_ms)
     : device_(std::move(device)), buffer_ms_(buffer_ms) {}

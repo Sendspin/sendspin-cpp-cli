@@ -279,7 +279,6 @@ void print_device_capabilities(std::FILE* out, PaDeviceIndex device) {
 
 }  // namespace
 
-
 PortAudioGuard::PortAudioGuard() : err_(Pa_Initialize()) {}
 
 PortAudioGuard::~PortAudioGuard() {
@@ -304,7 +303,6 @@ bool PortAudioGuard::reinitialize() {
     this->err_ = Pa_Initialize();
     return this->err_ == paNoError;
 }
-
 
 PortAudioSink::PortAudioSink(std::string device, uint32_t buffer_ms)
     : device_(std::move(device)), buffer_ms_(buffer_ms) {
