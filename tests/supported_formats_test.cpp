@@ -12,11 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-/// @file supported_formats_test.cpp
-/// @brief supported_formats(): what a device's capabilities become in the hello handshake
-///
-/// Nothing here opens an audio device -- the crossing is a pure function precisely so the
-/// suite stays runnable on a sound-card-less CI runner.
+/// supported_formats() and the --audio-format grammar, without an audio device.
 
 #include "supported_formats.h"
 
@@ -52,12 +48,10 @@ size_t count_codec(const std::vector<AudioSupportedFormatObject>& formats,
         [&](const AudioSupportedFormatObject& format) { return format.codec == codec; }));
 }
 
-/// One entry reduced to something comparable -- AudioSupportedFormatObject is a plain
-/// aggregate with no operator==.
+/// One entry as a comparable tuple; the struct has no operator==.
 using FormatKey = std::tuple<int, uint8_t, uint32_t, uint8_t>;
 
-/// The advertisement as a *set*: sorted keys, so two orderings of the same entries compare
-/// equal and a difference is a difference in what was advertised, not in what order.
+/// The advertisement as a sorted set, ignoring order.
 std::vector<FormatKey> as_set(const std::vector<AudioSupportedFormatObject>& formats) {
     std::vector<FormatKey> keys;
     keys.reserve(formats.size());
@@ -69,10 +63,7 @@ std::vector<FormatKey> as_set(const std::vector<AudioSupportedFormatObject>& for
     return keys;
 }
 
-/// What supported_formats() advertised before the preference ladders: the same crossing, in
-/// the ascending order a probe reports its axes in. Spelled out here so the ranking can be
-/// held to permuting that list and nothing else -- an ordering change that quietly dropped
-/// an entry would take a format away from every server and every user picking one by hand.
+/// The unranked ascending crossing, so tests can hold the ranking to a pure permutation.
 std::vector<AudioSupportedFormatObject> ascending_advertisement(const SinkCapabilities& caps) {
     std::vector<AudioSupportedFormatObject> formats;
     if (caps.channels.empty()) {
@@ -145,9 +136,7 @@ size_t last_index(const std::vector<AudioSupportedFormatObject>& formats,
     return formats.size();
 }
 
-// ---------------------------------------------------------------------------
 // The device's own limits reach the advertisement
-// ---------------------------------------------------------------------------
 
 TEST(SupportedFormats, A16BitOnlyDeviceAdvertisesOnly16Bit) {
     const SinkCapabilities caps{{44100, 48000}, {16}, {1, 2}};
@@ -164,8 +153,6 @@ TEST(SupportedFormats, A16BitOnlyDeviceAdvertisesOnly16Bit) {
 }
 
 TEST(SupportedFormats, A24And32BitDeviceReachesTheDeeperPaths) {
-    // The whole point of deriving the list: before it, 8/24/32-bit were unreachable because
-    // the advertisement was hardcoded to 16.
     const SinkCapabilities caps{{44100, 96000}, {24, 32}, {2}};
 
     const std::vector<AudioSupportedFormatObject> formats = supported_formats(caps);
@@ -187,8 +174,7 @@ TEST(SupportedFormats, AMonoOnlyDeviceIsNotAdvertisedAsStereo) {
 }
 
 TEST(SupportedFormats, StereoWinsOverAWiderCount) {
-    // A 7.1 card still gets a stereo advertisement: the player has no reason to ask for more
-    // than the stream carries, and every extra count multiplies the list.
+    // A 7.1 card still advertises stereo.
     const SinkCapabilities caps{{48000}, {16}, {1, 2, 6, 8}};
 
     const std::vector<AudioSupportedFormatObject> formats = supported_formats(caps);
@@ -199,9 +185,7 @@ TEST(SupportedFormats, StereoWinsOverAWiderCount) {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Per codec, not one cross product
-// ---------------------------------------------------------------------------
 
 TEST(SupportedFormats, OpusIsOnly48kHz16Bit) {
     const SinkCapabilities caps{{44100, 48000, 96000}, {16, 24}, {2}};
@@ -215,8 +199,6 @@ TEST(SupportedFormats, OpusIsOnly48kHz16Bit) {
 }
 
 TEST(SupportedFormats, OpusIsDroppedWhereTheDeviceCannotTakeIt) {
-    // A device with no 48 kHz, and one with no 16-bit: advertising OPUS on either would be a
-    // route to a stream that arrives and cannot be played.
     EXPECT_EQ(
         count_codec(supported_formats({{44100, 88200}, {16}, {2}}), SendspinCodecFormat::OPUS), 0U);
     EXPECT_EQ(count_codec(supported_formats({{48000}, {24, 32}, {2}}), SendspinCodecFormat::OPUS),
@@ -224,8 +206,7 @@ TEST(SupportedFormats, OpusIsDroppedWhereTheDeviceCannotTakeIt) {
 }
 
 TEST(SupportedFormats, OpusIsDroppedOnADeviceNarrowerThanNothingBelowFourChannels) {
-    // opus_decoder_init() takes mono or stereo only, so a device whose narrowest count is 4
-    // can be sent FLAC and PCM but never Opus -- advertising it would be a nonsense entry.
+    // opus_decoder_init() takes mono or stereo only.
     const SinkCapabilities caps{{48000}, {16}, {4, 6, 8}};
 
     const std::vector<AudioSupportedFormatObject> formats = supported_formats(caps);
@@ -250,13 +231,10 @@ TEST(SupportedFormats, FlacAndPcmCoverTheWholeGrid) {
     EXPECT_EQ(count_codec(formats, SendspinCodecFormat::PCM), 4U);
 }
 
-// ---------------------------------------------------------------------------
 // Degenerate capability sets
-// ---------------------------------------------------------------------------
 
 TEST(SupportedFormats, ADeviceWithNoUsableRateAdvertisesNothing) {
-    // Empty rather than guessed at. Substituting a permissive set here would hide the
-    // condition from the caller, which is the one place that can report it.
+    // Empty, so the caller can report it.
     EXPECT_TRUE(supported_formats({{}, {16}, {2}}).empty());
     EXPECT_TRUE(supported_formats({{48000}, {}, {2}}).empty());
     EXPECT_TRUE(supported_formats({{48000}, {16}, {}}).empty());
@@ -276,17 +254,10 @@ TEST(SupportedFormats, ThePermissiveSetCoversEveryDepthAndCodec) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// The advertisement is a ranking, not just a set
-//
-// The protocol has supported_formats in priority order, first preferred, and Music
-// Assistant's aiosendspin takes filter_encodable_formats(...)[0] without looking further.
-// So the order these come out in *is* the format a server will pick.
-// ---------------------------------------------------------------------------
+// The advertisement is a ranking: servers take the first entry they can encode
 
 TEST(SupportedFormats, RankingOnlyPermutesWhatIsAdvertised) {
-    // The one thing the ordering must never do: change which formats go out. Every entry the
-    // ascending crossing produced is still there, for degenerate capability sets too.
+    // Ranking must never change which formats go out.
     const std::vector<SinkCapabilities> cases{
         SinkCapabilities::permissive(),
         {{44100, 48000}, {16, 24}, {2}},
@@ -308,8 +279,6 @@ TEST(SupportedFormats, RankingOnlyPermutesWhatIsAdvertised) {
 }
 
 TEST(SupportedFormats, ThePermissiveSetLeadsWithFlacStereo48kHz16Bit) {
-    // The default a device that refuses nothing lands on -- and the whole point of the
-    // ladders: ascending probe order used to put FLAC at 22050 Hz here.
     const std::vector<AudioSupportedFormatObject> formats =
         supported_formats(SinkCapabilities::permissive());
 
@@ -321,8 +290,7 @@ TEST(SupportedFormats, ThePermissiveSetLeadsWithFlacStereo48kHz16Bit) {
 }
 
 TEST(SupportedFormats, ADeviceWithNeitherPreferredRateLeadsWithItsBestRemaining) {
-    // Neither 48 nor 44.1 kHz on offer: the fallback is the best rate the device does take,
-    // not its lowest.
+    // No 48 or 44.1 kHz: the best rate on offer leads, not the lowest.
     const std::vector<AudioSupportedFormatObject> formats =
         supported_formats({{22050, 96000}, {16}, {2}});
 
@@ -338,7 +306,6 @@ TEST(SupportedFormats, RatesAndDepthsGoOutRanked) {
     EXPECT_EQ(rates_of(formats, SendspinCodecFormat::FLAC),
               (std::vector<uint32_t>{48000, 44100, 96000, 88200, 192000, 176400, 32000, 22050}));
     EXPECT_EQ(depths_of(formats, SendspinCodecFormat::FLAC), (std::vector<uint8_t>{16, 24, 32, 8}));
-    // PCM carries the same grid, so it is ranked the same way.
     EXPECT_EQ(rates_of(formats, SendspinCodecFormat::PCM),
               rates_of(formats, SendspinCodecFormat::FLAC));
     EXPECT_EQ(depths_of(formats, SendspinCodecFormat::PCM),
@@ -346,8 +313,6 @@ TEST(SupportedFormats, RatesAndDepthsGoOutRanked) {
 }
 
 TEST(SupportedFormats, OpusSitsAfterEveryFlacEntryAndBeforeEveryPcmEntry) {
-    // Lossless is preferred outright; Opus is the fallback worth having where bandwidth is
-    // the constraint; PCM costs the most bytes for no gain over FLAC.
     const std::vector<AudioSupportedFormatObject> formats =
         supported_formats({{44100, 48000}, {16, 24}, {2}});
 
@@ -359,8 +324,7 @@ TEST(SupportedFormats, OpusSitsAfterEveryFlacEntryAndBeforeEveryPcmEntry) {
 }
 
 TEST(SupportedFormats, ARateTheLaddersDoNotNameIsAdvertisedLastRatherThanDropped) {
-    // A backend that grows a rate outside PROBE_RATES must not lose it to the ranking: the
-    // ordering is a permutation, and an unranked value simply sorts to the back.
+    // An unranked rate sorts to the back rather than being dropped.
     const std::vector<AudioSupportedFormatObject> formats =
         supported_formats({{8000, 48000}, {16}, {2}});
 
@@ -368,13 +332,10 @@ TEST(SupportedFormats, ARateTheLaddersDoNotNameIsAdvertisedLastRatherThanDropped
     EXPECT_EQ(rates_of(formats, SendspinCodecFormat::FLAC), (std::vector<uint32_t>{48000, 8000}));
 }
 
-// ---------------------------------------------------------------------------
 // The startup digest
-// ---------------------------------------------------------------------------
 
 TEST(DescribeFormats, GroupsTheAxesPerCodec) {
-    // Each axis is spelled in advertised order, and the groups follow first-seen codec order,
-    // so the digest reads as the ranking it describes -- 48000 before 44100, FLAC before PCM.
+    // Axes in advertised order, codecs in first-seen order.
     const std::string text = describe_formats(supported_formats({{44100, 48000}, {16, 24}, {2}}));
 
     const size_t flac = text.find("FLAC 2ch 16/24-bit @ 48000/44100 Hz");
@@ -392,9 +353,7 @@ TEST(DescribeFormats, SaysSoWhenThereIsNothingToSay) {
     EXPECT_EQ(describe_formats({}), "(nothing)");
 }
 
-// ---------------------------------------------------------------------------
 // parse_format_spec(): the --audio-format grammar
-// ---------------------------------------------------------------------------
 
 TEST(ParseFormatSpec, ReadsEachCodec) {
     const std::pair<const char*, SendspinCodecFormat> specs[] = {
@@ -441,8 +400,7 @@ TEST(ParseFormatSpec, RejectsACodecThisPlayerCannotPlay) {
 }
 
 TEST(ParseFormatSpec, RejectsNumbersThatAreNotPlainNumbers) {
-    // Digits-only for parse_port()'s reason: strtoul would take " 48000", "+48000" and read
-    // "-1" as a huge unsigned.
+    // Digits only.
     for (const char* spec : {"flac:abc:24:2", "flac: 48000:24:2", "flac:-48000:24:2",
                              "flac:48000:24:", "flac:48000:24:0", "flac:0:24:2"}) {
         AudioSupportedFormatObject format{};
@@ -461,9 +419,7 @@ TEST(ParseFormatSpec, RejectsADepthNoSinkCanEmit) {
 }
 
 TEST(ParseFormatSpec, RejectsAnOpusShapeNoDecoderCanReach) {
-    // One spec per axis: the rate, the depth, and a width past what opus_decoder_init() takes.
-    // Each parses as a shape and would then miss every advertised entry on every device, so the
-    // refusal has to name the codec rather than let startup blame the output device.
+    // Shapes the Opus decoder can never produce are refused by codec.
     for (const char* spec : {"opus:44100:16:2", "opus:48000:24:2", "opus:48000:16:4"}) {
         AudioSupportedFormatObject format{};
         std::string error;
@@ -475,9 +431,7 @@ TEST(ParseFormatSpec, RejectsAnOpusShapeNoDecoderCanReach) {
 }
 
 TEST(ParseFormatSpec, KeepsTheOpusShapesTheDecoderReaches) {
-    // Mono is the one that needs pinning down: OpusSurvivesOnAMonoDevice proves the emit path
-    // produces it, so the check above has to be a ceiling on the channel count and not an
-    // equality against OPUS_MAX_CHANNELS.
+    // Mono must pass: the channel check is a ceiling, not an equality.
     for (const char* spec : {"opus:48000:16:2", "opus:48000:16:1"}) {
         AudioSupportedFormatObject format{};
         std::string error;
@@ -486,9 +440,7 @@ TEST(ParseFormatSpec, KeepsTheOpusShapesTheDecoderReaches) {
     }
 }
 
-// ---------------------------------------------------------------------------
 // parse_format_list(): the comma-separated --audio-format value
-// ---------------------------------------------------------------------------
 
 TEST(ParseFormatList, ReadsASingleSpecExactlyAsParseFormatSpecDoes) {
     std::vector<AudioSupportedFormatObject> formats;
@@ -563,9 +515,7 @@ TEST(ParseFormatList, LeavesTheOutputAloneOnFailure) {
     EXPECT_EQ(format_list_spec(formats), "pcm:44100:16:2");
 }
 
-// ---------------------------------------------------------------------------
 // pin_preferred_formats(): what the pins do to the advertisement
-// ---------------------------------------------------------------------------
 
 TEST(PinPreferredFormats, MovesOneEntryToTheFrontAndKeepsTheRest) {
     std::vector<AudioSupportedFormatObject> formats =
@@ -594,8 +544,7 @@ TEST(PinPreferredFormats, PutsSeveralPinsFirstInOrderThenTheRestInRankedOrder) {
 
     ASSERT_TRUE(pin_preferred_formats(formats, pins).empty());
 
-    // Built independently of the rotate: the pins as given, then every ranked entry that is not
-    // one of them, in the order it was ranked.
+    // Built independently: the pins, then every other ranked entry in order.
     std::vector<AudioSupportedFormatObject> expected = pins;
     const std::string pinned = "," + format_list_spec(pins) + ",";
     for (const AudioSupportedFormatObject& entry : ranked) {

@@ -12,8 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-/// @file pulse_sink.h
-/// @brief AudioSink over libpulse, with server-reported latency as the sync feedback
+/// AudioSink over libpulse, with server-reported latency as the sync feedback.
 
 #pragma once
 
@@ -35,43 +34,14 @@
 
 namespace sendspin_cli {
 
-/// @brief How long to wait for the server to answer, in milliseconds.
-///
-/// Bounds every wait in this backend: the context handshake, a stream connect, and each
-/// enumeration query. libpulse's own waits have no timeout at all -- `pa_threaded_mainloop_wait()`
-/// returns when a callback signals it and never otherwise -- so a socket that accepts and then
-/// says nothing would hang the player at startup with no output. That is exactly the case this
-/// backend exists to be honest about, so every wait here is our own condition variable with a
-/// deadline instead.
-///
-/// Three seconds because the only servers reachable through libpulse are on a Unix socket or a
-/// LAN: a handshake that has not finished by then is not going to.
+/// Bound on every wait for the server; libpulse's own waits have no timeout.
 inline constexpr int PULSE_TIMEOUT_MS = 3000;
 
-/// @brief How long a *recovery* attempt may wait on the server, in milliseconds.
-///
-/// Much shorter than the startup budget, because both threads that spend it are on somebody's
-/// deadline: poll() runs on the main loop, which also drives the protocol client, mDNS and the
-/// control socket -- AudioSink::poll() asks for a bound and three seconds is barely one -- and
-/// reopen_in_place_() spends it out of a write()'s own timeout.
-///
-/// Half a second is generous for a local socket that is actually there. One that is not fails
-/// immediately rather than waiting, and one that is merely slow costs nothing here: the next
-/// configure() reconnects with the full budget anyway.
+/// Shorter bound for recovery waits, which run on the main loop or inside a write().
 inline constexpr int PULSE_RECOVERY_TIMEOUT_MS = 500;
 
-/// @brief A libpulse threaded mainloop and the context running on it, as one lifetime.
-///
-/// Owned for as long as the sink lives, and taken briefly by probe() and list_devices() -- each
-/// of which needs a connected context and nothing else. Every libpulse call on `context()` must
-/// hold the mainloop lock (`pa_threaded_mainloop_lock()`); that is libpulse's rule, not ours.
-///
-/// THREAD SAFETY: connect(), disconnect() and the destructor must run on a thread that is *not*
-/// the mainloop's -- `pa_threaded_mainloop_stop()` deadlocks if called from inside it. Every
-/// caller is on the main loop, and deliberately so: the sink's constructor and destructor,
-/// configure(), and poll(). **write() never reconnects** -- reopen_in_place_() refuses when the
-/// context is down and escalates to poll() instead, which is what keeps a wait on the server off
-/// the sync task's thread. ready() and notify() are safe from anywhere.
+/// A libpulse threaded mainloop and its context, as one lifetime.
+/// connect(), disconnect() and the destructor deadlock if called on the mainloop thread.
 class PulseConnection {
 public:
     PulseConnection() = default;
@@ -80,25 +50,19 @@ public:
     PulseConnection(const PulseConnection&) = delete;
     PulseConnection& operator=(const PulseConnection&) = delete;
 
-    /// @brief Brings up the mainloop and connects a context, waiting for it to become ready.
-    ///
-    /// Idempotent only in the sense that a failed attempt leaves nothing behind: it tears its own
-    /// half-built state down before returning, so the caller may simply try again later.
-    /// @param error Set to a human-readable reason when the return value is false.
-    /// @param timeout_ms How long to wait for the server to answer. PULSE_RECOVERY_TIMEOUT_MS on
-    /// a path that is already on somebody's deadline; the default everywhere else.
+    /// Starts the mainloop and connects a context; a failed attempt leaves nothing behind.
+    /// @param timeout_ms PULSE_RECOVERY_TIMEOUT_MS on paths already on a deadline.
     /// @return true once the context is PA_CONTEXT_READY.
     bool connect(std::string& error, int timeout_ms = PULSE_TIMEOUT_MS);
 
-    /// @brief Tears the context and the mainloop down. Idempotent.
+    /// Tears the context and the mainloop down. Idempotent.
     void disconnect();
 
-    /// @brief True while the context is connected and usable.
+    /// True while the context is connected and usable.
     bool ready() const;
 
-    /// @brief The server this context reached, for log lines and errors. "(no server)" if none.
-    ///
-    /// Takes the mainloop lock itself, so it must not be called with that lock already held.
+    /// The server this context reached, or "(no server)".
+    /// Takes the mainloop lock itself: do not call with it held.
     std::string server_name() const;
 
     pa_threaded_mainloop* mainloop() const {
@@ -108,14 +72,8 @@ public:
         return this->context_;
     }
 
-    /// @brief Blocks until `predicate` holds or `timeout_ms` passes. Mainloop lock NOT held.
-    ///
-    /// The one waiting primitive this backend has. Callbacks run on the mainloop thread and call
-    /// notify() when they have changed something a waiter might be watching for.
-    ///
-    /// The predicate must read nothing but plain values and atomics: it is evaluated under
-    /// wait_mutex_, which the mainloop thread takes to notify, so a libpulse call in there would
-    /// need the mainloop lock and close a cycle between the two.
+    /// Blocks until `predicate` holds or `timeout_ms` passes, without the mainloop lock.
+    /// The predicate may read only plain values and atomics: no libpulse calls.
     /// @return true if the predicate held before the deadline.
     template <typename Predicate>
     bool wait_for(Predicate predicate, int timeout_ms = PULSE_TIMEOUT_MS) {
@@ -123,7 +81,7 @@ public:
         return this->wait_cv_.wait_for(lock, std::chrono::milliseconds(timeout_ms), predicate);
     }
 
-    /// @brief Wakes every waiter. Called from libpulse callbacks, on the mainloop thread.
+    /// Wakes every waiter. Called from libpulse callbacks, on the mainloop thread.
     void notify();
 
 private:
@@ -138,49 +96,12 @@ private:
     std::condition_variable wait_cv_;
 };
 
-/// @brief An AudioSink that plays through a PulseAudio server, natively.
-///
-/// The device string is what followed `-o pulse:` -- a sink name as `-l` prints it, or empty for
-/// whichever sink the server itself calls default. It is passed to the server verbatim and
-/// resolved there, which is why a sink that appears after startup is picked up by the next
-/// stream without anything here having to rescan.
-///
-/// **What this buys over `-o alsa:pulse`**, which reaches the same server through ALSA's plugin
-/// PCM and has always worked: the sinks are enumerable, so `-o` can name one; the stream carries
-/// an application name, so it appears as `sendspin-cli` in the host's mixer and can be routed
-/// per-application; and `pa_stream_get_latency()` answers for the server's real playout rather
-/// than for the plugin's own buffering, which is what a synchronised multi-room player needs.
-/// The ALSA route stays reachable and documented -- see resolve_device_spec().
-///
-/// THREAD SAFETY: mutex_ serialises everything, as AlsaAudioSink does and unlike PortAudioSink:
-/// libpulse lets any thread write to a stream under the mainloop lock, so there is no audio
-/// callback to keep lock-free and no ring to bridge to one. **The server's own buffer is the
-/// ring**, sized by --buffer-ms through pa_buffer_attr::tlength, which is also what
-/// pa_stream_get_latency() answers about -- so a second buffer here would be latency the sync
-/// feedback could not see.
-///
-/// Lock order is mutex_ then the mainloop lock, never the other way, and no libpulse callback
-/// takes mutex_ -- they only notify a condition variable. write() releases mutex_ while waiting
-/// for room, exactly as PortAudioSink's does, so configure(), clear() and stop() are not stuck
-/// behind a parked writer; stream_generation_ is what makes that safe.
-///
-/// Volume is applied on the way in, into a scratch buffer, as AlsaAudioSink does -- the bytes
-/// handed to pa_stream_write() are the caller's, so scaling them in place is not ours to do. A
-/// volume change therefore reaches only audio not yet written, where PortAudio's callback-side
-/// scaling also reaches what is already buffered. Both are correct; this one takes effect a
-/// buffer later.
-///
-/// Volume is deliberately *not* pushed to the server as a sink-input volume. Three reasons: the
-/// spec's `(volume/100)^1.5` perceived-loudness curve is not PulseAudio's cubic taper; stacking a
-/// server gain on the software one would square the taper (ROADMAP item 15 says so for ALSA's
-/// mixer, and this is the same trap); and a gain `pavucontrol` can move behind our back would
-/// break the guarantee in audio_sink.h that a player never reports a volume the speaker is not
-/// at, which group volume is derived from.
+/// An AudioSink that plays through a PulseAudio server; `-o pulse:` a sink name or empty.
+/// Lock order is mutex_ then the mainloop lock; no libpulse callback takes mutex_.
 class PulseAudioSink final : public AudioSink {
 public:
-    /// @param device The sink name from `-o pulse:<sink>`, or empty for the server's default.
-    /// @param buffer_ms How much audio the server should keep queued, from --buffer-ms. A
-    /// request rather than a promise: the server's own minimum wins, and says so at `debug`.
+    /// @param device Sink name, or empty for the server's default.
+    /// @param buffer_ms Requested server buffer; the server's minimum wins.
     PulseAudioSink(std::string device, uint32_t buffer_ms);
     ~PulseAudioSink() override;
 
@@ -192,35 +113,16 @@ public:
     void set_volume(uint8_t volume) override;
     void set_muted(bool muted) override;
 
-    /// @brief Spends the delayed half of this sink's reconnect budget, when write()'s failed.
-    ///
-    /// Does nothing on an ordinary tick and takes no lock to establish that, like
-    /// PortAudioSink::poll(). What it does when there is work is a full reconnect --
-    /// SinkRecovery's second attempt, which for a sound server is what a *restarted* daemon
-    /// needs: the socket is gone for a moment and comes back, so an immediate retry fails and
-    /// one SINK_RESCAN_DELAY_MS later succeeds.
-    ///
-    /// Up to SINK_RESCAN_ATTEMPTS of them per configured stream, behind a delay that doubles --
-    /// so a daemon that takes most of a minute to come back is still caught, and one that takes
-    /// longer is left to the next configure(), which reconnects anyway.
+    /// Makes the delayed reconnect once write()'s in-place attempt has failed.
     void poll(int64_t now_ms) override;
 
-    /// @brief Everything this player can emit, because the server converts.
-    ///
-    /// PulseAudio resamples and reformats whatever a stream sends into what the sink runs at, so
-    /// "what can I push through this -o value" really is the whole ladder -- the same answer, for
-    /// the same reason, that ALSA's `default` plug PCM gives. Asking the sink's own sample spec
-    /// would describe the hardware behind the server rather than the question being asked.
+    /// The whole ladder: the server converts whatever the stream sends.
     SinkCapabilities capabilities() const override;
 
-    /// @brief Checks that a server is reachable and that it has the named sink.
-    ///
-    /// Called from make_audio_sink() so an unreachable socket or a mistyped sink fails at
-    /// startup, while someone is watching the terminal, rather than at the first track.
-    /// @param error Set to a human-readable reason when the return value is false.
+    /// Checks that a server is reachable and has the named sink.
     static bool probe(const std::string& device, std::string& error);
 
-    /// @brief Prints this server's sinks, with the default marked. Backs part of -l.
+    /// Prints this server's sinks, with the default marked.
     static void list_devices(std::FILE* out);
 
 private:
@@ -228,38 +130,26 @@ private:
     static void stream_write_cb(pa_stream* stream, size_t nbytes, void* userdata);
     static void stream_underflow_cb(pa_stream* stream, void* userdata);
 
-    /// Opens a stream on the configured sink for a format. Caller holds mutex_ and has already
-    /// closed any previous stream.
-    /// @param timeout_ms How long to wait for the server to accept the stream. See
-    /// PULSE_RECOVERY_TIMEOUT_MS.
+    /// Opens a stream for a format. Caller holds mutex_ and has closed any previous stream.
+    /// @param timeout_ms How long to wait for the server to accept the stream.
     bool open_stream_(uint32_t sample_rate, uint8_t channels, uint8_t bits_per_sample,
                       int timeout_ms);
-    /// Disconnects and frees the stream if open, and forgets the format. Caller holds mutex_.
-    /// Idempotent, and deliberately leaves stopping_ alone -- see stop().
+    /// Disconnects and frees the stream and forgets the format. Caller holds mutex_.
+    /// Must not touch stopping_; see stop().
     void close_stream_();
-    /// Makes the one in-place attempt a dead stream gets: reconnect the context if it has
-    /// dropped, then reopen at last_format_. Called from write(), so on the sync task's thread.
-    /// Caller holds mutex_.
+    /// The one in-place attempt a dead stream gets, from write(). Caller holds mutex_.
     /// @return true if a stream is running again.
     bool reopen_in_place_();
-    /// Reports a recovery attempt that failed, and says what happens next. Caller holds mutex_,
-    /// and has just made the attempt rescan_due() handed out.
-    /// @param reason What went wrong, for the log line.
+    /// Logs a failed recovery attempt and what happens next. Caller holds mutex_.
     void report_failed_recovery_(const std::string& reason);
     /// True while the context and the stream are both usable. Caller holds mutex_.
     bool stream_alive_() const;
-    /// Prepares `frames` frames of `data` for the server: scaled by a ramp from `start` toward
-    /// `target`, and converted to unsigned where the stream is 8-bit. Caller holds mutex_.
-    ///
-    /// Deliberately does not advance the ramp -- write() commits that by the frames it really
-    /// wrote, which is not necessarily the frames scaled here.
-    /// @return scratch_ when anything had to change, or `data` itself when nothing did.
+    /// Scales `frames` of `data` along a ramp and converts 8-bit; does not advance the ramp.
+    /// @return scratch_ when anything changed, else `data`. Caller holds mutex_.
     const uint8_t* stage_(const uint8_t* data, size_t frames, uint64_t start, uint64_t target);
-    /// Recomputes target_multiplier_ from volume_ and muted_.
     void update_target_multiplier_();
 
-    /// Held for the sink's whole life. Declared first so it is destroyed last: the stream has to
-    /// be freed before the mainloop it runs on goes away.
+    /// Declared first so it is destroyed last, after the stream is freed.
     PulseConnection conn_;
 
     /// The sink name as -o spelled it, empty for the server's default.
@@ -277,46 +167,31 @@ private:
     size_t bytes_per_frame_{0};
     /// Per-frame gain increment for this stream's rate, from volume_ramp_step().
     uint64_t ramp_step_{0};
-    /// Scaled copy of the caller's PCM, reused across writes so a steady stream allocates once.
+    /// Scaled copy of the caller's PCM, reused across writes.
     std::vector<uint8_t> scratch_;
 
-    /// Bumped whenever the stream is opened, closed or flushed. write() captures it before
-    /// waiting and compares it on waking, because waiting releases mutex_ -- see
-    /// PortAudioSink::stream_generation_, which this mirrors for the same reason.
+    /// Bumped on open, close or flush; a write() that waited compares it on waking.
     uint64_t stream_generation_{0};
 
-    /// Set before stop() takes the mutex, so a write() waiting for room bails out promptly
-    /// instead of making shutdown wait for the server. Latches: nothing clears it.
+    /// Set before stop() takes the mutex so a waiting write() bails out; latches.
     std::atomic<bool> stopping_{false};
-    /// Latches when write() first finds no usable stream, purely so it complains once rather
-    /// than on every buffer. Cleared by a configure() that succeeds.
+    /// Latches so write() complains once about a missing stream; cleared by a good configure().
     std::atomic<bool> failed_{false};
-    /// Set by the stream state callback when the server kills the stream under us. Read by
-    /// stream_alive_(), which is what turns a dead stream into a reconnect.
+    /// Set when the server kills the stream; stream_alive_() turns it into a reconnect.
     std::atomic<bool> stream_failed_{false};
-    /// The state the server last reported, as a pa_stream_state_t.
-    ///
-    /// Mirrored into an atomic rather than read back with pa_stream_get_state() because the one
-    /// caller is open_stream_()'s wait predicate, which runs under the connection's own wait
-    /// mutex: a libpulse call there would have to take the mainloop lock, and the mainloop thread
-    /// takes that wait mutex to notify. Reading a plain value instead is what keeps the two lock
-    /// orders from meeting.
+    /// Mirrored from the state callback so wait predicates need no libpulse call.
     std::atomic<int> stream_state_{PA_STREAM_UNCONNECTED};
 
-    /// The format the sink was last *asked* to play, which outlives the stream playing it, so
-    /// recovery has something to reopen at. Guarded by mutex_; zeroed by stop().
+    /// Format last asked for; recovery reopens at it. Guarded by mutex_, zeroed by stop().
     StreamFormat last_format_{};
-    /// What is left to try about a stream that has died, and when. Guarded by mutex_, bar
-    /// SinkRecovery::pending().
+    /// Guarded by mutex_, except SinkRecovery::pending().
     SinkRecovery recovery_;
 
     std::atomic<uint8_t> volume_{DEFAULT_SINK_VOLUME};
     std::atomic<bool> muted_{false};
-    /// The Q32 gain the ramp is heading for. Atomic because set_volume()/set_muted() write it
-    /// from the main loop and write() reads it from the sync task's thread.
+    /// Q32 gain the ramp is heading for; written by the main loop, read by write().
     std::atomic<uint64_t> target_multiplier_{Q32_ONE};
-    /// The Q32 gain actually being applied. Plain: only write() and clear() touch it, and both
-    /// hold mutex_ -- the same rule AlsaAudioSink's copy follows.
+    /// Q32 gain being applied; only touched under mutex_.
     uint64_t current_multiplier_{Q32_ONE};
 };
 

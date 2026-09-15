@@ -12,12 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-/// @file parse_harness.h
-/// @brief One parse_options() call, with its argv and its diagnostics owned for you
-///
-/// Shared by the two suites that drive the parser -- the flag surface and the config file --
-/// rather than copied into each, for scoped_env.h's reason: the hermeticity rule below is the
-/// kind of thing that must not be fixed in only one of them.
+/// One parse_options() call, with its argv and its diagnostics owned for you.
 
 #pragma once
 
@@ -32,36 +27,19 @@
 
 namespace sendspin_cli {
 
-/// @brief Runs parse_options() on a command line written as a plain list of words.
-///
-/// Three things this owns rather than the test: the argv array (getopt wants a mutable `char*[]`
-/// and permutes it in place, so nothing may point at a literal), the diagnostics stream (a
-/// tmpfile(), so a test can read the exact wording back and nothing reaches the runner's own
-/// stderr), and which config file the parse reads.
-///
-/// **That last one is what keeps this suite runnable anywhere.** `parse_options()` searches
-/// `$XDG_CONFIG_HOME`, `$HOME/.config` and `/etc/sendspin-cli.conf`, so a parse left to its own
-/// devices would read whatever the machine running the tests happens to have -- and `/etc` is not
-/// something a test can move out of the way. So every parse here names a config explicitly, and
-/// the default is `/dev/null`: a file that always exists, always reads as valid, and always
-/// contains nothing. Tests about the *search itself* go to config_search_paths() and
-/// load_config_file() directly, which take the list to walk.
+/// Runs parse_options() on a list of words, owning argv and a tmpfile() diagnostics stream.
+/// Always names a config (default /dev/null) so no machine's real config leaks into a test.
 class Parse {
 public:
     /// @param args The command line after argv[0]. A subcommand must still come first.
-    /// @param config The config file to read. Defaults to a file with nothing in it; pass a real
-    /// path to test what a config does.
+    /// @param config The config file to read; defaults to an empty one.
     explicit Parse(std::vector<std::string> args, std::string config = "/dev/null")
         : words_(std::move(args)) {
         this->words_.insert(this->words_.begin(), "sendspin-cli");
-        // Inserted at the front of the flags rather than appended, and the difference matters both
-        // ways: a subcommand and its argument have to stay at argv[1..], and a test that
-        // deliberately leaves a flag's value off would swallow `--config` as that value.
+        // Inserted after any subcommand, and before flags so a missing value cannot swallow it.
         size_t at = 1;
         if (this->words_.size() > 1 && this->words_[1][0] != '-') {
-            // argv[1] is the subcommand *position* whether or not the word there is a real
-            // subcommand, so the insert goes after it either way -- otherwise a bare word would be
-            // diagnosed as a stray argument rather than as the subcommand typo it is.
+            // argv[1] is the subcommand position whether or not the word is a real subcommand.
             const ControlSubcommand* subcommand = find_control_subcommand(this->words_[1]);
             at = 2 + (subcommand == nullptr ? 0 : subcommand->arity);
         }

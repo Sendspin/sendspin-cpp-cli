@@ -12,8 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-/// @file pcm_ring.h
-/// @brief Lock-free single-producer/single-consumer byte ring, for the pull-model backends
+/// Lock-free single-producer/single-consumer byte ring, for the pull-model backends.
 
 #pragma once
 
@@ -24,56 +23,31 @@
 
 namespace sendspin_cli {
 
-/// @brief Lock-free single-producer/single-consumer byte ring buffer.
-///
-/// Bridges AudioSink::write()'s push model to a backend that *pulls*: the sync task writes,
-/// the backend's audio callback reads, and neither waits on the other. The ring itself needs
-/// no lock and allocates nothing outside reset(); what a sink does around it -- notifying the
-/// producer's condition variable, and invoking on_frames_played -- is not strictly
-/// realtime-safe, and is the same pragmatic trade upstream's reference makes.
-///
-/// The producer owns write_pos_ and the consumer owns read_pos_. That each index has exactly
-/// one writer is the invariant the whole class rests on, and it is why request_clear() only
-/// *asks* for a drain that the consumer performs on its next read() -- resetting read_pos_
-/// from the producer side would break it.
-///
-/// Lifted from upstream's PortAudioSink (examples/common/portaudio_sink.cpp), so the two
-/// implementations buffer alike. It lives here rather than in one backend's header because
-/// PortAudio and PipeWire both pull, and a second copy of a lock-free ring is the kind of
-/// duplication that drifts silently. Device-free and clock-free, so it is compiled and tested
-/// on a host with no audio backend at all -- the same split src/sink_recovery.{h,cpp} and
-/// src/pcm_volume.{h,cpp} make.
+/// Lock-free SPSC byte ring bridging write()'s push to a backend callback's pull.
+/// The producer owns write_pos_ and the consumer read_pos_; nothing else may write either.
 class PcmRingBuffer {
 public:
-    /// @brief Writes up to `len` bytes. Producer side.
-    /// @return Bytes actually written, which is short of `len` when the ring is nearly full.
+    /// Writes up to `len` bytes. Producer side.
+    /// @return Bytes written, short of `len` when the ring is nearly full.
     size_t write(const uint8_t* data, size_t len);
 
-    /// @brief Reads up to `len` bytes, zero-filling any shortfall. Consumer side.
-    ///
-    /// Zeroed bytes are silence for the signed PCM the player emits, so a starved callback
-    /// outputs a gap rather than whatever the device buffer last held.
-    /// @return Bytes of real audio read, not counting the silence padding.
+    /// Reads up to `len` bytes, zero-filling any shortfall. Consumer side.
+    /// @return Bytes of real audio read, not counting the padding.
     size_t read(uint8_t* dest, size_t len);
 
-    /// @brief Bytes available to read.
+    /// Bytes available to read.
     size_t available() const;
 
-    /// @brief Bytes that can be written before the ring is full.
+    /// Bytes that can be written before the ring is full.
     size_t free_space() const;
 
-    /// @brief Asks the consumer to drop everything buffered, on its next read().
-    ///
-    /// Safe to call while the callback is running, and the only clearing operation that is.
+    /// Asks the consumer to drop everything on its next read(); safe while the callback runs.
     void request_clear();
 
-    /// @brief Drops everything buffered, here and now.
-    ///
-    /// Writes both positions, so it is only safe with no reader running -- after the backend's
-    /// stream has been stopped, with the producer's mutex held.
+    /// Drops everything now. Only with no reader running and the producer's mutex held.
     void drop();
 
-    /// @brief Resizes the ring and drops everything in it. Same restriction as drop().
+    /// Resizes the ring and drops everything in it. Same restriction as drop().
     void reset(size_t capacity);
 
 private:

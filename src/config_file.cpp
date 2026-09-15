@@ -50,9 +50,7 @@ std::vector<std::string> config_search_paths() {
     }
     const std::string home = env_or_empty("HOME");
     if (!home.empty()) {
-        // Listed even when it duplicates the entry above -- `XDG_CONFIG_HOME=$HOME/.config` is the
-        // spec's own default and a common thing to set explicitly. Reading the same file twice is
-        // impossible anyway, since the first hit wins.
+        // Listed even when it duplicates the XDG default; the first hit wins anyway.
         paths.push_back(home + "/.config/" + CONFIG_SUBDIR + "/" + CONFIG_FILE);
     }
     paths.push_back(SYSTEM_CONFIG_PATH);
@@ -75,8 +73,7 @@ bool load_config_file(const std::string& explicit_path,
                 error = malformed_message(explicit_path, malformed_line);
                 return false;
             case KeyValueStatus::Unreadable:
-                // Fatal, unlike the search below: the operator named this file, so falling back
-                // would start a player on options nobody chose.
+                // Fatal, unlike the search: the operator named this file.
                 error = "--config '" + explicit_path +
                         "': cannot be read -- check the path exists and is readable";
                 return false;
@@ -86,13 +83,10 @@ bool load_config_file(const std::string& explicit_path,
     for (const std::string& path : search_paths) {
         switch (read_key_value_file(path, out.entries, malformed_line)) {
             case KeyValueStatus::Ok:
-                // The first file found is used whole, and the search stops here: nothing below is
-                // merged over it.
                 out.path = path;
                 return true;
             case KeyValueStatus::Malformed:
-                // Refused rather than skipped. A config that exists and is broken is an operator's
-                // mistake to see, and carrying on to /etc would run a player on the wrong file.
+                // Refused rather than skipped, so a broken config never falls through to /etc.
                 error = malformed_message(path, malformed_line);
                 return false;
             case KeyValueStatus::Unreadable:
@@ -100,7 +94,6 @@ bool load_config_file(const std::string& explicit_path,
         }
     }
 
-    // Nothing found, which is silent and normal.
     out.entries.clear();
     return true;
 }

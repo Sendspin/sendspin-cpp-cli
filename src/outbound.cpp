@@ -39,9 +39,7 @@ bool RetryPacer::note_connection_state(bool connected, int64_t now_ms) {
         return false;
     }
     if (lost) {
-        // Restart the schedule, and pace the first redial from *now* rather than from the
-        // dial that established the link -- which may have been hours ago, and would make
-        // the redial immediate.
+        // Pace the first redial from now, not from the dial that made the link.
         this->dials_ = 1;
         this->last_dial_ms_ = now_ms;
         this->dialled_ = true;
@@ -53,7 +51,6 @@ bool RetryPacer::should_dial(int64_t now_ms) const {
     if (this->connected_) {
         return false;
     }
-    // The very first dial waits for nothing: there is no attempt in flight to protect.
     if (!this->dialled_) {
         return true;
     }
@@ -63,8 +60,7 @@ bool RetryPacer::should_dial(int64_t now_ms) const {
 void RetryPacer::note_dial(int64_t now_ms) {
     this->last_dial_ms_ = now_ms;
     this->dialled_ = true;
-    // Stops counting once the schedule has saturated: the delay would not change, and a
-    // daemon that retried for years would otherwise wrap the counter.
+    // Stop counting once saturated, so the counter cannot wrap.
     if (this->delay_ms() < MAX_RETRY_DELAY_MS) {
         ++this->dials_;
     }
@@ -81,7 +77,6 @@ void LastDial::note_lost() {
 }
 
 std::string LastDial::url_for(const std::string& connected_server_id) const {
-    // An empty id cannot be checked against the connection, so it answers nothing.
     if (this->server_id_.empty() || this->server_id_ != connected_server_id) {
         return {};
     }

@@ -12,23 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-/// @file mdns_dnssd.cpp
-/// @brief MdnsService over `dns_sd.h` -- Bonjour on macOS, libavahi-compat-libdnssd on Linux
-///
-/// Everything here runs on the main loop thread, driven from poll(). That is a requirement
-/// rather than a simplification: a browse result is what triggers
-/// SendspinClient::connect_to(), which is documented as main-loop-only.
-///
-/// Address lookup goes through DNSServiceQueryRecord() rather than the more obvious
-/// DNSServiceGetAddrInfo(): the latter is a Bonjour extension that
-/// libavahi-compat-libdnssd does not implement at all, so it would take the Linux build
-/// with it. QueryRecord() is in the compat layer, and being asynchronous it keeps the whole
-/// resolve chain on the one thread -- where the POSIX getaddrinfo() upstream's
-/// `examples/tui_client` falls back to needs a thread per lookup.
-///
-/// That the Linux half really behaves that way is checked rather than assumed: CI advertises,
-/// browses and resolves through a real `avahi-daemon` on every push, and a resolve cannot
-/// produce a URL without an address. See docs/ROADMAP.md item 12.
+/// MdnsService over `dns_sd.h`: Bonjour on macOS, libavahi-compat-libdnssd on Linux.
+/// Addresses use DNSServiceQueryRecord(): the avahi compat layer lacks DNSServiceGetAddrInfo().
 
 #include "mdns.h"
 
@@ -54,19 +39,12 @@ namespace sendspin_cli {
 
 using sendspin::LogLevel;
 
-/// The advertising half of this file. The browse, resolve and address-query callbacks
-/// speak for discovery instead, and say so by calling log_line() with that tag.
+/// Advertising lines; discovery callbacks log under LOG_TAG_DISCOVERY.
 static constexpr const char* LOG_TAG = LOG_TAG_MDNS;
 
 namespace {
 
-/// How long after its first address a candidate waits before it is offered for dialling.
-///
-/// The A and AAAA queries are issued together and a responder usually answers both in one
-/// packet, but nothing guarantees they land in the same poll() tick. Without this window a
-/// dual-stack server whose AAAA arrived first would be dialled over IPv6, against the
-/// stated preference for IPv4 -- and the reference server binds V4Only, so that is a route
-/// to a listener that may not be there.
+/// Wait after a candidate's first address, so a late A record still wins over AAAA.
 constexpr int64_t ADDRESS_SETTLE_MS = 250;
 
 /// A TXT value, or empty when the key is absent.
@@ -96,8 +74,7 @@ std::string address_literal(uint16_t rrtype, uint16_t rdlen, const void* rdata) 
 
 }  // namespace
 
-/// The whole of the dns_sd state, kept out of the header so nothing else has to see
-/// `dns_sd.h` -- which the null build does not have at all.
+/// All dns_sd state, kept out of the header for the null build.
 struct MdnsService::Impl {
     /// A `_sendspin-server._tcp` instance being resolved, or already resolved.
     struct Candidate {
@@ -120,14 +97,13 @@ struct MdnsService::Impl {
         bool unusable{false};      ///< dropped for what it is, not for having gone away
     };
 
-    /// What a callback needs to find its way back. Owned by the candidate, so it outlives
-    /// every ref that points at it and dies with them.
+    /// What a callback needs to find its way back; owned by the candidate, outliving its refs.
     struct CandidateContext {
         Impl* impl{nullptr};
         std::string instance;
     };
 
-    // -- what was asked for, kept so a daemon restart can be recovered from --------------
+    // What was asked for, kept to recover from a daemon restart.
     bool advertise_wanted{false};
     std::string advertise_instance;
     std::string advertise_path;
@@ -135,25 +111,21 @@ struct MdnsService::Impl {
     uint16_t advertise_port{0};
     bool browse_wanted{false};
 
-    // -- live dns_sd state ---------------------------------------------------------------
+    // Live dns_sd state.
     DNSServiceRef register_ref{nullptr};
     DNSServiceRef browse_ref{nullptr};
     std::map<std::string, std::unique_ptr<Candidate>> candidates;
     std::map<std::string, std::unique_ptr<CandidateContext>> contexts;
 
-    /// Refs finished with during a callback. Deallocating a ref from inside its own
-    /// DNSServiceProcessResult() is asking the daemon to free what it is still using, so
-    /// they are retired here and released once processing has returned.
+    /// Refs to release after processing returns; freeing one inside its own callback is unsafe.
     std::vector<DNSServiceRef> retired;
 
-    /// Candidates to erase once the callbacks have returned -- either because the browse
-    /// says they have gone, or because they turned out to be undialable. Deferred for the
-    /// same reason `retired` is: erasing a candidate frees the refs a callback is inside.
+    /// Candidates to erase after callbacks return, for the same reason as `retired`.
     std::vector<std::string> doomed;
 
     uint64_t next_seq{1};
 
-    // -- recovery ------------------------------------------------------------------------
+    // Recovery.
     int64_t restart_at_ms{-1};
     uint32_t restart_attempt{0};
 
@@ -164,14 +136,8 @@ struct MdnsService::Impl {
         this->teardown();
     }
 
-    // ====================================================================================
-    // Lifecycle
-    // ====================================================================================
-
     bool start_register(std::string& error) {
-        // Byte limits, not character limits: an instance label is one DNS label (63 bytes)
-        // and a TXT value's length is carried in a single octet. Truncating is what keeps
-        // dns_sd's own uint8_t length argument from silently wrapping on a long -n.
+        // Byte limits: dns_sd takes lengths as uint8_t, which would wrap on a long -n.
         const std::string instance = truncate_utf8(this->advertise_instance, MDNS_MAX_LABEL_BYTES);
         const std::string path = truncate_utf8(this->advertise_path, MDNS_MAX_TXT_VALUE_BYTES);
         const std::string friendly =
@@ -186,16 +152,13 @@ struct MdnsService::Impl {
 
         TXTRecordRef txt;
         TXTRecordCreate(&txt, 0, nullptr);
-        // `path` is REQUIRED by the spec; `name` is optional, so an empty one is left out
-        // rather than advertised as an empty string.
         TXTRecordSetValue(&txt, "path", static_cast<uint8_t>(path.size()), path.c_str());
         if (!friendly.empty()) {
             TXTRecordSetValue(&txt, "name", static_cast<uint8_t>(friendly.size()),
                               friendly.c_str());
         }
 
-        // Flags 0 so the daemon renames rather than failing on a collision; the register
-        // callback is what reports the name we actually got.
+        // Flags 0: the daemon renames on collision, and the callback reports the result.
         const DNSServiceErrorType err = DNSServiceRegister(
             &this->register_ref, 0, kDNSServiceInterfaceIndexAny, instance.c_str(),
             MDNS_CLIENT_SERVICE, nullptr, nullptr, htons(this->advertise_port),
@@ -222,16 +185,13 @@ struct MdnsService::Impl {
                     Impl::describe_error(err);
             return false;
         }
-        // A browse has no callback-confirmed success the way a registration does, so the
-        // backoff is cleared here instead.
+        // A browse has no confirming callback, so reset the backoff here.
         this->restart_attempt = 0;
         return true;
     }
 
     void teardown() {
-        // Retired refs go first: they still carry a pointer to a CandidateContext, so
-        // clearing the contexts before releasing them would break the ownership rule the
-        // context is documented to keep.
+        // Release retired refs before clearing the contexts they point at.
         this->drain_retired();
 
         for (auto& entry : this->candidates) {
@@ -245,16 +205,7 @@ struct MdnsService::Impl {
         Impl::release(this->register_ref);
     }
 
-    /// Tears everything down and schedules a fresh registration.
-    ///
-    /// The case this exists for is `avahi-daemon` being restarted: every ref then reports
-    /// kDNSServiceErr_ServiceNotRunning forever, and a player that ignored it would go
-    /// permanently undiscoverable while logging nothing at all.
-    ///
-    /// Everything goes, not just the ref that reported it, and that is deliberate:
-    /// DNSServiceProcessResult() fails for connection-level reasons -- the daemon is gone --
-    /// rather than per-operation ones, which arrive through each callback's own errorCode.
-    /// So one ref reporting it means every ref is already dead.
+    /// Tears everything down and schedules a restart: a connection error means every ref is dead.
     void fail(DNSServiceErrorType err, const char* what, int64_t now_ms) {
         cli_log(LogLevel::ERROR, "%s failed (%s) -- restarting mDNS in %u ms", what,
                 Impl::describe_error(err).c_str(), next_retry_delay_ms(this->restart_attempt));
@@ -270,12 +221,7 @@ struct MdnsService::Impl {
         }
     }
 
-    /// Starts whatever is wanted and not already running.
-    ///
-    /// Only what is missing: a registration and a browse can fail independently -- one
-    /// starting while the other does not is the ordinary case at boot -- and re-running a
-    /// live one would overwrite its `DNSServiceRef` without deallocating it, leaking the
-    /// ref and leaving two advertisements of the same instance.
+    /// Starts only what is wanted and not running; re-running a live one would leak its ref.
     void restart() {
         std::string error;
         if (this->advertise_wanted && this->register_ref == nullptr &&
@@ -287,16 +233,10 @@ struct MdnsService::Impl {
         }
     }
 
-    // ====================================================================================
-    // The poll pump
-    // ====================================================================================
-
     void poll_once(int64_t now_ms) {
         this->now_ms = now_ms;
 
-        // Anything asked for but not running is owed a retry, whichever way it stopped --
-        // a daemon that was not up when we started looks the same here as one that was
-        // restarted under us, and both should be recovered from rather than given up on.
+        // Anything wanted but not running is owed a retry.
         const bool missing = (this->advertise_wanted && this->register_ref == nullptr) ||
                              (this->browse_wanted && this->browse_ref == nullptr);
         if (missing && this->restart_at_ms < 0) {
@@ -316,9 +256,7 @@ struct MdnsService::Impl {
                 fds.push_back(pollfd{DNSServiceRefSockFD(ref), POLLIN, 0});
             }
 
-            // Zero timeout: this shares the main loop with client.loop(), so it may never
-            // wait. DNSServiceProcessResult() blocks until a result arrives, which is why
-            // it is called only for a descriptor poll() has already reported readable.
+            // Zero timeout, and DNSServiceProcessResult() only on a readable descriptor: it blocks.
             if (::poll(fds.data(), static_cast<nfds_t>(fds.size()), 0) > 0) {
                 for (size_t i = 0; i < fds.size(); ++i) {
                     if ((fds[i].revents & (POLLIN | POLLHUP | POLLERR)) == 0) {
@@ -361,8 +299,7 @@ struct MdnsService::Impl {
         return refs;
     }
 
-    /// Whether `ref` is still one of ours, checked between callbacks: an earlier one in the
-    /// same tick may have retired it, or torn everything down.
+    /// Whether `ref` is still ours; an earlier callback this tick may have retired it.
     bool is_live(DNSServiceRef ref) const {
         if (ref == this->register_ref || ref == this->browse_ref) {
             return ref != nullptr;
@@ -386,10 +323,7 @@ struct MdnsService::Impl {
 
     void purge_doomed() {
         for (const std::string& instance : this->doomed) {
-            // A Remove that emptied the interface set can be followed, in the same tick, by
-            // an Add on another one -- a flap rather than a departure. Such a candidate is
-            // only really gone if nothing has put an interface back. One marked `unusable`
-            // goes regardless: it is being dropped for what it is, not for where it is.
+            // Gone only if no interface came back this tick; `unusable` goes regardless.
             const Candidate* candidate = this->find(instance);
             if (candidate != nullptr && !candidate->unusable && !candidate->interfaces.empty()) {
                 continue;
@@ -415,8 +349,7 @@ struct MdnsService::Impl {
             DiscoveredServer server;
             this->fill(candidate, server);
             if (!discovered_server_url(server, url, error)) {
-                // Logged once per candidate, at debug: a server misconfigured this way is
-                // otherwise completely invisible, but it is also not this player's problem.
+                // Once per candidate, at debug.
                 if (!candidate.announced) {
                     candidate.announced = true;
                     log_line(LogLevel::DEBUG, LOG_TAG_DISCOVERY, "skipping server \"%s\" -- %s",
@@ -440,10 +373,6 @@ struct MdnsService::Impl {
         out.port = candidate.port;
         out.addresses = candidate.addresses;
     }
-
-    // ====================================================================================
-    // Candidate bookkeeping
-    // ====================================================================================
 
     void release_candidate_refs(Candidate& candidate) {
         Impl::release(candidate.resolve_ref);
@@ -499,9 +428,7 @@ struct MdnsService::Impl {
         }
     }
 
-    // ====================================================================================
-    // dns_sd callbacks -- all of them run inside poll_once(), on the main loop thread
-    // ====================================================================================
+    // dns_sd callbacks: all run inside poll_once(), on the main loop thread.
 
     static void DNSSD_API register_callback(DNSServiceRef /*ref*/, DNSServiceFlags /*flags*/,
                                             DNSServiceErrorType err, const char* name,
@@ -513,10 +440,7 @@ struct MdnsService::Impl {
                     Impl::describe_error(err).c_str());
             return;
         }
-        // Reported rather than assumed: with flags 0 the daemon renames on a collision, so
-        // the name that went out may not be the name that was asked for. The asked-for name
-        // is deliberately left as it was, so a re-registration after a daemon restart does
-        // not compound the rename into "name (2) (3)".
+        // Keep the requested name, so a re-registration does not compound the rename.
         cli_log(LogLevel::INFO, "advertising %s as \"%s\" on port %u (path %s)", regtype, name,
                 impl->advertise_port, impl->advertise_path.c_str());
         impl->restart_attempt = 0;
@@ -539,11 +463,7 @@ struct MdnsService::Impl {
                  interface_index);
         Candidate* existing = impl->find(instance);
 
-        // Adds and removes are per interface, and one instance is normally reported on
-        // several. So the candidate is only dropped once the *last* interface carrying it
-        // has gone -- dropping it on the first Remove would lose a server that is still
-        // there, and the browse would not re-Add it, since it never went away as far as the
-        // daemon is concerned.
+        // Drop a candidate only when its last interface is removed.
         if ((flags & kDNSServiceFlagsAdd) == 0) {
             if (existing != nullptr) {
                 existing->interfaces.erase(interface_index);
@@ -564,17 +484,7 @@ struct MdnsService::Impl {
         candidate->interface_index = interface_index;
         candidate->interfaces.insert(interface_index);
 
-        // Resolved across every interface rather than on the one this reply arrived on, and
-        // the regtype and domain are passed through from the reply rather than rebuilt.
-        //
-        // The interface matters: a host with more than one -- a VPN or a second physical
-        // link alongside the LAN -- gets a browse reply per interface, and the instance is
-        // only actually resolvable on the one it really lives on. Pinning the resolve to
-        // whichever reply happened to arrive first is a coin toss that fails silently,
-        // because a resolve for a service that is not on that interface simply never calls
-        // back. kDNSServiceInterfaceIndexAny lets the daemon answer from wherever it can:
-        // whichever interface replies first wins -- resolve_callback takes one reply and
-        // retires the ref -- and that reply carries the interface the address queries use.
+        // Resolve on any interface: only the one the instance lives on ever answers.
         const DNSServiceErrorType resolve_err = DNSServiceResolve(
             &candidate->resolve_ref, 0, kDNSServiceInterfaceIndexAny, service_name, regtype, domain,
             Impl::resolve_callback, impl->context_for(instance));
@@ -607,15 +517,7 @@ struct MdnsService::Impl {
             return;
         }
 
-        // One resolve is enough: the SRV target and TXT are the same on every interface the
-        // instance answers on.
-        //
-        // The guard is not belt-and-braces. A resolve delivers one reply per interface, and
-        // a single DNSServiceProcessResult() call hands over all of the ones already
-        // waiting -- so this fires several times in a row, before poll_once() gets to look
-        // at `resolve_ref` again. Without the check the same ref would be retired once per
-        // reply and then deallocated that many times, and the address queries below would
-        // be reissued over the top of their own live refs.
+        // One reply per interface can arrive in one processing call; act on the first only.
         if (candidate->resolve_ref == nullptr) {
             return;
         }
@@ -631,17 +533,11 @@ struct MdnsService::Impl {
         candidate->path = txt_value(txt_len, txt_record, "path");
         candidate->name = txt_value(txt_len, txt_record, "name");
 
-        // Both families are asked at once, and the settle window is what stops whichever
-        // answers first from deciding the preference. The queries stay open, so an address
-        // change reaches the candidate set instead of stranding it on a stale one.
+        // Both families at once; the settle window decides preference, and queries stay open.
         ctx->impl->start_address_query(*candidate, kDNSServiceType_A, candidate->v4_ref, ctx);
         ctx->impl->start_address_query(*candidate, kDNSServiceType_AAAA, candidate->v6_ref, ctx);
 
-        // With neither query running no address can ever arrive, so the candidate would sit
-        // in the map forever: never dialable, never announced, and never re-created, since
-        // the browse has no reason to report it again. Dropping it puts it back in reach of
-        // the next browse announcement, and one WARN is what makes the difference between
-        // "nothing was found" and "something was found and then quietly lost".
+        // No query running means no address can arrive: drop it so a later browse can re-add it.
         if (candidate->v4_ref == nullptr && candidate->v6_ref == nullptr) {
             log_line(LogLevel::WARN, LOG_TAG_DISCOVERY,
                      "cannot look up any address for \"%s\" (%s) -- dropping",
@@ -662,8 +558,7 @@ struct MdnsService::Impl {
             return;
         }
         if (err != kDNSServiceErr_NoError) {
-            // Not fatal to the candidate: one family failing still leaves the other, and
-            // kDNSServiceErr_NoSuchRecord is the ordinary answer for a v4-only host.
+            // Not fatal: NoSuchRecord is normal for one family.
             log_line(LogLevel::DEBUG, LOG_TAG_DISCOVERY, "address query for \"%s\" returned %s",
                      ctx->instance.c_str(), Impl::describe_error(err).c_str());
             return;
@@ -692,10 +587,6 @@ struct MdnsService::Impl {
         }
     }
 
-    // ====================================================================================
-    // Helpers
-    // ====================================================================================
-
     static void release(DNSServiceRef& ref) {
         if (ref != nullptr) {
             DNSServiceRefDeallocate(ref);
@@ -703,15 +594,7 @@ struct MdnsService::Impl {
         }
     }
 
-    /// dns_sd has no strerror of its own, so the few errors worth telling apart are named
-    /// and the rest carry their number.
-    ///
-    /// Two of them are Bonjour's alone: libavahi-compat-libdnssd declares neither
-    /// kDNSServiceErr_ServiceNotRunning nor kDNSServiceErr_Timeout, and both are enumerators
-    /// rather than macros, so CMake compiles a use of each and defines the matching
-    /// SENDSPIN_CLI_HAVE_ERR_* only where the header really has it. Where a header does not
-    /// declare one, that code is not part of the error set that implementation documents, and
-    /// anything it does return falls to the default and carries its number.
+    /// Names the dns_sd errors worth telling apart; Bonjour-only ones are gated by CMake checks.
     static std::string describe_error(DNSServiceErrorType err) {
         switch (err) {
             case kDNSServiceErr_NoError:
@@ -778,10 +661,7 @@ std::vector<DiscoveredServer> MdnsService::servers() const {
     for (const Impl::Candidate* candidate : ready) {
         DiscoveredServer server;
         this->impl_->fill(*candidate, server);
-        // Re-checked rather than trusted from settle time: an address can be *withdrawn*
-        // after a candidate was announced, which would leave it offered here but no longer
-        // dialable. Since selection takes the first match, one such candidate at the front
-        // of the list would otherwise block every good server behind it, silently.
+        // Re-checked: an address withdrawn after settling would otherwise block servers behind it.
         std::string url;
         std::string error;
         if (!discovered_server_url(server, url, error)) {
