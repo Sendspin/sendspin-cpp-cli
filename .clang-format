@@ -1,6 +1,5 @@
 # sendspin-cpp-cli clang-format configuration
-# Kept in sync with sendspin-cpp's own .clang-format so this repo and the library
-# it links read as one codebase.
+# Follows sendspin-cpp's .clang-format, except for include grouping.
 
 Language: Cpp
 Standard: c++20
@@ -81,16 +80,21 @@ PointerAlignment: Left
 
 # Include sorting
 IncludeBlocks: Regroup
+# control_socket.cpp's main header is control.h, not only control_socket.h.
+IncludeIsMainRegex: '([-_].*)?$'
 IncludeCategories:
-  # Project headers
+  # Local headers
+  - Regex: '^"'
+    Priority: 1
+  # sendspin-cpp headers
   - Regex: '^<sendspin/'
     Priority: 2
   # Standard library headers
   - Regex: '^<[a-z_]+>'
-    Priority: 3
-  # Other headers
+    Priority: 4
+  # System and third-party headers
   - Regex: '.*'
-    Priority: 1
+    Priority: 3
 SortIncludes: true
 
 # Other
