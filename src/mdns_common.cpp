@@ -111,8 +111,8 @@ bool discovered_server_url(const DiscoveredServer& server, std::string& url, std
     }
 
     if (first_v6 != nullptr) {
-        // Bracketed, which is also the only IPv6 form parse_server_url() accepts, so a URL
-        // built here and one typed at -s read the same.
+        // Bracketed, since a URL's authority cannot otherwise tell the address's colons from
+        // the port separator.
         url = "ws://[" + *first_v6 + "]:" + std::to_string(server.port) + server.path;
         return true;
     }

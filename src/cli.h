@@ -30,17 +30,16 @@ namespace sendspin_cli {
 
 /// @brief The WebSocket endpoint this player serves, and the spec's recommended value.
 ///
-/// One constant because it is now read three ways: `parse_server_url()` fills it into a
-/// bare `-s <host>`, the mDNS advertisement carries it as the required TXT `path`, and a
-/// discovered server's own TXT `path` is compared against nothing else -- the spec makes it
-/// per-instance, so a server is free to serve elsewhere.
+/// The mDNS advertisement carries it as the required TXT `path`. A discovered server's own TXT
+/// `path` is not compared against it -- the spec makes it per-instance, so a server is free to
+/// serve elsewhere.
 inline constexpr const char* SENDSPIN_PATH = "/sendspin";
 
-/// @brief The reserved `-s` prefix that means "discover a server" rather than "dial this one".
+/// @brief The `-s` prefix that asks for a server to be discovered -- the only form -s takes.
 ///
-/// Split on the **first** colon, exactly as `-o` splits `<backend>:<device>`, so every
-/// existing `-s` form is untouched and `hifi:8927` is still a host and a port. A host
-/// genuinely named `mdns` is still reachable as a bare `-s mdns`; only `mdns:` is reserved.
+/// Split on the **first** colon, exactly as `-o` splits `<backend>:<device>`, so everything
+/// after it is the name. There is no address form: the spec only has a player connect to a
+/// server it has discovered, so any other value is refused.
 inline constexpr const char* DISCOVERY_PREFIX = "mdns:";
 
 /// @brief The -o default: a real sound card where this build has one, silence otherwise.
@@ -146,7 +145,7 @@ struct Options {
     /// listed as itself -- same as the Python CLI's flags of the same names.
     std::string manufacturer{"sendspin-cpp-cli"};
     std::string product_name{"sendspin-cli"};
-    std::string server;          ///< -s <server>: dial this server instead of only listening
+    std::string server;          ///< -s mdns:[<name>]: discover a server and dial it
     bool daemonize{false};       ///< -z: detach and run in the background
     std::string pidfile;         ///< -P <path>: write our pid here
     std::string logfile;         ///< -f <path>: send log output to this file
@@ -257,14 +256,7 @@ struct Options {
     /// The words after the subcommand: exactly its arity, already checked to be present.
     std::vector<std::string> subcommand_args;
 
-    /// The WebSocket URL `server` resolved to, validated during parsing. Empty when -s
-    /// was not given, and when -s asked for discovery -- there is no URL until a server has
-    /// been found. Resolved once here so nothing downstream re-parses a value that has
-    /// already been accepted -- and so a bad -s fails before the daemon starts, rather
-    /// than dialling something plausible-looking.
-    std::string server_url;
-
-    /// True when -s asked for discovery rather than naming an address.
+    /// True when -s asked for discovery, which on a successful parse is every -s.
     bool discover{false};
 
     /// The TXT `name` a discovered server must carry, from `-s mdns:<name>`. Empty for
@@ -333,55 +325,11 @@ void print_usage(std::FILE* out, const char* prog);
 /// @brief Prints our version and the sendspin-cpp tag this binary was built against.
 void print_version(std::FILE* out);
 
-/// @brief Turns a -s value into a WebSocket URL, or explains why it cannot.
-///
-/// Accepts a full ws:// or wss:// URL unchanged, otherwise `<host>[:<port>]`, filling in
-/// the /sendspin path and, when no port is given, the port a Sendspin *server* listens on
-/// (8927) -- which is not the port this player serves on (8928). IPv6 literals must be
-/// bracketed (`[::1]:8927`), since an unbracketed one is indistinguishable from a host
-/// with a port.
-///
-/// Rejects rather than guesses: an address that does not parse means the daemon would
-/// dial *something*, and a player quietly talking to the wrong port is harder to diagnose
-/// than one that refuses to start.
-/// @param error Set to a human-readable reason when the return value is false.
-/// @return true if `server` resolved to a URL.
-bool parse_server_url(const std::string& server, std::string& url, std::string& error);
-
-/// @brief The spelling of a server URL that is safe to log: its userinfo masked.
-///
-/// A `-s` value may carry credentials -- `ws://user:token@host:8927/sendspin` -- and every
-/// line that names a server is a line an operator pastes into an issue, so every message that
-/// quotes one comes through here. The URL handed to the dial is untouched, which is also the
-/// limit of what this buys: the library logs the URL it dials itself, and those lines are not
-/// this layer's to redact.
-///
-/// Masks only the secret half. A `user:password` pair keeps its username, which is what makes
-/// the line still worth reading -- `ws://user:***@host:8927/sendspin` names the endpoint that
-/// was dialled. A userinfo field with no colon is indistinguishable from a bearer token, so
-/// the whole of it goes: `ws://***@host`. The mask is a fixed `***` either way, since the
-/// length of a secret is itself worth nothing to a reader and something to an attacker.
-///
-/// Reads the authority the way a URL parser would -- it ends at the first `/`, `?` or `#`, and
-/// the userinfo at the last `@` inside it -- which is what makes this safe on strings that are
-/// not URLs at all: an `@` in a path or a query, or a whole second URL smuggled into one, is
-/// left alone. A value with no scheme is read as a bare authority, which is what a rejected
-/// `-s` value is. Anything with no userinfo, an empty one (`ws://@host`) or an empty password
-/// (`ws://user:@host`) comes back unchanged: there is nothing there to hide.
-///
-/// Reading it that way is also the one thing a caller has to know the limit of: a userinfo
-/// field holding an *unencoded* `/`, `?` or `#` ends the authority early, so there is no `@`
-/// left inside it to split on and the value comes back whole. RFC 3986 requires those
-/// percent-encoded there, and such a URL does not name the host it appears to, so it is a
-/// malformed value rather than a parse to repair by guesswork -- but it is not masked.
-/// @return `url` with its userinfo masked, or `url` itself when it carries none.
-std::string redact_url_userinfo(const std::string& url);
-
-/// @brief Reads a -s value as the reserved discovery form, if that is what it is.
+/// @brief Reads a -s value as the discovery form, if that is what it is.
 ///
 /// `mdns:<name>` asks for a server whose TXT `name` is `<name>`; a bare `mdns:` asks for
-/// any server. Split on the first colon, so only the exact prefix is reserved -- `hifi:8927`
-/// and a bare `mdns` are still a host, and go to parse_server_url() as they always did.
+/// any server. Only the exact prefix counts -- `hifi:8927` and a bare `mdns` are not the
+/// discovery form, and parse_options() refuses them.
 /// @param name Set to the TXT `name` filter, empty when none was given.
 /// @return true if `server` is the discovery form.
 bool parse_discovery_spec(const std::string& server, std::string& name);

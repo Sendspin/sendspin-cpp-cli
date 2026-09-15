@@ -37,12 +37,9 @@ struct HookContext {
     /// SENDSPIN_SERVER_URL: the URL this run dialled, on an -s run only.
     ///
     /// What was dialled, not which server answered. A lost connection clears it rather than
-    /// letting it describe whatever connects next, and a discovery dial is exported only
-    /// when the stream arrived from the server_id it dialled. A literal -s URL is the case
-    /// that cannot be checked: -s leaves the inbound listener up, and the library reports
-    /// that a connection is up without saying where it came from, so a server that dialled
-    /// in while that attempt was outstanding or had failed still reads as the dial.
-    /// server_id always describes the connection the stream arrived on.
+    /// letting it describe whatever connects next, and it is exported only when the stream
+    /// arrived from the server_id the dial chose. server_id always describes the connection
+    /// the stream arrived on.
     std::string server_url;
     std::string client_id;    ///< SENDSPIN_CLIENT_ID: this player's id, when --id chose one
     std::string client_name;  ///< SENDSPIN_CLIENT_NAME: this player's friendly name

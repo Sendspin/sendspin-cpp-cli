@@ -19,9 +19,8 @@
 /// client.loop() until a signal arrives. A Sendspin server drives everything else.
 ///
 /// Two connection modes, which the spec makes mutually exclusive: by default the player
-/// advertises `_sendspin._tcp` and waits to be dialled, and any -s instead makes it dial
-/// out -- to an address, or to a server it discovers over mDNS -- with the advertisement
-/// suppressed.
+/// advertises `_sendspin._tcp` and waits to be dialled, and -s mdns: instead makes it
+/// discover a server over mDNS and dial out to it, with the advertisement suppressed.
 ///
 /// The same binary is also its own client: `sendspin-cli <subcommand>` talks to a running
 /// player over that player's control socket and exits, without opening a device or a port.
@@ -218,9 +217,7 @@ public:
     /// `store` must outlive this mode, and is where the chosen server is remembered.
     OutboundMode(const Options& opts, MdnsService& mdns, StateStore& store)
         : opts_(opts), mdns_(mdns), store_(store), remembered_(store.last_server()) {
-        if (!this->remembered_.empty() && opts.discover) {
-            // Only worth saying when discovering: with an address there is nothing to
-            // choose between, and the memory only exists to break that tie.
+        if (!this->remembered_.empty()) {
             log_line(LogLevel::INFO, LOG_TAG_OUTBOUND,
                      "Last server used was \"%s\" -- it wins if it turns up among the candidates",
                      this->remembered_.c_str());
@@ -253,14 +250,8 @@ public:
 
         std::string url;
         std::string server_id;
-        if (this->opts_.discover) {
-            if (!this->choose(url, server_id)) {
-                return;
-            }
-        } else {
-            url = this->opts_.server_url;
-            log_line(LogLevel::INFO, LOG_TAG_OUTBOUND, "Connecting to %s",
-                     redact_url_userinfo(url).c_str());
+        if (!this->choose(url, server_id)) {
+            return;
         }
 
         // Stamped before the dial rather than after, so the backoff measures from when the
@@ -274,11 +265,9 @@ public:
     /// empty when no dial of this run's plausibly produced that connection.
     ///
     /// What was dialled, never a claim about what answered: a lost connection forgets the
-    /// dial, and a discovery dial is answered only for the server_id it dialled. A literal
-    /// -s URL is the case that cannot be verified -- -s leaves the inbound listener up, and
-    /// telling an inbound connection from our own needs the library to say where the live
-    /// connection came from, which it does not: there is no connect callback, and nothing
-    /// exposes a connection's URL or its direction.
+    /// dial, and a dial is answered only for the server_id it dialled. -s leaves the inbound
+    /// listener up, and the library does not say where a live connection came from, so the
+    /// server_id is the only thing that tells our own dial from a server that dialled in.
     std::string url_for(const std::string& server_id) const {
         return this->last_dial_.url_for(server_id);
     }
@@ -302,16 +291,9 @@ private:
             return false;
         }
         server_id = chosen->instance;
-        // A discovered URL has no userinfo to hide -- discovered_server_url() builds it from a
-        // resolved address and a TXT path it requires to start with '/', so the authority is
-        // always just that address. It goes through the helper anyway so that both "Connecting
-        // to" lines have one spelling and one place to change it, not because this one is
-        // suspect. The mDNS backend logs the same URL when it first resolves and does *not* do
-        // this: src/mdns_dnssd.cpp depends on mdns.h and log.h and nothing else, and pulling
-        // cli.h into it to restate a guarantee it already owns would cost more than it buys.
         log_line(LogLevel::INFO, LOG_TAG_OUTBOUND,
-                 "Connecting to %s (server \"%s\") -- chosen because %s",
-                 redact_url_userinfo(url).c_str(), chosen->instance.c_str(), reason.c_str());
+                 "Connecting to %s (server \"%s\") -- chosen because %s", url.c_str(),
+                 chosen->instance.c_str(), reason.c_str());
         return true;
     }
 
@@ -575,8 +557,8 @@ void start_advertising(MdnsService& mdns, const Options& opts) {
 
     if (!mdns_available()) {
         log_line(LogLevel::INFO, LOG_TAG_MDNS,
-                 "This build has no mDNS support, so it cannot be discovered: point a server at "
-                 "ws://<this-host>:%u%s, or dial one with -s. See docs/ROADMAP.md.",
+                 "This build has no mDNS support, so it can neither be discovered nor discover a "
+                 "server: point a server at ws://<this-host>:%u%s. See docs/ROADMAP.md.",
                  opts.port, SENDSPIN_PATH);
         return;
     }
@@ -917,16 +899,14 @@ int main(int argc, char* argv[]) {
     // Already validated during parsing, so there is nothing left here that can be wrong --
     // and nothing to fail on after the server is up.
     std::unique_ptr<OutboundMode> outbound;
-    if (opts.was_given(Opt::Server)) {
-        if (opts.discover) {
-            std::string error;
-            if (!mdns.browse(error)) {
-                log_line(LogLevel::WARN, LOG_TAG_DISCOVERY, "%s -- retrying", error.c_str());
-            }
-            log_line(LogLevel::INFO, LOG_TAG_DISCOVERY, "Looking for a Sendspin server on %s%s%s%s",
-                     MDNS_SERVER_SERVICE, opts.discover_name.empty() ? "" : " named \"",
-                     opts.discover_name.c_str(), opts.discover_name.empty() ? "" : "\"");
+    if (opts.discover) {
+        std::string error;
+        if (!mdns.browse(error)) {
+            log_line(LogLevel::WARN, LOG_TAG_DISCOVERY, "%s -- retrying", error.c_str());
         }
+        log_line(LogLevel::INFO, LOG_TAG_DISCOVERY, "Looking for a Sendspin server on %s%s%s%s",
+                 MDNS_SERVER_SERVICE, opts.discover_name.empty() ? "" : " named \"",
+                 opts.discover_name.c_str(), opts.discover_name.empty() ? "" : "\"");
         outbound = std::make_unique<OutboundMode>(opts, mdns, state_store);
     }
 
