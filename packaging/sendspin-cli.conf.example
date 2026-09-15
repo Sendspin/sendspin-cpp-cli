@@ -1,81 +1,43 @@
-# An example sendspin-cli config file. Copy it to /etc/sendspin-cli.conf and edit.
+# Example sendspin-cli config: copy to /etc/sendspin-cli.conf and edit.
 #
-# Keys are the long flag names without their dashes, one 'key = value' per line, and a
-# value is exactly the string the flag would have been given -- so `sendspin-cli --help`
-# is this file's reference rather than a second document to keep in step with it.
-# Booleans take true/yes/on/1 or false/no/off/0, '#' starts a comment only at the start of
-# a line, and where a key appears twice the last one wins. The command line beats the file,
-# per option.
-#
-# The first of these that exists is read whole, with nothing below it merged over the top:
-#
-#   --config <path>   (fatal if it cannot be read, because you named it)
-#   $XDG_CONFIG_HOME/sendspin-cli/config
-#   $HOME/.config/sendspin-cli/config
-#   /etc/sendspin-cli.conf
-#
-# Finding none is normal. A line that does not parse, or a key that is not a flag, stops
-# the player and names the file and line -- a config that is quietly half-applied is the
-# failure this surface exists to avoid. Run shape is the exception that cannot come from
-# here at all: -l, -z, --config, --help and --version are refused as unknown keys.
-#
-# Every line below is commented out, since a line that is not is a value chosen. Where an
-# option has a default, that is the value shown; the keys with none worth printing --
-# `name`, `id`, `server` and the two hooks -- carry an example instead.
+# Keys are long flag names without dashes, one 'key = value' per line; `sendspin-cli --help`
+# is the reference. '#' starts a comment only at the start of a line, the last duplicate
+# wins, and the command line beats the file. The first file found is read whole:
+# --config <path>, $XDG_CONFIG_HOME/sendspin-cli/config, ~/.config/sendspin-cli/config,
+# /etc/sendspin-cli.conf. Unknown keys and bad lines stop the player.
 
 # The name a controller shows for this endpoint. Defaults to this host's name.
 #name = kitchen
 
-# The stable client id a server files this player's volume, group and pairing under --
-# the name above is only what it displays. Defaults to an id derived from the network
-# interface MAC, which two players on one host would share: give each its own id (and
-# its own port and state-dir).
+# Stable client id a server files volume and grouping under. Defaults to a MAC-derived id,
+# which two players on one host would share.
 #id = kitchen-left
 
-# The device info client/hello carries, shown in server device lists. For a product
-# that embeds this player and should be listed as itself.
+# Device info sent in client/hello, for a product embedding this player.
 #manufacturer = sendspin-cpp-cli
 #product-name = sendspin-cli
 
-# The output device: a reserved name (null, stdout, -) or a <backend>:<device> pair.
-# `sendspin-cli -l` lists what this host has and what each device accepts. The default is
-# ALSA's own `default` PCM wherever this build has ALSA, which follows whatever the host is
-# configured for -- PipeWire, PulseAudio or bare hardware. Under the systemd *system* unit
-# there is no user session and so no PipeWire or PulseAudio to follow, and `default` will
-# usually fail: name the card there, as in `hw:1,0`.
+# Output device: null, stdout, - or <backend>:<device>; `sendspin-cli -l` lists them.
+# Under the systemd system unit, `default` usually fails: name the card, e.g. hw:1,0.
 #output = default
 
 # Audio the output backend keeps buffered, 10-2000 ms. Raise it on a device that stutters.
 #buffer-ms = 100
 
-# Preferred audio formats, comma-separated in priority order -- codec:rate:depth:channels,
-# codecs flac/opus/pcm. They are offered first, in that order, and everything else the
-# player advertises is still offered behind them. A server uses the first entry it can
-# encode, so it may still pick a later one: preferred, not exclusive. A listed format the
-# advertised list does not carry refuses to start; `sendspin-cli -l` shows what the device
-# itself reports -- not the same set as what goes out.
+# Preferred formats, codec:rate:depth:channels in priority order; the rest are still offered.
+# A format the advertised list does not carry refuses to start.
 #audio-format = flac:48000:24:2,pcm:48000:24:2
 
 # The port this player's own WebSocket server listens on, for a server that connects in.
 #port = 8928
 
-# Discover a server and dial it instead of waiting to be found: mdns: takes any server,
-# mdns:<name> the one advertised under that name. There is no address form -- the spec only
-# has a player connect to a server it has discovered. Any value here turns the mDNS
-# advertisement off, as -s does -- the spec forbids advertising while this end dials.
+# Discover a server and dial it: mdns: for any, mdns:<name> for one. Disables advertising.
 #server = mdns:Living Room
 
-# Latency this endpoint's hardware adds after the audio port -- an amplifier, an external
-# speaker -- 0-5000 ms. A first-run default only: a delay a server or `sendspin-cli delay`
-# has set is remembered and wins over this every run after.
+# Latency added after the audio port, 0-5000 ms. A first-run default: a remembered delay wins.
 #static-delay = 0
 
-# Shell commands run when a stream starts and when it stops -- an amplifier relay, a
-# light. `/bin/sh -c`, with the event's facts in SENDSPIN_* environment variables:
-# SENDSPIN_EVENT (start|stop) always, and SENDSPIN_SERVER_ID, SENDSPIN_SERVER_NAME,
-# SENDSPIN_SERVER_URL, SENDSPIN_CLIENT_ID and SENDSPIN_CLIENT_NAME where known. The hook
-# runs without blocking playback, its output goes to the log, and a non-zero exit is a
-# warning.
+# Shell commands run on stream start and stop, with SENDSPIN_* facts in the environment.
 #hook-start = amixer set Master unmute
 #hook-stop = amixer set Master mute
 
@@ -83,9 +45,5 @@
 # debug, verbose. Under systemd this lands in the journal.
 #log-level = info
 
-# The socket the subcommands talk to. Uncomment this line when running under the systemd
-# unit: it passes --control-socket, and root has no $XDG_RUNTIME_DIR for `sendspin-cli
-# status` to derive the same path from -- so without it every subcommand has to repeat the
-# flag. It changes nothing about the daemon under that unit, whose own command line wins;
-# what it does is tell the subcommands where to look, so it must name the unit's path.
+# Uncomment under the systemd unit so subcommands find its socket (root has no $XDG_RUNTIME_DIR).
 #control-socket = /run/sendspin-cli/control.sock
