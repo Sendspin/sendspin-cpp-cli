@@ -210,6 +210,10 @@ private:
     /// remembered, shutdown has not begun, and the attempt is still in hand.
     /// @return true if a stream is running again, so the caller can carry on filling the ring.
     bool reopen_in_place_();
+    /// Adds the frames still in the ring to the outage gap: the player has counted them, and the
+    /// lost stream recovery is about to close will never report them. Only for those closes --
+    /// stop(), configure() and clear() end the stream the gap belonged to. Caller holds mutex_.
+    void discard_ring_tail_();
     /// True while the open stream is still being driven by PortAudio. Caller holds mutex_.
     bool stream_alive_() const;
     /// Ring size in bytes for the open stream's format. Caller holds mutex_, and the format
@@ -281,6 +285,9 @@ private:
     /// What is left to try about a stream that has died, and when. Guarded by mutex_, bar
     /// SinkRecovery::pending() -- see it.
     SinkRecovery recovery_;
+    /// The outage gap once write() has handed it on, for the callback to retire lock-free with
+    /// its next report. recovery_ cannot be read there; see OutageGapHandoff.
+    OutageGapHandoff gap_handoff_;
 
     std::atomic<uint8_t> volume_{DEFAULT_SINK_VOLUME};
     std::atomic<bool> muted_{false};

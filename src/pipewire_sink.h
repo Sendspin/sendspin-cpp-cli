@@ -229,6 +229,10 @@ private:
     /// write(), so on the sync task's thread. Caller holds mutex_.
     /// @return true if a stream is running again.
     bool reopen_in_place_();
+    /// Adds the frames still in the ring to the outage gap: the player has counted them, and the
+    /// lost stream recovery is about to close will never report them. Only for those closes --
+    /// stop(), configure() and clear() end the stream the gap belonged to. Caller holds mutex_.
+    void discard_ring_tail_();
     /// True while the stream is connected and the graph is still driving it. Caller holds mutex_.
     bool stream_alive_() const;
     /// Ring size in bytes for the open stream's format. Caller holds mutex_, and the format
@@ -300,6 +304,9 @@ private:
     /// What is left to try about a stream that has died, and when. Guarded by mutex_, bar
     /// SinkRecovery::pending().
     SinkRecovery recovery_;
+    /// The outage gap once write() has handed it on, for the process callback to retire lock-free
+    /// with its next timed report. recovery_ cannot be read there; see OutageGapHandoff.
+    OutageGapHandoff gap_handoff_;
 
     std::atomic<uint8_t> volume_{DEFAULT_SINK_VOLUME};
     std::atomic<bool> muted_{false};

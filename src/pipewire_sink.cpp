@@ -413,6 +413,11 @@ bool PipeWireSink::configure(uint32_t sample_rate, uint8_t channels, uint8_t bit
     // Remembered before anything can fail: this is the format the player is about to send audio in
     // whether or not the graph takes it, so it is also the only format recovery may reopen at.
     this->last_format_ = {sample_rate, channels, bits_per_sample};
+    // A new stream starts the producer from zero buffered frames, so an outage gap left over from
+    // the last one is owed to nobody, on either side of the handoff. Here rather than beside
+    // reset(), which a failed open skips.
+    this->recovery_.forget_discarded_frames();
+    this->gap_handoff_.forget();
 
     this->close_stream_();
     if (!this->open_stream_(sample_rate, channels, bits_per_sample, PIPEWIRE_STREAM_TIMEOUT_MS)) {
@@ -449,7 +454,11 @@ size_t PipeWireSink::write(const uint8_t* data, size_t length, uint32_t timeout_
                                  ? this->bytes_per_frame_
                                  : static_cast<size_t>(this->last_format_.channels) *
                                        (static_cast<size_t>(this->last_format_.bit_depth) / 8U);
-        return (frame == 0) ? length : length - (length % frame);
+        const size_t consumed = (frame == 0) ? length : length - (length % frame);
+        if (frame != 0) {
+            this->recovery_.discard_frames(static_cast<uint32_t>(consumed / frame));
+        }
+        return consumed;
     }
 
     const size_t bytes_per_frame = this->bytes_per_frame_;
@@ -468,6 +477,10 @@ size_t PipeWireSink::write(const uint8_t* data, size_t length, uint32_t timeout_
     const uint64_t start = this->current_multiplier_;
     const uint64_t target = this->target_multiplier_.load(std::memory_order_relaxed);
     const uint8_t* src = this->stage_(data, frames_total, start, target);
+
+    // The stream is alive, so an outage's gap can go to the process callback: it has the
+    // timestamp to retire the gap against, and this thread does not.
+    this->gap_handoff_.add(this->recovery_.take_discarded_frames());
 
     size_t done = 0;
     while (done < usable) {
@@ -519,6 +532,13 @@ void PipeWireSink::clear() {
     // holds is audio the player has just asked us to drop.
     ++this->stream_generation_;
     this->space_available_.notify_all();
+
+    // The player zeroes its buffered-frame count with a flush, so the gap is owed to nobody. Not
+    // reset(): the recovery budget is configure()'s to refill. A callback that has already taken
+    // the gap may still report it after this -- the same window request_clear() leaves for frames
+    // already read, and not worth a lock on the realtime path.
+    this->recovery_.forget_discarded_frames();
+    this->gap_handoff_.forget();
 
     // current_multiplier_ is deliberately *not* snapped here, for PortAudioSink::clear()'s reason:
     // the process callback keeps running through a flush, and a mid-stream flush is followed by
@@ -609,6 +629,7 @@ void PipeWireSink::poll(int64_t now_ms) {
     }
 
     const StreamFormat format = this->last_format_;
+    this->discard_ring_tail_();
     this->close_stream_();
     // The loop goes too, which is what makes this the *second* attempt rather than a repeat of the
     // first: a daemon that restarted took the connection behind this loop with it, and only a new
@@ -708,6 +729,7 @@ void PipeWireSink::stream_process_cb(void* userdata) {
     pw_time time{};
     int64_t finish_us = 0;
     bool have_timing = false;
+    uint32_t gap_frames = 0;
     if (real_bytes > 0 && self->on_frames_played &&
         pw_stream_get_time_n(self->stream_, &time, sizeof(time)) == 0 && time.rate.denom != 0) {
         const double rate_s = static_cast<double>(time.rate.num) /
@@ -719,6 +741,8 @@ void PipeWireSink::stream_process_cb(void* userdata) {
         }
         finish_us = entered_us + static_cast<int64_t>(ahead_s * 1e6);
         have_timing = true;
+        // Only here, so a cycle the graph gave no timing for leaves the gap for the next one.
+        gap_frames = self->gap_handoff_.take();
     }
 
     data.chunk->offset = 0;
@@ -738,8 +762,10 @@ void PipeWireSink::stream_process_cb(void* userdata) {
     // cycle is only a quantum away and the writer's own deadline bounds the wait regardless.
     self->space_available_.notify_one();
 
+    // The gap rides on this report rather than its own: the player sums the frames of reports it
+    // has not read yet but keeps only the last timestamp.
     if (have_timing) {
-        self->on_frames_played(static_cast<uint32_t>(real_bytes / stride), finish_us);
+        self->on_frames_played(frames_with_gap(gap_frames, real_bytes / stride), finish_us);
     }
 }
 
@@ -955,6 +981,7 @@ bool PipeWireSink::reopen_in_place_() {
     }
 
     const StreamFormat format = this->last_format_;
+    this->discard_ring_tail_();
     this->close_stream_();
     // The loop is deliberately kept: this is the cheap attempt, and it is the one that recovers a
     // node that went away while the daemon stayed up. A daemon that restarted needs the loop
@@ -974,6 +1001,14 @@ bool PipeWireSink::reopen_in_place_() {
     cli_log(LogLevel::INFO, "pipewire: '%s' recovered without waiting for the next stream",
             this->name().c_str());
     return true;
+}
+
+void PipeWireSink::discard_ring_tail_() {
+    if (this->bytes_per_frame_ == 0) {
+        return;  // no stream, so close_stream_() has already emptied the ring
+    }
+    this->recovery_.discard_frames(
+        static_cast<uint32_t>(this->ring_.available() / this->bytes_per_frame_));
 }
 
 bool PipeWireSink::stream_alive_() const {

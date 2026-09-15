@@ -482,6 +482,11 @@ bool PortAudioSink::configure(uint32_t sample_rate, uint8_t channels, uint8_t bi
     // send audio in whether or not a device takes it -- so it is also the only format recovery
     // may reopen at from here on. See last_format_.
     this->last_format_ = {sample_rate, channels, bits_per_sample};
+    // A new stream starts the producer from zero buffered frames, so an outage gap left over from
+    // the last one is owed to nobody, on either side of the handoff. Before the device is
+    // resolved, so the restart_stream_() reuse path and a failed open both drop it too.
+    this->recovery_.forget_discarded_frames();
+    this->gap_handoff_.forget();
 
     // Resolved per stream, not once at construction: a bare -o portaudio then follows the
     // host's default output as the user changes it, and a device that was absent at startup
@@ -546,7 +551,11 @@ size_t PortAudioSink::write(const uint8_t* data, size_t length, uint32_t timeout
                                  ? this->bytes_per_frame_
                                  : static_cast<size_t>(this->last_format_.channels) *
                                        (static_cast<size_t>(this->last_format_.bit_depth) / 8U);
-        return (frame == 0) ? length : length - (length % frame);
+        const size_t consumed = (frame == 0) ? length : length - (length % frame);
+        if (frame != 0) {
+            this->recovery_.discard_frames(static_cast<uint32_t>(consumed / frame));
+        }
+        return consumed;
     }
 
     const size_t bytes_per_frame = this->bytes_per_frame_;
@@ -559,6 +568,10 @@ size_t PortAudioSink::write(const uint8_t* data, size_t length, uint32_t timeout
         // which the contract forbids.
         return 0;
     }
+
+    // The stream is alive, so an outage's gap can go to the callback: it has the timestamp to
+    // retire the gap against, and this thread does not.
+    this->gap_handoff_.add(this->recovery_.take_discarded_frames());
 
     size_t done = 0;
     while (done < usable) {
@@ -606,6 +619,13 @@ void PortAudioSink::clear() {
     // A flush ends this buffer's stream as far as a parked write() is concerned: whatever it
     // still holds is audio the player has just asked us to drop.
     ++this->stream_generation_;
+
+    // The player zeroes its buffered-frame count with a flush, so the gap is owed to nobody. Not
+    // reset(): the recovery budget is configure()'s to refill. A callback that has already taken
+    // the gap may still report it after this -- the same window request_clear() leaves for frames
+    // already read, and not worth a lock on the callback.
+    this->recovery_.forget_discarded_frames();
+    this->gap_handoff_.forget();
 
     // current_multiplier_ is deliberately *not* snapped here, unlike in AlsaAudioSink::clear().
     // Two reasons, and they agree. The callback keeps running through a flush -- nothing here stops
@@ -673,6 +693,7 @@ void PortAudioSink::poll(int64_t now_ms) {
     // and every PaDeviceIndex -- device_index_ among them, which this clears -- dies with it.
     // Nothing playing is torn down by this, because only reopen_in_place_() can ask for a rescan
     // and it only runs on a stream that has already died.
+    this->discard_ring_tail_();
     this->close_stream_();
 
     if (!this->pa_.reinitialize()) {
@@ -905,6 +926,7 @@ bool PortAudioSink::reopen_in_place_() {
     }
 
     const StreamFormat format = this->last_format_;
+    this->discard_ring_tail_();
     this->close_stream_();
     if (!this->open_stream_(device, format.sample_rate, format.channels, format.bit_depth)) {
         this->recovery_.reopen_done(false);  // open_stream_() has already said why, once
@@ -924,6 +946,14 @@ bool PortAudioSink::reopen_in_place_() {
     cli_log(LogLevel::INFO, "portaudio: '%s' recovered without waiting for the next stream",
             this->name().c_str());
     return true;
+}
+
+void PortAudioSink::discard_ring_tail_() {
+    if (this->bytes_per_frame_ == 0) {
+        return;  // no stream, so close_stream_() has already emptied the ring
+    }
+    this->recovery_.discard_frames(
+        static_cast<uint32_t>(this->ring_.available() / this->bytes_per_frame_));
 }
 
 bool PortAudioSink::stream_alive_() const {
@@ -1013,7 +1043,10 @@ int PortAudioSink::pa_callback(const void* /*input*/, void* output, unsigned lon
                                     (static_cast<double>(frames_played) / self->stream_rate_);
         const int64_t finish_us =
             entered_us + static_cast<int64_t>(std::llround(dac_offset_s * 1e6));
-        self->on_frames_played(frames_played, finish_us);
+        // The gap rides on this report rather than its own: the player sums the frames of reports
+        // it has not read yet but keeps only the last timestamp.
+        self->on_frames_played(frames_with_gap(self->gap_handoff_.take(), frames_played),
+                               finish_us);
     }
 
     return paContinue;
