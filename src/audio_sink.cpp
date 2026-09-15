@@ -258,7 +258,7 @@ bool resolve_device_spec(const std::string& spec, DeviceSpec& out, std::string& 
             }
             if (rest.empty()) {
                 // A written-but-empty device is a truncated command line, not a request for
-                // the default -- the same call parse_server_url() makes about a bare `host:`.
+                // the default.
                 error = "-o '" + spec + "' names no device -- write -o " + prefix + ":<device>";
                 if (entry.device_arg == DeviceArg::Optional) {
                     error += ", or -o " + prefix + " on its own for this host's default";

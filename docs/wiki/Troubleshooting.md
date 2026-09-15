@@ -209,8 +209,8 @@ sudo apt install avahi-daemon libavahi-compat-libdnssd1
 quietly finding nothing:
 
 ```
-I mdns: This build has no mDNS support, so it cannot be discovered: point a server at
-ws://<this-host>:8928/sendspin, or dial one with -s. See docs/ROADMAP.md.
+I mdns: This build has no mDNS support, so it can neither be discovered nor discover a
+server: point a server at ws://<this-host>:8928/sendspin. See docs/ROADMAP.md.
 ```
 
 Rebuild with `libavahi-compat-libdnssd-dev` present, or point the server at the URL by hand.

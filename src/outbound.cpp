@@ -81,7 +81,8 @@ void LastDial::note_lost() {
 }
 
 std::string LastDial::url_for(const std::string& connected_server_id) const {
-    if (!this->server_id_.empty() && this->server_id_ != connected_server_id) {
+    // An empty id cannot be checked against the connection, so it answers nothing.
+    if (this->server_id_.empty() || this->server_id_ != connected_server_id) {
         return {};
     }
     return this->url_;
