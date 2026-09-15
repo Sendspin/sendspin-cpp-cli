@@ -37,6 +37,7 @@ Audio backends and mDNS are optional and auto-detected. Use
 - Keep changes focused and add or update tests for behavior changes.
 - Run the focused CTest tests, or the complete `ctest --test-dir build --output-on-failure`
   suite when the change crosses components.
+- Run `scripts/format.sh` after changing C++ sources; CI runs `scripts/format.sh --check`.
 - Run `shellcheck scripts/*.sh` after changing a shell script.
 - Update the appropriate generated-wiki source in `docs/wiki/` when user-facing
   behavior changes.

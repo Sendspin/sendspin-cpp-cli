@@ -35,6 +35,21 @@ jobs:
       - name: Lint the shell scripts
         run: shellcheck scripts/*.sh
 
+  clang-format:
+    name: clang-format
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      # Pinned, so a new clang-format release cannot fail an untouched tree.
+      - name: Install clang-format
+        run: pipx install clang-format==20.1.8
+
+      - name: Check formatting
+        run: scripts/format.sh --check
+
   # The matrix lives in build.yml (shared with release.yml); linux-armv6 is in build-armv6.yml.
   build:
     uses: ./.github/workflows/build.yml
