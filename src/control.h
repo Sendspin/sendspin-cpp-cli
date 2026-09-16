@@ -12,8 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-/// @file control.h
-/// @brief The local control channel: a Unix socket in the daemon, subcommands on the same binary
+/// Local control channel: a Unix socket in the daemon, subcommands on the same binary.
 
 #pragma once
 
@@ -22,12 +21,8 @@
 #include <sendspin/controller_role.h>
 
 #ifndef SENDSPIN_ENABLE_CONTROLLER
-// The control channel *is* the controller role: every transport verb it carries comes from
-// `controller@v1`, and `SendspinClient::add_controller()` does not exist without this. Said here
-// rather than left to fail somewhere inside main.cpp, because `CMakeLists.txt` sets the option
-// without FORCE -- so `-DSENDSPIN_ENABLE_CONTROLLER=OFF` is reachable, and deserves an answer
-// rather than a compile error about a missing member function.
-#error "sendspin-cli's control channel needs the sendspin controller role: do not configure with -DSENDSPIN_ENABLE_CONTROLLER=OFF"
+#error \
+    "sendspin-cli's control channel needs the sendspin controller role: do not configure with -DSENDSPIN_ENABLE_CONTROLLER=OFF"
 #endif
 
 #include <cstdint>
@@ -39,67 +34,25 @@
 
 namespace sendspin_cli {
 
-/// @brief What goes before the port in the default socket name.
-///
-/// The port is in the leaf rather than in a subdirectory, so two players on one host get their
-/// own socket without either having to create a directory the other might own. Split into a
-/// prefix and a suffix only so `--help` can print the shape without duplicating it.
+/// Default socket name is PREFIX<port>SUFFIX.
 inline constexpr const char* CONTROL_SOCKET_PREFIX = "sendspin-cli-";
 
-/// @brief What goes after the port in the default socket name.
 inline constexpr const char* CONTROL_SOCKET_SUFFIX = ".sock";
 
-/// @brief The longest request line the daemon will assemble, in bytes.
-///
-/// A bound rather than a protocol limit, for the reason `src/last_server.cpp` bounds its own
-/// read: the socket is the daemon's, but anything that can reach it can also send bytes
-/// forever. The longest legal request is `seek-rel -2147483648`, at 20 bytes.
+/// Longest request line the daemon will assemble, in bytes.
 inline constexpr size_t MAX_CONTROL_LINE_BYTES = 256;
 
-/// @brief How many control connections the daemon will hold at once.
-///
-/// One command per connection and a reply measured in microseconds, so the only way to reach
-/// this is a peer that connects and does not talk -- which is what the idle deadline below is
-/// for. Bounded anyway, so a local user cannot spend the daemon's descriptors.
 inline constexpr size_t MAX_CONTROL_CONNECTIONS = 8;
 
-/// @brief How long a connection has, from being accepted, to deliver a whole request line.
-///
-/// Measured from `accept()` and never refreshed, so it bounds the *whole* handshake rather than
-/// the gap between reads: a connection that has not produced a complete line by then is dropped
-/// whether it has been silent throughout or is still dribbling bytes. That is the property worth
-/// having, since a peer trickling one byte at a time is the case a per-read deadline would never
-/// catch.
-///
-/// The cost is that driving the socket by hand from an interactive `socat` means typing the
-/// request within this window. A subcommand -- the only thing that talks to it in anger -- writes
-/// its line immediately after `connect()`, so it never comes close.
+/// Time from accept() to a complete request line; never refreshed by reads.
 inline constexpr int64_t CONTROL_IDLE_TIMEOUT_MS = 5000;
 
-/// @brief The largest static delay the spec allows, and what `delay` and --static-delay accept.
-///
-/// `Sendspin/spec` `roles/player/v1.md` bounds `static_delay_ms` at 0-5000, and this tracks *that*
-/// rather than the library -- the same relationship `q32_gain_for()`'s `^1.5` taper has to
-/// upstream's `^2`. sendspin-cpp happens to agree today, but its own bound is a file-local
-/// constant in `player_role.cpp` and `update_static_delay()` **silently clamps** to it, so a value
-/// past the end would be reported as accepted and then quietly become 5000. Named here so this
-/// player refuses it at parse time instead, as every other numeric argument is refused.
-///
-/// Lives in this header rather than beside MIN_BUFFER_MS/MAX_BUFFER_MS in `cli.h` because both
-/// users are here and in `cli.cpp`, and `control_common.cpp` deliberately includes no `cli.h`.
+/// Spec bound for static delay; sendspin-cpp silently clamps past it, so refuse at parse time.
 inline constexpr uint16_t MAX_STATIC_DELAY_MS = 5000;
 
-/// @brief What `sendspin-cli <subcommand>` can ask for.
-///
-/// Mostly one entry per command in the spec's `controller@v1` role, which is the whole *transport*
-/// surface: anything that moves the group has to go out as a controller command, because the
-/// `player` role carries only this endpoint's own volume, mute and static delay.
-///
-/// Two entries are not transport at all, and both are answered without the server: `Status`, which
-/// is formatted out of the daemon's own shadows, and `Delay`, which drives this endpoint's own
-/// `PlayerRole::update_static_delay()`. See protocol_command(), which yields nothing for either.
+/// Every request a subcommand can make: controller@v1 commands plus the locally answered two.
 enum class ControlCommand : uint8_t {
-    Status,  ///< not a protocol command: the daemon's own view, formatted locally
+    Status,  ///< answered locally from the daemon's own state
     Play,
     Pause,
     Stop,
@@ -113,35 +66,17 @@ enum class ControlCommand : uint8_t {
     Shuffle,
     Switch,
 
-    /// Not a protocol command either: this endpoint's own static delay, set locally.
-    ///
-    /// The one *mutating* request answered without a server, which the spec explicitly provides
-    /// for -- the delay compensates for hardware past the audio port (an amplifier, an external
-    /// speaker), the client is required to persist it, and "clients may update `static_delay_ms`
-    /// ... when audio output changes". A server whose UI has no slider for it would otherwise
-    /// leave a physical fact only the person in the room knows unreachable.
-    ///
-    /// Keep last: `ControlSubcommands.EveryCommandInTheEnumHasARow` walks the enum's range up to
-    /// this enumerator, so a command added after it would escape that check silently.
+    /// Answered locally: this endpoint's own static delay.
+    /// Keep last: EveryCommandInTheEnumHasARow walks the enum up to here.
     Delay,
 };
 
-/// @brief How a subcommand run ended, and the exit status it leaves.
-///
-/// The three failures the brief keeps distinct are distinct values here, because they call
-/// for three different actions: start the daemon, connect it to a server, or stop asking for
-/// a command this server does not offer. Collapsing them into one non-zero status would make
-/// a script unable to tell "nothing is running" from "the server said no".
-///
-/// 1 is deliberately absent: that is what this binary already exits with when its command line
-/// does not parse, which includes a subcommand's own arguments -- `vol 500` is refused by
-/// parse_options() before a socket is opened, exactly as a bad `--buffer-ms` is.
+/// How a subcommand run ended; the value is its exit status.
+/// 1 is deliberately unused: it is the exit status for a command line that does not parse.
 enum class ControlStatus : uint8_t {
-    Ok = 0,  ///< the command was sent, or `status` printed
+    Ok = 0,
 
-    /// The *daemon* refused what the client had already accepted: a `seek` past the
-    /// `seek_max_ms` only it knows, or a request line that did not parse -- which a subcommand
-    /// cannot produce, so in practice means something else is driving the socket.
+    /// The daemon refused the request, e.g. `seek` past `seek_max_ms`.
     Usage = 2,
 
     NoDaemon = 3,      ///< nothing is listening on the control socket
@@ -150,282 +85,152 @@ enum class ControlStatus : uint8_t {
     Failed = 6,        ///< the exchange broke down
 };
 
-/// @brief One row of the subcommand table.
 struct ControlSubcommand {
-    const char* name;         ///< as typed, e.g. "seek-rel"
-    ControlCommand command;   ///< what it asks for
-    unsigned arity;           ///< how many words follow the name: 0 or 1
-    const char* argument;     ///< what that word must be, for diagnostics; nullptr when arity is 0
+    const char* name;  ///< as typed, e.g. "seek-rel"
+    ControlCommand command;
+    unsigned arity;           ///< words after the name: 0 or 1
+    const char* argument;     ///< argument shape for diagnostics; nullptr when arity is 0
     const char* description;  ///< the --help line
 };
 
-/// @brief Every subcommand, in the order `--help` lists them.
-///
-/// The single source of truth for the name, the argument count and the help text, so a
-/// subcommand cannot exist in the parser and be missing from `--help`.
+/// Every subcommand, in `--help` order.
 const std::vector<ControlSubcommand>& control_subcommands();
 
-/// @brief Looks up a subcommand by the name typed, or nullptr when there is no such thing.
+/// Looks up a subcommand by name; nullptr when unknown.
 const ControlSubcommand* find_control_subcommand(const std::string& name);
 
-/// @brief Every subcommand name, comma-separated, for a diagnostic that has to list them.
+/// Every subcommand name, comma-separated.
 std::string control_subcommand_list();
 
-/// @brief What one subcommand invocation asks the daemon to do.
-///
-/// Only the field the command uses is set, mirroring `ClientCommandControllerObject`. Kept as
-/// our own type rather than that one because it also has to carry `status`, which is not a
-/// protocol command, and `repeat`, which is three protocol commands rather than a parameter.
+/// What one subcommand invocation asks for; only the field the command uses is set.
 struct ControlRequest {
     ControlCommand command{ControlCommand::Status};
-    std::optional<uint8_t> volume{};                  ///< `vol`, 0-100
-    std::optional<bool> flag{};                       ///< `mute` and `shuffle`, on|off
-    std::optional<uint32_t> position_ms{};            ///< `seek`
-    std::optional<int32_t> offset_ms{};               ///< `seek-rel`
+    std::optional<uint8_t> volume{};                       ///< `vol`, 0-100
+    std::optional<bool> flag{};                            ///< `mute` and `shuffle`, on|off
+    std::optional<uint32_t> position_ms{};                 ///< `seek`
+    std::optional<int32_t> offset_ms{};                    ///< `seek-rel`
     std::optional<sendspin::SendspinRepeatMode> repeat{};  ///< `repeat`
     std::optional<uint16_t> delay_ms{};                    ///< `delay`, 0 to MAX_STATIC_DELAY_MS
 };
 
-/// @brief The subcommand and its arguments, split off the front of argv.
+/// A subcommand and its arguments, split off the front of argv.
 struct ControlInvocation {
     std::string name;               ///< empty when this is a daemon run
     std::vector<std::string> args;  ///< exactly the subcommand's arity, when it parsed
-    int consumed{0};                ///< argv words the split took, so flags start at argv[consumed]
+    int consumed{0};                ///< argv words taken; flags start at argv[consumed]
 };
 
-/// @brief Reads argv[1] as a subcommand, when that is what it is.
-///
-/// Done before `getopt_long()` rather than by reading its leftovers, because getopt's
-/// treatment of a positional argument is not portable: glibc permutes argv so the flags after
-/// it are still seen, and the BSDs stop at the first non-option word. `seek-rel -5000` settles
-/// it on its own -- a negative offset is indistinguishable from a flag cluster to getopt, so
-/// the argument has to be taken out of argv before getopt ever looks at it.
-///
-/// Only argv[1] is considered, so `sendspin-cli --port 9000 status` is *not* a subcommand run;
-/// parse_options() reports that as a subcommand in the wrong place rather than as junk.
-///
-/// @param error Set to a human-readable reason when the return value is false.
-/// @return false only when argv[1] names something that is not a subcommand, or the
-/// subcommand's argument is missing. A daemon run yields an empty `out.name` and true.
+/// Splits argv[1] off as a subcommand, before getopt sees it; a daemon run leaves `out.name` empty.
+/// @return false when argv[1] is not a subcommand or its argument is missing.
 bool split_subcommand(int argc, char* const argv[], ControlInvocation& out, std::string& error);
 
-/// @brief Turns a subcommand and its arguments into a request, or says why it cannot.
-///
-/// Every range check the client can make without asking the daemon happens here: `vol` 0-100,
-/// `delay` 0 to MAX_STATIC_DELAY_MS, `seek` a non-negative value that fits `uint32_t`, `seek-rel`
-/// anything that fits `int32_t`, `mute`/`shuffle` on|off, `repeat` off|one|all. `seek` against the
-/// server's published `seek_max_ms` cannot be checked here, since only the daemon holds that --
-/// see control_refusal().
-///
-/// Also the daemon's own parser: it reads the request line back through this, so the two ends
-/// cannot drift into disagreeing about what `vol 50` means.
-/// @param error Set to a human-readable reason, naming the value and the accepted range.
+/// Parses and range-checks a subcommand's arguments; also the daemon's parser for request lines.
 bool parse_control_request(const std::string& name, const std::vector<std::string>& args,
-                          ControlRequest& out, std::string& error);
+                           ControlRequest& out, std::string& error);
 
-/// @brief The request as one line, exactly as parse_control_request() reads it back.
+/// The request as one line, as parse_control_request() reads it back.
 std::string encode_control_request(const ControlRequest& request);
 
-/// @brief Splits a request line into a subcommand name and its arguments.
-///
-/// Whitespace-separated, because every argument this protocol carries is a number or a
-/// keyword. @return false when the line holds no name at all.
+/// Splits a request line on whitespace. @return false when the line holds no name.
 bool split_control_line(const std::string& line, std::string& name, std::vector<std::string>& args);
 
-/// @brief The protocol command a request dispatches, or nothing when it dispatches none.
-///
-/// Two requests have none, and returning `nullopt` for them is what routes them locally: `status`,
-/// answered out of the daemon's own shadows, and `delay`, which drives this endpoint's own player
-/// role. Neither ever reaches the server as a controller command -- and because control_refusal()
-/// gates on this function, neither is refused for want of a connection either.
+/// The controller command a request dispatches; nullopt for locally answered requests.
 std::optional<sendspin::SendspinControllerCommand> protocol_command(const ControlRequest& request);
 
-/// @brief The library command object a request becomes, ready for send_command().
-///
-/// Only ever called for a request protocol_command() gives a command for; the daemon checks that
-/// first. A locally answered request reaching here would be dispatched as whatever the fallback
-/// names, which is why that check is the dispatcher's first branch rather than a nicety.
+/// Only for requests protocol_command() gives a command for.
 sendspin::ClientCommandControllerObject to_client_command(const ControlRequest& request);
 
-/// @brief What the daemon knows about the server's controller state, as plain data.
-///
-/// A snapshot rather than a reference into the role: `get_controller_state()` hands back a
-/// reference to a vector that `drain_events()` move-assigns from inside `client.loop()`, so
-/// anything that outlives one main-loop tick has to be a copy.
+/// Copy of the server's controller state, safe to keep across main-loop ticks.
 struct ControllerSnapshot {
-    /// True on a completed handshake -- `SendspinClient::is_connected()`.
+    /// A completed handshake.
     bool connected{false};
 
-    /// `ServerStateControllerObject::supported_commands`, or empty when the server has sent
-    /// no `server/state` yet. Emptied again by `on_controller_state_clear()` on a disconnect,
-    /// which is why `connected` is carried separately: without it, a dropped connection would
-    /// be reported as "pause is not supported".
+    /// Empty until the server sends `server/state`, and again after a disconnect.
     std::vector<sendspin::SendspinControllerCommand> supported_commands{};
 
-    /// `ServerStateControllerObject::seek_max_ms`. Absent for a live or unknown-duration
-    /// stream, in which case `seek` carries no upper bound at all.
+    /// Absent for a live or unknown-duration stream.
     std::optional<uint32_t> seek_max_ms{};
 };
 
-/// @brief Decides whether the daemon may dispatch `request`, and says why not.
-///
-/// Three refusals, in the order that makes each message the true one:
-///
-/// 1. **Not connected.** Nothing can be sent, and `SendspinClient::send_text()` no-ops
-///    silently with no connection -- so a dispatch here would report a success that never
-///    left the process.
-/// 2. **Unsupported.** The server ignores a command outside its `supported_commands`, so
-///    sending it would be a success that changes nothing.
-/// 3. **Out of range for this server.** Only `seek` past a published `seek_max_ms`.
-///
-/// The locally answered requests -- `status` and `delay` -- are refused by none of them, and for
-/// the same reason: nothing about them goes to a server, so a missing connection is no obstacle. A
-/// daemon with none is exactly when reading `status` is most worth doing, and setting a speaker's
-/// own delay does not become invalid because nothing is currently playing through it. Both are
-/// exempted by protocol_command() returning nothing, so a new locally answered command inherits
-/// this without a second list to keep in step.
-/// @param status Set to the refusal's kind when the return value is true.
-/// @param reason Set to a human-readable reason when the return value is true.
+/// Decides whether the daemon must refuse `request`: not connected, unsupported, or out of range.
+/// Locally answered requests are never refused.
 /// @return true if the request must not be dispatched.
 bool control_refusal(const ControlRequest& request, const ControllerSnapshot& snapshot,
                      ControlStatus& status, std::string& reason);
 
-/// @brief Everything `status` prints, gathered from the daemon's main-loop shadows.
-///
-/// Plain data with no library types in it beyond the two the daemon really holds, so the
-/// formatter is a pure function over a struct a test can build by hand.
+/// Everything `status` prints.
 struct StatusSnapshot {
-    std::string name;  ///< -n, or the hostname it defaulted to
+    std::string name;  ///< -n, or the hostname default
 
-    bool connected{false};      ///< a completed handshake
-    std::string server_name;    ///< `ServerInformationObject::name`, empty when not known
-    std::string server_id;      ///< `ServerInformationObject::server_id`
+    bool connected{false};
+    std::string server_name;  ///< `ServerInformationObject::name`, empty when not known
+    std::string server_id;    ///< `ServerInformationObject::server_id`
 
-    /// The metadata progress object's `playback_speed`, absent when the server has sent no
-    /// progress at all. 0 is paused, 1000 is normal speed. Absent prints `unknown` rather
-    /// than being guessed at as stopped: no state having arrived is not a state.
+    /// 0 is paused, 1000 is normal speed; absent when no progress has arrived.
     std::optional<uint32_t> playback_speed{};
 
-    /// This daemon's own `on_stream_start`/`on_stream_end`. Labelled separately from the
-    /// transport state on purpose: "audio is arriving here" and "the group is playing" are
-    /// different facts, and a player that has been dropped from the group has the second
-    /// without the first.
+    /// Audio is arriving at this endpoint, independent of the group's transport state.
     bool streaming{false};
-    std::optional<StreamFormat> format{};  ///< what the sink was configured for, if anything
+    std::optional<StreamFormat> format{};  ///< what the sink was configured for
 
-    std::string artist;  ///< from the cached metadata; empty when unknown
+    std::string artist;  ///< empty when unknown
     std::string title;
 
-    /// `MetadataRole::get_track_progress_ms()` and `get_track_duration_ms()`, absent when
-    /// the server has sent no metadata progress. A duration of 0 is a live stream.
+    /// Absent without metadata progress; a duration of 0 is a live stream.
     std::optional<uint32_t> progress_ms{};
     std::optional<uint32_t> duration_ms{};
 
-    /// True once the server has sent controller state this connection. False leaves the
-    /// group lines reading `unknown`, since a default-constructed state is 0/unmuted/off and
-    /// printing that would be a claim about the group rather than an absence of one.
+    /// False until controller state arrives; the group fields then print `unknown`.
     bool group_state_known{false};
     uint8_t group_volume{0};
     bool group_muted{false};
 
-    /// The group's queue modes, from the same `server/state` controller object as the volume.
-    ///
-    /// Reported because this CLI can *change* them: shipping `repeat` and `shuffle` subcommands
-    /// whose effect is invisible in `status` would leave a user unable to see what they just did,
-    /// or to put it back. Like the volume above they read `unknown` until the server has sent
-    /// controller state at all.
-    ///
-    /// **These two carry less certainty than the rest of the block, and the reason is upstream.**
-    /// `ServerStateControllerObject` holds them as a plain enum and a plain bool, and the parser
-    /// assigns them only when the field is present -- so a server that omits `repeat` leaves the
-    /// struct's own `OFF` behind, and nothing downstream can tell that from a server that said
-    /// `off`. `seek_max_ms` in the same object is an `optional` and does not have this problem.
-    /// So read these as "the last value the server published, or `off` if it has published none",
-    /// not as a fact the server asserted. Reported anyway, because against a server that does
-    /// publish them they are correct and they are the only way to see these commands land.
+    /// Last values the server published; a server that omits them reads as OFF/false.
     sendspin::SendspinRepeatMode group_repeat{sendspin::SendspinRepeatMode::OFF};
     bool group_shuffle{false};
 
-    /// The gain this endpoint's sink is really applying, and whether it is muted -- from
-    /// `PlayerListener`, which is the only thing that calls `AudioSink::set_volume()` and so the
-    /// only thing that knows what the sink was told. `PlayerRole::get_volume()` agrees with it
-    /// from startup, but only because `main()` pushes the sink's figure into the role before
-    /// anything can connect; it is not the authority on what is being applied.
+    /// What the sink is really applying, from PlayerListener.
     uint8_t player_volume{DEFAULT_SINK_VOLUME};
     bool player_muted{false};
 
-    /// Who chose the pair above, which makes the line say so. A server that deliberately chose
-    /// full output, a player nothing has ever spoken to, and one that restored a remembered figure
-    /// are otherwise identical in the output, and only one of the three is a number a server
-    /// asserted. The role has no equivalent, which is the other reason this comes from the
-    /// listener.
     VolumeSource player_volume_source{VolumeSource::SinkDefault};
 
-    /// This endpoint's static delay, from `PlayerRole::get_static_delay_ms()`.
-    ///
-    /// Not an `optional`: the role always holds a value, whether it came from a server, the state
-    /// store, --static-delay or the 0 default. Read straight from the role rather than shadowed in
-    /// `PlayerListener`, because `update_static_delay()` does not invoke the listener -- so a
-    /// `delay` set through this daemon's own control socket would leave any shadow stale.
-    ///
-    /// The getter reports the *effective* delay, which is the stored one only while the delay is
-    /// adjustable. `main()` sets that unconditionally; were it ever made configurable, this would
-    /// read 0 against a store holding 375, exactly as `client/state` would.
+    /// The role's effective static delay.
     uint16_t static_delay_ms{0};
 
-    std::string output;  ///< the sink's `name()`
+    std::string output;  ///< the sink's name()
 };
 
-/// @brief Formats a status snapshot as the `key: value` block `status` prints.
-///
-/// Ends with a newline, and every line is `<key>: <value>` so `grep` and `cut -d:` both
-/// reach a field. Group and player volume are separate, named lines: `vol` moves the group,
-/// the server clamps it per player, and one ambiguous `volume:` would leave a reader unable
-/// to tell which number their `vol 50` had moved.
+/// Formats a snapshot as `key: value` lines, newline-terminated.
 std::string format_status(const StatusSnapshot& snapshot);
 
-/// @brief The reply block for one request: a status line, then any payload.
-///
-/// The first line is `ok`, or `error <kind>: <reason>`. The kind is one machine-readable
-/// token so the client can map a refusal onto its own exit status without parsing the reason,
-/// and the whole line still reads as English to anyone driving the socket by hand.
+/// The reply block: `ok` or `error <kind>: <reason>`, then any payload.
 std::string encode_control_reply(ControlStatus status, const std::string& reason,
-                                const std::string& payload);
+                                 const std::string& payload);
 
-/// @brief Reads a reply's first line back into a status and a reason.
-///
-/// @param reason Set to the error's reason, empty on `ok`.
-/// @return false when the line is not a reply at all, which is what a peer that is not a
-/// sendspin-cli daemon looks like.
+/// Reads a reply's first line back into a status and a reason.
+/// @return false when the line is not a reply at all.
 bool decode_control_reply(const std::string& line, ControlStatus& status, std::string& reason);
 
-/// @brief What a line assembler holds after being fed some bytes.
+/// State of a line assembler after being fed.
 enum class LineState {
     Incomplete,  ///< no '\n' yet, and still inside the length bound
     Ready,       ///< one whole line is available from line()
     TooLong,     ///< MAX_CONTROL_LINE_BYTES passed with no '\n'
-    Invalid,     ///< an embedded NUL: this is a text protocol
+    Invalid,     ///< an embedded NUL
 };
 
-/// @brief Assembles one '\n'-terminated line out of however many reads it takes.
-///
-/// A non-blocking socket hands over whatever has arrived, which for a line as short as a
-/// control request will usually be all of it and is not guaranteed to be any of it. Bounded
-/// because the peer decides how much to send.
+/// Assembles one '\n'-terminated line across non-blocking reads, bounded in length.
 class LineAssembler {
 public:
-    /// @brief Feeds one read's worth of bytes.
-    ///
-    /// Bytes after the first '\n' are discarded: this protocol is one command per
-    /// connection, so a second line is a peer talking out of turn rather than pipelining.
+    /// Feeds one read's bytes; bytes after the first '\n' are discarded.
     LineState feed(const char* data, size_t length);
 
-    /// @brief Treats what is buffered as a whole line, for a peer that closed without a '\n'.
-    ///
-    /// @return Ready when there was anything to take, Incomplete when the buffer was empty.
+    /// Takes what is buffered as the line, for a peer that closed without '\n'.
+    /// @return Ready when anything was buffered, Incomplete otherwise.
     LineState finish();
 
-    /// @brief The assembled line, without its newline. Valid once feed() returned Ready.
+    /// The assembled line, without its newline. Valid once feed() returned Ready.
     const std::string& line() const {
         return this->line_;
     }
@@ -435,187 +240,64 @@ private:
     std::string line_;
 };
 
-/// @brief Why a line assembler gave up, as a reason for an `error` reply.
+/// Why a line assembler gave up, for an `error` reply.
 const char* line_state_reason(LineState state);
 
-/// @brief The default control socket path for a player serving on `port`.
-///
-/// `<runtime_dir>/sendspin-cli-<port>.sock`. The port is in the name because the socket
-/// belongs to one player and a host can run several; it is the serve port rather than an
-/// index so a subcommand can derive the same path from the same `--port`.
-///
-/// @param runtime_dir The user-private directory, from control_runtime_dir(). Empty yields an
-/// empty path: there is deliberately no fallback to a shared directory -- see
-/// control_socket_absent_reason().
+/// `<runtime_dir>/sendspin-cli-<port>.sock`, or empty when `runtime_dir` is empty.
 std::string control_socket_path(const std::string& runtime_dir, uint16_t port);
 
-/// @brief Where the default control socket should go, and anything worth saying about it.
+/// Where the default control socket goes.
 struct ControlRuntimeDir {
-    /// The directory, or empty when no source produced a usable one.
+    /// Empty when no source produced a usable directory.
     std::string path;
 
-    /// A path that is being used but failed the privacy check -- said out loud rather than
-    /// silently accepted or silently refused. Only `$XDG_RUNTIME_DIR` can produce this: it is
-    /// the user's own declaration, so it is honoured, but a group- or world-writable runtime
-    /// directory (a systemd unit with `RuntimeDirectoryMode=0775`, say) means the socket's 0600
-    /// is not the whole story and the operator should know.
+    /// Set when `$XDG_RUNTIME_DIR` is used but is group- or world-writable.
     std::string warning;
 
-    /// Why a *platform* candidate was refused, when one was found and rejected. Carried so the
-    /// absent reason can say "writable by its group" rather than only "could not be used" --
-    /// is_private_runtime_dir() knows exactly what was wrong, and dropping that on the floor
-    /// would leave an operator with no way to find out.
+    /// Why a platform candidate was refused, if one was.
     std::string rejection;
 };
 
-/// @brief The user-private directory the default control socket goes in.
-///
-/// Two sources, in order:
-///
-/// 1. **`$XDG_RUNTIME_DIR`**, wherever it is set, on every platform. A variable set to the empty
-///    string counts as unset, which is what the XDG spec says and what `last_server_path()`
-///    already does with `$XDG_STATE_HOME`: the alternative resolves to a path starting at the
-///    filesystem root. Trusted rather than verified, because it is the user's own declaration of
-///    where their runtime files go.
-/// 2. **This platform's own equivalent**, from control_platform_runtime_dir() -- which on macOS
-///    is the per-user directory launchd already provides, and nothing anywhere else.
-///
-/// There is deliberately no third source. `/tmp` is world-writable, and a control socket there
-/// would let any local account pause playback and `switch` this endpoint out of its group; an
-/// empty return and a warning is the better answer.
-///
-/// Split from control_socket_path() so that function stays pure and testable -- the environment
-/// and the filesystem are read here, once, and the result handed in.
+/// `$XDG_RUNTIME_DIR` if set and non-empty, else the platform's own; never a shared `/tmp`.
 ControlRuntimeDir control_runtime_dir();
 
-/// @brief This platform's own user-private runtime directory, verified, or empty.
-///
-/// @param rejection Set to why a candidate was refused, when one was found and failed the
-/// check. Left alone when the platform has no candidate at all, which is not a failure.
-///
-/// On **macOS** that is `confstr(_CS_DARWIN_USER_TEMP_DIR)`: the per-user, 0700 directory under
-/// `/var/folders` that launchd hands every session. It exists because launchd sets no
-/// `$XDG_RUNTIME_DIR` at all -- not for a system service and not in an interactive shell -- so
-/// without this the default socket path never resolved on the one platform the PortAudio backend
-/// exists to serve, and every macOS user needed an explicit `--control-socket`.
-///
-/// Deliberately **not `$TMPDIR`**, which usually names the same directory: `confstr()` reads
-/// nothing from the environment, so unlike `$TMPDIR` it cannot be pointed at a directory someone
-/// else can write. That distinction is the whole reason this is not the `/tmp` fallback the
-/// design refuses.
-///
-/// Verified before use rather than trusted, by is_private_runtime_dir(): a platform answer is
-/// still only a path until the filesystem agrees it is a directory this user owns and no one else
-/// can write to.
-///
-/// There is a window between that check and the `bind()` that follows it, and it is left open
-/// knowingly rather than overlooked. Closing it would need the socket created through a
-/// descriptor opened on the verified directory, which `bind()` has no interface for -- and
-/// swapping the directory in between requires write access to its *parent*, which on both
-/// sources is itself user-owned. An attacker who already has that does not need this race.
-///
-/// Empty on every other platform, where `$XDG_RUNTIME_DIR` is the convention and its absence is
-/// a real absence rather than a platform difference.
-///
-/// One caveat worth knowing: macOS prunes `/var/folders` on a schedule, so a very long-lived
-/// player could in principle have its socket unlinked from under it, which shows up as
-/// subcommands reporting no daemon until it is restarted. `$XDG_RUNTIME_DIR` on Linux is tmpfs
-/// cleared at logout, so it is the same class of impermanence, and `--control-socket` is the
-/// answer in both cases.
+/// The platform's verified user-private runtime directory (macOS only), or empty.
+/// @param rejection Set when a candidate was found and failed the check.
 std::string control_platform_runtime_dir(std::string& rejection);
 
-/// @brief True if `path` is a directory this user owns and no one else can write to.
-///
-/// The three things that make a directory safe to put a control socket in, checked rather than
-/// assumed: it is a directory, its owner is the effective uid, and neither the group- nor the
-/// other-write bit is set. Linux enforces socket-inode permissions on `connect()` but macOS and
-/// the BSDs historically do not, so on those platforms the *directory* is what stops another
-/// local account reaching the socket -- which makes this check load-bearing rather than belt and
-/// braces.
-/// @param reason Set to a human-readable reason when the return value is false.
+/// True if `path` is a directory owned by this user that no one else can write to.
 bool is_private_runtime_dir(const std::string& path, std::string& reason);
 
-/// @brief Why there is no default control socket path, or empty when there is one.
-///
-/// A **user-private directory** is the only acceptable home for this socket, and there are
-/// exactly two ways to name one -- see control_runtime_dir(). What there is deliberately no way
-/// to name is a shared one: `/tmp` is world-writable, so falling back there would hand any local
-/// account the ability to pause playback and `switch` this endpoint out of its group. So when
-/// neither source answers, the result is no socket rather than a worse one.
-///
-/// Non-fatal, and the wording says what to do instead: the player is still a player without
-/// a control channel, exactly as it is still a player without an mDNS advertisement. It also
-/// carries `runtime.rejection` when there is one, so an operator learns *why* a candidate was
-/// refused rather than only that it was.
-/// @param path The path control_socket_path() produced, so an over-long one is named as such.
+/// Why there is no default control socket path, or empty when there is one.
 std::string control_socket_absent_reason(const ControlRuntimeDir& runtime, const std::string& path);
 
-/// @brief True if `path` fits `sockaddr_un::sun_path`, which is 104 bytes on macOS.
-///
-/// Checked at parse time and hard-failed rather than truncated: a silently shortened path
-/// binds a socket nothing will find, and the subcommand would report "no daemon" against a
-/// daemon that is running.
+/// True if `path` fits `sockaddr_un::sun_path`.
 bool control_socket_path_fits(const std::string& path);
 
-/// @brief The longest control socket path this platform can bind, for a diagnostic.
+/// The longest control socket path this platform can bind.
 size_t control_socket_path_limit();
 
-/// @brief How binding the control socket ended.
-///
-/// AlreadyRunning is separated from Failed for the reason PidFileStatus separates the same two:
-/// a lock held by another instance is the operator having started a duplicate, which must stop
-/// this run, while everything else -- an unwritable directory, a descriptor limit -- leaves a
-/// player that still works and should carry on serving audio.
+/// How binding the control socket ended; AlreadyRunning stops the run, Failed does not.
 enum class ControlSocketStatus {
     Ok,
     AlreadyRunning,
     Failed,
 };
 
-/// @brief Reports whether the control socket's lock could be taken, without keeping it.
-///
-/// Exists for the reason `probe_pidfile()` does, and it is the same problem:
-/// `ControlSocket::open()` has to run *after* the fork, so its "already running" refusal reaches
-/// the log in the child while the terminal has already been handed a 0 -- and without `-f` it
-/// reaches nowhere at all.
-/// So under -z the parent looks first, and a duplicate instance fails at the shell exactly as a
-/// locked `-P` does. The child's own acquire is still the authoritative one.
-///
-/// Only the lock is probed, never the socket: binding one here would break the fork invariant
-/// `daemonize()` names, and it is not needed -- the lock is what decides the question.
-///
-/// The probe's window is harmless in the direction that matters, again as `probe_pidfile()`'s is:
-/// an instance that starts between the probe and the child's acquire costs a *missed* terminal
-/// error, never a false success.
-/// @param error Set to a human-readable reason for AlreadyRunning and Failed alike.
+/// Probes the control socket's lock without keeping it, so -z can fail in the parent.
 ControlSocketStatus probe_control_socket(const std::string& path, std::string& error);
 
-/// @brief Runs one control request on the main loop and returns the whole reply block.
-///
-/// Implemented by the daemon, called by ControlSocket. An interface rather than a
-/// std::function so the threading contract has somewhere to be written down: every
-/// implementation is called from ControlSocket::poll(), and therefore from the main loop.
+/// Runs one control request and returns the reply block. Called on the main loop.
 class ControlHandler {
 public:
     virtual ~ControlHandler() = default;
 
-    /// @param line One request line, without its newline. Not yet parsed or trusted.
+    /// @param line One request line, without its newline, not yet parsed.
     virtual std::string handle_control_request(const std::string& line) = 0;
 };
 
-/// @brief The daemon's half of the control channel: a bound Unix socket, pumped by the main loop.
-///
-/// THREAD SAFETY: every method must be called on the main loop thread, and poll() is what
-/// runs the handler. That is not a convenience. A request reaches
-/// `ControllerRole::send_command()`, which reaches `SendspinClient::send_text()` and
-/// `ConnectionManager::current()` -- documented main-thread-only, with `current_shared()`
-/// existing for off-thread callers. Reading is no safer: `get_controller_state()` returns a
-/// reference to a vector `drain_events()` move-assigns from inside `client.loop()`. So there
-/// is no reader thread and no command queue; the cost is that a round trip is bounded by the
-/// main loop's tick rather than by the socket.
-///
-/// Lifetime mirrors PidFile: the socket is unlinked in the destructor, so the path is cleaned
-/// up on the failed-startup paths too.
+/// The daemon's control socket, pumped by the main loop; unlinked on destruction.
+/// Every method must be called on the main loop thread.
 class ControlSocket {
 public:
     ControlSocket();
@@ -624,37 +306,16 @@ public:
     ControlSocket(const ControlSocket&) = delete;
     ControlSocket& operator=(const ControlSocket&) = delete;
 
-    /// @brief Binds and listens on `path`, taking a stale socket over and refusing a live one.
-    ///
-    /// Held under an exclusive `flock()` on a sibling `<path>.lock` for the process's
-    /// lifetime, then unlinked and bound under that lock. That ordering is what makes the
-    /// two cases different: a crashed daemon's lock is gone with its descriptor, so its
-    /// leftover socket file is simply unlinked and rebound, while a *running* daemon still
-    /// holds the lock and the second instance is refused before it can unlink a socket that
-    /// is being listened on. `unlink()`-then-`bind()` alone races the live socket away, and
-    /// connecting to probe is a TOCTOU -- the same argument `src/daemon.cpp` makes for
-    /// preferring `flock()` over an `O_EXCL` create and a pid-and-signal probe.
-    ///
-    /// Its own lock rather than a second use of the `-P` pidfile, so `--control-socket` does
-    /// not acquire a dependency on `-P` being given.
-    ///
-    /// Must be called *after* `daemonize()`: a socket is one of the resources the fork
-    /// invariant at `src/daemon.cpp` names, and `bind()` applies the umask that
-    /// `daemonize()` sets.
-    /// @param error Set to a human-readable reason on anything but Ok.
+    /// Binds `path` under `<path>.lock`, taking over a stale socket and refusing a live one.
+    /// Must be called after daemonize().
     ControlSocketStatus open(const std::string& path, std::string& error);
 
-    /// @brief Accepts what is waiting, answers whatever sent a whole line, without blocking.
-    ///
-    /// @param now_ms A monotonic clock in milliseconds, for the idle deadline.
-    /// @param handler Runs each assembled request. Called on this thread.
+    /// Accepts and answers what is waiting, without blocking.
+    /// @param now_ms Monotonic milliseconds, for the idle deadline.
     void poll(int64_t now_ms, ControlHandler& handler);
 
-    /// @brief Unlinks the socket and drops every connection. Idempotent; the destructor calls it.
-    ///
-    /// Called explicitly during shutdown, *before* `client.disconnect()`, for the reason
-    /// `mdns.stop()` goes first: a request accepted after the client has gone would be
-    /// answered out of a half-torn-down player.
+    /// Unlinks the socket and drops every connection. Idempotent.
+    /// Call before client.disconnect() so no request hits a half-torn-down player.
     void close();
 
 private:
@@ -662,16 +323,8 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-/// @brief Runs one subcommand against a daemon's control socket, and prints what it says.
-///
-/// The whole of a subcommand run: connect, write one line, read the reply, print it, and
-/// return the status to exit with. Opens no audio device, starts no WebSocket server, takes
-/// no pidfile and touches no mDNS -- a `status` must not disturb the daemon it is asking
-/// about, let alone try to become one.
-///
-/// @param path The socket to talk to, from `--control-socket` or the default.
-/// @param absent_reason Why `path` is empty, when it is, so "no socket" can say what to do.
-/// @param out Where the reply's payload goes. Diagnostics go to stderr.
+/// Runs one subcommand against the daemon's socket and prints the reply.
+/// @param absent_reason Why `path` is empty, when it is.
 /// @return The status to exit with.
 ControlStatus run_control_subcommand(const ControlRequest& request, const std::string& path,
                                      const std::string& absent_reason, std::FILE* out);

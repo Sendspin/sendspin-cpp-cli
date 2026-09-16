@@ -52,10 +52,10 @@ already does that.
 | `id` | `--id` | the stable client id a server files this player's settings under — two players on one host must not share it | derived from the interface MAC |
 | `manufacturer` | `--manufacturer` | the manufacturer `client/hello` reports | `sendspin-cpp-cli` |
 | `product-name` | `--product-name` | the product name `client/hello` reports | `sendspin-cli` |
-| `server` | `-s`, `--server` | `<host>[:<port>]`, a `ws://` URL, or `mdns:[<name>]` | none — wait to be discovered |
+| `server` | `-s`, `--server` | `mdns:` to discover any server, or `mdns:<name>` for the one advertised under that name | none — wait to be discovered |
 | `port` | `--port` | the port this player's own WebSocket server listens on | `8928` |
 | `buffer-ms` | `--buffer-ms` | audio the output backend keeps queued, 10–2000 | `100` |
-| `audio-format` | `--audio-format` | pin a preferred format to the front of the advertised list: `codec:rate:depth:channels`, e.g. `flac:48000:24:2`; refuses to start if the advertised list does not carry it — it carries a single channel count — and an `opus` pin at anything but 48000/16 and at most 2 channels is refused outright | none — device-derived order |
+| `audio-format` | `--audio-format` | preferred formats, comma-separated in priority order: `codec:rate:depth:channels[,...]`, e.g. `flac:48000:24:2,pcm:48000:24:2`; offered first in that order, with the rest of the advertised list still behind them, so a server that cannot encode them falls back — a preference, not a restriction; refuses to start if the advertised list does not carry every one — it carries a single channel count — and an `opus` entry at anything but 48000/16 and at most 2 channels is refused outright | none — device-derived order |
 | `static-delay` | `--static-delay` | latency this endpoint's hardware adds after the audio port, 0–5000 | `0` |
 | `no-mdns` | `--no-mdns` | `true`/`false` — do not advertise `_sendspin._tcp` | `false` |
 | `mdns-name` | `--mdns-name` | the instance label to advertise, when it should differ from `name` | `name` |
@@ -76,21 +76,6 @@ reason, so that one vocabulary covers both.
 Booleans take `true`/`yes`/`on`/`1` or `false`/`no`/`off`/`0`. A line whose first non-blank
 character is `#` is a comment; a `#` anywhere else is not, so a name or a path is free to
 contain one. Where a key appears twice, the last one wins.
-
-**A `server` URL that carries userinfo belongs here rather than on the command line — and it
-does not authenticate anything.** `ws://user:token@host:8927/sendspin` is accepted, and the
-`user:token` is dropped before the handshake: Sendspin authenticates in the handshake, not in
-the URL, so nothing turns userinfo into an `Authorization` header. If a proxy in front of
-your server wants HTTP Basic, this is not the way to give it to it — and the player accepting
-a credential it cannot send is a wrong it owes a fix, not a feature to configure around.
-
-Where it still matters is what gets written down. A URL typed at `-s` is in the process's
-`argv`, which `ps` shows to **every** local user for as long as the player runs; in this file
-it is protected by the file's own permissions, so `chmod 0600` and an owner is the whole of
-the fix. The player also masks userinfo out of every line *it* writes — `Connecting to
-ws://user:***@host:8927/sendspin` — but every line tagged `sendspin.*` is the library's own
-and prints the URL in full, at the default log level. Treat the log of a `-s` run with
-userinfo in it as sensitive either way.
 
 **Five things cannot come from a file**: `-l`, `-z`, `--config`, `--help` and `--version`.
 Run shape stays on the command line, and a config naming one is refused as an unknown key.

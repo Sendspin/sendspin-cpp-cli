@@ -12,20 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-/// @file control_test.cpp
-/// @brief The control channel's decisions, exercised without binding a socket
-///
-/// Nothing here opens a socket, forks or touches a filesystem: everything under test is a pure
-/// function over a struct a test can build by hand, which is what `src/control_common.cpp`
-/// exists to make possible. The parts that genuinely need two processes -- the socket appearing
-/// at the default path, a `status` round trip, stale-socket takeover, refusal of a second
-/// instance -- are in `scripts/smoke_test.sh`, for the reason README.md gives: this suite has to
-/// stay runnable on a bare machine.
+/// The control channel's decisions, exercised without a socket; round trips are in smoke_test.sh.
 
 #include "control.h"
 
 #include <gtest/gtest.h>
-
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -41,10 +32,7 @@ namespace {
 using sendspin::SendspinControllerCommand;
 using sendspin::SendspinRepeatMode;
 
-/// Runs split_subcommand() over a literal command line, as argv really arrives.
-///
-/// The strings are held by the vector rather than pointed into a temporary, since
-/// split_subcommand() takes `char* const[]` exactly as main() gets it.
+/// Runs split_subcommand() over a literal command line.
 bool split(const std::vector<std::string>& words, ControlInvocation& out, std::string& error) {
     std::vector<std::string> storage = words;
     std::vector<char*> argv;
@@ -110,9 +98,8 @@ std::string field(const std::string& block, const std::string& key) {
     size_t position = 0;
     while (position <= block.size()) {
         const size_t line_end = block.find('\n', position);
-        const std::string line = block.substr(position, line_end == std::string::npos
-                                                            ? std::string::npos
-                                                            : line_end - position);
+        const std::string line = block.substr(
+            position, line_end == std::string::npos ? std::string::npos : line_end - position);
         if (line.compare(0, needle.size(), needle) == 0) {
             return line.substr(needle.size());
         }
@@ -124,14 +111,10 @@ std::string field(const std::string& block, const std::string& key) {
     return {};
 }
 
-// ==============================================================================
 // The subcommand table
-// ==============================================================================
 
 TEST(ControlSubcommands, EveryCommandInTheEnumHasARow) {
-    // The table is what --help prints, what the parser reads and what names a command in a
-    // diagnostic, so a command reachable in one and missing from it would be invisible in the
-    // other two. Checked by walking the enum's whole range rather than the table's own rows.
+    // Walks the enum, not the table, so a command missing from the table fails.
     for (uint8_t value = 0; value <= static_cast<uint8_t>(ControlCommand::Delay); ++value) {
         const auto command = static_cast<ControlCommand>(value);
         bool found = false;
@@ -147,22 +130,16 @@ TEST(ControlSubcommands, EveryCommandInTheEnumHasARow) {
 
 TEST(ControlSubcommands, ArityAndArgumentAgree) {
     for (const ControlSubcommand& subcommand : control_subcommands()) {
-        // encode_control_request() and split_subcommand() both trust arity to say whether there
-        // is an argument to read, and --help prints `argument` beside the name.
         EXPECT_LE(subcommand.arity, 1U) << subcommand.name;
         EXPECT_EQ(subcommand.arity == 1, subcommand.argument != nullptr) << subcommand.name;
     }
 }
 
 TEST(ControlSubcommands, EveryProtocolCommandIsReachable) {
-    // The point of the item: `controller@v1`'s whole transport surface is drivable locally. A
-    // library command with no subcommand mapping onto it would be a hole in that claim.
+    // Every controller@v1 command must be reachable from some subcommand.
     std::vector<SendspinControllerCommand> reached;
     for (const ControlSubcommand& subcommand : control_subcommands()) {
-        // Every legal argument, not just one: `repeat` and `shuffle` each cover more than one
-        // protocol command, so a single sample would leave most of them unreached. The argument
-        // is chosen off the table's own `argument` column, so a new subcommand is covered here
-        // without this test having to learn its name.
+        // Every legal argument, chosen from the table's `argument` column.
         std::vector<std::vector<std::string>> arguments;
         if (subcommand.arity == 0) {
             arguments.push_back({});
@@ -182,11 +159,7 @@ TEST(ControlSubcommands, EveryProtocolCommandIsReachable) {
         }
     }
 
-    // SEEK_RELATIVE is the library's last enumerator today, and this walk assumes it. A library
-    // that appends a command would silently reduce this test's coverage rather than fail it --
-    // there is no count to check against, since the enum is in a FetchContent'd header that
-    // `SENDSPIN_GIT_TAG` moves. So the count is pinned here, and a tag bump that changes it
-    // fails *this* line, which is where the reader will be told to extend the table.
+    // Pinned so a library tag bump that adds a command fails here.
     constexpr int LAST_PROTOCOL_COMMAND =
         static_cast<int>(SendspinControllerCommand::SEEK_RELATIVE);
     EXPECT_EQ(LAST_PROTOCOL_COMMAND, 14)
@@ -200,9 +173,7 @@ TEST(ControlSubcommands, EveryProtocolCommandIsReachable) {
     }
 }
 
-// ==============================================================================
 // Splitting argv
-// ==============================================================================
 
 TEST(SplitSubcommand, NoArgumentsIsADaemonRun) {
     ControlInvocation invocation;
@@ -241,8 +212,7 @@ TEST(SplitSubcommand, AUnaryCommandTakesItsArgument) {
 }
 
 TEST(SplitSubcommand, ANegativeOffsetIsAnArgumentRatherThanAFlag) {
-    // The whole reason the split happens before getopt: `-5000` is indistinguishable from a
-    // flag cluster to getopt_long(), so the argument has to leave argv before it is scanned.
+    // A negative offset looks like a flag to getopt, so it leaves argv first.
     ControlInvocation invocation;
     std::string error;
     ASSERT_TRUE(split({"sendspin-cli", "seek-rel", "-5000"}, invocation, error)) << error;
@@ -256,8 +226,7 @@ TEST(SplitSubcommand, FlagsAfterASubcommandAreLeftForGetopt) {
     ControlInvocation invocation;
     std::string error;
     ASSERT_TRUE(split({"sendspin-cli", "vol", "50", "--port", "9000"}, invocation, error)) << error;
-    // consumed is where the flags start, and it must not swallow them: glibc would permute
-    // them into view and the BSDs would not, so the count is what makes the two agree.
+    // consumed marks where flags start.
     EXPECT_EQ(invocation.consumed, 3);
 }
 
@@ -266,7 +235,6 @@ TEST(SplitSubcommand, AnUnknownFirstWordIsRefusedByName) {
     std::string error;
     EXPECT_FALSE(split({"sendspin-cli", "paws"}, invocation, error));
     EXPECT_NE(error.find("paws"), std::string::npos);
-    // The list is what makes the message actionable rather than merely correct.
     EXPECT_NE(error.find("pause"), std::string::npos);
 }
 
@@ -278,9 +246,7 @@ TEST(SplitSubcommand, AMissingArgumentIsRefusedNamingTheShape) {
 }
 
 TEST(SplitSubcommand, AFlagIsNotReadAsAMissingArgument) {
-    // `vol --port 9000` has a word after `vol`, and it is not a volume. The split takes it
-    // anyway -- by count, not by shape -- and the parse is what refuses it. That keeps one
-    // place deciding what a legal argument is.
+    // Split by count; the parse refuses the bad argument.
     ControlInvocation invocation;
     std::string error;
     ASSERT_TRUE(split({"sendspin-cli", "vol", "--port"}, invocation, error)) << error;
@@ -291,9 +257,7 @@ TEST(SplitSubcommand, AFlagIsNotReadAsAMissingArgument) {
     EXPECT_FALSE(parse_control_request(invocation.name, invocation.args, request, error));
 }
 
-// ==============================================================================
 // Parsing each subcommand's argument
-// ==============================================================================
 
 TEST(ParseControlRequest, NullaryCommandsMapOntoTheirProtocolCommand) {
     EXPECT_EQ(protocol_command(parsed("play", {})), SendspinControllerCommand::PLAY);
@@ -305,8 +269,6 @@ TEST(ParseControlRequest, NullaryCommandsMapOntoTheirProtocolCommand) {
 }
 
 TEST(ParseControlRequest, StatusDispatchesNothing) {
-    // Answered out of the daemon's own shadows, which is what makes it readable while
-    // disconnected.
     EXPECT_FALSE(protocol_command(parsed("status", {})).has_value());
 }
 
@@ -337,14 +299,12 @@ TEST(ParseControlRequest, DelayTakesZeroToTheSpecsMaximum) {
 }
 
 TEST(ParseControlRequest, DelayRejectsOutOfRangeRatherThanLettingItBeClamped) {
-    // The reason this repo carries its own bound: PlayerRole::update_static_delay() would take
-    // 9000 silently down to 5000 and report success for a delay nobody asked for.
+    // Refused, not clamped: the library would silently clamp to 5000.
     ControlRequest request;
     std::string error;
     for (const char* value : {"5001", "9000", "65536", "-1", "", " 250", "+250", "250.0", "abc"}) {
         EXPECT_FALSE(parse_control_request("delay", {value}, request, error))
             << "accepted delay '" << value << "'";
-        // The message names the bound, so a caller learns the range from the refusal.
         EXPECT_NE(error.find("0 to " + std::to_string(MAX_STATIC_DELAY_MS)), std::string::npos)
             << error;
         EXPECT_NE(error.find(std::string(value)), std::string::npos) << error;
@@ -352,13 +312,10 @@ TEST(ParseControlRequest, DelayRejectsOutOfRangeRatherThanLettingItBeClamped) {
 }
 
 TEST(ParseControlRequest, DelayDispatchesNothingAndIsNeverSentToTheServer) {
-    // The static delay is this endpoint's own player-role state, so nothing goes out as a
-    // controller command -- update_static_delay() republishes `client/state` by itself.
+    // Answered locally, not as a controller command.
     EXPECT_FALSE(protocol_command(parsed("delay", {"250"})).has_value());
 
-    // And the trap that makes the daemon's ordering load-bearing: to_client_command() falls back to
-    // PLAY for a request with no protocol command, so a `delay` that ever reached it would start
-    // playback. The dispatcher branches on Delay before send_command() precisely so it cannot.
+    // Trap: to_client_command() falls back to PLAY, so the dispatcher must branch on Delay first.
     EXPECT_EQ(to_client_command(parsed("delay", {"250"})).command, SendspinControllerCommand::PLAY)
         << "the fallback changed -- the dispatcher's Delay branch is what keeps this unreachable";
 }
@@ -432,8 +389,7 @@ TEST(ParseControlRequest, SeekRelativeTakesTheWholeInt32Range) {
     EXPECT_EQ(parsed("seek-rel", {"+10000"}).offset_ms, 10000);
     EXPECT_EQ(parsed("seek-rel", {"-10000"}).offset_ms, -10000);
     EXPECT_EQ(parsed("seek-rel", {"2147483647"}).offset_ms, 2147483647);
-    // The negative end is one wider than the positive one, which is why the bound is applied
-    // before the sign rather than by negating a value that has already had to fit.
+    // The negative end is one wider than the positive.
     EXPECT_EQ(parsed("seek-rel", {"-2147483648"}).offset_ms, -2147483648LL);
     EXPECT_EQ(to_client_command(parsed("seek-rel", {"-10000"})).offset_ms, -10000);
     EXPECT_FALSE(to_client_command(parsed("seek-rel", {"-10000"})).position_ms.has_value());
@@ -458,21 +414,31 @@ TEST(ParseControlRequest, TheWrongNumberOfArgumentsIsRefused) {
     EXPECT_FALSE(parse_control_request("nonsense", {}, request, error));
 }
 
-// ==============================================================================
 // The wire form of a request
-// ==============================================================================
 
 TEST(ControlRequestWire, EveryRequestSurvivesARoundTrip) {
-    // The daemon reads the line back through the same parser the subcommand used, so this is
-    // what stops the two ends drifting into disagreeing about what `vol 50` means.
+    // Both ends parse with the same code, so encoding must round-trip.
     const std::vector<std::pair<std::string, std::vector<std::string>>> cases = {
-        {"status", {}},         {"play", {}},              {"pause", {}},
-        {"stop", {}},           {"next", {}},              {"prev", {}},
-        {"switch", {}},         {"vol", {"0"}},            {"vol", {"100"}},
-        {"mute", {"on"}},       {"mute", {"off"}},         {"shuffle", {"on"}},
-        {"shuffle", {"off"}},   {"repeat", {"off"}},       {"repeat", {"one"}},
-        {"repeat", {"all"}},    {"seek", {"0"}},           {"seek", {"4294967295"}},
-        {"seek-rel", {"-2147483648"}}, {"seek-rel", {"2147483647"}},
+        {"status", {}},
+        {"play", {}},
+        {"pause", {}},
+        {"stop", {}},
+        {"next", {}},
+        {"prev", {}},
+        {"switch", {}},
+        {"vol", {"0"}},
+        {"vol", {"100"}},
+        {"mute", {"on"}},
+        {"mute", {"off"}},
+        {"shuffle", {"on"}},
+        {"shuffle", {"off"}},
+        {"repeat", {"off"}},
+        {"repeat", {"one"}},
+        {"repeat", {"all"}},
+        {"seek", {"0"}},
+        {"seek", {"4294967295"}},
+        {"seek-rel", {"-2147483648"}},
+        {"seek-rel", {"2147483647"}},
         {"delay", {"0"}},
         {"delay", {"5000"}},
     };
@@ -501,8 +467,7 @@ TEST(ControlRequestWire, EveryRequestSurvivesARoundTrip) {
 }
 
 TEST(ControlRequestWire, ZeroValuedArgumentsSurvive) {
-    // The encoder walks the optionals in order, so a `vol 0` -- a set field holding a falsy
-    // value -- is the case a has_value()-less check would silently drop.
+    // A set field holding 0 must still be encoded.
     EXPECT_EQ(encode_control_request(parsed("vol", {"0"})), "vol 0");
     EXPECT_EQ(encode_control_request(parsed("seek", {"0"})), "seek 0");
     EXPECT_EQ(encode_control_request(parsed("seek-rel", {"0"})), "seek-rel 0");
@@ -534,9 +499,7 @@ TEST(SplitControlLine, ReadsWordsAndRejectsAnEmptyLine) {
     EXPECT_FALSE(split_control_line("   \t ", name, args));
 }
 
-// ==============================================================================
 // Whether the daemon may dispatch
-// ==============================================================================
 
 TEST(ControlRefusal, ASupportedCommandOnAConnectedServerIsDispatched) {
     ControlStatus status = ControlStatus::Failed;
@@ -557,10 +520,7 @@ TEST(ControlRefusal, NotConnectedIsReportedAsNotConnected) {
 }
 
 TEST(ControlRefusal, ADisconnectedDaemonDoesNotReportUnsupported) {
-    // The failure this ordering exists to prevent. on_controller_state_clear() empties
-    // supported_commands on a drop, so a gate that consulted it first would answer "pause is
-    // not supported" when the truth is that nothing is connected -- and the operator would go
-    // looking at their server's capabilities instead of at the connection.
+    // Not connected must be reported before unsupported: a disconnect empties supported_commands.
     ControllerSnapshot snapshot;
     snapshot.connected = false;
     snapshot.supported_commands.clear();
@@ -586,9 +546,7 @@ TEST(ControlRefusal, AnAbsentCommandIsReportedAsUnsupported) {
 }
 
 TEST(ControlRefusal, AConnectedServerWithNoStateYetSaysSo) {
-    // Connected but no server/state has arrived. Still unsupported -- sending would be ignored
-    // -- but the reason has to distinguish "not yet" from "never", because only one of them
-    // resolves itself.
+    // No server/state yet: unsupported, but the reason says "not yet".
     ControllerSnapshot snapshot;
     snapshot.connected = true;
 
@@ -600,8 +558,6 @@ TEST(ControlRefusal, AConnectedServerWithNoStateYetSaysSo) {
 }
 
 TEST(ControlRefusal, StatusIsNeverRefused) {
-    // Readable in every state, and most useful in the worst one: a disconnected daemon with no
-    // controller state is exactly when an operator wants to know what the player thinks.
     ControllerSnapshot disconnected;
     ControlStatus status = ControlStatus::Failed;
     std::string reason;
@@ -610,18 +566,14 @@ TEST(ControlRefusal, StatusIsNeverRefused) {
 }
 
 TEST(ControlRefusal, DelayIsNeverRefusedEither) {
-    // The other locally answered request, and the case that matters most: a speaker's own delay
-    // does not become unsettable because nothing is currently connected to it. Exempted through
-    // protocol_command() returning nothing rather than by name, so this and `status` share one
-    // rule.
+    // `delay` is exempt too, through protocol_command() rather than by name.
     ControllerSnapshot disconnected;
     ControlStatus status = ControlStatus::Failed;
     std::string reason;
     EXPECT_FALSE(control_refusal(parsed("delay", {"250"}), disconnected, status, reason));
     EXPECT_FALSE(control_refusal(parsed("delay", {"250"}), everything_supported(), status, reason));
 
-    // And specifically not reported as unsupported: `set_static_delay` is a *player* command, so it
-    // is not in the controller role's supported_commands and never should be looked for there.
+    // `set_static_delay` is a player command, never in the controller's supported_commands.
     ControllerSnapshot connected_no_state;
     connected_no_state.connected = true;
     EXPECT_FALSE(control_refusal(parsed("delay", {"250"}), connected_no_state, status, reason));
@@ -641,8 +593,6 @@ TEST(ControlRefusal, SeekPastSeekMaxIsRefusedNamingTheBound) {
 }
 
 TEST(ControlRefusal, SeekIsUnboundedWhenTheServerPublishesNoMaximum) {
-    // Absent for a live or unknown-duration stream, where the server itself has no bound to
-    // apply -- so neither does this.
     ControllerSnapshot snapshot = everything_supported();
     snapshot.seek_max_ms.reset();
 
@@ -652,9 +602,7 @@ TEST(ControlRefusal, SeekIsUnboundedWhenTheServerPublishesNoMaximum) {
 }
 
 TEST(ControlRefusal, RelativeSeekIsNotBoundedBySeekMax) {
-    // Deliberate, and the reason is worth keeping under test: the server does not bound a
-    // relative seek, and this client's only view of the position is its own interpolated
-    // shadow -- so bounding it here would refuse legitimate commands off stale data.
+    // Relative seeks are deliberately unbounded.
     ControllerSnapshot snapshot = everything_supported();
     snapshot.seek_max_ms = 1000;
 
@@ -664,9 +612,7 @@ TEST(ControlRefusal, RelativeSeekIsNotBoundedBySeekMax) {
     EXPECT_FALSE(control_refusal(parsed("seek-rel", {"-2147483648"}), snapshot, status, reason));
 }
 
-// ==============================================================================
 // The status block
-// ==============================================================================
 
 TEST(FormatStatus, EveryFieldIsPresentAndLabelled) {
     const std::string block = format_status(playing_snapshot());
@@ -685,9 +631,7 @@ TEST(FormatStatus, EveryFieldIsPresentAndLabelled) {
 }
 
 TEST(FormatStatus, GroupAndPlayerVolumeAreSeparateLines) {
-    // The distinction the whole item turns on: `vol` moves the *group*, and the server clamps
-    // it per player, so one ambiguous `volume:` would leave a reader unable to tell which
-    // number their `vol 50` had moved.
+    // Group and player volume are separate lines.
     StatusSnapshot snapshot = playing_snapshot();
     snapshot.group_volume = 55;
     snapshot.group_muted = true;
@@ -701,12 +645,7 @@ TEST(FormatStatus, GroupAndPlayerVolumeAreSeparateLines) {
 }
 
 TEST(FormatStatus, AVolumeNoServerHasSetIsMarkedAsADefault) {
-    // The bug this exists to stop coming back. The library's `PlayerRole` defaults its volume to 0
-    // while every sink runs at DEFAULT_SINK_VOLUME from the first sample, so reporting the role's
-    // number printed `player volume: 0` at a player that was audibly at full output. `status`
-    // reports the gain the sink is applying, and says nobody chose it. (`main()` now also pushes
-    // that figure into the role at startup, so the two agree on the wire -- but this line is about
-    // which of them `status` asks, which is still the sink's side.)
+    // Regression: status once printed the role's default 0 at a player at full output.
     StatusSnapshot snapshot = playing_snapshot();
     snapshot.player_volume = DEFAULT_SINK_VOLUME;
     snapshot.player_volume_source = VolumeSource::SinkDefault;
@@ -716,14 +655,12 @@ TEST(FormatStatus, AVolumeNoServerHasSetIsMarkedAsADefault) {
               std::string::npos)
         << line;
     EXPECT_NE(line.find("no server has set it"), std::string::npos) << line;
-    // And the number itself must never be 0, which is the claim that sent people looking for a
-    // dead player. Taken as the leading token rather than searched for, since "100" contains a 0.
+    // Leading token, since "100" contains a 0.
     EXPECT_NE(line.substr(0, line.find(' ')), "0") << line;
 }
 
 TEST(FormatStatus, AVolumeAServerChoseIsNotMarkedAsADefault) {
-    // The other half: a server that deliberately set full output must not be described as a
-    // default, or the qualifier stops meaning anything.
+    // A server-chosen full volume is not a default.
     StatusSnapshot snapshot = playing_snapshot();
     snapshot.player_volume = DEFAULT_SINK_VOLUME;
     snapshot.player_volume_source = VolumeSource::Server;
@@ -733,9 +670,7 @@ TEST(FormatStatus, AVolumeAServerChoseIsNotMarkedAsADefault) {
 }
 
 TEST(FormatStatus, ARestoredVolumeIsNeitherADefaultNorAServersChoice) {
-    // The third case, and the reason the flag stopped being a bool: a volume read back from the
-    // state store is not DEFAULT_SINK_VOLUME, so calling it a default is false -- and no server
-    // on this connection chose it either, so leaving it unqualified would be a claim one had.
+    // A restored volume is neither a default nor server-chosen.
     StatusSnapshot snapshot = playing_snapshot();
     snapshot.player_volume = 42;
     snapshot.player_volume_source = VolumeSource::Restored;
@@ -748,26 +683,20 @@ TEST(FormatStatus, ARestoredVolumeIsNeitherADefaultNorAServersChoice) {
 }
 
 TEST(FormatStatus, TheStaticDelayIsReportedSoItsCommandIsVisible) {
-    // Reported for the reason `repeat` and `shuffle` are: `delay` can change it, and a setting
-    // whose effect `status` cannot show leaves a user unable to see what they did or to put it
-    // back.
     StatusSnapshot snapshot = playing_snapshot();
     snapshot.static_delay_ms = 375;
     EXPECT_EQ(field(format_status(snapshot), "static delay"), "375 ms");
 
-    // Zero is a real value -- the delay turned off -- and reads as such rather than as `unknown`.
-    // The role always holds a figure, whether or not anybody chose it.
+    // Zero is a real value, not unknown.
     snapshot.static_delay_ms = 0;
     EXPECT_EQ(field(format_status(snapshot), "static delay"), "0 ms");
 
-    // Its own line rather than folded into the player volume, so `grep`/`cut -d:` reach it.
     snapshot.static_delay_ms = MAX_STATIC_DELAY_MS;
     EXPECT_EQ(field(format_status(snapshot), "static delay"), "5000 ms");
 }
 
 TEST(FormatStatus, TheStaticDelayIsReportedWhileDisconnected) {
-    // It is this process's own state, so unlike every server-sourced field it is knowable with
-    // nothing connected -- which is also when `delay` is most likely to have just been used.
+    // Local state, known even with nothing connected.
     StatusSnapshot snapshot;
     snapshot.name = "kitchen";
     snapshot.output = "null";
@@ -776,8 +705,6 @@ TEST(FormatStatus, TheStaticDelayIsReportedWhileDisconnected) {
 }
 
 TEST(FormatStatus, TheQueueModesAreReportedSoTheirCommandsAreVisible) {
-    // `repeat` and `shuffle` are the only subcommands whose effect status could not show, which
-    // left a user unable to see what they had just changed -- or to put it back.
     StatusSnapshot snapshot = playing_snapshot();
     snapshot.group_state_known = true;
 
@@ -796,8 +723,7 @@ TEST(FormatStatus, TheQueueModesAreReportedSoTheirCommandsAreVisible) {
 }
 
 TEST(FormatStatus, UnknownQueueModesAreNotPrintedAsOff) {
-    // Same trap the group volume has: a default-constructed controller object is OFF and
-    // unshuffled, so printing it would be a claim about the group rather than an absence of one.
+    // A default-constructed controller object would be a false claim.
     StatusSnapshot snapshot = playing_snapshot();
     snapshot.group_state_known = false;
 
@@ -815,15 +741,13 @@ TEST(FormatStatus, TheTransportStateComesFromPlaybackSpeed) {
     snapshot.playback_speed = 1000;
     EXPECT_EQ(field(format_status(snapshot), "state"), "playing");
 
-    // A speed the protocol allows but no server sends today: named rather than rounded to
-    // "playing", so an unusual value is visible instead of hidden.
+    // Unusual speeds are named, not rounded.
     snapshot.playback_speed = 1500;
     EXPECT_EQ(field(format_status(snapshot), "state"), "playing (speed 1500/1000)");
 }
 
 TEST(FormatStatus, NoProgressReadsUnknownRatherThanGuessing) {
-    // The server having sent no progress is not a state. Reporting it as "stopped" would be a
-    // claim about the group made out of an absence of information.
+    // No progress is unknown, not stopped.
     StatusSnapshot snapshot = playing_snapshot();
     snapshot.playback_speed.reset();
     snapshot.progress_ms.reset();
@@ -835,8 +759,7 @@ TEST(FormatStatus, NoProgressReadsUnknownRatherThanGuessing) {
 }
 
 TEST(FormatStatus, ADisconnectedPlayerStillReportsWhatItKnows) {
-    // The criterion: `status` against a daemon with no server connection prints, says it is not
-    // connected, and still reports the local facts -- which is when it is most worth reading.
+    // Disconnected status still reports local facts.
     StatusSnapshot snapshot;
     snapshot.name = "living-room";
     snapshot.connected = false;
@@ -856,8 +779,7 @@ TEST(FormatStatus, ADisconnectedPlayerStillReportsWhatItKnows) {
 }
 
 TEST(FormatStatus, AnUnknownGroupVolumeIsNotPrintedAsZero) {
-    // A default-constructed ServerStateControllerObject is 0 and unmuted, which would read as a
-    // group turned all the way down rather than as a group nothing is known about.
+    // A default-constructed state would read as volume 0.
     StatusSnapshot snapshot = playing_snapshot();
     snapshot.group_state_known = false;
     snapshot.group_volume = 0;
@@ -865,10 +787,7 @@ TEST(FormatStatus, AnUnknownGroupVolumeIsNotPrintedAsZero) {
 }
 
 TEST(FormatStatus, APlayingPositionIsMarkedAsAnEstimate) {
-    // While the group plays, the library interpolates from the last progress the server sent, so
-    // a server that does not resend it after a seek leaves the figure drifting by however far the
-    // seek moved -- observed against a real server, where both seek forms moved the audio while
-    // this number carried on climbing. Paused, it is the server's own snapshot and needs no mark.
+    // Interpolated while playing, so marked as estimated; paused, it is the server's own figure.
     StatusSnapshot snapshot = playing_snapshot();
 
     snapshot.playback_speed = 1000;
@@ -884,10 +803,7 @@ TEST(FormatStatus, APlayingPositionIsMarkedAsAnEstimate) {
 }
 
 TEST(FormatStatus, AConnectedPlayerSaysWhichFieldsAreTheServersWord) {
-    // The misreading this prevents cost real debugging time: `shuffle` and `repeat` read `off`
-    // against a server that acts on them and never reports them back, and the position kept
-    // climbing through seeks that audibly worked. A reader who has just changed something needs
-    // to know which figures can lag before concluding the command failed.
+    // Warns which fields can lag behind a change.
     const std::string note = field(format_status(playing_snapshot()), "note");
     EXPECT_FALSE(note.empty());
     for (const char* field_name : {"position", "repeat", "shuffle"}) {
@@ -901,8 +817,6 @@ TEST(FormatStatus, AConnectedPlayerSaysWhichFieldsAreTheServersWord) {
 }
 
 TEST(FormatStatus, ALiveStreamsPositionNamesItsUnknownDuration) {
-    // Paused, so the reading is the server's own snapshot and carries no `(estimated)` marker --
-    // this test is about the clock, not about provenance.
     StatusSnapshot snapshot = playing_snapshot();
     snapshot.playback_speed = 0;
     snapshot.progress_ms = 65000;
@@ -944,10 +858,7 @@ TEST(FormatStatus, AnIdleStreamHasNoFormat) {
 }
 
 TEST(FormatStatus, AStreamWhoseFormatWasRefusedStillReadsAsStreaming) {
-    // The combination `streaming && !format`, which is what PlayerListener reports when the
-    // device refused the stream's format -- audio is arriving and being discarded. Reporting it
-    // as idle would contradict the ERROR the player raises about exactly that, and would answer
-    // "nothing is being sent to me" to an operator diagnosing "nothing is coming out".
+    // streaming && !format: a refused format still reports as receiving.
     StatusSnapshot snapshot = playing_snapshot();
     snapshot.streaming = true;
     snapshot.format.reset();
@@ -964,9 +875,7 @@ TEST(FormatStatus, AConnectedServerWithNoNameStillReadsAsConnected) {
     EXPECT_NE(field(format_status(snapshot), "server").find("OraobU4l"), std::string::npos);
 }
 
-// ==============================================================================
 // The reply's status line
-// ==============================================================================
 
 TEST(ControlReply, OkRoundTripsWithItsPayload) {
     const std::string reply = encode_control_reply(ControlStatus::Ok, "", "name: x\n");
@@ -980,8 +889,7 @@ TEST(ControlReply, OkRoundTripsWithItsPayload) {
 }
 
 TEST(ControlReply, EveryErrorKindRoundTripsToItsOwnStatus) {
-    // The exit statuses a script tells apart, so each kind has to survive the wire as itself
-    // rather than collapsing into a generic failure.
+    // Each kind maps to an exit status, so it must survive the wire.
     for (ControlStatus sent : {ControlStatus::Usage, ControlStatus::NotConnected,
                                ControlStatus::Unsupported, ControlStatus::Failed}) {
         const std::string reply = encode_control_reply(sent, "because: reasons", "");
@@ -997,8 +905,7 @@ TEST(ControlReply, EveryErrorKindRoundTripsToItsOwnStatus) {
 }
 
 TEST(ControlReply, ANonReplyIsRejectedRatherThanPrinted) {
-    // Something is listening on that path and it is not a sendspin-cli daemon. Printing its
-    // answer as though it were a status would be worse than saying so.
+    // A non-sendspin peer is reported, not printed.
     ControlStatus status = ControlStatus::Ok;
     std::string reason;
     EXPECT_FALSE(decode_control_reply("", status, reason));
@@ -1009,8 +916,7 @@ TEST(ControlReply, ANonReplyIsRejectedRatherThanPrinted) {
 }
 
 TEST(ControlReply, AnUnknownKindKeepsTheReasonAndDegrades) {
-    // A newer daemon against an older subcommand. The reason is the useful half, so it is kept
-    // rather than the whole reply being discarded.
+    // An unknown kind from a newer daemon keeps its reason.
     ControlStatus status = ControlStatus::Ok;
     std::string reason;
     ASSERT_TRUE(decode_control_reply("error future-thing: something new", status, reason));
@@ -1018,9 +924,7 @@ TEST(ControlReply, AnUnknownKindKeepsTheReasonAndDegrades) {
     EXPECT_EQ(reason, "something new");
 }
 
-// ==============================================================================
 // Line framing
-// ==============================================================================
 
 TEST(LineAssembler, AWholeLineInOneReadIsReady) {
     LineAssembler assembler;
@@ -1029,8 +933,7 @@ TEST(LineAssembler, AWholeLineInOneReadIsReady) {
 }
 
 TEST(LineAssembler, APartialLineAcrossTwoReadsIsAssembled) {
-    // What a non-blocking socket really does: hands over whatever has arrived, which is not
-    // guaranteed to be a whole line or any of it.
+    // Non-blocking reads can split a line anywhere.
     LineAssembler assembler;
     EXPECT_EQ(assembler.feed("se", 2), LineState::Incomplete);
     EXPECT_EQ(assembler.feed("ek 30", 5), LineState::Incomplete);
@@ -1039,8 +942,7 @@ TEST(LineAssembler, APartialLineAcrossTwoReadsIsAssembled) {
 }
 
 TEST(LineAssembler, NoTrailingNewlineIsTakenAtEndOfInput) {
-    // `printf status | socat - UNIX-CONNECT:...` sends no newline and shuts its write side
-    // down; end-of-input terminates a line as unambiguously as '\n'.
+    // EOF without a newline still ends the line.
     LineAssembler assembler;
     EXPECT_EQ(assembler.feed("status", 6), LineState::Incomplete);
     EXPECT_EQ(assembler.finish(), LineState::Ready);
@@ -1053,8 +955,7 @@ TEST(LineAssembler, AClosedConnectionWithNothingBufferedIsNotALine) {
 }
 
 TEST(LineAssembler, AnEmptyLineIsReadyAndEmpty) {
-    // Ready at this layer and refused at the parse layer, which is the right split: framing
-    // says a line arrived, the parser says whether it means anything.
+    // Framing accepts it; the parser refuses it.
     LineAssembler assembler;
     EXPECT_EQ(assembler.feed("\n", 1), LineState::Ready);
     EXPECT_EQ(assembler.line(), "");
@@ -1078,8 +979,7 @@ TEST(LineAssembler, AnOverLongLineIsRefusedRatherThanBuffered) {
 }
 
 TEST(LineAssembler, ALineExactlyAtTheBoundIsAccepted) {
-    // The bound is on the line, not on the line plus its newline: a request of exactly
-    // MAX_CONTROL_LINE_BYTES bytes is legal, and one byte more is not.
+    // The bound excludes the newline.
     LineAssembler assembler;
     const std::string exact(MAX_CONTROL_LINE_BYTES, 'x');
     EXPECT_EQ(assembler.feed(exact.data(), exact.size()), LineState::Incomplete);
@@ -1088,24 +988,18 @@ TEST(LineAssembler, ALineExactlyAtTheBoundIsAccepted) {
 }
 
 TEST(LineAssembler, AnEmbeddedNulIsRefused) {
-    // A text protocol, and a NUL is how a truncated C string or a binary peer arrives. Refused
-    // so nothing downstream has to be NUL-safe.
     LineAssembler assembler;
     EXPECT_EQ(assembler.feed("pau\0se\n", 7), LineState::Invalid);
     EXPECT_STRNE(line_state_reason(LineState::Invalid), "");
 }
 
 TEST(LineAssembler, BytesAfterTheFirstNewlineAreDropped) {
-    // One command per connection, so a second line is a peer talking out of turn rather than
-    // a pipeline to honour.
     LineAssembler assembler;
     EXPECT_EQ(assembler.feed("pause\nplay\n", 11), LineState::Ready);
     EXPECT_EQ(assembler.line(), "pause");
 }
 
-// ==============================================================================
 // The socket path
-// ==============================================================================
 
 /// A runtime-directory result naming `path`, for the absent-reason tests.
 ControlRuntimeDir runtime_dir_of(const std::string& path) {
@@ -1115,19 +1009,14 @@ ControlRuntimeDir runtime_dir_of(const std::string& path) {
 }
 
 TEST(ControlSocketPath, TheDefaultCarriesThePort) {
-    // The port is what lets two players share a host, and what lets a subcommand derive the
-    // same path from the same --port.
-    EXPECT_EQ(control_socket_path("/run/user/1000", 8928),
-              "/run/user/1000/sendspin-cli-8928.sock");
-    EXPECT_EQ(control_socket_path("/run/user/1000", 9000),
-              "/run/user/1000/sendspin-cli-9000.sock");
+    EXPECT_EQ(control_socket_path("/run/user/1000", 8928), "/run/user/1000/sendspin-cli-8928.sock");
+    EXPECT_EQ(control_socket_path("/run/user/1000", 9000), "/run/user/1000/sendspin-cli-9000.sock");
     EXPECT_NE(control_socket_path("/run/user/1000", 8928),
               control_socket_path("/run/user/1000", 8929));
 }
 
 TEST(ControlSocketPath, NoRuntimeDirectoryYieldsNoPathAndAReason) {
-    // Deliberately not a /tmp fallback: a world-writable directory would let any local account
-    // pause playback and switch this endpoint out of its group.
+    // No /tmp fallback.
     const std::string path = control_socket_path("", 8928);
     EXPECT_TRUE(path.empty());
 
@@ -1145,35 +1034,22 @@ TEST(ControlSocketPath, AUsableDefaultHasNoAbsentReason) {
 }
 
 TEST(ControlSocketPath, AnOverLongPathDoesNotFit) {
-    // 104 bytes on macOS, 108 on Linux, and read off the struct rather than written down --
-    // truncating instead of refusing would bind a socket nothing can find.
     EXPECT_TRUE(control_socket_path_fits("/run/user/1000/sendspin-cli-8928.sock"));
     EXPECT_FALSE(control_socket_path_fits(""));
     EXPECT_FALSE(control_socket_path_fits(std::string(control_socket_path_limit(), 'x')));
     EXPECT_TRUE(control_socket_path_fits(std::string(control_socket_path_limit() - 1, 'x')));
 }
 
-// ==============================================================================
 // Which directories are fit to hold the socket
-// ==============================================================================
-//
-// These touch the filesystem, which the suite's own boundary allows -- what it forbids is opening
-// an audio device, a socket or the mDNS daemon. `daemon_test.cpp` and `last_server_test.cpp`
-// already create scratch files for the same reason.
 
-/// A directory of its own per test, with a settable mode, removed again afterwards.
-///
-/// Under the test binary's working directory rather than /tmp, for the reason
-/// `last_server_test.cpp` gives: a suite that scatters files outside the build tree is one that
-/// leaves something behind when it fails.
+/// A scratch directory with a settable mode, under the build tree, removed afterwards.
 class ScratchDir {
 public:
     explicit ScratchDir(mode_t mode) {
         this->path_ = "control-test-" + std::to_string(::getpid()) + "-" +
                       std::to_string(ScratchDir::next_id());
         this->created_ = ::mkdir(this->path_.c_str(), mode) == 0;
-        // mkdir() applies the umask, which would clear exactly the group/other bits one of these
-        // tests is trying to set -- so the mode is applied again explicitly.
+        // mkdir() applies the umask, so set the mode again.
         if (this->created_) {
             this->created_ = ::chmod(this->path_.c_str(), mode) == 0;
         }
@@ -1216,13 +1092,9 @@ TEST(PrivateRuntimeDir, APrivateDirectoryThisUserOwnsIsAccepted) {
 }
 
 TEST(PrivateRuntimeDir, AGroupOrWorldWritableDirectoryIsRefused) {
-    // The check that carries the security argument: a directory anyone else can write to is one
-    // where the socket can be replaced or unlinked, whatever mode the socket itself carries. And
-    // macOS and the BSDs do not enforce socket-inode permissions on connect() at all, so on those
-    // platforms the directory is the *only* thing standing between another local account and this
-    // player's transport controls.
-    for (mode_t mode : {static_cast<mode_t>(0770), static_cast<mode_t>(0707),
-                        static_cast<mode_t>(0777)}) {
+    // Group- or world-writable directories are refused: macOS does not check socket permissions.
+    for (mode_t mode :
+         {static_cast<mode_t>(0770), static_cast<mode_t>(0707), static_cast<mode_t>(0777)}) {
         const ScratchDir dir(mode);
         ASSERT_TRUE(dir.created()) << "mode " << mode;
 
@@ -1245,8 +1117,7 @@ TEST(PrivateRuntimeDir, AMissingPathIsRefused) {
 }
 
 TEST(PrivateRuntimeDir, ADirectoryOwnedBySomeoneElseIsRefused) {
-    // Skipped for root, which owns / and would legitimately pass. The same accommodation
-    // `last_server_test.cpp` makes for its unwritable-directory case.
+    // Root owns / and would pass.
     if (::geteuid() == 0) {
         GTEST_SKIP() << "running as root, which owns /";
     }
@@ -1256,9 +1127,7 @@ TEST(PrivateRuntimeDir, ADirectoryOwnedBySomeoneElseIsRefused) {
 }
 
 TEST(PrivateRuntimeDir, ASymlinkIsJudgedByWhatItPointsAt) {
-    // The documented direction, and the safe one: stat() follows, so a link into a world-writable
-    // directory is refused for the target's mode rather than accepted for the link's. lstat()
-    // would instead refuse a legitimately symlinked $XDG_RUNTIME_DIR for being a link at all.
+    // stat() follows links: a link to a world-writable directory is refused.
     const ScratchDir target(0700);
     ASSERT_TRUE(target.created());
 
@@ -1276,26 +1145,19 @@ TEST(PrivateRuntimeDir, ASymlinkIsJudgedByWhatItPointsAt) {
 }
 
 TEST(PrivateRuntimeDir, TmpIsRefused) {
-    // Named explicitly because it is the fallback this design refuses, and the reason it does:
-    // /tmp is 1777 on every platform this builds on.
     std::string reason;
     EXPECT_FALSE(is_private_runtime_dir("/tmp", reason)) << "/tmp must never be usable";
 }
 
 TEST(PlatformRuntimeDir, WhateverItReturnsIsPrivate) {
-    // Empty where there is no platform convention to fall back on -- which is everywhere but
-    // macOS -- and a verified directory where there is. Either way it must never hand back a path
-    // that would fail the check the code applies before using it.
+    // Empty except on macOS, and never a path that would fail the check.
     std::string rejection;
     const std::string platform = control_platform_runtime_dir(rejection);
 #ifdef __APPLE__
-    // Asserted rather than tolerated: this is the platform the fallback exists for, and an empty
-    // answer here is the acceptance criterion failing, not a configuration to skip past.
     ASSERT_FALSE(platform.empty())
         << "macOS must supply a per-user runtime directory; rejected because: " << rejection;
 #else
-    // And asserted the other way, which locks in "no third source": a future accidental fallback
-    // on a platform with no convention for one would fail here rather than pass unnoticed.
+    // No third source elsewhere.
     EXPECT_TRUE(platform.empty()) << platform;
     if (platform.empty()) {
         return;
@@ -1315,9 +1177,7 @@ TEST(PlatformRuntimeDir, WhateverItReturnsIsPrivate) {
 }
 
 TEST(PlatformRuntimeDir, ARefusedCandidateExplainsItself) {
-    // The whole point of carrying the rejection out: an empty answer *with* a candidate behind it
-    // has to say what was wrong with it, or the operator has nothing to act on. Where the platform
-    // has no candidate at all, nothing was tried, so there is nothing to explain.
+    // A refused candidate must say why; no candidate needs no reason.
     std::string rejection;
     const std::string platform = control_platform_runtime_dir(rejection);
     if (platform.empty() && !rejection.empty()) {
@@ -1330,8 +1190,7 @@ TEST(PlatformRuntimeDir, ARefusedCandidateExplainsItself) {
 }
 
 TEST(ControlSocketAbsentReason, ARefusedPlatformDirectoryIsNamedRatherThanGeneralised) {
-    // "not set" and "found it, and it is group-writable" are different problems with different
-    // fixes, so the reason has to distinguish them rather than collapsing both into the first.
+    // "Not set" and "refused" are different diagnoses.
     ControlRuntimeDir refused;
     refused.rejection = "/var/folders/xx/T is writable by its group or by everyone";
 
@@ -1343,8 +1202,7 @@ TEST(ControlSocketAbsentReason, ARefusedPlatformDirectoryIsNamedRatherThanGenera
 }
 
 TEST(ControlSocketPath, AnOverLongDefaultIsAnAbsentReasonRatherThanATruncation) {
-    // A pathologically deep $XDG_RUNTIME_DIR is the same class of problem as an absent one: the
-    // player carries on without a control channel and says which flag fixes it.
+    // Too deep is handled like absent.
     const std::string deep = "/run/user/1000/" + std::string(control_socket_path_limit(), 'd');
     const std::string path = control_socket_path(deep, 8928);
     EXPECT_FALSE(path.empty());

@@ -12,12 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-/// @file scoped_env.h
-/// @brief One environment variable, set for the length of a test
-///
-/// Shared by the two suites that need it -- `$XDG_STATE_HOME` for the remembered server, and
-/// `$XDG_RUNTIME_DIR` for the control socket path -- rather than copied into each, so a fix to
-/// the restore path cannot land in only one of them.
+/// One environment variable, set for the length of a test.
 
 #pragma once
 
@@ -26,10 +21,7 @@
 
 namespace sendspin_cli {
 
-/// @brief Sets an environment variable for the duration of a test, restoring it afterwards.
-///
-/// Restoring matters rather than being tidiness: the variables under test are read by code the
-/// *other* suites in this binary also exercise, and gtest runs them all in one process.
+/// Sets an environment variable for a test and restores it: every suite shares one process.
 class ScopedEnv {
 public:
     /// @param value The value to set, or nullptr to unset the variable.

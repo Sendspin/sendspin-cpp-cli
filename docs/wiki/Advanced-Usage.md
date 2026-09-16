@@ -12,17 +12,18 @@ server to connect:
 sendspin-cli -n living-room
 ```
 
-To make the player connect to a known server instead, use `-s`/`--server`. This disables
+To make the player find a server and connect to it instead, use `-s`/`--server` with
+`mdns:`. The player browses `_sendspin-server._tcp` and dials what it finds. This disables
 mDNS advertisement because the Sendspin protocol does not allow both modes at once:
 
 ```bash
-sendspin-cli --server music.local              # the server port defaults to 8927
-sendspin-cli --server music.local:9000
-sendspin-cli --server ws://music.local:9000/sendspin
-sendspin-cli --server "[2001:db8::1]:8927"     # an IPv6 literal must be bracketed
 sendspin-cli --server mdns:                    # discover any server
 sendspin-cli --server "mdns:Music Assistant"   # ...or one by its advertised name
 ```
+
+`-s` does not take an address. The spec only has a player connect to a server it has
+discovered, so a host, `host:port` or `ws://` URL is refused at startup. Where mDNS cannot
+reach between the two, leave `-s` off and point the server at the player instead.
 
 An outbound connection retries until it answers, and `--mdns-name` is unused in this
 mode. `--no-mdns` turns the advertisement off without switching modes.
@@ -91,15 +92,20 @@ config file.
 first-run default only: once a server or [`delay`](Controlling-the-Player) has set one,
 the remembered value wins.
 
-`--audio-format <codec:rate:depth:channels>` pins a preferred format to the front of
-the advertised list, for a DAC that is only happy in one shape:
+`--audio-format <codec:rate:depth:channels>[,...]` lists preferred formats, comma-separated
+in priority order. They go to the front of the advertised list in that order:
 
 ```bash
-sendspin-cli --audio-format flac:48000:24:2
+sendspin-cli --audio-format flac:48000:24:2,pcm:48000:24:2
 ```
 
-The player refuses to start if the device cannot offer the pinned format. Run
-`sendspin-cli -l` to see what it accepts.
+This is a preference, not a restriction. Every other format the player normally
+advertises still follows the listed ones, and a server uses the first format it can
+encode, so it may still choose a later one. A single format works the same way.
+
+The player refuses to start if any listed format is not among those it advertises for
+the device, and the error names every one that is missing. Run `sendspin-cli -l` to see
+what the device accepts.
 
 ## Identity
 

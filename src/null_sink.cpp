@@ -30,12 +30,11 @@ static constexpr const char* LOG_TAG = LOG_TAG_AUDIO;
 
 namespace {
 
-/// Chunk of zeroes used to emit silence while muted, so muting costs no allocation.
+/// Zeroes emitted while muted, so muting allocates nothing.
 constexpr size_t SILENCE_CHUNK = 4096;
 constexpr std::array<uint8_t, SILENCE_CHUNK> SILENCE{};
 
-/// Rounds `bytes` down to a whole number of PCM frames, per the AudioSink::write()
-/// contract. A frame size of 0 means no stream is configured, so nothing is aligned.
+/// Rounds `bytes` down to whole frames; a frame size of 0 means no stream, so no alignment.
 size_t align_to_frame(size_t bytes, size_t bytes_per_frame) {
     if (bytes_per_frame == 0) {
         return bytes;
@@ -70,14 +69,13 @@ bool NullAudioSink::configure(uint32_t sample_rate, uint8_t channels, uint8_t bi
 size_t NullAudioSink::write(const uint8_t* data, size_t length, uint32_t /*timeout_ms*/) {
     const bool to_stdout = this->output_ == NullSinkOutput::Stdout && !this->stdout_failed_.load();
     if (!to_stdout) {
-        // Discarding: the whole buffer is "consumed" instantly.
         this->total_bytes_.fetch_add(length);
         return length;
     }
 
     size_t written = 0;
     if (this->muted_.load()) {
-        // Zeroes are silence for the signed-integer PCM the player advertises.
+        // Zeroes are silence for signed PCM.
         while (written < length) {
             const size_t chunk = std::min(SILENCE_CHUNK, length - written);
             const size_t n = std::fwrite(SILENCE.data(), 1, chunk, stdout);
@@ -92,8 +90,7 @@ size_t NullAudioSink::write(const uint8_t* data, size_t length, uint32_t /*timeo
 
     size_t consumed = align_to_frame(written, this->bytes_per_frame_.load());
     if (written < length) {
-        // A short write means stdout is gone (a closed downstream pipe). Latch it and
-        // degrade to discarding, rather than short-writing on every call from here on.
+        // A short write means stdout is gone; latch and discard from here on.
         cli_log(LogLevel::ERROR,
                 "stdout: short write (%zu of %zu bytes) -- discarding audio from here on", written,
                 length);
@@ -110,9 +107,7 @@ void NullAudioSink::clear() {
     if (this->output_ == NullSinkOutput::Stdout && !this->stdout_failed_.load()) {
         std::fflush(stdout);
     }
-    // The frame size deliberately survives: clear() is a flush that keeps the device
-    // open, so writes after it are still part of the same format. Forgetting the format
-    // is stop()'s job.
+    // The frame size survives: clear() keeps the format, stop() forgets it.
 }
 
 void NullAudioSink::stop() {
@@ -126,7 +121,6 @@ void NullAudioSink::stop() {
 
 void NullAudioSink::set_volume(uint8_t volume) {
     this->volume_.store(volume);
-    // Recorded, not applied: per-bit-depth sample scaling belongs to a real backend.
     cli_log(LogLevel::DEBUG, "%s: volume now %u (not applied by this sink)", this->name().c_str(),
             volume);
 }

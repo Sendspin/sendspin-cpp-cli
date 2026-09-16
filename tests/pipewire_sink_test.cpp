@@ -12,15 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-/// @file pipewire_sink_test.cpp
-/// @brief The ring-versus-quantum arithmetic behind -o pipewire
-///
-/// Graph-free: these are the two pure functions the sink defers its sizing to, so the case that
-/// matters most -- a graph running a quantum larger than the whole ring -- is testable here
-/// without a daemon willing to be configured into that state.
-///
-/// Compiled only where the backend is, because that is where the header is: the rest of the suite
-/// stays buildable on a host with no PipeWire at all.
+/// The ring-versus-quantum arithmetic behind -o pipewire; built only with the PipeWire backend.
 
 #ifdef SENDSPIN_CLI_HAVE_PIPEWIRE
 
@@ -33,7 +25,7 @@
 namespace sendspin_cli {
 namespace {
 
-// --- pipewire_ring_frames -----------------------------------------------------------------
+// pipewire_ring_frames
 
 TEST(PipeWireRingFrames, ScalesWithRateAndBufferMs) {
     EXPECT_EQ(pipewire_ring_frames(48000, 100), 4800U);
@@ -44,7 +36,6 @@ TEST(PipeWireRingFrames, ScalesWithRateAndBufferMs) {
 TEST(PipeWireRingFrames, FloorsAtMinRingFrames) {
     // 10 ms at 44.1 kHz is 441 frames, well under the floor, so the floor is what a caller gets.
     EXPECT_EQ(pipewire_ring_frames(44100, 10), MIN_RING_FRAMES);
-    // And the floor loses as soon as the request clears it.
     EXPECT_GT(pipewire_ring_frames(44100, 100), MIN_RING_FRAMES);
 }
 
@@ -53,7 +44,7 @@ TEST(PipeWireRingFrames, ZeroBufferMsStillYieldsAUsableRing) {
     EXPECT_EQ(pipewire_ring_frames(48000, 0), MIN_RING_FRAMES);
 }
 
-// --- pipewire_quantum_fit -----------------------------------------------------------------
+// pipewire_quantum_fit
 
 TEST(PipeWireQuantumFit, ComfortableRingReportsNeitherFault) {
     // The default case: 100 ms at 48 kHz against the graph's usual 1024-frame quantum.
@@ -63,25 +54,20 @@ TEST(PipeWireQuantumFit, ComfortableRingReportsNeitherFault) {
 }
 
 TEST(PipeWireQuantumFit, RingUnderThreeQuantaIsTightNotStarving) {
-    // Holds a quantum twice over, so every cycle is served -- but a busy graph can outrun it.
     const PipeWireQuantumFit fit = pipewire_quantum_fit(2048, 1024, 48000);
     EXPECT_FALSE(fit.starves);
     EXPECT_TRUE(fit.tight);
 }
 
 TEST(PipeWireQuantumFit, RingSmallerThanOneQuantumStarves) {
-    // The failure this whole split exists to name: a forced 8192-frame quantum against a ring
-    // sized from a 100 ms --buffer-ms. process() asks for more than the ring can ever hold, so
-    // it zero-fills the remainder on every cycle for the life of the stream.
+    // A forced 8192-frame quantum against a 100 ms ring: every cycle zero-fills.
     const PipeWireQuantumFit fit = pipewire_quantum_fit(4800, 8192, 48000);
     EXPECT_TRUE(fit.starves);
     EXPECT_FALSE(fit.tight);  // starving is reported instead of tight, never as well as
 }
 
 TEST(PipeWireQuantumFit, BoundariesFallOnTheRightSide) {
-    // Exactly one quantum: served, because process() asks for one and one is there.
     EXPECT_FALSE(pipewire_quantum_fit(1024, 1024, 48000).starves);
-    // One frame short of it: not served.
     EXPECT_TRUE(pipewire_quantum_fit(1023, 1024, 48000).starves);
     // Exactly three quanta clears the floor; one frame short of three does not.
     EXPECT_FALSE(pipewire_quantum_fit(3072, 1024, 48000).tight);
@@ -89,22 +75,21 @@ TEST(PipeWireQuantumFit, BoundariesFallOnTheRightSide) {
 }
 
 TEST(PipeWireQuantumFit, RecommendedBufferMsActuallyClearsTheFloor) {
-    // The figure is only worth printing if passing it back in fixes the fault it was printed for.
+    // The advice must fix the fault when passed back in.
     const uint32_t rate = 48000;
     const uint32_t quantum = 8192;
     const PipeWireQuantumFit bad = pipewire_quantum_fit(4800, quantum, rate);
     ASSERT_TRUE(bad.starves);
     ASSERT_GT(bad.recommended_buffer_ms, 0U);
 
-    const PipeWireQuantumFit fixed = pipewire_quantum_fit(
-        pipewire_ring_frames(rate, bad.recommended_buffer_ms), quantum, rate);
+    const PipeWireQuantumFit fixed =
+        pipewire_quantum_fit(pipewire_ring_frames(rate, bad.recommended_buffer_ms), quantum, rate);
     EXPECT_FALSE(fixed.starves);
     EXPECT_FALSE(fixed.tight);
 }
 
 TEST(PipeWireQuantumFit, RecommendationRoundsUpAtAwkwardRates) {
-    // 3 * 1024 frames at 44.1 kHz is 69.66 ms. Rounded down to 69 the advice would fail the very
-    // check it was given for, so it must round up.
+    // 69.66 ms: rounding down to 69 would fail the check, so it rounds up.
     const PipeWireQuantumFit fit = pipewire_quantum_fit(1024, 1024, 44100);
     EXPECT_EQ(fit.recommended_buffer_ms, 70U);
     EXPECT_FALSE(
@@ -113,8 +98,7 @@ TEST(PipeWireQuantumFit, RecommendationRoundsUpAtAwkwardRates) {
 }
 
 TEST(PipeWireQuantumFit, UnobservedGraphReportsNothing) {
-    // poll() asks before the first process() callback has run. No quantum means no verdict --
-    // warning here would fire on every stream before it had a chance to play.
+    // No quantum yet means no verdict.
     const PipeWireQuantumFit no_quantum = pipewire_quantum_fit(4800, 0, 48000);
     EXPECT_FALSE(no_quantum.starves);
     EXPECT_FALSE(no_quantum.tight);

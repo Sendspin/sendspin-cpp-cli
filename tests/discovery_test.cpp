@@ -12,11 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-/// @file discovery_test.cpp
-/// @brief The decisions outbound mode makes: which server, what URL, and when to redial
-///
-/// All of it without a socket or an mDNS daemon: the browse result is a plain struct, and
-/// RetryPacer is handed the clock rather than reading one.
+/// Outbound mode's decisions: which server, what URL, and when to redial.
 
 #include "mdns.h"
 #include "outbound.h"
@@ -41,9 +37,7 @@ DiscoveredServer make_server(std::string instance, std::string name,
     return server;
 }
 
-// ---------------------------------------------------------------------------
 // Browse result to URL
-// ---------------------------------------------------------------------------
 
 TEST(DiscoveredServerUrl, BuildsFromAddressPortAndPath) {
     const DiscoveredServer server = make_server("srv-1", "Living room", {"192.168.1.10"});
@@ -149,9 +143,7 @@ TEST(DiscoveredServerUrl, IgnoresSomethingThatIsNotAnAddressAtAll) {
     EXPECT_EQ(url, "ws://192.168.1.10:8927/sendspin");
 }
 
-// ---------------------------------------------------------------------------
 // Choosing among candidates
-// ---------------------------------------------------------------------------
 
 TEST(SelectServer, TakesTheFirstToResolveWhenNothingIsPreferred) {
     const std::vector<DiscoveredServer> servers = {
@@ -229,9 +221,7 @@ TEST(SelectServer, NoCandidatesAtAll) {
     EXPECT_EQ(select_server({}, "", "", reason), nullptr);
 }
 
-// ---------------------------------------------------------------------------
 // Name truncation
-// ---------------------------------------------------------------------------
 
 TEST(TruncateUtf8, LeavesSomethingThatFitsAlone) {
     EXPECT_EQ(truncate_utf8("living-room", MDNS_MAX_LABEL_BYTES), "living-room");
@@ -254,9 +244,7 @@ TEST(TruncateUtf8, KeepsAMultiByteSequenceThatEndsExactlyOnTheLimit) {
     EXPECT_EQ(truncate_utf8(name, MDNS_MAX_LABEL_BYTES), name);
 }
 
-// ---------------------------------------------------------------------------
 // The backoff schedule
-// ---------------------------------------------------------------------------
 
 TEST(NextRetryDelay, DoublesFromTheFloorAndSaturatesAtTheCap) {
     EXPECT_EQ(next_retry_delay_ms(0), 1000U);
@@ -270,9 +258,7 @@ TEST(NextRetryDelay, DoublesFromTheFloorAndSaturatesAtTheCap) {
     EXPECT_EQ(next_retry_delay_ms(1000), MAX_RETRY_DELAY_MS);
 }
 
-// ---------------------------------------------------------------------------
 // Pacing the redials
-// ---------------------------------------------------------------------------
 
 TEST(RetryPacer, DialsImmediatelyOnTheFirstTick) {
     RetryPacer pacer;
@@ -285,8 +271,7 @@ TEST(RetryPacer, WaitsTheBackoffBeforeRedialling) {
     pacer.note_connection_state(false, 0);
     pacer.note_dial(0);
 
-    // The point of the whole class: a tick during an in-flight attempt must not redial,
-    // because connect_to() would tear that attempt down.
+    // A redial during an in-flight attempt would tear that attempt down.
     EXPECT_FALSE(pacer.should_dial(10));
     EXPECT_FALSE(pacer.should_dial(999));
     EXPECT_TRUE(pacer.should_dial(1000));
@@ -340,8 +325,7 @@ TEST(RetryPacer, LosingAConnectionRestartsFromTheFloor) {
     const int64_t lost_at = 900'000;
     EXPECT_TRUE(pacer.note_connection_state(false, lost_at));
     EXPECT_EQ(pacer.delay_ms(), MIN_RETRY_DELAY_MS);
-    // Paced from the drop, not from the dial that established the link hours ago -- which
-    // would otherwise make the redial instant.
+    // Paced from the drop, not from the dial that made the link.
     EXPECT_FALSE(pacer.should_dial(lost_at + 999));
     EXPECT_TRUE(pacer.should_dial(lost_at + 1000));
 }
@@ -354,9 +338,7 @@ TEST(RetryPacer, TheLostTransitionIsReportedExactlyOnce) {
     EXPECT_FALSE(pacer.note_connection_state(true, 300));
 }
 
-// ---------------------------------------------------------------------------
 // What the last dial may claim
-// ---------------------------------------------------------------------------
 
 TEST(LastDial, StartsWithNothingToExport) {
     const LastDial dial;
@@ -364,14 +346,13 @@ TEST(LastDial, StartsWithNothingToExport) {
     EXPECT_EQ(dial.url_for("srv-1"), "");
 }
 
-TEST(LastDial, ALiteralUrlIsTakenAtItsWord) {
-    // A -s URL promises nothing about who answers, so there is nothing to check the
-    // connected server against: the URL is exported as dialled.
+TEST(LastDial, ADialWithNoServerIdAnswersNothing) {
+    // A dial with no server id has nothing to check against, so it exports nothing.
     LastDial dial;
     dial.note_dial("ws://hifi:8927/sendspin", "");
 
-    EXPECT_EQ(dial.url_for("srv-1"), "ws://hifi:8927/sendspin");
-    EXPECT_EQ(dial.url_for(""), "ws://hifi:8927/sendspin");
+    EXPECT_EQ(dial.url_for("srv-1"), "");
+    EXPECT_EQ(dial.url_for(""), "");
 }
 
 TEST(LastDial, ADiscoveryDialAnswersOnlyForTheServerItDialled) {
@@ -379,18 +360,16 @@ TEST(LastDial, ADiscoveryDialAnswersOnlyForTheServerItDialled) {
     dial.note_dial("ws://192.168.1.10:8927/sendspin", "srv-1");
 
     EXPECT_EQ(dial.url_for("srv-1"), "ws://192.168.1.10:8927/sendspin");
-    // A different server answered -- it dialled in, or beat the attempt -- and an unknown
-    // one cannot be checked at all. Either way the URL would describe the wrong connection.
     EXPECT_EQ(dial.url_for("srv-2"), "");
     EXPECT_EQ(dial.url_for(""), "");
 }
 
 TEST(LastDial, ALostConnectionForgetsTheDial) {
     LastDial dial;
-    dial.note_dial("ws://hifi:8927/sendspin", "");
+    dial.note_dial("ws://hifi:8927/sendspin", "srv-1");
     dial.note_lost();
 
-    EXPECT_EQ(dial.url_for(""), "");
+    EXPECT_EQ(dial.url_for("srv-1"), "");
 }
 
 TEST(LastDial, ARedialAfterALossIsExportedAgain) {

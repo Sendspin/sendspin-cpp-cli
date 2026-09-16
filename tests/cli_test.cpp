@@ -12,8 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-/// @file cli_test.cpp
-/// @brief parse_options() and parse_server_url(): what the flag surface accepts and rejects
+/// parse_options(): what the flag surface accepts and rejects.
 
 #include "cli.h"
 
@@ -34,18 +33,24 @@ namespace {
 
 using sendspin::LogLevel;
 
-// ---------------------------------------------------------------------------
 // Every flag reaches its field
-// ---------------------------------------------------------------------------
 
 TEST(ParseOptions, EachFlagSetsItsField) {
-    Parse parse({"-o", "null", "-n", "kitchen", "-s", "192.168.12.2", "-z", "-P", "/run/x.pid",
-                 "-d", "debug", "-f", "/var/log/x.log", "--port", "9000"});
+    std::vector<std::string> args = {
+        "-o", "null",  "-n", "kitchen",        "-z",     "-P",  "/run/x.pid",
+        "-d", "debug", "-f", "/var/log/x.log", "--port", "9000"};
+#ifdef SENDSPIN_CLI_HAVE_MDNS
+    // -s only parses in a build that can discover a server.
+    args.insert(args.end(), {"-s", "mdns:hifi"});
+#endif
+    Parse parse(args);
 
     ASSERT_TRUE(parse.ok()) << parse.diagnostics();
     EXPECT_EQ(parse.options().device, "null");
     EXPECT_EQ(parse.options().name, "kitchen");
-    EXPECT_EQ(parse.options().server, "192.168.12.2");
+#ifdef SENDSPIN_CLI_HAVE_MDNS
+    EXPECT_EQ(parse.options().server, "mdns:hifi");
+#endif
     EXPECT_TRUE(parse.options().daemonize);
     EXPECT_EQ(parse.options().pidfile, "/run/x.pid");
     EXPECT_EQ(parse.options().log_level, LogLevel::DEBUG);
@@ -70,7 +75,7 @@ TEST(ParseOptions, DefaultsWhenNothingIsGiven) {
     EXPECT_FALSE(parse.options().daemonize);
     EXPECT_FALSE(parse.options().list_devices);
     EXPECT_TRUE(parse.options().server.empty());
-    EXPECT_TRUE(parse.options().server_url.empty());
+    EXPECT_FALSE(parse.options().discover);
     // -n falls back to the hostname, so the one thing promised is that it is not empty.
     EXPECT_FALSE(parse.options().name.empty());
 }
@@ -93,13 +98,9 @@ TEST(ParseOptions, ShortAndLongHelpAgree) {
     EXPECT_TRUE(long_form.options().show_help);
 }
 
-// ---------------------------------------------------------------------------
 // --help / --version short-circuit
-// ---------------------------------------------------------------------------
 
 TEST(ParseOptions, HelpWinsOverAnInvalidFlagAfterIt) {
-    // Asking for the flag list is exactly what someone does after getting one wrong, so
-    // --help must not be the thing that fails.
     Parse parse({"--help", "--port", "0"});
 
     ASSERT_TRUE(parse.ok()) << parse.diagnostics();
@@ -114,16 +115,14 @@ TEST(ParseOptions, VersionWinsOverAnInvalidFlagAfterIt) {
 }
 
 TEST(ParseOptions, HelpWinsOverAnInvalidFlagBeforeIt) {
-    // The harder half, and the one worth a test per flag: appending --help to a line you
-    // already got wrong is the most likely way to reach for it. Diagnostics are collected
-    // rather than returned on, so a failure earlier in argv cannot pre-empt the flag list.
+    // Appending --help to any wrong line must still print the flag list.
     const std::vector<std::string> bad_prefixes[] = {
-        {"--port", "0"},      // validated inline, as -s is not
-        {"-o", ""},           // an empty value
-        {"-d", "nonsense"},   // an unknown log level
-        {"-Q"},               // an unknown flag entirely
-        {"-s", "::1"},        // resolved after the loop
-        {"extra"},            // a positional argument
+        {"--port", "0"},     // validated inline, as -s is not
+        {"-o", ""},          // an empty value
+        {"-d", "nonsense"},  // an unknown log level
+        {"-Q"},              // an unknown flag entirely
+        {"-s", "::1"},       // an address, refused after the loop
+        {"extra"},           // a positional argument
     };
 
     for (const std::vector<std::string>& prefix : bad_prefixes) {
@@ -150,8 +149,7 @@ TEST(ParseOptions, HelpWinsOverAnInvalidFlagBeforeIt) {
 }
 
 TEST(ParseOptions, AFlagValueThatLooksLikeHelpIsNotHelp) {
-    // Why the short-circuit is deferred to getopt rather than pre-scanned for "--help":
-    // here the word is -n's value, and naming a player "--help" must not print usage.
+    // Here --help is -n's value, not a flag.
     Parse parse({"-n", "--help"});
 
     ASSERT_TRUE(parse.ok()) << parse.diagnostics();
@@ -170,12 +168,9 @@ TEST(ParseOptions, OnlyTheFirstProblemIsReported) {
         << "later problems should stay quiet: " << diagnostics;
 }
 
-// ---------------------------------------------------------------------------
 // Empty values
-// ---------------------------------------------------------------------------
 
 TEST(ParseOptions, EmptyValuesAreRejected) {
-    // -n "" used to land silently on the hostname, which reads as the flag being ignored.
     for (const char* flag : {"-o", "-n", "-P", "-f"}) {
         Parse parse({flag, ""});
 
@@ -185,9 +180,7 @@ TEST(ParseOptions, EmptyValuesAreRejected) {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Identity: --id, --manufacturer, --product-name
-// ---------------------------------------------------------------------------
 
 TEST(ParseOptions, IdentityFlagsSetTheirFields) {
     Parse parse({"--id", "kitchen-left", "--manufacturer", "Acme Audio", "--product-name",
@@ -203,8 +196,7 @@ TEST(ParseOptions, IdentityDefaultsSayWhatThisReallyIs) {
     Parse parse({});
 
     ASSERT_TRUE(parse.ok()) << parse.diagnostics();
-    // Empty deliberately: the library derives the MAC-based id only when nothing is set,
-    // so a non-empty default here would silently turn that path off for everyone.
+    // Empty, so the library derives the MAC-based id.
     EXPECT_TRUE(parse.options().client_id.empty());
     EXPECT_EQ(parse.options().manufacturer, "sendspin-cpp-cli");
     EXPECT_EQ(parse.options().product_name, "sendspin-cli");
@@ -220,26 +212,46 @@ TEST(ParseOptions, IdentityFlagsRejectEmptyValues) {
     }
 }
 
-// ---------------------------------------------------------------------------
 // --audio-format
-// ---------------------------------------------------------------------------
 
 TEST(ParseOptions, AudioFormatIsParsedAtTheFlag) {
     Parse parse({"--audio-format", "flac:48000:24:2"});
 
     ASSERT_TRUE(parse.ok()) << parse.diagnostics();
-    ASSERT_TRUE(parse.options().audio_format.has_value());
-    EXPECT_EQ(parse.options().audio_format->codec, sendspin::SendspinCodecFormat::FLAC);
-    EXPECT_EQ(parse.options().audio_format->sample_rate, 48000U);
-    EXPECT_EQ(parse.options().audio_format->bit_depth, 24);
-    EXPECT_EQ(parse.options().audio_format->channels, 2);
+    ASSERT_EQ(parse.options().audio_formats.size(), 1U);
+    const sendspin::AudioSupportedFormatObject& format = parse.options().audio_formats.front();
+    EXPECT_EQ(format.codec, sendspin::SendspinCodecFormat::FLAC);
+    EXPECT_EQ(format.sample_rate, 48000U);
+    EXPECT_EQ(format.bit_depth, 24);
+    EXPECT_EQ(format.channels, 2);
+}
+
+TEST(ParseOptions, AudioFormatTakesAnOrderedList) {
+    Parse parse({"--audio-format", "flac:48000:24:2,pcm:48000:24:2,opus:48000:16:2"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    const std::vector<sendspin::AudioSupportedFormatObject>& formats =
+        parse.options().audio_formats;
+    ASSERT_EQ(formats.size(), 3U);
+    EXPECT_EQ(formats[0].codec, sendspin::SendspinCodecFormat::FLAC);
+    EXPECT_EQ(formats[1].codec, sendspin::SendspinCodecFormat::PCM);
+    EXPECT_EQ(formats[2].codec, sendspin::SendspinCodecFormat::OPUS);
+}
+
+TEST(ParseOptions, ARepeatedAudioFormatReplacesTheListRatherThanExtendingIt) {
+    Parse parse(
+        {"--audio-format", "flac:48000:24:2,pcm:48000:24:2", "--audio-format", "pcm:44100:16:2"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    ASSERT_EQ(parse.options().audio_formats.size(), 1U);
+    EXPECT_EQ(parse.options().audio_formats.front().sample_rate, 44100U);
 }
 
 TEST(ParseOptions, AudioFormatDefaultsToNoPin) {
     Parse parse({});
 
     ASSERT_TRUE(parse.ok()) << parse.diagnostics();
-    EXPECT_FALSE(parse.options().audio_format.has_value());
+    EXPECT_TRUE(parse.options().audio_formats.empty());
 }
 
 TEST(ParseOptions, ABadAudioFormatIsRefusedWithTheShapeToCopy) {
@@ -252,9 +264,26 @@ TEST(ParseOptions, ABadAudioFormatIsRefusedWithTheShapeToCopy) {
         << parse.diagnostics();
 }
 
-// ---------------------------------------------------------------------------
+TEST(ParseOptions, ABadAudioFormatListIsRefusedNamingTheEntry) {
+    const std::pair<const char*, const char*> cases[] = {
+        {"flac:48000:24:2,", "entry 2 is empty"},
+        {",flac:48000:24:2", "entry 1 is empty"},
+        {"flac:48000:24:2,,pcm:48000:16:2", "entry 2 is empty"},
+        {"flac:48000:24:2,flac:48000:24:2", "'flac:48000:24:2' is listed more than once"},
+        {"flac:48000:24:2,pcm:48000:20:2", "'pcm:48000:20:2'"},
+    };
+    for (const auto& [value, named] : cases) {
+        Parse parse({"--audio-format", value});
+
+        EXPECT_FALSE(parse.ok()) << value;
+        EXPECT_NE(parse.diagnostics().find("error: invalid --audio-format"), std::string::npos)
+            << value << ": " << parse.diagnostics();
+        EXPECT_NE(parse.diagnostics().find(named), std::string::npos)
+            << value << ": " << parse.diagnostics();
+    }
+}
+
 // --port
-// ---------------------------------------------------------------------------
 
 TEST(ParseOptions, PortBounds) {
     for (const char* value : {"0", "65536", "abc", "12x", "", "-1", " 80"}) {
@@ -275,9 +304,7 @@ TEST(ParseOptions, PortEdgesAreAccepted) {
     EXPECT_EQ(high.options().port, 65535);
 }
 
-// ---------------------------------------------------------------------------
 // --buffer-ms
-// ---------------------------------------------------------------------------
 
 TEST(ParseOptions, BufferMsIsAccepted) {
     Parse parse({"--buffer-ms", "250"});
@@ -296,8 +323,6 @@ TEST(ParseOptions, BufferMsDefaultsWithoutBeingGiven) {
 }
 
 TEST(ParseOptions, BufferMsBounds) {
-    // Zero, non-numeric, empty, signed and either side of the range all refuse to start --
-    // nothing here warns and carries on with the default.
     for (const char* value : {"0", "9", "2001", "abc", "12x", "", "-1", " 100", "+100", "100.5"}) {
         Parse parse({"--buffer-ms", value});
 
@@ -327,9 +352,7 @@ TEST(ParseOptions, BufferMsNeedsAValue) {
         << parse.diagnostics();
 }
 
-// ---------------------------------------------------------------------------
 // --static-delay
-// ---------------------------------------------------------------------------
 
 TEST(ParseOptions, StaticDelayIsAccepted) {
     Parse parse({"--static-delay", "250"});
@@ -348,8 +371,7 @@ TEST(ParseOptions, StaticDelayDefaultsToNoDelay) {
 }
 
 TEST(ParseOptions, StaticDelayEdgesAreAccepted) {
-    // Zero is legal and meaningful here, unlike --buffer-ms: it is the value that turns the delay
-    // off, so there is no floor to refuse it against.
+    // Zero is legal: it turns the delay off.
     Parse low({"--static-delay", "0"});
     Parse high({"--static-delay", std::to_string(MAX_STATIC_DELAY_MS)});
 
@@ -360,8 +382,7 @@ TEST(ParseOptions, StaticDelayEdgesAreAccepted) {
 }
 
 TEST(ParseOptions, StaticDelayBounds) {
-    // Refused rather than clamped, which is the point: PlayerRole::update_static_delay() would take
-    // 5001 quietly down to 5000, so a value the library would accept has to fail here instead.
+    // Refused, not clamped: the library would silently clamp.
     for (const char* value :
          {"5001", "9000", "65536", "abc", "12x", "", "-1", " 250", "+250", "250.5"}) {
         Parse parse({"--static-delay", value});
@@ -370,7 +391,6 @@ TEST(ParseOptions, StaticDelayBounds) {
         const std::string diagnostics = parse.diagnostics();
         EXPECT_NE(diagnostics.find("error: invalid --static-delay"), std::string::npos) << value;
         EXPECT_NE(diagnostics.find(std::string("'") + value + "'"), std::string::npos) << value;
-        // The bound is in the message, so a refusal teaches the range.
         EXPECT_NE(diagnostics.find("0-" + std::to_string(MAX_STATIC_DELAY_MS)), std::string::npos)
             << value;
     }
@@ -385,8 +405,7 @@ TEST(ParseOptions, StaticDelayNeedsAValue) {
 }
 
 TEST(ParseOptions, StaticDelayIsListedByHelpAsAFirstRunDefault) {
-    // The half-precedence is the part that needs saying: the flag loses to a remembered delay
-    // forever after the first run, and a reader who does not know that will think it is broken.
+    // --help must say a remembered delay beats the flag.
     std::FILE* out = std::tmpfile();
     ASSERT_NE(out, nullptr);
     print_usage(out, "sendspin-cli");
@@ -402,18 +421,15 @@ TEST(ParseOptions, StaticDelayIsListedByHelpAsAFirstRunDefault) {
     EXPECT_NE(text.find("--static-delay"), std::string::npos);
     EXPECT_NE(text.find("FIRST-RUN DEFAULT"), std::string::npos)
         << "the precedence is not in --help";
-    // The bound comes from the constant rather than a literal, so moving MAX_STATIC_DELAY_MS
-    // without updating --help fails here instead of passing against a stale number.
+    // Uses the constant, so a changed bound without a --help update fails.
     EXPECT_NE(text.find("0-" + std::to_string(MAX_STATIC_DELAY_MS)), std::string::npos) << text;
-    // And the direction, which is the opposite of what the flag's name suggests: the value is
-    // latency the hardware adds, which the player compensates for by handing audio over earlier.
+    // The direction: audio is handed over earlier.
     EXPECT_NE(text.find("EARLIER"), std::string::npos)
         << "--help does not say which way the delay goes";
 }
 
 TEST(ParseOptions, BufferMsDoesNotClaimDashA) {
-    // -a is deliberately left unclaimed: an ALSA-only <b>:<p>:<f>:<m> grammar,
-    // and two of its four subfields are already fixed here.
+    // -a is deliberately unclaimed.
     Parse parse({"-a", "100"});
 
     EXPECT_FALSE(parse.ok());
@@ -421,18 +437,13 @@ TEST(ParseOptions, BufferMsDoesNotClaimDashA) {
         << parse.diagnostics();
 }
 
-// ---------------------------------------------------------------------------
 // -d
-// ---------------------------------------------------------------------------
 
 TEST(ParseOptions, LogLevelNames) {
     const std::pair<const char*, LogLevel> cases[] = {
-        {"none", LogLevel::NONE},   {"off", LogLevel::NONE},
-        {"error", LogLevel::ERROR}, {"err", LogLevel::ERROR},
-        {"warn", LogLevel::WARN},   {"warning", LogLevel::WARN},
-        {"info", LogLevel::INFO},   {"debug", LogLevel::DEBUG},
-        {"verbose", LogLevel::VERBOSE},
-        // The conventional name for the loudest level.
+        {"none", LogLevel::NONE},      {"off", LogLevel::NONE},    {"error", LogLevel::ERROR},
+        {"err", LogLevel::ERROR},      {"warn", LogLevel::WARN},   {"warning", LogLevel::WARN},
+        {"info", LogLevel::INFO},      {"debug", LogLevel::DEBUG}, {"verbose", LogLevel::VERBOSE},
         {"sdebug", LogLevel::VERBOSE},
     };
 
@@ -445,9 +456,7 @@ TEST(ParseOptions, LogLevelNames) {
 }
 
 TEST(ParseOptions, LogCategoryIsAcceptedAndWarnedAboutWithSomethingToDoInstead) {
-    // The -d <category>=<level> shape. sendspin-cpp gates every line on one global
-    // int with no sink hook, so the category is parsed, ignored, and said out loud -- and the
-    // warning has to leave the user somewhere to go, which is the per-line tag plus grep.
+    // The category is parsed, ignored and warned about.
     Parse parse({"-d", "slimproto=info"});
 
     ASSERT_TRUE(parse.ok()) << parse.diagnostics();
@@ -462,13 +471,10 @@ TEST(ParseOptions, LogCategoryIsAcceptedAndWarnedAboutWithSomethingToDoInstead) 
     }
 }
 
-// ---------------------------------------------------------------------------
 // -z
-// ---------------------------------------------------------------------------
 
 TEST(ParseOptions, DaemonizeRefusesToWritePcmToStdout) {
-    // A detached daemon's stdout is /dev/null, so the PCM sink would become a second discard
-    // sink without saying so. Both spellings of the sink, since -o accepts both.
+    // A detached daemon's stdout is /dev/null; both spellings of the stdout sink.
     for (const char* device : {"stdout", "-"}) {
         Parse parse({"-z", "-o", device});
 
@@ -486,8 +492,7 @@ TEST(ParseOptions, DaemonizeIsFineWithADeviceThatIsNotStdout) {
 }
 
 TEST(ParseOptions, StdoutWithoutDaemonizeIsStillFine) {
-    // The refusal is about -z, not about the sink: piping PCM out of a foreground run is what
-    // -o stdout is for.
+    // Without -z, -o stdout is fine.
     Parse parse({"-o", "stdout"});
 
     ASSERT_TRUE(parse.ok()) << parse.diagnostics();
@@ -510,8 +515,7 @@ TEST(ParseOptions, DaemonizeWithALogfileSaysNothing) {
 }
 
 TEST(ParseOptions, DaemonizeMakesRelativePidfileAndLogfilePathsAbsolute) {
-    // -z chdir()s to /, so a relative path would name the operator's directory to the
-    // parent's pidfile probe and a file directly under / to the child that writes it.
+    // -z chdir()s to /, so relative paths are made absolute.
     Parse parse({"-z", "-o", "null", "-P", "sendspin.pid", "-f", "sendspin.log"});
 
     ASSERT_TRUE(parse.ok()) << parse.diagnostics();
@@ -530,8 +534,7 @@ TEST(ParseOptions, DaemonizeLeavesAnAbsolutePathAloneAndAForegroundRunUntouched)
         EXPECT_EQ(parse.options().pidfile, "/run/sendspin-cli.pid");
     }
     {
-        // Nothing chdir()s in the foreground, so a relative path there means what it says and
-        // is left exactly as typed.
+        // In the foreground, relative paths stay as typed.
         Parse parse({"-o", "null", "-P", "sendspin.pid", "-f", "sendspin.log"});
         ASSERT_TRUE(parse.ok()) << parse.diagnostics();
         EXPECT_EQ(parse.options().pidfile, "sendspin.pid");
@@ -548,19 +551,15 @@ TEST(ParseOptions, UnknownLogLevelIsRejected) {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Malformed command lines
-// ---------------------------------------------------------------------------
 
 TEST(ParseOptions, AFirstWordThatIsNotASubcommandIsRejectedAsOne) {
-    // argv[1] is the subcommand position now, so a bare word there is diagnosed as a subcommand
-    // typo -- which is what it almost always is -- rather than as an unexpected argument.
+    // A bare first word is diagnosed as a subcommand typo.
     Parse parse({"extra"});
 
     EXPECT_FALSE(parse.ok());
     EXPECT_NE(parse.diagnostics().find("error: unknown subcommand 'extra'"), std::string::npos)
         << parse.diagnostics();
-    // Naming the alternatives is what makes it actionable rather than merely correct.
     EXPECT_NE(parse.diagnostics().find("pause"), std::string::npos) << parse.diagnostics();
 }
 
@@ -574,8 +573,6 @@ TEST(ParseOptions, APositionalArgumentAfterFlagsIsRejected) {
 }
 
 TEST(ParseOptions, ASubcommandAfterFlagsSaysToMoveIt) {
-    // A real subcommand, just not where it can be read as one -- the fix is to move one word,
-    // so the message says that instead of calling it junk.
     Parse parse({"--port", "9000", "status"});
 
     EXPECT_FALSE(parse.ok());
@@ -602,199 +599,95 @@ TEST(ParseOptions, MissingValueIsRejected) {
 }
 
 TEST(ParseOptions, MissingValueNamesTheOptionNotTheCluster) {
-    // `-lo` is -l followed by -o, and it is -o that is short a value. Naming the argv word
-    // would report "-lo", which is not an option anyone typed.
+    // The cluster's option letter is named, not the argv word.
     Parse cluster({"-lo"});
     EXPECT_FALSE(cluster.ok());
     EXPECT_NE(cluster.diagnostics().find("option '-o' needs a value"), std::string::npos)
         << cluster.diagnostics();
 
-    // A long option has no cluster to disambiguate, and its getopt `val` is deliberately
-    // outside the char range, so there the argv word is the only usable name.
+    // A long option is named by its argv word.
     Parse long_form({"--port"});
     EXPECT_FALSE(long_form.ok());
     EXPECT_NE(long_form.diagnostics().find("option '--port' needs a value"), std::string::npos)
         << long_form.diagnostics();
 }
 
-// ---------------------------------------------------------------------------
-// -s, through the parser
-// ---------------------------------------------------------------------------
+// -s takes no address
 
-TEST(ParseOptions, ServerIsResolvedDuringParsing) {
-    Parse parse({"-s", "192.168.12.2"});
-
-    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
-    EXPECT_EQ(parse.options().server, "192.168.12.2");
-    EXPECT_EQ(parse.options().server_url, "ws://192.168.12.2:8927/sendspin");
+/// How many times `needle` occurs in `text`.
+size_t occurrences(const std::string& text, const std::string& needle) {
+    size_t count = 0;
+    for (size_t at = text.find(needle); at != std::string::npos; at = text.find(needle, at + 1)) {
+        ++count;
+    }
+    return count;
 }
 
-TEST(ParseOptions, BadServerFailsTheWholeParse) {
-    Parse parse({"-s", "host:abc"});
+TEST(ParseOptions, AnAddressIsRefusedWithTheRemoval) {
+    const char* addresses[] = {
+        "music.local",
+        "music.local:8927",
+        "ws://host:8927/sendspin",
+        "wss://host/sendspin",
+        "192.168.12.2",
+        "[::1]:8927",
+        "hifi:8927",
+        "",
+    };
+
+    for (const char* address : addresses) {
+        for (const char* flag : {"-s", "--server"}) {
+            Parse parse({flag, address});
+
+            EXPECT_FALSE(parse.ok()) << flag << " '" << address << "' was accepted";
+            const std::string diagnostics = parse.diagnostics();
+            EXPECT_NE(diagnostics.find("error: connecting to an address with -s was removed"),
+                      std::string::npos)
+                << flag << " '" << address << "': " << diagnostics;
+            EXPECT_EQ(occurrences(diagnostics, "error:"), 1U) << diagnostics;
+            EXPECT_EQ(occurrences(diagnostics, "\n"), 1U) << diagnostics;
+#ifdef SENDSPIN_CLI_HAVE_MDNS
+            EXPECT_NE(diagnostics.find("-s mdns:<name>"), std::string::npos) << diagnostics;
+            EXPECT_NE(diagnostics.find("let a server discover this player"), std::string::npos)
+                << diagnostics;
+#else
+            EXPECT_NE(diagnostics.find("point a server at"), std::string::npos) << diagnostics;
+#endif
+        }
+    }
+}
+
+TEST(ParseOptions, ABareMdnsIsRefusedWithAHint) {
+    // The one address most likely to be the discovery form with its colon left off.
+    Parse parse({"-s", "mdns"});
 
     EXPECT_FALSE(parse.ok());
-    EXPECT_NE(parse.diagnostics().find("error:"), std::string::npos);
-    EXPECT_NE(parse.diagnostics().find("host:abc"), std::string::npos);
+    EXPECT_NE(parse.diagnostics().find("connecting to an address with -s was removed"),
+              std::string::npos)
+        << parse.diagnostics();
+    EXPECT_NE(parse.diagnostics().find("Did you mean -s mdns:?"), std::string::npos)
+        << parse.diagnostics();
 }
 
-// ---------------------------------------------------------------------------
-// -s, as a matrix over parse_server_url()
-// ---------------------------------------------------------------------------
-
-TEST(ParseServerUrl, Accepted) {
-    const std::pair<const char*, const char*> cases[] = {
-        // A bare host takes the port a Sendspin *server* listens on -- 8927, not the 8928
-        // this player serves on.
-        {"192.168.12.2", "ws://192.168.12.2:8927/sendspin"},
-        {"192.168.12.2:8927", "ws://192.168.12.2:8927/sendspin"},
-        {"music.local:9000", "ws://music.local:9000/sendspin"},
-        // A full URL is the caller's to get right, path and all.
-        {"ws://host:9000/sendspin", "ws://host:9000/sendspin"},
-        {"wss://host/sendspin", "wss://host/sendspin"},
-        // A bracketed IPv6 literal keeps its brackets in the URL.
-        {"[::1]:8927", "ws://[::1]:8927/sendspin"},
-        {"[::1]", "ws://[::1]:8927/sendspin"},
-        {"[2001:db8::1]:9000", "ws://[2001:db8::1]:9000/sendspin"},
+TEST(ParseOptions, TheRemovalNeverQuotesTheValue) {
+    // Addresses may carry credentials, so they are never quoted.
+    const char* addresses[] = {
+        "ws://u:s3cr3t@host/sendspin",
+        "u:s3cr3t@host:8927",
+        "s3cr3t@host",
+        "s3cr3t.local",
     };
 
-    for (const auto& [input, expected] : cases) {
-        std::string url;
-        std::string error;
+    for (const char* address : addresses) {
+        Parse parse({"-s", address});
 
-        ASSERT_TRUE(parse_server_url(input, url, error)) << input << ": " << error;
-        EXPECT_EQ(url, expected) << input;
+        ASSERT_FALSE(parse.ok()) << "accepted '" << address << "'";
+        EXPECT_EQ(parse.diagnostics().find("s3cr3t"), std::string::npos)
+            << "'" << address << "' was refused with: " << parse.diagnostics();
     }
 }
 
-TEST(ParseServerUrl, Rejected) {
-    const char* cases[] = {
-        "",              // nothing at all
-        "host:abc",      // not a port
-        "host:",         // a truncated line, not a request for the default
-        ":8927",         // no host
-        "host:0",        // ports are 1-65535
-        "host:70000",    // ditto
-        "::1",           // an IPv6 literal must be bracketed to be told from host:port
-        "[::1",          // unterminated bracket
-        "[::1]junk",     // trailing text where a port belongs
-        "[]",            // no host
-        "[]:8927",       // ditto
-        "http://host",   // Sendspin is WebSocket only
-        "https://host",  // ditto
-        "ws://",         // a scheme naming no server
-        "wss://",        // ditto
-    };
-
-    for (const char* input : cases) {
-        std::string url;
-        std::string error;
-
-        EXPECT_FALSE(parse_server_url(input, url, error)) << "accepted '" << input << "'";
-        EXPECT_FALSE(error.empty()) << "no reason given for '" << input << "'";
-    }
-}
-
-// ---------------------------------------------------------------------------
-// redact_url_userinfo(): what a logged server URL is allowed to say
-// ---------------------------------------------------------------------------
-
-TEST(RedactUrlUserinfo, MasksTheSecretAndKeepsTheRest) {
-    const std::pair<const char*, const char*> cases[] = {
-        // A user:password pair keeps its username: the line exists to say which endpoint was
-        // dialled, and a username is not the secret.
-        {"ws://alice:s3cr3t@host:8927/sendspin", "ws://alice:***@host:8927/sendspin"},
-        {"wss://alice:s3cr3t@host/sendspin", "wss://alice:***@host/sendspin"},
-        // One field with no colon could be a bearer token, so the whole of it goes.
-        {"ws://s3cr3t@host:8927/sendspin", "ws://***@host:8927/sendspin"},
-        // A password may contain colons, so the split is on the *first* one -- splitting on the
-        // last would print a prefix of the secret.
-        {"ws://alice:s3c:r3t@host/sendspin", "ws://alice:***@host/sendspin"},
-        // And the authority splits on the *last* '@', a host being unable to contain one.
-        {"ws://alice:s3c@r3t@host/sendspin", "ws://alice:***@host/sendspin"},
-        // A bracketed IPv6 host keeps its brackets and its own colons.
-        {"ws://alice:s3cr3t@[2001:db8::1]:8927/sendspin",
-         "ws://alice:***@[2001:db8::1]:8927/sendspin"},
-        {"ws://s3cr3t@[::1]:8927/sendspin", "ws://***@[::1]:8927/sendspin"},
-        // No username is still a secret to hide.
-        {"ws://:s3cr3t@host/sendspin", "ws://:***@host/sendspin"},
-        // A rejected -s value never had a scheme, so a bare authority is read as one.
-        {"alice:s3cr3t@host", "alice:***@host"},
-        {"s3cr3t@host", "***@host"},
-    };
-
-    for (const auto& [input, expected] : cases) {
-        EXPECT_EQ(redact_url_userinfo(input), expected) << input;
-        EXPECT_EQ(redact_url_userinfo(input).find("s3cr3t"), std::string::npos)
-            << "the secret survived in '" << input << "'";
-    }
-}
-
-TEST(RedactUrlUserinfo, LeavesAloneWhatHoldsNoSecret) {
-    const char* unchanged[] = {
-        // Nothing to hide.
-        "",
-        "ws://host:8927/sendspin",
-        "wss://[2001:db8::1]:8927/sendspin",
-        "host:8927",
-        "mdns:Living room",
-        // A scheme naming nothing, and other fragments a rejected -s value arrives as.
-        "ws://",
-        "::1",
-        "[::1",
-        // An empty userinfo, and an empty password: masking either would invent a secret that is
-        // not there.
-        "ws://@host:8927/sendspin",
-        "ws://alice:@host:8927/sendspin",
-        // The authority ends at the first '/', '?' or '#', so an '@' past it is not a credential
-        // separator -- including one a server chose. A TXT `path` has to start with '/', which is
-        // what puts a hostile one here rather than in the authority.
-        "ws://host:8927/sendspin@1",
-        "ws://host:8927//alice:s3cr3t@evil/x",
-        "ws://host:8927/sendspin?token=a@b",
-        "ws://host:8927/sendspin#a@b",
-        // A known boundary, pinned rather than left to be discovered: an unencoded '/', '?' or
-        // '#' *inside* userinfo ends the authority early, so there is no '@' left in it to split
-        // on and the value comes back whole. RFC 3986 requires those percent-encoded there, and
-        // such a URL does not name the endpoint it looks like it names anyway -- the host reads
-        // as everything up to the '/'. README.md and the wiki say to percent-encode; the
-        // alternative, refusing the shape, would refuse a value -s accepts today.
-        "ws://alice:aGVsbG8/d29ybGQ=@host:8927/sendspin",
-    };
-
-    for (const char* input : unchanged) {
-        EXPECT_EQ(redact_url_userinfo(input), input);
-    }
-}
-
-// Every rejection parse_server_url() writes quotes the -s value back at the operator, and a value
-// that does not parse is exactly the one most likely to have been mistyped around a password.
-// Asserted over the reason rather than per message, so a rejection added later is covered without
-// being listed here.
-TEST(RedactUrlUserinfo, NoRejectionReasonQuotesACredential) {
-    const char* cases[] = {
-        "alice:s3cr3t@host",                     // userinfo lands in the port field
-        "alice:s3cr3t@2001:db8::1",              // ...and in the bracket-it-yourself advice
-        "http://alice:s3cr3t@host/sendspin",     // the wrong scheme
-        "ws://",                                 // a scheme and nothing else
-        "[::1]alice:s3cr3t@host",                // a fragment after the closing bracket
-        "[::1]:s3cr3t@host",                     // ...and one that reads as a port
-        ":s3cr3t@host",                          // no host before the port
-    };
-
-    for (const char* input : cases) {
-        std::string url;
-        std::string error;
-
-        ASSERT_FALSE(parse_server_url(input, url, error)) << "accepted '" << input << "'";
-        ASSERT_FALSE(error.empty()) << "no reason given for '" << input << "'";
-        EXPECT_EQ(error.find("s3cr3t"), std::string::npos)
-            << "'" << input << "' was refused with: " << error;
-    }
-}
-
-// ---------------------------------------------------------------------------
 // -s mdns:, the discovery form
-// ---------------------------------------------------------------------------
 
 TEST(ParseDiscoverySpec, RecognisesBothDiscoveryForms) {
     std::string name = "stale";
@@ -806,16 +699,14 @@ TEST(ParseDiscoverySpec, RecognisesBothDiscoveryForms) {
 }
 
 TEST(ParseDiscoverySpec, SplitsOnTheFirstColonOnly) {
-    // Everything after the prefix is the name, colons and all -- a server may well be
-    // called something with one in it.
+    // Everything after the prefix is the name, colons included.
     std::string name;
     ASSERT_TRUE(parse_discovery_spec("mdns:a:b", name));
     EXPECT_EQ(name, "a:b");
 }
 
 TEST(ParseDiscoverySpec, LeavesEveryOtherFormAlone) {
-    // The reservation is the exact `mdns:` prefix. A host whose name merely starts with
-    // those letters, or a bare `mdns`, is still an address.
+    // Only the exact `mdns:` prefix is the discovery form.
     const char* addresses[] = {
         "hifi:8927", "mdns", "mdnsx:8927", "192.168.1.10", "ws://mdns:8927/sendspin", "",
     };
@@ -833,10 +724,7 @@ TEST(ParseOptions, DiscoveryReachesTheOptions) {
     ASSERT_TRUE(parse.ok()) << parse.diagnostics();
     EXPECT_TRUE(parse.options().discover);
     EXPECT_EQ(parse.options().discover_name, "Living room");
-    // There is no URL until a server has actually been found.
-    EXPECT_TRUE(parse.options().server_url.empty());
 #else
-    // A build with no mDNS refuses at parse time rather than discovering nothing forever.
     EXPECT_FALSE(parse.ok());
     EXPECT_NE(parse.diagnostics().find("error:"), std::string::npos);
     EXPECT_NE(parse.diagnostics().find("mDNS"), std::string::npos) << parse.diagnostics();
@@ -855,27 +743,7 @@ TEST(ParseOptions, DiscoveryWithNoNameFilter) {
 #endif
 }
 
-TEST(ParseOptions, AHostWithAColonIsStillAHost) {
-    // The regression the reserved prefix has to not cause: `hifi:8927` was a host and a
-    // port before this flag existed, and still is.
-    Parse parse({"-s", "hifi:8927"});
-
-    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
-    EXPECT_FALSE(parse.options().discover);
-    EXPECT_EQ(parse.options().server_url, "ws://hifi:8927/sendspin");
-}
-
-TEST(ParseOptions, ABareMdnsIsStillAHost) {
-    Parse parse({"-s", "mdns"});
-
-    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
-    EXPECT_FALSE(parse.options().discover);
-    EXPECT_EQ(parse.options().server_url, "ws://mdns:8927/sendspin");
-}
-
-// ---------------------------------------------------------------------------
 // The two connection modes are exclusive
-// ---------------------------------------------------------------------------
 
 TEST(ParseOptions, AdvertisesByDefault) {
     Parse parse({});
@@ -885,24 +753,13 @@ TEST(ParseOptions, AdvertisesByDefault) {
 }
 
 TEST(ParseOptions, AnyServerSuppressesTheAdvertisement) {
-    // The spec's rule, so it holds for every -s form there is -- there is deliberately no
-    // flag that turns the advertisement back on alongside one.
-    const char* servers[] = {"192.168.1.10", "host:9000", "ws://host:9000/sendspin", "[::1]"};
-
-    for (const char* server : servers) {
+    for (const char* server : {"mdns:", "mdns:Living room"}) {
         Parse parse({"-s", server});
+#ifdef SENDSPIN_CLI_HAVE_MDNS
         ASSERT_TRUE(parse.ok()) << server << ": " << parse.diagnostics();
+#endif
         EXPECT_FALSE(parse.options().advertises()) << server;
     }
-}
-
-TEST(ParseOptions, DiscoverySuppressesTheAdvertisementToo) {
-    Parse parse({"-s", "mdns:"});
-
-#ifdef SENDSPIN_CLI_HAVE_MDNS
-    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
-#endif
-    EXPECT_FALSE(parse.options().advertises());
 }
 
 TEST(ParseOptions, NoMdnsSuppressesTheAdvertisementWithoutAServer) {
@@ -913,9 +770,7 @@ TEST(ParseOptions, NoMdnsSuppressesTheAdvertisementWithoutAServer) {
     EXPECT_FALSE(parse.options().advertises());
 }
 
-// ---------------------------------------------------------------------------
 // --mdns-name
-// ---------------------------------------------------------------------------
 
 TEST(ParseOptions, MdnsNameDefaultsToTheFriendlyName) {
     Parse parse({"-n", "kitchen"});
@@ -949,16 +804,17 @@ TEST(ParseOptions, MdnsNameNeedsAValue) {
         << parse.diagnostics();
 }
 
+#ifdef SENDSPIN_CLI_HAVE_MDNS
 TEST(ParseOptions, MdnsNameWithAServerWarnsButStillStarts) {
-    // Inert rather than contradictory: the name names an advertisement that -s has already
-    // ruled out, so refusing to start would be a worse trade than saying so.
-    Parse parse({"-s", "192.168.1.10", "--mdns-name", "Kitchen"});
+    // Inert with -s, so warned rather than refused.
+    Parse parse({"-s", "mdns:", "--mdns-name", "Kitchen"});
 
     ASSERT_TRUE(parse.ok()) << parse.diagnostics();
     EXPECT_NE(parse.diagnostics().find("warning:"), std::string::npos) << parse.diagnostics();
     EXPECT_NE(parse.diagnostics().find("--mdns-name is unused with -s"), std::string::npos)
         << parse.diagnostics();
 }
+#endif
 
 TEST(ParseOptions, MdnsNameAloneDoesNotWarn) {
     Parse parse({"--mdns-name", "Kitchen"});
@@ -967,9 +823,7 @@ TEST(ParseOptions, MdnsNameAloneDoesNotWarn) {
     EXPECT_EQ(parse.diagnostics().find("warning:"), std::string::npos) << parse.diagnostics();
 }
 
-// ---------------------------------------------------------------------------
 // The control socket, and subcommands, through the parser
-// ---------------------------------------------------------------------------
 
 TEST(ParseOptions, TheControlSocketDefaultsUnderTheRuntimeDirectory) {
     ScopedEnv runtime_dir("XDG_RUNTIME_DIR", "/run/user/1000");
@@ -981,8 +835,6 @@ TEST(ParseOptions, TheControlSocketDefaultsUnderTheRuntimeDirectory) {
 }
 
 TEST(ParseOptions, TheControlSocketDefaultFollowsThePort) {
-    // The whole reason the port is in the leaf: two players on one host, and a subcommand able
-    // to derive the same path from the same --port.
     ScopedEnv runtime_dir("XDG_RUNTIME_DIR", "/run/user/1000");
     Parse parse({"--port", "9000"});
 
@@ -991,8 +843,7 @@ TEST(ParseOptions, TheControlSocketDefaultFollowsThePort) {
 }
 
 TEST(ParseOptions, ThePortIsReadBeforeTheDefaultPathIsBuiltWhicheverOrderItComesIn) {
-    // The derivation happens after the whole line has parsed, so --port cannot arrive too late
-    // to move the socket.
+    // --port after the default path still moves the socket.
     ScopedEnv runtime_dir("XDG_RUNTIME_DIR", "/run/user/1000");
     Parse before({"--port", "9000", "-o", "null"});
     Parse after({"-o", "null", "--port", "9000"});
@@ -1004,10 +855,7 @@ TEST(ParseOptions, ThePortIsReadBeforeTheDefaultPathIsBuiltWhicheverOrderItComes
 }
 
 TEST(ParseOptions, NoRuntimeDirectoryFallsBackToThePlatformDirectory) {
-    // Two correct outcomes, and which one applies is a property of the platform -- so it is read
-    // off the same function the parser uses rather than decided by an #ifdef here. On macOS,
-    // where launchd sets no $XDG_RUNTIME_DIR at all, the fallback is what makes the default path
-    // resolve; elsewhere an unset variable is a real absence.
+    // Platform-dependent, so read off the function the parser uses rather than an #ifdef.
     ScopedEnv runtime_dir("XDG_RUNTIME_DIR", nullptr);
     Parse parse({});
     ASSERT_TRUE(parse.ok()) << parse.diagnostics();
@@ -1015,13 +863,10 @@ TEST(ParseOptions, NoRuntimeDirectoryFallsBackToThePlatformDirectory) {
     std::string rejection;
     const std::string platform = control_platform_runtime_dir(rejection);
 #ifdef __APPLE__
-    // The acceptance criterion itself, asserted rather than derived from the branch taken: on
-    // macOS the default path must resolve. Without this, a confstr() that regressed to empty
-    // would quietly take the other branch and still pass.
+    // On macOS the default path must resolve.
     ASSERT_FALSE(platform.empty()) << "rejected because: " << rejection;
 #endif
     if (platform.empty()) {
-        // Non-fatal on purpose: a player with no control channel is still a player.
         EXPECT_TRUE(parse.options().control_socket.empty());
         EXPECT_FALSE(parse.options().control_absent_reason.empty());
         EXPECT_NE(parse.options().control_absent_reason.find("--control-socket"),
@@ -1031,18 +876,14 @@ TEST(ParseOptions, NoRuntimeDirectoryFallsBackToThePlatformDirectory) {
         EXPECT_TRUE(parse.options().control_absent_reason.empty());
     }
 
-    // Either way, and this is the part that must hold on every platform: never /tmp. A
-    // world-writable directory would let any local account drive the player.
+    // Never /tmp.
     EXPECT_NE(parse.options().control_socket.compare(0, 5, "/tmp/"), 0)
         << parse.options().control_socket;
     EXPECT_EQ(parse.options().control_absent_reason.find("/tmp"), std::string::npos);
 }
 
 TEST(ParseOptions, AnEmptyRuntimeDirectoryCountsAsUnset) {
-    // The XDG rule, and what last_server_path() already does with $XDG_STATE_HOME: the
-    // alternative resolves to a path starting at the filesystem root. Asserted as equivalence to
-    // the unset case rather than against a fixed outcome, so it holds on a platform with a
-    // fallback and on one without.
+    // An empty variable must behave exactly like an unset one.
     std::string unset_path;
     {
         ScopedEnv runtime_dir("XDG_RUNTIME_DIR", nullptr);
@@ -1058,13 +899,7 @@ TEST(ParseOptions, AnEmptyRuntimeDirectoryCountsAsUnset) {
 }
 
 TEST(ParseOptions, ANonPrivateRuntimeDirectoryIsUsedButWarnedAbout) {
-    // $XDG_RUNTIME_DIR is honoured even when it is not private, because it is the user's own
-    // declaration and refusing it would break setups this code cannot anticipate -- but the
-    // socket's 0600 is not the whole story if anyone can write the directory holding it, so it is
-    // said out loud. /tmp is the case that needs no setup to arrange.
-    //
-    // Not a contradiction of the never-/tmp rule: that rule is about what this code reaches for
-    // on its own, not about a path the user pointed it at.
+    // A non-private $XDG_RUNTIME_DIR is honoured but warned about.
     ScopedEnv runtime_dir("XDG_RUNTIME_DIR", "/tmp");
     Parse parse({});
 
@@ -1076,9 +911,7 @@ TEST(ParseOptions, ANonPrivateRuntimeDirectoryIsUsedButWarnedAbout) {
 }
 
 TEST(ParseOptions, ASubcommandDoesNotWarnAboutTheDirectoryItOnlyConnectsTo) {
-    // The daemon creates the socket, so it is the one that owes a warning about where it goes. A
-    // subcommand merely connects, and repeating it on every `status` would be noise about a
-    // decision made by another process.
+    // Only the daemon warns; a subcommand merely connects.
     ScopedEnv runtime_dir("XDG_RUNTIME_DIR", "/tmp");
     Parse parse({"status"});
 
@@ -1088,8 +921,7 @@ TEST(ParseOptions, ASubcommandDoesNotWarnAboutTheDirectoryItOnlyConnectsTo) {
 }
 
 TEST(ParseOptions, AnExplicitRuntimeDirectoryWinsOverThePlatformFallback) {
-    // The order matters and is not incidental: $XDG_RUNTIME_DIR is the user saying where their
-    // runtime files go, so a platform default must never override it.
+    // $XDG_RUNTIME_DIR must beat any platform default.
     ScopedEnv runtime_dir("XDG_RUNTIME_DIR", "/run/user/1000");
     Parse parse({});
 
@@ -1116,8 +948,6 @@ TEST(ParseOptions, ControlSocketNeedsANonEmptyValue) {
 }
 
 TEST(ParseOptions, AnOverLongControlSocketIsRefusedRatherThanTruncated) {
-    // A truncated path binds a socket nothing can find, and every subcommand would then report
-    // "no daemon" against a daemon that is running.
     const std::string too_long = "/" + std::string(control_socket_path_limit(), 'x');
     Parse parse({"--control-socket", too_long});
 
@@ -1138,8 +968,7 @@ TEST(ParseOptions, AControlSocketAtTheLimitIsAccepted) {
 }
 
 TEST(ParseOptions, NoControlLeavesNoSocketAndNoReason) {
-    // --no-control needs no explaining, unlike a missing $XDG_RUNTIME_DIR: the flag is the
-    // reason, and main() logs it at info rather than warning about it.
+    // --no-control leaves no absent-reason to explain.
     ScopedEnv runtime_dir("XDG_RUNTIME_DIR", "/run/user/1000");
     Parse parse({"--no-control"});
 
@@ -1150,8 +979,6 @@ TEST(ParseOptions, NoControlLeavesNoSocketAndNoReason) {
 }
 
 TEST(ParseOptions, NoControlWithAControlSocketIsRefused) {
-    // Contradictory rather than inert, like -z with -o stdout: one names where the socket goes
-    // and the other says there is not one.
     Parse parse({"--no-control", "--control-socket", "/tmp/mine.sock"});
 
     EXPECT_FALSE(parse.ok());
@@ -1159,8 +986,7 @@ TEST(ParseOptions, NoControlWithAControlSocketIsRefused) {
 }
 
 TEST(ParseOptions, ARelativeControlSocketIsMadeAbsoluteUnderZ) {
-    // The same split -P and -f have: the daemon chdir()s to /, so a relative path would name
-    // one file before the fork and a different one after it.
+    // Relative socket paths are made absolute under -z, like -P and -f.
     Parse parse({"-z", "-f", "/tmp/log", "--control-socket", "mine.sock"});
 
     ASSERT_TRUE(parse.ok()) << parse.diagnostics();
@@ -1189,9 +1015,7 @@ TEST(ParseOptions, ASubcommandIsReportedThroughOptions) {
 }
 
 TEST(ParseOptions, FlagsAfterASubcommandAreStillParsed) {
-    // The portability trap the pre-getopt split exists to close: glibc permutes a positional
-    // argument out of the way and the BSDs stop at it, so relying on getopt's leftovers would
-    // read --port on Linux and drop it on macOS.
+    // Flags after the subcommand must parse on glibc and the BSDs alike.
     ScopedEnv runtime_dir("XDG_RUNTIME_DIR", "/run/user/1000");
     Parse parse({"vol", "50", "--port", "9000"});
 
@@ -1212,8 +1036,7 @@ TEST(ParseOptions, ANegativeSubcommandArgumentIsNotReadAsFlags) {
 }
 
 TEST(ParseOptions, ASubcommandArgumentIsValidatedAtParseTime) {
-    // So a bad `vol 500` reads exactly like a bad --buffer-ms: one error: line at the terminal,
-    // before a socket has been opened, rather than a failure out on the wire.
+    // A bad argument fails at parse time, before any socket.
     Parse parse({"vol", "500"});
 
     EXPECT_FALSE(parse.ok());
@@ -1228,8 +1051,7 @@ TEST(ParseOptions, HelpWinsOverABadSubcommandArgument) {
 }
 
 TEST(ParseOptions, DaemonFlagsAlongsideASubcommandWarnRatherThanFail) {
-    // The natural mistake is pasting a daemon's whole flag line and appending a subcommand,
-    // which should still work -- just without pretending the flags did anything.
+    // Daemon flags with a subcommand warn, not fail.
     ScopedEnv runtime_dir("XDG_RUNTIME_DIR", "/run/user/1000");
     Parse parse({"pause", "-o", "null"});
 
@@ -1239,8 +1061,7 @@ TEST(ParseOptions, DaemonFlagsAlongsideASubcommandWarnRatherThanFail) {
 }
 
 TEST(ParseOptions, ASubcommandDoesNotDrawTheDaemonWarnings) {
-    // -z without -f warns about a daemon's discarded log. A subcommand starts no daemon, so
-    // that warning would be describing something that is not going to happen.
+    // The -z-without-f warning describes a daemon that is not starting.
     ScopedEnv runtime_dir("XDG_RUNTIME_DIR", "/run/user/1000");
     Parse parse({"pause", "-z"});
 
@@ -1257,17 +1078,14 @@ TEST(ParseOptions, ADaemonRunHasNoSubcommand) {
     EXPECT_TRUE(parse.options().subcommand_args.empty());
 }
 
-// ---------------------------------------------------------------------------
-// Config-file precedence hooks (roadmap item 8)
-// ---------------------------------------------------------------------------
+// Config-file precedence hooks
 
 TEST(ParseOptions, TracksWhichOptionsWereExplicitlyGiven) {
     Parse parse({"-o", "null"});
 
     ASSERT_TRUE(parse.ok()) << parse.diagnostics();
     EXPECT_TRUE(parse.options().was_given(Opt::Device));
-    // -n and --port hold values, but the parser put them there, not the user. A config
-    // file has to be able to tell those apart to layer under the command line.
+    // Parser defaults are not "given".
     EXPECT_FALSE(parse.options().was_given(Opt::Name));
     EXPECT_FALSE(parse.options().was_given(Opt::Port));
     EXPECT_FALSE(parse.options().was_given(Opt::Server));
@@ -1275,34 +1093,39 @@ TEST(ParseOptions, TracksWhichOptionsWereExplicitlyGiven) {
 }
 
 TEST(ParseOptions, ExplicitlyGivenTracksEveryOption) {
-    Parse parse({"-o", "null", "-l", "-n", "kitchen", "-s", "host", "-z", "-P", "/run/x.pid", "-d",
-                 "debug", "-f", "/var/log/x.log", "--port", "9000", "--buffer-ms", "200"});
+    std::vector<std::string> args = {"-o",      "null",  "-l",          "-n",
+                                     "kitchen", "-z",    "-P",          "/run/x.pid",
+                                     "-d",      "debug", "-f",          "/var/log/x.log",
+                                     "--port",  "9000",  "--buffer-ms", "200"};
+    std::vector<Opt> given = {Opt::Device,    Opt::ListDevices, Opt::Name,
+                              Opt::Daemonize, Opt::Pidfile,     Opt::Logfile,
+                              Opt::LogLevel,  Opt::Port,        Opt::BufferMs};
+#ifdef SENDSPIN_CLI_HAVE_MDNS
+    // -s only parses in a build that can discover a server.
+    args.insert(args.end(), {"-s", "mdns:"});
+    given.push_back(Opt::Server);
+#endif
+    Parse parse(args);
 
     ASSERT_TRUE(parse.ok()) << parse.diagnostics();
-    for (const Opt opt : {Opt::Device, Opt::ListDevices, Opt::Name, Opt::Server, Opt::Daemonize,
-                          Opt::Pidfile, Opt::Logfile, Opt::LogLevel, Opt::Port, Opt::BufferMs}) {
+    for (const Opt opt : given) {
         EXPECT_TRUE(parse.options().was_given(opt))
             << "option " << static_cast<unsigned>(opt) << " not recorded as given";
     }
 }
 
 TEST(ParseOptions, AValueEqualToTheDefaultStillCountsAsGiven) {
-    // The point of the hook: -o with the default's own value is still the user's choice,
-    // and must outrank a config file that says otherwise.
+    // -o with the default's value still counts as given.
     Parse parse({"-o", DEFAULT_OUTPUT_DEVICE});
 
     ASSERT_TRUE(parse.ok()) << parse.diagnostics();
     EXPECT_TRUE(parse.options().was_given(Opt::Device));
 }
 
-// ---------------------------------------------------------------------------
 // getopt's global state
-// ---------------------------------------------------------------------------
 
 TEST(ParseOptions, ParsingTwiceInOneProcessGivesTheSameAnswers) {
-    // getopt's scan position is process-global. Without the reset in parse_options() the
-    // second call would resume wherever the first stopped -- and every other test in this
-    // binary is already a second call.
+    // getopt's scan position is process-global, so parse_options() must reset it.
     {
         Parse first({"-o", "stdout", "--port", "9000"});
         ASSERT_TRUE(first.ok()) << first.diagnostics();
@@ -1321,8 +1144,7 @@ TEST(ParseOptions, ParsingTwiceInOneProcessGivesTheSameAnswers) {
 }
 
 TEST(ParseOptions, AFailedParseDoesNotStrandTheNextOne) {
-    // A parse that bails mid-line leaves getopt stopped partway through argv. The next
-    // caller must still see its own arguments from the start.
+    // A parse that bailed mid-line must not affect the next.
     {
         Parse failed({"-o", "null", "-Q", "-n", "ignored"});
         ASSERT_FALSE(failed.ok());

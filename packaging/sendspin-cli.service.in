@@ -1,111 +1,39 @@
-# sendspin-cli as a system service.
-#
-# `cmake --install` puts this in <prefix>/lib/systemd/system, which systemd already searches
-# for both /usr and the default /usr/local prefix, so there is nothing to copy by hand. The one
-# thing a tarball cannot do for itself is create the account User= names, since it has no
-# postinst to run sysusers with:
+# sendspin-cli as a system service. After installing:
 #
 #   systemd-sysusers
 #   systemctl daemon-reload
 #   systemctl enable --now sendspin-cli
 #
-# ExecStart names the prefix the build was configured for, so a unit installed from one prefix
-# cannot start a binary from another.
-#
-# Anything this player needs beyond its defaults belongs in /etc/sendspin-cli.conf rather than
-# in a drop-in over ExecStart: every config key is a long flag name, so there is nothing a
-# command line can say that the file cannot. See sendspin-cli.conf.example, installed beside
-# the README. The two flags below are the exception -- they describe the directories this unit
-# creates rather than anything an operator chose -- and because the command line beats the
-# file, `state-dir` or `control-socket` in a config are silently ignored by *this* process.
-# Setting `control-socket` in the config to the same path is still worth doing: that is what a
-# subcommand reads to find this socket, which is why the example file suggests it.
-#
-# `sendspin-cli status` and the other subcommands need `sudo` here: the control socket is mode
-# 0600 and belongs to the service account, so an unprivileged shell cannot connect to it. Root
-# still can, because root is not subject to the mode -- which is why the recipe is `sudo` rather
-# than joining a group.
-#
-# Needs systemd 236 or newer: StateDirectory= is 235, and the %S that names it is 236 -- the two
-# are a release apart, and it is the specifier that sets the floor (RuntimeDirectory= and %t are
-# both far older). 235 is where the recursive chown the upgrade note below relies on was first
-# documented, so that is covered either way. Debian 10 shipped 241, so every distribution this
-# player plausibly runs on is well past it.
-#
-# The hardening block wants 247 for all of it -- ProtectProc= is the newest directive here, and
-# RestrictSUIDSGID=, ProtectHostname=, ProtectKernelLogs= and ProtectClock= arrive between 242
-# and 245. Nothing breaks below that: an unknown key is a "Unknown key name ... ignoring"
-# warning and the unit runs with one directive fewer, checked against 245. So the floor for
-# *starting* is 236 and the floor for the whole block is 247, which is Debian 11.
+# Configure it in /etc/sendspin-cli.conf. Subcommands need sudo: the socket is 0600 and owned
+# by the service account. Needs systemd 236; the hardening block wants 247.
 
 [Unit]
 Description=Sendspin audio player
 Documentation=https://github.com/Sendspin/sendspin-cpp-cli
-# network.target rather than network-online.target: the player retries its mDNS advertisement
-# and an -s dial on a backoff, so it comes up perfectly well ahead of the network -- and
-# network-online.target delays every boot to buy nothing here. sound.target is ordering only
-# and says nothing about a device being ready; Restart= below is what covers that.
+# The player retries mDNS and dials on a backoff, so network-online.target buys nothing.
 After=network.target sound.target
-# Ordering only, and deliberately no Wants=: a failed advertisement is warned about and
-# retried rather than fatal, so a host whose operator turned avahi-daemon off should stay that
-# way instead of having this unit pull it back in.
+# Ordering only: an unavailable avahi-daemon is retried, not fatal.
 After=avahi-daemon.service
 
 [Service]
-# Foreground, which is what README documents as the primary shape: journald captures stderr,
-# so -z buys nothing and -f would put the log somewhere logrotate has to be told about.
-# Type=notify is not an option -- sd_notify is not wired up -- and Type=forking with PIDFile=
-# pointing at -P is the alternative for a supervisor that has no journal.
+# Foreground; journald captures stderr.
 Type=simple
 
-# The account declared in lib/sysusers.d/sendspin-cli.conf, installed beside this file. It is
-# not created for you -- run `systemd-sysusers` once, as above -- and until it exists this unit
-# does not start at all: `systemctl status` reports 217/USER, which names the cause rather than
-# hiding it. No SupplementaryGroups=audio here even though the player needs it for /dev/snd
-# (root:audio 0660): the fragment's `m` line carries the membership, and the account and what it
-# may reach belong in one file rather than half in each. DynamicUser= is not the shortcut it
-# looks like -- it hands the player a uid in no supplementary group at all, which deafens the
-# ALSA backend that is the point of this unit on Linux.
-#
-# An existing /var/lib/sendspin-cli left root-owned by an earlier root-run version needs nothing
-# done to it: StateDirectory= chowns a directory it finds as well as one it creates, recursively,
-# which is documented from systemd 235 and was checked here against 255.
+# Created by lib/sysusers.d/sendspin-cli.conf, which also adds the audio group membership.
+# Not DynamicUser=: it gets no audio group.
 User=sendspin-cli
 
-# Hardening. Every directive below was run rather than copied: with it in place the unit starts,
-# the control socket answers `status`, the WebSocket port greets a connection with a client/hello
-# whose client_id is the MAC-derived default, the mDNS advertisement reaches avahi-daemon, `delay`
-# lands in a 0600 state file that survives a restart, the unit comes back after SIGKILL, and
-# `systemctl stop` leaves Result=success. What could not be tried is named at the end of this
-# block instead of guessed at.
-#
-# No privilege to gain, none to keep, and none to hand on: an unprivileged service starts with
-# an empty capability set anyway, and these make that the kernel's rule rather than a
-# consequence of who it happens to be running as.
+# Hardening, each directive verified against a running player.
 NoNewPrivileges=yes
 CapabilityBoundingSet=
 RestrictSUIDSGID=yes
 
-# The whole hierarchy read-only, with the two directories below as the exception systemd makes
-# itself -- RuntimeDirectory= and StateDirectory= stay writable under ProtectSystem=strict, which
-# is what leaves the socket and the state file somewhere to be. /etc/sendspin-cli.conf is only
-# ever read, so nothing here wants /etc writable.
-#
-# The one thing this takes away: `logfile` or `pidfile` in the config, pointing anywhere but
-# those two directories, now fails -- "cannot open logfile ...: Read-only file system" on every
-# attempt rather than a player that quietly logs nowhere. Neither is the shape for this unit
-# anyway, since journald already has stderr, and a drop-in with ReadWritePaths= is the way back
-# for an operator who wants one regardless.
+# Read-only except RuntimeDirectory= and StateDirectory=, so logfile/pidfile elsewhere fail.
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
 
-# Kernel surface this player has no use for. ProtectProc= hides other users' processes and not
-# /proc/asound, which is the distinction that matters: ProcSubset=pid would hide that too and is
-# in the unproven list below for it. MemoryDenyWriteExecute= is the one here that touches the
-# audio path at all, and only through dlopen: alsa-lib loads its PCM plugins as shared objects,
-# which map executable-not-writable like any library and so are untouched by it -- the mDNS
-# compatibility layer this run does dlopen is the same mechanism, proven rather than argued.
+# ProtectProc= hides other users' processes but not /proc/asound.
 ProtectProc=invisible
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
@@ -117,49 +45,21 @@ RestrictNamespaces=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
 
-# AF_UNIX for the control socket and for the avahi socket the mDNS compatibility layer dials,
-# AF_INET and AF_INET6 for the WebSocket server and for an -s dial. AF_NETLINK because glibc's
-# getifaddrs() reads the interface list over it and has no other way to: without it the call
-# fails outright, and that list is where the library finds the MAC it derives the default client
-# id from. A player with no `id` then says hello with an empty one, which a server has nothing to
-# file it under. rtnetlink, the protocol getifaddrs() speaks, refuses every change to an interface
-# or a route without CAP_NET_ADMIN, which the empty bounding set above rules out. The family admits
-# the other netlink protocols as well -- socket diagnostics and device events among them -- and
-# no directive narrows it to NETLINK_ROUTE.
+# AF_NETLINK for getifaddrs(), which the default MAC-derived client id needs.
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 
-# @system-service covers every syscall libasound imports, ioctl, mmap, mlock and the SysV IPC
-# calls dmix uses included -- checked against the shipped library's own import table, so the
-# audio path is not what this is gambling on. Native ABI only: every archive installs a player
-# built for the machine it runs on, 32-bit and 64-bit alike, so there is no second ABI to want.
+# @system-service covers libasound's syscalls.
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 
-# What is NOT here, and why: PrivateDevices=, DeviceAllow= and ProcSubset=pid each gate what the
-# ALSA backend reaches -- /dev/snd and /proc/asound -- and every one of them passes the checks
-# above with `-o null`, which is exactly why passing proves nothing. They want a real card.
-# RestrictRealtime= is the same shape from the other side: an unprivileged player cannot take
-# SCHED_FIFO anyway, so the directive would be free here and untested where it counts.
-# docs/ROADMAP.md item 10 carries all four as future work.
+# Not set: PrivateDevices=, DeviceAllow=, ProcSubset=pid, RestrictRealtime= (untested with a real card).
 
-# %t and %S are the two directories the lines below create -- /run and /var/lib for a system
-# unit -- and each flag is here because a system unit has neither of the environment variables
-# the default path would come from: no $XDG_RUNTIME_DIR for the socket, no $XDG_STATE_HOME for
-# what the player remembers. Unpaired, the socket is skipped with a warning and the volume,
-# mute and static delay are forgotten on every restart.
+# A system unit has no $XDG_RUNTIME_DIR or $XDG_STATE_HOME, so both paths are passed.
 ExecStart=@SENDSPIN_CLI_INSTALLED_BINARY@ --control-socket %t/sendspin-cli/control.sock --state-dir %S/sendspin-cli
 RuntimeDirectory=sendspin-cli
 StateDirectory=sendspin-cli
 
-# on-failure rather than always: a clean exit here means SIGTERM, which is `systemctl stop` or
-# a shutdown, and neither wants the player back. A device that is not ready yet exits non-zero,
-# which is exactly what the delay is for.
-#
-# A config file that does not parse exits non-zero too, and this retries it every 5s
-# indefinitely -- systemd's default start limit is 5 starts in 10s, which one every 5s never
-# trips. That is the wanted end of it rather than an oversight: the parse error names the file
-# and its line in the journal on every attempt, and an operator who fixes the file gets a player
-# back without also having to `systemctl reset-failed` a unit that gave up.
+# Clean exit is a stop; failures (device not ready, bad config) retry every 5s indefinitely.
 Restart=on-failure
 RestartSec=5
 

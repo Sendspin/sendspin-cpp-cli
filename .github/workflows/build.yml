@@ -1,30 +1,11 @@
 name: Build
 
-# How this project builds everywhere it builds at native speed, called by `ci.yml` on a push or a
-# pull request and by `release.yml` on a tag. It is a reusable workflow rather than a composite
-# action because what must not be duplicated is the *matrix* below, not the steps: a composite
-# action cannot own `strategy.matrix`, so a second caller would have to restate the very block
-# whose per-leg `publish`/`avahi` keys the comment there warns about getting wrong.
-#
-# No inputs, deliberately. Both callers get exactly these five legs -- the no-mDNS one included,
-# since a break in src/mdns_null.cpp is a real break -- and an input is the seam along which the
-# two would start to differ.
-#
-# What a tag gets and a push does not is the sixth archive, and it is a whole workflow away:
-# `.github/workflows/build-armv6.yml` builds linux-armv6 inside an emulated Raspbian container,
-# which costs 23 minutes against the two or three every leg here takes, so it carries triggers of
-# its own instead of running on every push. `release.yml` calls it alongside this file and blocks
-# the release on both. The trade that buys -- a tag builds one thing a push does not -- is written
-# out in that file's header, and its trigger set is the mitigation: `main` within half an hour of
-# every merge, plus a path filter and a dispatch.
+# The native-speed build matrix, shared by ci.yml and release.yml; no inputs, so both get the same legs.
+# linux-armv6 is in build-armv6.yml.
 on:
   workflow_call:
 
-# Restated here rather than inherited: a called workflow gets none of the caller's
-# workflow-level `permissions`, `defaults` or `env`. The one that matters is the shell. The
-# default is `bash -e` with no pipefail, which would let the `| tee` in the configure step
-# below swallow a configure failure -- leaving the assertion after it grepping a truncated log
-# and both callers green on a build that never configured.
+# Restated: called workflows inherit no defaults, and bash -e without pipefail would let | tee hide a failed configure.
 permissions:
   contents: read
 
@@ -40,36 +21,13 @@ jobs:
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
-    # Not sized for a build. Every leg here compiles at native speed and the slowest of them,
-    # linux-armv7, measures a little over three minutes; macos-arm64, the one that brews, packages
-    # a .pkg, installs it and runs the smoke suite twice, comes in under two. What this number is
-    # for is a player which ignores SIGTERM: the suite and the smoke test both start one, and the
-    # point is that it fails rather than holding a runner all day.
-    #
-    # 20 leaves better than five times the slowest measurement, which is the margin that keeps a
-    # slow runner from being a red leg -- a leg that goes red for the weather teaches people to
-    # re-run rather than to read. build-armv6.yml sizes its own against a build instead, that one
-    # emulating every compile it makes.
+    # Not sized for a build: bounds a player that ignores SIGTERM, with margin over the slowest leg.
     timeout-minutes: 20
     strategy:
-      # Every leg's result is wanted rather than only the first failure's: a break that shows
-      # on one architecture and not another is precisely what the matrix is here to tell apart.
+      # Every leg's result, not just the first failure.
       fail-fast: false
-      # `publish`, `avahi` and `systemd` are spelled out on every leg, false included: an `if:`
-      # reads a missing key as false, so a leg that simply omitted one would quietly stop
-      # publishing, or stop proving the unit it installs, and still go green. `with_mdns`,
-      # `with_pulse` and `with_pipewire` are spelled out for the sibling reason: an omitted key
-      # reaches cmake as `-DSENDSPIN_CLI_WITH_PULSE=`, which is falsy, so a leg meaning to
-      # build the backend would silently not.
-      #
-      # `arm32` names the 32-bit ARM architecture a leg targets, and is empty on every leg that
-      # builds for the runner it is on.
-      #
-      # A new leg owes all seven -- and a `publish: true` leg owes an eighth thing in another
-      # file: an entry in each of the two asset sets release.yml diffs before it publishes,
-      # which otherwise fails the release with a diff rather than a reason. A publishing
-      # *macOS* leg owes two entries in each, its tarball and the installer .pkg built further
-      # down.
+      # Spell every key on every leg, false included: a missing key reads as false and silently disables that leg's work.
+      # A publish: true leg also needs entries in both asset sets release.yml diffs (macOS: tarball and .pkg).
       matrix:
         include:
           - name: linux-x86_64
@@ -100,29 +58,7 @@ jobs:
             avahi: false
             systemd: true
 
-          # The 32-bit Raspberry Pi leg, cross-compiled because no runner can build it natively:
-          # GitHub offers no armv7 image, and its arm64 images are Neoverse N1, which has no
-          # AArch32 at EL0 -- so there is no `runs-on` value that reaches this target. Emulating
-          # the whole build is the other route, and it would pay for every compile in the
-          # FetchContent tree to arrive somewhere this already is: compiling at native speed and
-          # emulating only what has to be executed puts configure, build and suite inside a
-          # minute of runner time.
-          #
-          # That trade is available here and nowhere else. ARMv6 has no cross toolchain to take
-          # the other side of it -- Raspbian publishes none and every other armhf toolchain is an
-          # ARMv7-A port -- so build-armv6.yml pays the emulation this leg declines, which is the
-          # whole reason it is a workflow of its own rather than a leg here.
-          #
-          # `expect_mdns` is anchored on the multiarch library path rather than left as the
-          # `.*libdns_sd\.so.*` the native legs use, and that is the leg's own cross-check: a
-          # find_library that answered with the runner's x86_64 copy would configure cleanly,
-          # report mDNS as found, link nothing usable, and satisfy the looser pattern.
-          #
-          # `runtime_packages` names Raspberry Pi OS trixie's spellings, not this runner's.
-          # Debian renamed both of the ones that moved in its 64-bit time_t transition, so
-          # `libasound2` and `libpipewire-0.3-0` are bookworm's names and wrong for what ships
-          # today -- and this string is copied verbatim into the BUILD-INFO.txt inside the
-          # archive, so it is read by someone on the target rather than by someone here.
+          # Cross-compiled: no runner builds 32-bit ARM natively. expect_mdns pins the armhf path; runtime_packages use trixie names.
           - name: linux-armv7
             runner: ubuntu-24.04
             arm32: 'armv7'
@@ -137,10 +73,7 @@ jobs:
             avahi: false
             systemd: false
 
-          # Both sound-server backends are pinned OFF here rather than left to auto-detection.
-          # libpulse is brew-installable on macOS and could arrive on the image as some other
-          # formula's dependency, which would change this line without a commit -- and there is no
-          # PipeWire for macOS at all. CoreAudio through PortAudio is the macOS path either way.
+          # Sound-server backends pinned off: brew could pull libpulse in without a commit.
           - name: macos-arm64
             runner: macos-14
             arm32: ''
@@ -155,16 +88,7 @@ jobs:
             avahi: false
             systemd: false
 
-          # Compile coverage only, and the reason it is a leg of its own: turning mDNS off
-          # swaps which translation unit is built -- src/mdns_null.cpp instead of
-          # src/mdns_dnssd.cpp -- so nothing else in the matrix compiles it. It publishes
-          # nothing; a binary that cannot be discovered is not one to hand anybody.
-          #
-          # The two sound-server backends are off here for a second helping of the same idea:
-          # tests/device_spec_test.cpp guards half its cases on SENDSPIN_CLI_HAVE_PULSE and
-          # _PIPEWIRE, and this is the only Linux leg that compiles and runs the #else arms --
-          # the ones that assert a bare `pulse` is still an ALSA PCM name, and that the message
-          # for `pulse:<sink>` names the alsa: route as well as the CMake flag.
+          # Compiles mdns_null.cpp and the no-Pulse/PipeWire test arms, which no other leg does.
           - name: linux-x86_64-nomdns
             runner: ubuntu-24.04
             arm32: ''
@@ -178,9 +102,7 @@ jobs:
             systemd: true
 
     steps:
-      # Every third-party action here is pinned to a commit rather than a tag, because a tag
-      # can be repointed at any time and these run with write access to the workspace. The
-      # trailing comment is the version that commit was, for a reader bumping it.
+      # Actions pinned to commits; the trailing comment is the version.
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
@@ -188,9 +110,7 @@ jobs:
         if: runner.os == 'Linux' && !matrix.arm32
         run: |
           sudo apt-get update
-          # pkg-config is named even though the image already has it: it is what finds
-          # PortAudio, so a change in the image should fail here rather than silently produce
-          # a player with no audio backend.
+          # pkg-config finds PortAudio, so name it even though the image has it.
           sudo apt-get install --no-install-recommends -y \
             pkg-config \
             libasound2-dev \
@@ -199,20 +119,13 @@ jobs:
             libpipewire-0.3-dev \
             libavahi-compat-libdnssd-dev
 
-      # In place of the step above rather than beside it, and that is the point: with none of
-      # the runner's own -dev packages installed there is no libdns_sd.so or libasound.so of
-      # the wrong architecture for find_library to answer with at all. The anchored expect_mdns
-      # below is the check that it did not; this is what leaves it nothing to catch.
+      # Instead of the step above, so no host-arch -dev library can answer find_library.
       - name: Install the cross toolchain and armhf dependencies (cross-compiled 32-bit ARM)
         if: matrix.arm32
         run: |
           sudo dpkg --add-architecture armhf
 
-          # Both read off the runner rather than written down, because nothing else here binds
-          # them to it. A leg moved to a newer image would otherwise keep asking for this
-          # release's armhf packages and link them with the newer image's cross toolchain, and
-          # go green doing it -- the same failure the `pipewire-minimum` job's "Assert this
-          # image still ships the minimum" step exists to refuse.
+          # Read off the runner, so a newer image cannot mix this release's armhf packages with its toolchain.
           host_arch="$(dpkg --print-architecture)"
           . /etc/os-release
           [ -n "${VERSION_CODENAME:-}" ] || {
@@ -221,31 +134,21 @@ jobs:
           }
           echo "Cross-building on $host_arch/$VERSION_CODENAME."
 
-          # armhf is a *port*: archive.ubuntu.com carries amd64 and i386 and nothing else. So
-          # every source already on this image is pinned to the host architecture -- the
-          # third-party ones included, which would otherwise 404 on an armhf index nobody asked
-          # them for and fail the update before a single :armhf package is looked at -- and one
-          # ports.ubuntu.com source is added carrying armhf alone.
+          # armhf lives on ports.ubuntu.com: pin existing sources to the host arch and add one for armhf.
           sources=/etc/apt/sources.list.d/ubuntu.sources
           [ -f "$sources" ] || {
             echo "::error::this image has no $sources; its apt layout has changed and the armhf constraint below no longer lands anywhere"
             exit 1
           }
 
-          # `Types:` opens every deb822 stanza, so that is where the constraint goes. A file
-          # that already names its architectures is left alone rather than given a second,
-          # contradictory line.
+          # Constrain each deb822 stanza unless it already names architectures.
           for f in /etc/apt/sources.list.d/*.sources; do
             [ -e "$f" ] || continue
             grep -q '^Architectures:' "$f" ||
               sudo sed -i "/^Types:/a Architectures: $host_arch" "$f"
           done
 
-          # The one-line format, which third-party repositories on this image still use. Both
-          # substitutions skip a line that already names an architecture and nothing else, which
-          # is the same question the loop above asks: an entry carrying `signed-by=` alone is
-          # unconstrained despite having a bracket, and skipping it on the strength of the
-          # bracket is how this whole step would come to pass while doing half its job.
+          # One-line sources: skip only entries that already name an architecture, not any bracket.
           for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list; do
             [ -e "$f" ] || continue
             sudo sed -i -E \
@@ -263,8 +166,6 @@ jobs:
           Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
           SOURCES
 
-          # Both formats, because the one-line files are the fragile half and showing only the
-          # deb822 ones would print the part that cannot go wrong.
           echo 'What apt will read:'
           cat /etc/apt/sources.list.d/*.sources
           for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list; do
@@ -284,15 +185,10 @@ jobs:
             libpipewire-0.3-dev:armhf \
             libavahi-compat-libdnssd-dev:armhf
 
-          # qemu-user-static ships its handlers as systemd-binfmt drop-ins under
-          # /usr/lib/binfmt.d rather than registering them itself, so this is what puts
-          # qemu-arm into the kernel.
+          # qemu-user-static ships binfmt drop-ins; this registers them.
           sudo systemctl restart systemd-binfmt
 
-          # Proven here, where the message can say what is wrong, rather than left to surface
-          # further down wearing someone else's name: gtest_discover_tests runs the test binary
-          # at build time to enumerate its cases and the Package step reads the version off the
-          # player, so an unregistered handler breaks `cmake --build` rather than `ctest`.
+          # gtest discovery and the version read execute ARM binaries at build time, so prove binfmt works.
           printf 'int main(void) { return 0; }\n' >binfmt-probe.c
           arm-linux-gnueabihf-gcc -o binfmt-probe binfmt-probe.c
           ./binfmt-probe || {
@@ -308,17 +204,7 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install portaudio pkgconf
 
-      # The fetched sources and the populate stamps that record they were fetched -- the
-      # stamps live in `-subbuild`, which is a generated CMake tree rather than a download, and
-      # without them every run refetches. What is deliberately *not* in here is anything
-      # compiled: `-build` is excluded and `build/` is outside this path entirely, so no object
-      # file ever survives a compiler upgrade on the runner image. Restoring the downloads is
-      # where the time goes anyway -- sendspin-cpp pulls its own dependencies (ixwebsocket,
-      # opus, FLAC) through FetchContent in turn.
-      #
-      # Keyed per leg, and by CMakeLists.txt's hash because it holds both pinned tags. A
-      # subbuild left stale by a cmake upgrade on the image is the residual risk, and dropping
-      # the cache is its remedy.
+      # Fetched sources and subbuild stamps only, never build outputs; keyed per leg and by CMakeLists.txt.
       - name: Cache the fetched sources
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
@@ -335,15 +221,7 @@ jobs:
           DEPS_DIR: ${{ github.workspace }}/.deps
           ARM32: ${{ matrix.arm32 }}
         run: |
-          # Held in one array rather than written out on each side of the branch below. What a
-          # cross leg changes is the compiler and the flags naming the target, which
-          # scripts/build_arm32.sh owns; not one of these options, and a second copy of them is
-          # a second place for the two paths to stop agreeing about how this project builds.
-          #
-          # There is a third copy, and it is in another file: build-armv6.yml configures the same
-          # six options for the archive it builds. Nothing mechanical holds the two together the
-          # way the payload assertion below is held, so an option added here has to be added there
-          # or the ARMv6 archive quietly stops matching what every other leg was built with.
+          # Shared by both configure paths; build-armv6.yml has a third copy to keep in step.
           options=(
             -DCMAKE_BUILD_TYPE=Release
             -DSENDSPIN_CLI_WERROR=ON
@@ -359,13 +237,7 @@ jobs:
             cmake -B build "${options[@]}" 2>&1 | tee configure.log
           fi
 
-      # The check that stops a leg passing while quietly building something else. A missing
-      # -dev package does not fail the configure -- every backend here is optional and
-      # auto-detected by design -- so without this the matrix would happily ship a
-      # null-sink-only, mDNS-less binary and call it green.
-      #
-      # Whole-line matches, anchored: `audio backends:` on its own is also satisfied by the
-      # degraded `null, stdout` line, which is the exact failure being guarded against.
+      # Backends are optional, so assert each was found, with anchored whole-line matches.
       - name: Assert the configure output found what this leg expects
         env:
           EXPECT_BACKENDS: ${{ matrix.expect_backends }}
@@ -374,11 +246,7 @@ jobs:
         run: |
           patterns=("$EXPECT_BACKENDS" "$EXPECT_MDNS")
 
-          # The dns_sd probes are pinned to the answer this host owes, because they fail open:
-          # one that reported Failed for an unrelated reason would silently cost two case
-          # labels in describe_error(), and nothing else would complain. Empty on the no-mDNS
-          # leg, where the probes do not run at all -- and skipped rather than matched, since
-          # an empty ERE matches any non-empty file and would fail open in turn.
+          # Probes fail open, so pin them; skipped on no-mDNS legs since an empty ERE matches anything.
           if [ -n "$EXPECT_PROBE" ]; then
             for symbol in SERVICE_NOT_RUNNING TIMEOUT; do
               patterns+=("^-- Performing Test SENDSPIN_CLI_HAVE_ERR_$symbol - $EXPECT_PROBE\$")
@@ -400,22 +268,7 @@ jobs:
       - name: Build
         run: cmake --build build
 
-      # What makes these legs' names mean something. Every dependency arrives through
-      # FetchContent and so through add_subdirectory, in the one cmake invocation, which is why
-      # scripts/build_arm32.sh puts the target flags in CMAKE_C_FLAGS/CMAKE_CXX_FLAGS rather
-      # than on our own targets -- and this is the check that says it worked. A flag that
-      # reached sendspin-cli and missed a dependency still links, still passes the suite under
-      # an emulator permissive enough to run anything, and then traps on the hardware the
-      # archive is built for. The linker merges build attributes across every object in the
-      # link and reports the highest, so one read covers the whole tree.
-      #
-      # It covers what is *in* the file and nothing further. The shared libraries the loader
-      # pulls in on a Pi are that machine's own, built by whoever built its distribution, and
-      # are not this build's to make claims about.
-      #
-      # Ahead of the suite rather than after it: a binary of the wrong architecture is a fact
-      # about the build, and reading it off costs a `readelf` rather than the whole suite run
-      # under an emulator.
+      # Read the target architecture off the linked binary, which covers every dependency, before running the suite.
       - name: Assert the binary is built for the architecture this leg claims
         if: matrix.arm32
         env:
@@ -431,10 +284,7 @@ jobs:
               ;;
           esac
 
-          # Read into files rather than piped into each check, so that `grep -q` matching early
-          # cannot take the writer down with SIGPIPE -- `defaults.run.shell` is `bash -eo
-          # pipefail`, where that reads as a failed pipeline. The same reason the systemd step
-          # below uses `case` throughout.
+          # Into files first: grep -q on a pipe can SIGPIPE the writer under pipefail.
           readelf -h "$binary" >elf-header.txt
           readelf -A "$binary" >elf-attributes.txt
           echo 'What the linked binary reports:'
@@ -456,14 +306,10 @@ jobs:
           expect 'the ELF class' "$(field Class elf-header.txt)" 'ELF32'
           expect 'the ELF machine' "$(field Machine elf-header.txt)" 'ARM'
           expect 'Tag_CPU_arch' "$(field Tag_CPU_arch elf-attributes.txt)" "$want_arch"
-          # The calling convention, taken from the attribute that records it rather than from
-          # the -mfloat-abi this build passed. A soft-float object and a hard-float one disagree
-          # about how every function taking a double is called, and nothing refuses the mixture
-          # at load time -- it is the arithmetic that comes out wrong.
+          # Hard-float calling convention, from the attribute rather than the flag.
           expect 'Tag_ABI_VFP_args' "$(field Tag_ABI_VFP_args elf-attributes.txt)" 'VFP registers'
 
-          # Substring-matched, alone among these: the flags word is printed alongside its
-          # numeric value, which carries bits that have nothing to do with the ABI being named.
+          # Substring match: the flags line carries unrelated bits.
           flags="$(field Flags elf-header.txt)"
           case "$flags" in
             *'hard-float ABI'*) ;;
@@ -476,40 +322,23 @@ jobs:
           rm -f elf-header.txt elf-attributes.txt
           exit "$status"
 
-      # Run on every leg, the no-mDNS one included: the suite links sendspin-cli-core, so
-      # discovery_test.cpp is compiled against whichever MdnsService went in. That
-      # configuration has no other coverage in this matrix.
-      #
-      # Serial deliberately: daemon_test.cpp exercises flock paths and last_server_test writes
-      # real files, neither of which is obviously safe to run against itself in parallel.
+      # Every leg, no-mDNS included. Serial: flock and filesystem tests are not parallel-safe.
       - name: Test
         run: ctest --test-dir build --output-on-failure
 
-      # Deliberately before avahi-daemon is installed below. With no daemon to register with,
-      # this is what exercises the non-fatal advertise-failure path in src/main.cpp -- the
-      # player has to come up and warn rather than exit.
+      # Before avahi-daemon is installed, to exercise the non-fatal advertise-failure path.
       - name: Smoke test
         if: matrix.publish
         run: scripts/smoke_test.sh build/sendspin-cli
 
-      # The one *runtime* claim this matrix owes roadmap item 5, which was built and exercised
-      # against Bonjour only: that libavahi-compat-libdnssd really implements the calls
-      # src/mdns_dnssd.cpp makes of it. Reading its sources said so; this runs it.
-      #
-      # Two halves, because they cover different calls. Browsing our own advertisement back
-      # proves DNSServiceRegister reached the daemon. Discovering a server proves the rest of
-      # the chain -- Browse, Resolve, and above all DNSServiceQueryRecord for A and AAAA, which
-      # the compat layer implements in place of the DNSServiceGetAddrInfo it lacks entirely: a
-      # ws:// URL cannot be built at all without an address that query returned.
+      # Proves libavahi-compat-libdnssd implements our dns_sd calls: register, browse, resolve, QueryRecord.
       - name: Advertise and discover through a real Avahi daemon
         if: matrix.avahi
         run: |
           sudo apt-get install --no-install-recommends -y avahi-daemon avahi-utils
           sudo systemctl start avahi-daemon
 
-          # Waited for rather than assumed: the socket is what the compat layer connects to,
-          # and starting the player before it exists would leave the whole check riding on the
-          # player's own retry ramp landing inside the polls below.
+          # Wait for the avahi socket before starting the player.
           for _ in $(seq 1 200); do
             if [ -S /run/avahi-daemon/socket ]; then break; fi
             sleep 0.1
@@ -537,8 +366,7 @@ jobs:
             exit 1
           }
 
-          # -p is the parseable form: resolved records come back as `=;iface;proto;instance;...`
-          # with the address in field 8 and the port in field 9.
+          # Parseable output: address in field 8, port in field 9.
           avahi-browse -rpt _sendspin._tcp >browse.txt
           echo 'What avahi-browse resolved:'
           cat browse.txt
@@ -550,21 +378,12 @@ jobs:
             exit 1
           }
 
-          # Guarded like the traps are: everything this half set out to prove is already
-          # proven, so a player that has since exited on its own must not turn the leg red
-          # here with nothing said about why.
+          # Everything is proven by now, so a player that already exited must not fail the leg.
           kill -TERM "$player" 2>/dev/null || true
           wait "$player" 2>/dev/null || true
           trap - EXIT
 
-          # Half two: a server published into the same daemon, discovered and resolved by our
-          # own dns_sd code. Nothing is listening on 8927 and no dial is asserted -- what is
-          # asserted is that a ws:// URL was built at all, which takes an address, which takes
-          # a QueryRecord that answered.
-          #
-          # TXT `name` as well as the REQUIRED `path`, because -s mdns:<name> filters on the
-          # former: without it the instance resolves but matches nothing, and the filter goes
-          # untested.
+          # Half two: a published server discovered by our code; a built ws:// URL proves QueryRecord answered.
           avahi-publish -s "$instance-server" _sendspin-server._tcp 8927 \
             'path=/sendspin' "name=$instance-server" &
           publisher=$!
@@ -589,18 +408,7 @@ jobs:
 
           kill -TERM "$client" "$publisher" 2>/dev/null || true
 
-      # A build output for trying a commit on real hardware, staged by the same `install()`
-      # rules an operator would use. DESTDIR rather than `--prefix`, so every path in the
-      # archive is the path the file installs to: the unit's ExecStart is absolute and names the
-      # configure-time prefix, and `--prefix` would relocate the payload around it without
-      # changing what it says -- leaving a unit pointing at a binary the archive does not hold.
-      #
-      # `--component sendspin-cli` is what keeps the payload ours. Fetched dependencies declare
-      # install() rules of their own that no option turns off, and CMakeLists.txt says which.
-      #
-      # Tarred rather than handed to upload-artifact loose because the artifact is served as a
-      # zip, and zip does not carry the executable bit -- an untarred binary would arrive
-      # chmod-less.
+      # DESTDIR (not --prefix) keeps ExecStart valid; --component keeps it ours; tarred to keep +x.
       - name: Package
         if: matrix.publish
         id: package
@@ -638,9 +446,7 @@ jobs:
           what they are.
           INFO
 
-          # Appended only where it applies, and carried inside the archive rather than left in
-          # README alone: someone who unpacked this on a Mac and got told the developer cannot
-          # be verified is holding the tarball, not the repository.
+          # Gatekeeper advice travels inside the macOS archive.
           if [ "$RUNNER_OS" = 'macOS' ]; then
             cat >>"stage/$name/BUILD-INFO.txt" <<MACOS
 
@@ -681,10 +487,7 @@ jobs:
           LINUX
           fi
 
-          # Said inside the archive, because the lines above it are read on the machine this was
-          # built *for* while naming the machine it was built *on*: "Built from commit ... on
-          # Linux/X64", under a heading that says linux-armv7, is accurate and baffling at once
-          # until something accounts for it.
+          # Explains the build-host line for cross-built archives.
           if [ -n "$ARM32" ]; then
             cat >>"stage/$name/BUILD-INFO.txt" <<CROSS
 
@@ -704,20 +507,10 @@ jobs:
 
           tar -czf "$name.tar.gz" -C stage "$name"
           echo "name=$name" >>"$GITHUB_OUTPUT"
-          # Carried out of this step rather than derived again by the installer step below: the
-          # version is read off the binary above, and reading it twice is two things to keep
-          # agreeing about what this build is called.
+          # Passed on so the installer step does not read the version again.
           echo "version=$version" >>"$GITHUB_OUTPUT"
 
-      # What the payload holds, asserted rather than assumed -- the same check the configure
-      # output gets above, and for the same reason. Two things go wrong silently otherwise: a
-      # dependency that starts declaring install() rules on a SENDSPIN_GIT_TAG bump adds a
-      # static library and a tree of headers to a tarball nobody reads the manifest of, and a
-      # file dropped from our own install() rules leaves an archive that is merely smaller.
-      #
-      # The expected list below is one of two. build-armv6.yml holds the other, for the archive
-      # that builds there, and a change to the install() rules has to land in both or one of the
-      # two workflows fails on a diff.
+      # Assert the exact payload; keep in step with build-armv6.yml's list of the same.
       - name: Assert the payload holds exactly what it should
         if: matrix.publish
         env:
@@ -731,16 +524,13 @@ jobs:
             echo usr/local/share/doc/sendspin-cli/README.md
             echo usr/local/share/doc/sendspin-cli/contributors.md
             echo usr/local/share/doc/sendspin-cli/sendspin-cli.conf.example
-            # Installed on Linux alone: a systemd unit, and the account declaration it needs,
-            # are both files a Mac can only ignore.
             if [ "$RUNNER_OS" = 'Linux' ]; then
               echo usr/local/lib/sysusers.d/sendspin-cli.conf
               echo usr/local/lib/systemd/system/sendspin-cli.service
             fi
           } | sort >"$expected"
 
-          # `! -type d` rather than `-type f`, so a symlink into the payload is a difference
-          # rather than an invisible one.
+          # `! -type d` so symlinks count.
           actual=$(mktemp)
           (cd "stage/$NAME" && find . ! -type d | sed 's|^\./||') | sort >"$actual"
 
@@ -751,13 +541,7 @@ jobs:
             exit 1
           }
 
-          # And again from inside the archive that actually ships, since that is one `tar` away
-          # from the directory checked above and it is the artifact anybody downloads. The
-          # executable bit is asserted here too: it is the reason this is a tarball at all, the
-          # artifact being served as a zip that does not carry one.
-          # Directory entries dropped before the prefix is stripped, since both tars list them
-          # with a trailing slash -- including the archive's own top-level one, which would
-          # otherwise strip down to an empty line and read as a difference.
+          # Again from the shipped tarball, with the executable bit; directory entries dropped first.
           tar -tzf "$NAME.tar.gz" | grep -v '/$' | sed -n "s|^$NAME/||p" | sort >"$actual"
           diff -u "$expected" "$actual" || {
             echo '::error::the tarball does not hold what the staged payload does'
@@ -768,30 +552,8 @@ jobs:
             exit 1
           }
 
-      # The unit file is the one thing in the payload this matrix can check and no developer on
-      # macOS can, so it is checked here rather than read. Installed at the real prefix first,
-      # because `systemd-analyze verify` resolves ExecStart and reports a binary that is not
-      # there -- so this exercises the install rules at the prefix the unit names as well, which
-      # the staged payload above deliberately does not.
-      #
-      # After Package, because that is what keeps the ordering safe: a component install writes
-      # its manifest into the *build* directory, so a root-owned
-      # build/install_manifest_sendspin-cli.txt left here would make the unprivileged staging
-      # install above fail on EACCES. Unprivileged first, root over the top. The macOS steps
-      # below are the same hazard's other half and sit after Package for the same reason,
-      # though `installer` writes to /usr/local rather than into the build tree.
-      #
-      # `verify` is only a parse, so the step below runs the thing as well. What it cannot cover
-      # is the audio path: a runner has no sound card, which is why `output = null` goes in the
-      # config and why the unit ships no directive that gates /dev/snd.
-      #
-      # Gated on `systemd` rather than on `runner.os == 'Linux'`, which is what a cross leg
-      # would also satisfy while having nothing to offer here. Running the unit against a
-      # binary the runner can only reach through an emulator tests the emulator: qemu-user
-      # translates guest code into buffers it writes and then executes, which the unit's
-      # `MemoryDenyWriteExecute=yes` forbids outright, so the leg would fail on a directive the
-      # player itself has no quarrel with. The unit in the arm32 archive is the same file these
-      # legs verify, installed by the same rules.
+      # Install at the real prefix and verify the unit (not on cross legs: MemoryDenyWriteExecute= forbids qemu-user).
+      # After Package, or a root-owned install manifest in build/ breaks the unprivileged staging install.
       - name: Install at the real prefix and verify the systemd unit
         if: matrix.systemd
         run: |
@@ -805,22 +567,13 @@ jobs:
           cat "$unit"
           systemd-analyze verify "$unit"
 
-      # The unit run as the account it names, with the hardening block in place. A runner is a
-      # real machine with systemd as PID 1 -- the Avahi step above already leans on that -- so
-      # every claim the unit's comment makes short of `/dev/snd` can be made here rather than
-      # reasoned about, and a directive that boots on a maintainer's laptop and not on a stock
-      # 24.04 fails a leg instead of an operator's install.
-      #
-      # `systemd-sysusers` with no argument is the same command README tells an operator to run,
-      # reading the fragment the install rules just put in /usr/local/lib/sysusers.d -- so this
-      # covers the search path holding for /usr/local as well as the fragment's own content.
+      # Run the hardened unit as its account on a real systemd runner, via the same systemd-sysusers step as README.
       - name: Run the unit as its own user, with the hardening block
         if: matrix.systemd
         env:
           AVAHI: ${{ matrix.avahi }}
         run: |
-          # Defined first so that everything below, `systemctl start` included, reports the
-          # journal rather than dying on `set -e` with nothing but a non-zero exit to show.
+          # Defined first so every failure below prints the journal.
           fail() {
             echo "::error::$1"
             systemctl status sendspin-cli --no-pager --full || true
@@ -830,10 +583,7 @@ jobs:
 
           sudo systemd-sysusers
           id sendspin-cli
-          # A case match rather than a pipe into grep, which is the shape every check in this
-          # step uses: `defaults.run.shell` is `bash -eo pipefail`, and `grep -q` exits the
-          # instant it matches, so the writer on the left takes SIGPIPE and pipefail then reads
-          # a *successful* match as a failed pipeline.
+          # case, not a pipe into grep -q, which pipefail would report as failure.
           case " $(id -nG sendspin-cli) " in
             *' audio '*) ;;
             *)
@@ -842,12 +592,10 @@ jobs:
               ;;
           esac
 
-          # A runner has no card, and the unit deliberately carries no -o: the config file is
-          # where an operator picks one, so it is where this picks one too.
+          # No card on a runner, so the config picks null.
           printf '%s\n' 'output = null' | sudo tee /etc/sendspin-cli.conf >/dev/null
 
-          # The upgrade path, asserted rather than described: a root-owned state directory from
-          # an earlier root-run version, which StateDirectory= has to take over on its own.
+          # Plant a root-owned state dir: StateDirectory= must take it over.
           sock=/run/sendspin-cli/control.sock
           sudo rm -rf /var/lib/sendspin-cli
           sudo install -d -m 0700 /var/lib/sendspin-cli
@@ -861,9 +609,7 @@ jobs:
 
           [ "$(systemctl is-active sendspin-cli)" = active ] || fail 'the unit did not start'
 
-          # Numeric uids on both sides, the way scripts/smoke_test.sh already compares them:
-          # `ps -o user=` prints the uid instead of the name once the name outgrows the column,
-          # so a name comparison is one rename away from being a comparison of nothing.
+          # Numeric uids: ps truncates long user names.
           main=$(systemctl show -p MainPID --value sendspin-cli)
           [ "$main" != 0 ] || fail 'the unit reports no main process'
           owner=$(ps -o uid= -p "$main" | tr -d ' ') || fail "no process with pid $main"
@@ -874,8 +620,7 @@ jobs:
             fail 'the control socket did not answer status'
           printf '%s\n' "$status"
 
-          # Read back rather than merely chowned: 175 came from the root-owned file planted
-          # above, so seeing it proves systemd handed the whole directory over intact.
+          # 175 came from the planted root-owned file, so the directory was handed over intact.
           case "$status" in
             *'static delay: 175 ms'*) ;;
             *) fail 'the state left by a root-run player did not survive the ownership change' ;;
@@ -890,25 +635,11 @@ jobs:
           state=$(stat -c '%U %a' /var/lib/sendspin-cli/state 2>/dev/null)
           [ "$state" = 'sendspin-cli 600' ] || fail "the state file is '$state', not 'sendspin-cli 600'"
 
-          # Scoped to this invocation rather than `-u sendspin-cli`, which prints every start the
-          # unit has ever had: a run that failed would otherwise be judged by the lines an earlier
-          # one logged. A fail-open gate is worse than no gate.
+          # This invocation only, so an earlier run's lines cannot pass the gate.
           invocation=$(systemctl show -p InvocationID --value sendspin-cli)
           [ -n "$invocation" ] || fail 'the unit reports no invocation id to scope the journal to'
 
-          # The identity a server files this player under. With no `id` in the config -- and the
-          # one above sets none, which is what this depends on -- the library derives client_id
-          # from the interface MAC, read through getifaddrs(), which needs AF_NETLINK. It does that
-          # only while building client/hello, and only when a connection arrives, so nothing
-          # before this point has exercised it: booting, the socket and mDNS all work without the
-          # family. An inbound connection is sent its hello straight after the upgrade, unasked,
-          # so a bare WebSocket handshake is enough to get one.
-          #
-          # Two gates, because each is blind where the other is not. An empty client_id is what
-          # Music Assistant refuses, and checking for it survives a library that rewords its log;
-          # the journal line survives a library that answers a failed detection with some other
-          # non-empty id, which the first gate would wave through. Port 8928 is the default, and
-          # the config sets no other.
+          # A WebSocket handshake triggers client/hello; its client_id needs getifaddrs(), i.e. AF_NETLINK.
           python3 - <<'EOF' || fail 'the hardened unit did not greet a connection with a non-empty client_id'
           import base64, json, os, socket, sys, time
 
@@ -978,10 +709,7 @@ jobs:
           print(f"client/hello carried client_id {client_id}")
           EOF
 
-          # --sync returns only once everything logged before it is in the journal, so a line
-          # still on its way from the player's stderr cannot slip past the grep. An absence proves
-          # nothing about a journal that came back empty, so the startup line has to be there
-          # first.
+          # --sync so the grep sees every line logged so far.
           sudo journalctl --sync
           journalctl "_SYSTEMD_INVOCATION_ID=$invocation" --no-pager >journal.log
           grep -q 'listening on port 8928' journal.log ||
@@ -990,9 +718,7 @@ jobs:
             fail 'getifaddrs() failed under the hardening block, so the client id was not MAC-derived'
           fi
 
-          # Only on the leg that started a real avahi-daemon above, and the one claim the rest of
-          # this step cannot make: that RestrictAddressFamilies= still lets the player reach the
-          # daemon over AF_UNIX. Registration is asynchronous, so it is waited for.
+          # Only with a real avahi-daemon: RestrictAddressFamilies= must still allow AF_UNIX to it.
           if [ "$AVAHI" = 'true' ]; then
             for _ in $(seq 1 100); do
               journalctl "_SYSTEMD_INVOCATION_ID=$invocation" --no-pager >journal.log
@@ -1012,9 +738,7 @@ jobs:
             *) fail 'the 250 ms set over the socket did not survive a restart' ;;
           esac
 
-          # Restart=on-failure covering the case it exists for. RestartSec is 5s, so the poll
-          # below has to outlast it -- and a new MainPID is what says it really came back rather
-          # than the old one still being reported.
+          # Restart=on-failure: a new MainPID after RestartSec proves the restart.
           main=$(systemctl show -p MainPID --value sendspin-cli)
           sudo kill -9 "$main"
           for _ in $(seq 1 100); do
@@ -1031,18 +755,10 @@ jobs:
           result=$(systemctl show -p Result --value sendspin-cli)
           [ "$result" = success ] || fail "stopping the unit left Result=$result"
 
-          # Printed rather than asserted: a score is evidence for a reader, and pinning a number
-          # would make an unrelated systemd release fail this leg for saying so differently.
+          # Printed, not asserted.
           systemd-analyze security sendspin-cli --no-pager || true
 
-      # The macOS half of the same idea: the payload staged above, wrapped into the installer
-      # anybody on a Mac would rather double-click than untar. `scripts/build_macos_pkg.sh` owns
-      # how, and is a script rather than lines here so a developer can build the same .pkg from
-      # the same payload without a runner -- and so ci.yml's shellcheck job already gates it.
-      #
-      # Here rather than in ci.yml because this file is what release.yml calls too: the .pkg is a
-      # release asset, and an installer only a branch push produced would be exactly the seam the
-      # no-inputs comment at the top of this file refuses.
+      # macOS installer from the staged payload; here so release.yml ships it too.
       - name: Build the macOS installer .pkg
         if: matrix.publish && runner.os == 'macOS'
         env:
@@ -1050,35 +766,14 @@ jobs:
           VERSION: ${{ steps.package.outputs.version }}
         run: scripts/build_macos_pkg.sh "stage/$NAME" "$VERSION" "$NAME.pkg"
 
-      # An installer nobody installed is not shipped, and item 10 named this the untested half
-      # of the payload. So the .pkg goes in at `/` on the runner and the checks are made of what
-      # came out: the file list from its own receipt, then the installed binary answering
-      # --version, then the whole smoke suite against it rather than against build/sendspin-cli.
-      #
-      # `pkgutil --files` prints paths relative to the receipt's install location -- /usr/local,
-      # not `/` -- so this expected list is shorter than the tarball's above rather than a copy
-      # of it. The `._` filter is kept even though this listing does not currently need one, and
-      # the asymmetry is the point. macOS stamps every payload file with a com.apple.provenance
-      # extended attribute that cannot be removed (`xattr -c` is undone before the next stat), and
-      # pkgbuild carries extended attributes as AppleDouble members -- so the .pkg's *own* BOM
-      # does list `._` siblings, which is what `lsbom` shows when the archive is expanded. The
-      # receipt's does not, because installer folds those members back into attributes rather than
-      # writing files. Filtering rather than naming them keeps this right in both directions: if a
-      # future installer stops folding them, the assertion still passes.
-      #
-      # Last among the macOS steps for the sibling of the reason the Linux install above is: the
-      # payload assertion reads `stage/`, and this writes the same four files to the paths they
-      # install to. It also runs the smoke suite a second time, which the fixed ports 39281-39288
-      # require be sequential with the first.
+      # Install the .pkg at / and check its receipt, --version and the smoke suite against it.
+      # pkgutil --files is relative to /usr/local; the `._` filter guards against AppleDouble members.
       - name: Install the .pkg and verify what it put on disk
         if: matrix.publish && runner.os == 'macOS'
         env:
           NAME: ${{ steps.package.outputs.name }}
           VERSION: ${{ steps.package.outputs.version }}
-          # Spelled out here as well as in the script, deliberately. It is the string an operator
-          # types to `pkgutil --forget`, so changing it orphans every receipt already on disk --
-          # naming it independently is what makes that a change somebody has to mean, rather than
-          # one that follows an edit to the script and goes green.
+          # Spelled out independently of the script: changing it orphans existing receipts.
           IDENTIFIER: io.github.chrisuthe.sendspin-cli
         run: |
           sudo installer -pkg "$NAME.pkg" -target /
@@ -1086,10 +781,7 @@ jobs:
           echo 'What the receipt says was installed:'
           pkgutil --pkg-info "$IDENTIFIER"
 
-          # The version is threaded from the Package step rather than derived again here, so it
-          # is read back off the receipt to check it arrived. An empty one cannot reach this far
-          # -- build_macos_pkg.sh refuses it, rather than letting both sides of this comparison
-          # be the same empty string.
+          # Read back off the receipt to prove the threaded version arrived.
           info="$(pkgutil --pkg-info "$IDENTIFIER")"
           version="$(printf '%s\n' "$info" | sed -n 's|^version: ||p')"
           [ "$version" = "$VERSION" ] || {
@@ -1097,9 +789,7 @@ jobs:
             exit 1
           }
 
-          # Slashes trimmed at both ends before comparing: pkgutil prints a receipt's location
-          # relative to the volume and with a trailing slash -- `Library/Apple/` -- and the two
-          # spellings mean the same directory.
+          # Trim slashes: pkgutil prints the location relative and with a trailing slash.
           location="$(printf '%s\n' "$info" | sed -n 's|^location: ||p' | sed 's|^/*||; s|/*$||')"
           [ "$location" = 'usr/local' ] || {
             echo "::error::the receipt installs into '$location', not usr/local"
@@ -1115,10 +805,7 @@ jobs:
             echo share/doc/sendspin-cli/sendspin-cli.conf.example
           } | sort >"$expected"
 
-          # Echoed raw before anything filters or sorts it, the way the configure and payload
-          # assertions above print what they are about to judge. A wrong identifier has already
-          # failed at the --pkg-info above; what this covers is the filter, which would otherwise
-          # report a difference having quietly eaten the lines that explain it.
+          # Printed raw before the filter, so a difference is explainable.
           echo 'What the receipt lists, unfiltered:'
           pkgutil --files "$IDENTIFIER"
 
@@ -1145,20 +832,11 @@ jobs:
         with:
           name: ${{ steps.package.outputs.name }}
           path: ${{ steps.package.outputs.name }}.tar.gz
-          # Long enough to bisect a regression against, short enough that per-commit builds of
-          # every branch do not accumulate. This artifact is never itself a release: on a tag
-          # it is how the tarball reaches release.yml's release job, which attaches it to a
-          # release of its own and leaves this copy to expire on the same clock.
+          # Long enough to bisect; releases take their own copy.
           retention-days: 14
           if-no-files-found: error
 
-      # A second step rather than a second path on the one above, because `if-no-files-found:
-      # error` is wanted on both and a .pkg path there would fail every Linux leg. The artifact
-      # name has to differ from the tarball's for the same reason it is a step of its own:
-      # upload-artifact refuses to write two artifacts under one name.
-      #
-      # release.yml names this file in the asset set it asserts before it publishes, which is the
-      # third thing the matrix comment above says a publishing leg owes.
+      # A separate step: if-no-files-found: error would fail Linux legs, and artifact names must differ.
       - name: Upload the macOS installer
         if: matrix.publish && runner.os == 'macOS'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
@@ -1168,26 +846,15 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
-  # A job of its own rather than a sixth matrix leg. What keeps it out is that it publishes
-  # nothing: it has one question to answer and no binary to hand anybody, so `publish`, `avahi`,
-  # `systemd`, `arm32` and `runtime_packages` would all be keys it owed and none of them would
-  # mean anything. The matrix's own steps are built for hosted runners besides, using `sudo
-  # apt-get` and Ubuntu's package names.
+  # Not a matrix leg: it publishes nothing, and runs in a container rather than on a hosted image.
   pipewire-minimum:
     name: linux-x86_64-pipewire-min
     runs-on: ubuntu-24.04
-    # Debian 12 is the whole reason this exists: it ships libpipewire 0.3.65, the oldest release
-    # that satisfies SENDSPIN_CLI_PIPEWIRE_MIN_VERSION, and it is what Raspberry Pi OS bookworm
-    # is -- which is the floor still in the field rather than the current release, Raspberry Pi
-    # OS having moved to trixie. Every hosted image carries 1.x, where a pw_core_events member added after 0.3.65
-    # initialises cleanly -- so with only those legs the floor the README advertises goes
-    # untested until somebody on bookworm tries to build and finds a designated initialiser
-    # naming a member their header does not declare. That is a compile error, not a warning.
+    # Debian 12 ships libpipewire 0.3.65, the declared minimum; hosted images only have 1.x.
     container: debian:12
     timeout-minutes: 30
     steps:
-      # Before the checkout, and with no sudo: the image runs as root already, and it has
-      # neither git nor a CA bundle -- both of which actions/checkout needs before it can run.
+      # Before checkout, as root: the image lacks git and CA certificates.
       - name: Install build dependencies
         run: |
           apt-get update
@@ -1196,10 +863,7 @@ jobs:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      # Without this the job rots into a duplicate of the hosted legs. If bookworm ever moves to
-      # a 1.x libpipewire it would still build, still go green, and still claim in its name to
-      # have tested the floor -- while testing exactly what ubuntu-24.04 already does. Both ends
-      # are pinned: at or above the declared minimum, and still an 0.3 release.
+      # Fail if the image stops shipping an 0.3 libpipewire at or above the minimum.
       - name: Assert this image still ships the minimum
         run: |
           version=$(pkg-config --modversion libpipewire-0.3)
@@ -1214,21 +878,12 @@ jobs:
             exit 1
           fi
 
-      # SENDSPIN_CLI_WERROR is deliberately absent, alone among the builds in this repository's
-      # workflows -- build-armv6.yml meets the same gcc 12 -Wrestrict false positive on
-      # `line += " " + std::to_string(...)` in src/control_common.cpp and exempts that one
-      # diagnostic rather than all of them. Here the whole option is dropped, because the
-      # warning has nothing to do with either sound-server backend and this job is not the
-      # place the warning line is held. The matrix above holds it; what is held here is that
-      # the code compiles at all against the oldest libpipewire this project claims to
-      # support.
+      # No SENDSPIN_CLI_WERROR: gcc 12's -Wrestrict false positive is not what this job tests.
       - name: Configure
         run: |
           cmake -B build             -DCMAKE_BUILD_TYPE=Release             -DSENDSPIN_CLI_WITH_PORTAUDIO=OFF             -DSENDSPIN_CLI_WITH_MDNS=OFF             2>&1 | tee configure.log
 
-      # The same guard the matrix carries, and for a sharper reason here: a missing
-      # libpipewire-0.3-dev does not fail the configure, so without this the job would build a
-      # binary with no PipeWire backend in it and prove precisely nothing about the minimum.
+      # Without PipeWire found, this job would prove nothing.
       - name: Assert the configure output found PipeWire
         run: |
           expected='^-- sendspin-cli audio backends: null, stdout, alsa, pulse, pipewire$'
@@ -1243,10 +898,7 @@ jobs:
       - name: Build
         run: cmake --build build --parallel 3
 
-      # As somebody other than root, which is what the container otherwise runs as. Three
-      # StateStore cases assert that an unwritable directory is refused, and root is refused
-      # nothing -- they fail as root for a reason that has nothing to do with the code under
-      # test. The hosted legs never meet this because a runner is not root.
+      # As non-root: StateStore tests fail as root.
       - name: Test
         run: |
           useradd --create-home tester

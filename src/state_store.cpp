@@ -41,9 +41,6 @@ constexpr const char* KEY_VOLUME = "volume";
 constexpr const char* KEY_MUTED = "muted";
 
 /// An environment variable's value, or empty when it is unset or set to nothing.
-///
-/// The XDG spec treats an empty variable as unset, and so does this: `XDG_STATE_HOME=` would
-/// otherwise resolve to a path starting at the filesystem root.
 std::string env_or_empty(const char* name) {
     const char* value = std::getenv(name);
     return value == nullptr ? std::string() : std::string(value);
@@ -81,14 +78,11 @@ StateLoadResult StateStore::load(size_t& malformed_line) {
         case KeyValueStatus::Unreadable:
             return StateLoadResult::Absent;
         case KeyValueStatus::Malformed:
-            // The reader hands back nothing on a bad line, so there is nothing to salvage here
-            // either -- a partly-applied corrupt file is worse to reason about than an empty one.
             return StateLoadResult::Corrupt;
         case KeyValueStatus::Ok:
             break;
     }
-    // Last wins, which std::map::operator[] gives for free over entries in file order. Repeats
-    // cannot arise from write() below, but a file salvaged or edited by hand can hold them.
+    // Last wins over entries in file order.
     for (KeyValueEntry& entry : entries) {
         this->values_[entry.key] = std::move(entry.value);
     }
@@ -131,8 +125,6 @@ bool StateStore::set_static_delay_ms(uint16_t delay_ms) {
 }
 
 std::optional<uint8_t> StateStore::volume() const {
-    // Bounded at 100 rather than at a uint8_t's range: a volume is a percentage, and every
-    // consumer of this -- the sink, the role, `status` -- treats it as one.
     const std::optional<uint64_t> value = this->get_number(KEY_VOLUME, 100);
     if (!value.has_value()) {
         return std::nullopt;
@@ -151,7 +143,6 @@ std::optional<bool> StateStore::muted() const {
     if (*value == "false") {
         return false;
     }
-    // Anything else reads as absent, for get_number()'s reason: only this daemon writes here.
     return std::nullopt;
 }
 
@@ -169,8 +160,7 @@ std::optional<std::string> StateStore::get(const std::string& key) const {
 }
 
 bool StateStore::set_all(const std::vector<std::pair<std::string, std::string>>& pairs) {
-    // What each key held, so every one of them can be put back if the write fails. An absent key
-    // is recorded as absent rather than as empty, since the two are different to get().
+    // Previous values, absent kept distinct from empty, so a failed write can roll back.
     std::vector<std::pair<std::string, std::optional<std::string>>> previous;
     bool changed = false;
     for (const auto& [key, value] : pairs) {
@@ -190,10 +180,7 @@ bool StateStore::set_all(const std::vector<std::pair<std::string, std::string>>&
     if (this->write()) {
         return true;
     }
-    // Rolled back, so what is held keeps describing what is really on disk. Without this, a store
-    // whose write failed would answer the *next* set of the same values from the short-circuit
-    // above and report success for a write that never happened -- and a full disk that later
-    // cleared would never be retried.
+    // Roll back so the short-circuit above cannot report a write that never happened.
     for (const auto& [key, value] : previous) {
         if (value.has_value()) {
             this->values_[key] = *value;
@@ -221,26 +208,18 @@ bool StateStore::write() const {
         return false;
     }
 
-    // Only the leaf directory is created: `--state-dir`, `$XDG_STATE_HOME` and `~/.local/state` are
-    // the caller's own to provide, and silently building a whole tree under a mistyped one would
-    // scatter directories rather than fail visibly.
+    // Only the leaf directory is created; a mistyped parent should fail visibly.
     const std::string directory = parent_directory(this->path_);
     if (!directory.empty() && mkdir(directory.c_str(), 0700) != 0 && errno != EEXIST) {
         return false;
     }
 
-    // The pid is in the name so two players sharing one `$XDG_STATE_HOME` cannot rename each
-    // other's half-written temporary into place. They still share the *file* and will overwrite
-    // each other's keys -- give each one its own `--state-dir` when that matters.
+    // Pid in the name, so two players sharing a state dir cannot rename each other's temp file.
     const std::string temporary = this->path_ + ".tmp." + std::to_string(getpid());
-    // Anything left by a previous run that died mid-write, whose pid this process now has. Removed
-    // rather than truncated, so the O_EXCL below is what creates the file and its mode is therefore
-    // the one that applies.
+    // Remove a stale temp so O_EXCL creates the file with our mode.
     std::remove(temporary.c_str());
 
-    // 0600 at creation rather than fixed up afterwards: the file records which server this player
-    // talks to, and there must be no instant in which it is readable more widely than that. The
-    // umask can only take bits *away* from this, never add them, so it cannot widen the result.
+    // 0600 at creation, so the file is never readable more widely.
     const int fd = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
     if (fd < 0) {
         return false;
@@ -259,13 +238,11 @@ bool StateStore::write() const {
         }
         ok = std::fprintf(file, "%s = %s\n", key.c_str(), value.c_str()) > 0;
     }
-    // Flushed and pushed to the device *before* the rename. Without it the directory entry can
-    // reach the disk ahead of the bytes, and a power cut then leaves a file that exists and is
-    // empty -- which is the one outcome the temp-and-rename dance is here to prevent.
+    // fsync before rename, or a power cut can leave an empty file in place.
     if (ok) {
         ok = std::fflush(file) == 0 && ::fsync(fd) == 0;
     }
-    // fclose closes fd as well as flushing, so a full disk shows up here even if the above passed.
+    // fclose also flushes, so a full disk can surface here.
     ok = std::fclose(file) == 0 && ok;
 
     if (!ok || std::rename(temporary.c_str(), this->path_.c_str()) != 0) {
