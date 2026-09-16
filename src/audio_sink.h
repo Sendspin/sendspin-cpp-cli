@@ -100,14 +100,14 @@ public:
     /// @param now_ms Monotonic milliseconds; derive timing from this, not from counting calls.
     virtual void poll(int64_t /*now_ms*/) {}
 
-    /// What the device will take, probed once before start_server().
+    /// What the device will take, probed once before start().
     /// An unprobeable device must answer SinkCapabilities::permissive(), never an empty set.
     virtual SinkCapabilities capabilities() const {
         return SinkCapabilities::permissive();
     }
 
     /// Reports frames that reached the DAC, for sync feedback; optional for instant sinks.
-    /// Assign before start_server() and never after: backends read it from their audio thread.
+    /// Assign before start() and never after: backends read it from their audio thread.
     std::function<void(uint32_t frames, int64_t timestamp)> on_frames_played;
 
 protected:
