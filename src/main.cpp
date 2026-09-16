@@ -56,9 +56,6 @@ using sendspin::LogLevel;
 /// Sleep between client.loop() calls; bounds main-loop reaction time only.
 constexpr int LOOP_INTERVAL_MS = 10;
 
-/// How long shutdown keeps pumping client.loop() for the stream's end (~50 ms needed).
-constexpr int SHUTDOWN_DRAIN_MS = 500;
-
 std::atomic<bool> g_running{true};
 
 void handle_signal(int /*sig*/) {
@@ -600,7 +597,7 @@ int main(int argc, char* argv[]) {
 
     sendspin::SendspinClient client(std::move(config));
 
-    // Before add_player() and start_server(), or the library never asks it.
+    // Before add_player() and start(), or the library never asks it.
     client.set_persistence_provider(&persistence);
 
     std::vector<sendspin::AudioSupportedFormatObject> formats = advertised_formats(*sink);
@@ -659,7 +656,7 @@ int main(int argc, char* argv[]) {
     player.update_volume(volume);
     player.update_muted(muted);
 
-    if (!client.start_server()) {
+    if (!client.start()) {
         log_fatal(LOG_TAG, "could not start the Sendspin server on port %u", opts.port);
         return 1;
     }
@@ -668,7 +665,7 @@ int main(int argc, char* argv[]) {
             SENDSPIN_CLI_VERSION, opts.port, opts.name.c_str(), sink->name().c_str(),
             mdns_backend_name().c_str());
 
-    // After start_server(), so the advertised port is already accepting.
+    // After start(), so the advertised port is already accepting.
     MdnsService mdns;
     start_advertising(mdns, opts);
 
@@ -736,23 +733,11 @@ int main(int argc, char* argv[]) {
     }
 
     cli_log(LogLevel::INFO, "Shutting down");
-    // Before the client disconnects, so a restart does not race a stale record or socket.
+    // Before the client stops, so a restart does not race a stale record or socket.
     mdns.stop();
     control_socket.close();
-    client.disconnect(sendspin::SendspinGoodbyeReason::SHUTDOWN);
-    // Pump until the stream ends so the stop hook runs; disconnect() only asks.
-    for (int waited_ms = 0; player_listener.streaming(); waited_ms += LOOP_INTERVAL_MS) {
-        if (waited_ms >= SHUTDOWN_DRAIN_MS) {
-            cli_log(LogLevel::WARN,
-                    "The stream did not end within %d ms of disconnecting -- any --hook-stop "
-                    "has not run",
-                    SHUTDOWN_DRAIN_MS);
-            break;
-        }
-        client.loop();
-        hooks.poll();
-        std::this_thread::sleep_for(std::chrono::milliseconds(LOOP_INTERVAL_MS));
-    }
+    // Returns stopped, having delivered on_stream_end() -- so the stop hook is already queued.
+    client.stop();
     // The stop hook may be pending behind a hung start hook; run it anyway.
     hooks.flush();
     // The lambda references locals destroyed before the listener; drop it first.

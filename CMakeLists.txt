@@ -25,7 +25,7 @@ endif()
 
 # sendspin-cpp
 
-set(SENDSPIN_GIT_TAG "v0.7.2" CACHE STRING
+set(SENDSPIN_GIT_TAG "v0.8.0" CACHE STRING
     "sendspin-cpp git tag to build against")
 
 # player, metadata and controller (group transport verbs); no FORCE, so -D overrides still win.
