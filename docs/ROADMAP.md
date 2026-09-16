@@ -1681,7 +1681,7 @@ landed:
 - **`status` reports it**, as `static delay: <n> ms`, read from `PlayerRole::get_static_delay_ms()`
   rather than from a listener-held shadow. That is not a style choice: `update_static_delay()` does
   not invoke the listener (only a server's `set_static_delay` does,
-  `_deps/sendspin-src/src/player_role.cpp:396-400`), so a shadow would be stale the moment the
+  `_deps/sendspin-src/src/player_role.cpp:403-408`), so a shadow would be stale the moment the
   local knob below was used.
 - **`sendspin-cli delay <0-5000>`** sets it locally. The first *mutating* request answered without
   a server — `status` was previously the only locally answered one at all — which the spec
