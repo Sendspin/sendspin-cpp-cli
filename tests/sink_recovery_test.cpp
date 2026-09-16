@@ -80,8 +80,7 @@ TEST(SinkRecovery, ReturnsTheDiscardedGapOnceWhenADeviceComesBack) {
     SinkRecovery recovery;
     escalate(recovery);
 
-    // Fourteen seconds at the reporter's 48 kHz: these writes were accepted to prevent the
-    // producer spinning, but no DAC played them.
+    // Fourteen seconds at 48 kHz, accepted while no DAC played them.
     recovery.discard_frames(14U * 48'000U);
 
     EXPECT_EQ(recovery.take_discarded_frames(), 672'000U);
@@ -114,8 +113,7 @@ TEST(SinkRecovery, ForgettingTheDiscardedGapLeavesTheBudgetAlone) {
     escalate(recovery);
     recovery.discard_frames(48'000U);
 
-    // What a flush does with no device open. A flush is not a stream that got a device running,
-    // so the outage it happened in is still owed exactly what it was before.
+    // What a flush does with no device open: the outage is still owed what it was.
     recovery.forget_discarded_frames();
 
     EXPECT_EQ(recovery.take_discarded_frames(), 0U);
