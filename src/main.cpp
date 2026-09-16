@@ -665,7 +665,7 @@ int main(int argc, char* argv[]) {
             SENDSPIN_CLI_VERSION, opts.port, opts.name.c_str(), sink->name().c_str(),
             mdns_backend_name().c_str());
 
-    // After start(), so the advertised port is already accepting.
+    // The first client.loop() tick starts the listener after mDNS registration.
     MdnsService mdns;
     start_advertising(mdns, opts);
 
