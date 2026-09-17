@@ -2561,10 +2561,13 @@ frameworks, so the binary links only what every Mac already has.
   what keeps a device pinned at 48 kHz playing 44.1 kHz content without stealing it from
   whatever else is using it.
 
-**What has and has not been exercised.** Nothing on real hardware yet — this was written on
-Linux, where it does not compile, so CI's macOS leg is the first compiler to see it. The
-parser-level `-o coreaudio[:...]` forms and the Linux reserved-backend refusal are covered in
-`tests/device_spec_test.cpp` and run on every leg. Still owed, on a Mac with real output:
+**What has and has not been exercised.** It compiles clean under `-Werror` on CI's
+`macos-arm64` leg — which is the first compiler that saw it, since it was written on Linux,
+where it is not built — and that leg's `otool -L` guard reports only CoreAudio, AudioToolbox,
+CoreFoundation, `libc++` and `libSystem`, so the dyld abort this item exists to fix cannot
+come back unnoticed. The parser-level `-o coreaudio[:...]` forms and the Linux
+reserved-backend refusal are covered in `tests/device_spec_test.cpp` and run on every leg.
+None of that opens a device. Still owed, on a Mac with real output:
 a clean tone at 48 kHz/16-bit, 44.1 kHz/24-bit and 44.1 kHz/32-bit; exact `on_frames_played`
 accounting against the wall clock; a DAC offset plausible against the device's reported
 latency; a mid-stream format change and recovery from a refused one; volume, mute, the ramp
