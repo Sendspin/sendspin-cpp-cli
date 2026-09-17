@@ -856,15 +856,15 @@ bool CoreAudioSink::open_unit_(AudioDeviceID device, uint32_t sample_rate, uint8
         this->stream_rate_ = actual.mSampleRate;
     }
 
-    // The render timestamp is when the HAL hands the buffer over, not when it reaches the DAC, so
-    // the device's own latency goes on top -- unlike PortAudio's outputBufferDacTime.
+    // The render timestamp is when the hardware consumes the buffer, not when it reaches the
+    // speaker, so the presentation latency goes on top -- unlike PortAudio's outputBufferDacTime.
+    // Not the safety offset: that is the margin the HAL schedules ahead by, so it is already in
+    // how far in the future the timestamp sits, and adding it would count it twice.
     const double device_rate = nominal_sample_rate(device);
     double latency_s = 0.0;
     if (device_rate > 0.0) {
         const uint32_t frames =
             u32_property(device, kAudioDevicePropertyLatency, kAudioDevicePropertyScopeOutput) +
-            u32_property(device, kAudioDevicePropertySafetyOffset,
-                         kAudioDevicePropertyScopeOutput) +
             first_output_stream_latency(device);
         latency_s = static_cast<double>(frames) / device_rate;
     }

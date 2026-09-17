@@ -2518,10 +2518,15 @@ frameworks, so the binary links only what every Mac already has.
 - **Sync feedback through the render callback's `AudioTimeStamp`.** PortAudio hands the
   callback `outputBufferDacTime` against `currentTime`; AUHAL hands a Mach absolute time, so
   the distance is taken in Mach ticks and converted through `mach_timebase_info()`. That
-  timestamp is when the HAL hands the buffer over rather than when it reaches the DAC, so the
-  device's own latency, safety offset, stream latency and the unit's converter latency go on
-  top — unlike PortAudio, where `outputBufferDacTime` already carries them and adding them
-  would count twice.
+  timestamp is when the hardware *consumes* the buffer rather than when it reaches the speaker,
+  so `kAudioDevicePropertyLatency`, `kAudioStreamPropertyLatency` and the unit's converter
+  latency go on top — unlike PortAudio, where `outputBufferDacTime` already carries them and
+  adding them would count twice. **`kAudioDevicePropertySafetyOffset` is deliberately not in
+  that sum**: it is the margin the HAL schedules ahead by, so it is already in how far in the
+  future the timestamp sits. Adding it too is an easy mistake — it cost this backend a
+  systematic ~33-64 frames before the timestamp's meaning was checked — and it is why a
+  whole-path latency figure of the kind mpv computes, which also folds in
+  `kAudioDevicePropertyBufferFrameSize`, is the wrong thing to add to a per-buffer timestamp.
 - **8/16/24/32-bit** through a packed signed little-endian `AudioStreamBasicDescription` on
   the unit's input scope, letting the AU convert to whatever the device is running. That is
   what keeps every depth the decoders emit without a converter of our own, and
