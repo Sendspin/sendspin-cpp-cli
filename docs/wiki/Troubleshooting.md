@@ -335,8 +335,8 @@ Raise the buffer. The default is 100 ms, and the range is 10–2000:
 buffer-ms = 250
 ```
 
-That is one figure for every backend — ALSA divides it into periods, PortAudio makes it the
-ring size, and a device-less sink ignores it. A figure smaller than one device buffer is
+That is one figure for every backend — ALSA divides it into periods, CoreAudio and PortAudio
+make it the ring size, and a device-less sink ignores it. A figure smaller than one device buffer is
 raised to the floor and says so at `debug`. See
 [Buffering and stream hooks](Advanced-Usage#buffering-and-stream-hooks).
 

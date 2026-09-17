@@ -79,6 +79,11 @@ TEST(ResolveDeviceSpec, BackendListMatchesTheBuild) {
 #else
     EXPECT_EQ(audio_backend_list().find("alsa"), std::string::npos);
 #endif
+#ifdef SENDSPIN_CLI_HAVE_COREAUDIO
+    EXPECT_NE(audio_backend_list().find("coreaudio"), std::string::npos);
+#else
+    EXPECT_EQ(audio_backend_list().find("coreaudio"), std::string::npos);
+#endif
 #ifdef SENDSPIN_CLI_HAVE_PORTAUDIO
     EXPECT_NE(audio_backend_list().find("portaudio"), std::string::npos);
 #else
@@ -143,6 +148,8 @@ TEST(ResolveDeviceSpec, ShadowedPcmNamesAreOnlyTheBackendNames) {
     }
     EXPECT_FALSE(alsa_pcm_is_reachable("null"));
     EXPECT_FALSE(alsa_pcm_is_reachable("alsa"));
+    // Reserved even here, where the backend cannot exist: see the CoreAudio block below.
+    EXPECT_FALSE(alsa_pcm_is_reachable("coreaudio"));
 
 #ifdef SENDSPIN_CLI_HAVE_PULSE
     EXPECT_FALSE(alsa_pcm_is_reachable("pulse"));
@@ -171,13 +178,62 @@ TEST(ResolveDeviceSpec, BarePcmNamesHaveNowhereToGo) {
     const std::string error = rejected("hw:2,0");
     EXPECT_NE(error.find("unknown output device"), std::string::npos);
     EXPECT_NE(error.find(audio_backend_list()), std::string::npos);
-#ifdef SENDSPIN_CLI_HAVE_PORTAUDIO
     // Names the prefix, since a bare device name is the likely mistake.
+#ifdef SENDSPIN_CLI_HAVE_COREAUDIO
+    EXPECT_NE(error.find("-o coreaudio:hw:2,0"), std::string::npos);
+#endif
+#ifdef SENDSPIN_CLI_HAVE_PORTAUDIO
     EXPECT_NE(error.find("-o portaudio:hw:2,0"), std::string::npos);
 #endif
 }
 
 #endif  // SENDSPIN_CLI_HAVE_ALSA
+
+// The CoreAudio prefix, whose device is optional
+
+#ifdef SENDSPIN_CLI_HAVE_COREAUDIO
+
+TEST(ResolveDeviceSpec, BareCoreaudioMeansThisHostsDefaultOutput) {
+    // An empty device follows the host's default output.
+    const DeviceSpec spec = resolved("coreaudio");
+    EXPECT_EQ(spec.backend, SinkBackend::CoreAudio);
+    EXPECT_TRUE(spec.device.empty());
+}
+
+TEST(ResolveDeviceSpec, CoreaudioTakesAnIndexOrAName) {
+    EXPECT_EQ(resolved("coreaudio:2").backend, SinkBackend::CoreAudio);
+    EXPECT_EQ(resolved("coreaudio:2").device, "2");
+
+    EXPECT_EQ(resolved("coreaudio:MacBook Pro Speakers").device, "MacBook Pro Speakers");
+    EXPECT_EQ(resolved("coreaudio:External Headphones").device, "External Headphones");
+    // Split on the first colon only, like every other prefix.
+    EXPECT_EQ(resolved("coreaudio:BlackHole 2ch: Aggregate").device, "BlackHole 2ch: Aggregate");
+}
+
+TEST(ResolveDeviceSpec, CoreaudioPrefixWithNothingAfterTheColonIsRejected) {
+    // An empty device after the colon is a truncated command line.
+    const std::string error = rejected("coreaudio:");
+    EXPECT_NE(error.find("no device"), std::string::npos);
+    EXPECT_NE(error.find("-o coreaudio on its own"), std::string::npos)
+        << "the message should point at the form that does mean the default";
+}
+
+#else  // no CoreAudio backend in this build
+
+TEST(ResolveDeviceSpec, CoreaudioSaysItIsNotInThisBuild) {
+    // Reserved, so a Linux build explains it instead of handing it to ALSA as a PCM name.
+    for (const char* spec : {"coreaudio", "coreaudio:2", "coreaudio:MacBook Pro Speakers"}) {
+        const std::string error = rejected(spec);
+        EXPECT_NE(error.find("CoreAudio backend"), std::string::npos) << spec;
+        EXPECT_NE(error.find("not in this build"), std::string::npos) << spec;
+        EXPECT_NE(error.find("macOS-only"), std::string::npos) << spec;
+        EXPECT_NE(error.find("SENDSPIN_CLI_WITH_COREAUDIO"), std::string::npos) << spec;
+        EXPECT_NE(error.find(audio_backend_list()), std::string::npos)
+            << spec << ": the error should name the backends this build has";
+    }
+}
+
+#endif  // SENDSPIN_CLI_HAVE_COREAUDIO
 
 // The PortAudio prefix, whose device is optional
 

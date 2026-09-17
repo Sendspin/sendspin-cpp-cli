@@ -45,8 +45,8 @@ sendspin-cli --output hw:1,0
 ```
 
 An argument is either a reserved name (`null`, `stdout`, `-`), a `<backend>:<device>`
-pair split on the first colon (`portaudio:2`, `pulse:<sink>`, `pipewire:<node>`), or an
-ALSA PCM name such as `hw:1,0`, `plughw:1,0`, or `default`. `plughw:` lets ALSA convert
+pair split on the first colon (`coreaudio:2`, `portaudio:2`, `pulse:<sink>`,
+`pipewire:<node>`), or an ALSA PCM name such as `hw:1,0`, `plughw:1,0`, or `default`. `plughw:` lets ALSA convert
 rate and format for a device that refuses the stream as it arrives.
 
 `default` follows the host's normal audio configuration. Under a system service, name

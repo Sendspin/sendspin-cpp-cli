@@ -109,6 +109,10 @@ sudo installer -pkg sendspin-cli-0.1.0-macos-arm64.pkg -target /
 sendspin-cli --version
 ```
 
+**A released macOS build needs nothing installed alongside it.** Audio goes out through
+CoreAudio and discovery through Bonjour, both part of macOS, so there is no Homebrew step
+and `otool -L` on the shipped binary shows only `/usr/lib` and `/System`.
+
 It refuses a Mac it cannot run on — the architectures are read off the binary at build time
 and declared in the package — so an Intel Mac is turned away rather than told the install
 worked. To undo it: remove the four files and
@@ -152,7 +156,8 @@ against a different version of the library.
 ```bash
 sudo apt install pkg-config libasound2-dev portaudio19-dev libavahi-compat-libdnssd-dev  # Debian / Ubuntu
 sudo dnf install pkgconf alsa-lib-devel portaudio-devel avahi-compat-libdns_sd-devel     # Fedora / RHEL
-brew install portaudio pkgconf                                                           # macOS
+# macOS needs nothing: CoreAudio and Bonjour are part of the system. For the optional
+# PortAudio backend as well, `brew install portaudio pkgconf`.
 
 git clone https://github.com/Sendspin/sendspin-cpp-cli.git
 cd sendspin-cpp-cli

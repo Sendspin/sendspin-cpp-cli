@@ -18,9 +18,9 @@ daemonization.
   discovers a server on `_sendspin-server._tcp` and dials it — retrying with a backoff
   until it answers (item 5). A typed-in address is no longer accepted (item 26).
 - Defines the `AudioSink` seam (`src/audio_sink.h`) and plays real audio through it:
-  auto-detected ALSA (item 2), PortAudio (item 3), PulseAudio (item 18) and PipeWire
-  (item 19) backends, with the device-less null/stdout sink as the fallback, so the
-  binary still runs where there is no sound card.
+  auto-detected ALSA (item 2), CoreAudio (item 27), PortAudio (item 3), PulseAudio
+  (item 18) and PipeWire (item 19) backends, with the device-less null/stdout sink as the
+  fallback, so the binary still runs where there is no sound card.
 - Parses the command-line flag surface: `-o -l -n -s -z -P -d -f --port --buffer-ms
   --no-mdns --mdns-name --help --version`, validating every value at parse time and
   refusing to start on a bad one (item 1).
@@ -134,8 +134,15 @@ the item that owns it, rather than as a loose follow-up here:
 
 ### 3. PortAudio backend — *shipped (audible slice)*
 
-The cross-platform backend (macOS and Linux), and the only way this player makes noise on
-macOS, where there is no ALSA at all. Upstream's `examples/common/portaudio_sink.cpp` was
+> **macOS moved off this backend in item 27.** The released macOS binary inherited
+> Homebrew's absolute install name for `libportaudio.2.dylib` and aborted under `dyld` on
+> any Mac without it — a dependency CI could never see, because the runner had brewed it.
+> A native CoreAudio sink needs only frameworks every Mac already has, so PortAudio is now
+> built `OFF` on the macOS release leg. Everything below still describes the Linux build,
+> and a Mac configured with `-DSENDSPIN_CLI_WITH_PORTAUDIO=ON` still gets both.
+
+The cross-platform backend (macOS and Linux), and for its first two releases the only way
+this player made noise on macOS, where there is no ALSA at all. Upstream's `examples/common/portaudio_sink.cpp` was
 the reference, but it is not an `AudioSink`, has no device selection, and logs with bare
 `fprintf(stderr)` — so it was ported into `src/` rather than compiled out of the
 FetchContent tree, whose `examples/` path is not a stable interface.
@@ -2485,3 +2492,82 @@ hand-entered address is neither, so it went.
   credential-redaction check went with them.
 - **`SENDSPIN_SERVER_URL` is answered only for the server_id the dial chose.** `LastDial` has
   no "literal URL, taken at its word" case left; a dial with no id answers nothing.
+
+### 27. Native CoreAudio backend — *shipped (hardware pass still owed)*
+
+The shipped macOS binary aborted at launch on any Mac without Homebrew's PortAudio:
+
+```
+dyld[38468]: Library not loaded: /opt/homebrew/opt/portaudio/lib/libportaudio.2.dylib
+Referenced from: /usr/local/bin/sendspin-cli
+```
+
+CI brewed `portaudio` on the `macos-14` runner and then smoke-tested the `.pkg` on that same
+runner, so the one host that could have caught it was the one host guaranteed not to. The fix
+is not to bundle the dylib but to stop needing it: CoreAudio and AudioToolbox are system
+frameworks, so the binary links only what every Mac already has.
+
+**Shipped** in `src/coreaudio_sink.{h,cpp}`, built on macOS with nothing to find
+(`-DSENDSPIN_CLI_WITH_COREAUDIO=OFF` forces it out):
+
+- An `AudioSink` over AUHAL (`kAudioUnitSubType_HALOutput`), modelled on
+  `src/portaudio_sink.{h,cpp}` — the other callback-driven sink — and reusing
+  `PcmRingBuffer`, `pcm_volume.{h,cpp}` and `SinkRecovery`/`OutageGapHandoff` rather than
+  reimplementing them. The four invariants `portaudio_sink.h` writes down come from the
+  `AudioSink` contract, not from PortAudio, so they are carried across unchanged.
+- **Sync feedback through the render callback's `AudioTimeStamp`.** PortAudio hands the
+  callback `outputBufferDacTime` against `currentTime`; AUHAL hands a Mach absolute time, so
+  the distance is taken in Mach ticks and converted through `mach_timebase_info()`. That
+  timestamp is when the HAL hands the buffer over rather than when it reaches the DAC, so the
+  device's own latency, safety offset, stream latency and the unit's converter latency go on
+  top — unlike PortAudio, where `outputBufferDacTime` already carries them and adding them
+  would count twice.
+- **8/16/24/32-bit** through a packed signed little-endian `AudioStreamBasicDescription` on
+  the unit's input scope, letting the AU convert to whatever the device is running. That is
+  what keeps every depth the decoders emit without a converter of our own, and
+  `capabilities()` probes the three ladders by setting each candidate format on a scratch
+  unit — the same question a stream asks.
+- **`-o coreaudio[:<device>]`**, with PortAudio's device grammar exactly: bare means this
+  host's current default output, `coreaudio:2` an index as `-l` prints it, and
+  `coreaudio:<name>` a full case-insensitive match, with an ambiguous name refused naming the
+  candidates. The device is re-resolved at every stream, and `-o` defaults to `coreaudio`
+  wherever it is the most direct backend, so a bare run plays on a Mac.
+- **In-place device recovery without the rescan cycle item 14 needed.** An `AudioDeviceID` is
+  stable, and `AudioObjectAddPropertyListener` reports `kAudioDevicePropertyDeviceIsAlive`
+  directly, so there is no `Pa_Terminate()`/`Pa_Initialize()` and no index renumbering: the
+  listener flags the death off its HAL thread, `write()` spends the one in-place reopen, and
+  `poll()` retries on `SinkRecovery`'s backoff.
+- **A moved system default is followed, and is not a recovery.** A bare `-o coreaudio` also
+  listens on `kAudioHardwarePropertyDefaultOutputDevice`; `poll()` reopens on the new device
+  with the ring tail accounted as an outage gap. Deliberately outside `SinkRecovery`'s budget:
+  a default move is an ordinary event, and spending the reopen on it would leave a real outage
+  in the same track with nothing left.
+- **The guard that would have caught this.** CI's macOS leg runs `otool -L` over the staged
+  binary and fails on any load command outside `/usr/lib` and `/System`. Worth having whatever
+  the backend is, and it is the only part of this item a runner can prove — every
+  `scripts/smoke_test.sh` invocation is `-o null`, so no runner opens a device.
+- CI's `macos-arm64` leg no longer runs `brew install portaudio pkgconf`, its
+  `expect_backends` is `null, stdout, coreaudio`, and its `runtime_packages` is the fact that
+  there are none. `with_portaudio` joins the matrix on **every** leg, since a key missing from
+  one reads as false.
+
+**Not in this slice:**
+
+- **Removing PortAudio.** It stays in the tree and stays `ON` everywhere but the macOS release
+  leg; `-o portaudio` still works on Linux, and a Mac that asks for it still builds both.
+  Deleting it is a separate call once CoreAudio has field time.
+- **Hardware volume** → item 15, as for every other backend.
+- **Setting the device's nominal rate to match the stream.** The AU resamples instead, which is
+  what keeps a device pinned at 48 kHz playing 44.1 kHz content without stealing it from
+  whatever else is using it.
+
+**What has and has not been exercised.** Nothing on real hardware yet — this was written on
+Linux, where it does not compile, so CI's macOS leg is the first compiler to see it. The
+parser-level `-o coreaudio[:...]` forms and the Linux reserved-backend refusal are covered in
+`tests/device_spec_test.cpp` and run on every leg. Still owed, on a Mac with real output:
+a clean tone at 48 kHz/16-bit, 44.1 kHz/24-bit and 44.1 kHz/32-bit; exact `on_frames_played`
+accounting against the wall clock; a DAC offset plausible against the device's reported
+latency; a mid-stream format change and recovery from a refused one; volume, mute, the ramp
+across a change and the shutdown latch; a default-output move and an unplug while playing; and
+a real Sendspin server driving it end to end. Item 3 shipped without that last one and said so;
+this item should not.
