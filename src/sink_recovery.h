@@ -54,6 +54,16 @@ public:
     /// True while a rescan is still owed. The one method safe to call without the lock.
     bool pending() const;
 
+    /// Records frames accepted and discarded with no device to play them; saturates.
+    /// Stays pending through a recovered rescan until a timed write takes it.
+    void discard_frames(uint32_t frames);
+
+    /// Returns and clears the frames accumulated by discard_frames().
+    uint32_t take_discarded_frames();
+
+    /// Drops the discarded-frame count, leaving the recovery budget alone.
+    void forget_discarded_frames();
+
     /// Refills the budget; call only when configure() really opened a stream.
     void reset();
 
@@ -71,6 +81,8 @@ private:
     /// Set from handing out an attempt until rescan_done(); blocks re-arming and double counting.
     bool rescan_in_flight_{false};
     int rescan_attempts_{0};
+    /// Frames accepted with no device to play them, not yet retired; see discard_frames().
+    uint32_t discarded_frames_{0};
     /// Read by the main loop without the sink's lock; see pending().
     std::atomic<bool> rescan_owed_{false};
     int64_t rescan_at_ms_{NOT_STAMPED};

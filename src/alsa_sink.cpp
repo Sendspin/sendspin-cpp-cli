@@ -27,6 +27,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -467,6 +468,9 @@ bool AlsaAudioSink::configure(uint32_t sample_rate, uint8_t channels, uint8_t bi
 
     // Before anything can fail: poll() reopens at this format.
     this->last_format_ = {sample_rate, channels, bits_per_sample};
+    // A new stream starts from zero buffered frames; here, not beside reset(), so a failed open
+    // drops the gap too.
+    this->recovery_.forget_discarded_frames();
 
     if (this->pcm_ != nullptr && this->rate_ == sample_rate && this->channels_ == channels &&
         this->bits_ == bits_per_sample) {
@@ -505,6 +509,7 @@ size_t AlsaAudioSink::write(const uint8_t* data, size_t length, uint32_t timeout
     size_t bytes_per_frame = 0;
     int64_t finish_us = 0;
     bool have_timing = false;
+    uint32_t gap_frames = 0;
 
     {
         const std::lock_guard<std::mutex> lock(this->device_mutex_);
@@ -522,7 +527,11 @@ size_t AlsaAudioSink::write(const uint8_t* data, size_t length, uint32_t timeout
                                      ? this->bytes_per_frame_
                                      : static_cast<size_t>(this->last_format_.channels) *
                                            (static_cast<size_t>(this->last_format_.bit_depth) / 8U);
-            return (frame == 0) ? length : length - (length % frame);
+            const size_t consumed = (frame == 0) ? length : length - (length % frame);
+            if (frame != 0) {
+                this->recovery_.discard_frames(static_cast<uint32_t>(consumed / frame));
+            }
+            return consumed;
         }
 
         bytes_per_frame = this->bytes_per_frame_;
@@ -607,13 +616,23 @@ size_t AlsaAudioSink::write(const uint8_t* data, size_t length, uint32_t timeout
             if (snd_pcm_delay(this->pcm_, &delay) == 0 && delay >= 0) {
                 finish_us = now_us() + ((static_cast<int64_t>(delay) * 1000000) / this->rate_);
                 have_timing = true;
+                // Taken with the timestamp under the same lock, so nothing reports between them.
+                gap_frames = this->recovery_.take_discarded_frames();
             }
+        }
+
+        // recover_() closed the device mid-write: these bytes are consumed but never timestamped.
+        if (frames_done > 0 && this->pcm_ == nullptr) {
+            this->recovery_.discard_frames(static_cast<uint32_t>(frames_done));
         }
     }
 
-    // Outside the lock, so a callback that touches the sink cannot deadlock.
+    // Outside the lock, so a callback that touches the sink cannot deadlock. One report covers
+    // the gap and this write: the player keeps only the last timestamp it has not read.
     if (have_timing && this->on_frames_played) {
-        this->on_frames_played(static_cast<uint32_t>(frames_done), finish_us);
+        const uint64_t played = static_cast<uint64_t>(gap_frames) + frames_done;
+        const uint64_t ceiling = std::numeric_limits<uint32_t>::max();
+        this->on_frames_played(static_cast<uint32_t>(std::min(played, ceiling)), finish_us);
     }
 
     return frames_done * bytes_per_frame;
@@ -624,6 +643,10 @@ void AlsaAudioSink::clear() {
 
     // Safe only under device_mutex_; PortAudioSink::clear() must not do the same.
     this->current_multiplier_ = this->target_multiplier_.load(std::memory_order_relaxed);
+
+    // Before the early return: the gap's stream is over. Only the gap goes; reset() owns the
+    // budget.
+    this->recovery_.forget_discarded_frames();
 
     if (this->pcm_ == nullptr) {
         return;
@@ -698,6 +721,7 @@ void AlsaAudioSink::poll(int64_t now_ms) {
         this->close_device_();
         return;
     }
+    // The gap stays pending: reporting it here would race write()'s first timed report.
     this->recovery_.rescan_done(true);
     cli_log(LogLevel::INFO, "alsa: '%s' is back -- recovered without waiting for the next stream",
             this->device_.c_str());
