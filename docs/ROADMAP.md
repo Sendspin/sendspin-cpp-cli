@@ -14,9 +14,9 @@ daemonization.
 - Boots a `SendspinClient` with the `player`, `metadata` and `controller` roles, starts its
   WebSocket server, pumps `client.loop()`, and shuts down cleanly on `SIGINT`/`SIGTERM`.
 - Speaks both of the protocol's connection modes, and keeps them exclusive as the spec
-  requires: it advertises `_sendspin._tcp` over mDNS by default, and any `-s` instead
-  makes it dial out — to an address, or to a server discovered on
-  `_sendspin-server._tcp` — retrying with a backoff until it answers (item 5).
+  requires: it advertises `_sendspin._tcp` over mDNS by default, and `-s mdns:` instead
+  discovers a server on `_sendspin-server._tcp` and dials it — retrying with a backoff
+  until it answers (item 5). A typed-in address is no longer accepted (item 26).
 - Defines the `AudioSink` seam (`src/audio_sink.h`) and plays real audio through it:
   auto-detected ALSA (item 2), PortAudio (item 3), PulseAudio (item 18) and PipeWire
   (item 19) backends, with the device-less null/stdout sink as the fallback, so the
