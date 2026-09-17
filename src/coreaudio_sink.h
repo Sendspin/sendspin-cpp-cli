@@ -93,7 +93,12 @@ private:
     /// lost unit recovery is about to close will never report them. Only for those closes --
     /// stop(), configure() and clear() end the stream the gap belonged to. Caller holds mutex_.
     void discard_ring_tail_();
-    /// True while the open unit is still being driven by CoreAudio. Caller holds mutex_.
+    /// True while the render callback is still being driven. Caller holds mutex_.
+    /// Liveness only: a lost device does not stop the callback, so this stays true until the
+    /// unit does. Anything touching the ring's consumer side must ask this, not unit_alive_().
+    bool callback_running_() const;
+    /// True while the open unit is still worth feeding: running, on a device that has not died.
+    /// Caller holds mutex_.
     bool unit_alive_() const;
     /// Ring size in bytes. Caller holds mutex_ and the format fields are set.
     size_t ring_capacity_(double device_latency_s) const;
@@ -101,6 +106,8 @@ private:
 
     /// Starts listening for the open device's death, and for default-output moves when following
     /// the default. Caller holds mutex_; listeners are removed by close_unit_().
+    /// Removal does not wait an in-flight listener out, unlike PortAudio's stream close, so a
+    /// notification can still land on the atomics just after the sink is destroyed.
     void add_listeners_(AudioDeviceID device);
     void remove_listeners_();
 

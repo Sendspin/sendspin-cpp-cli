@@ -638,8 +638,9 @@ void CoreAudioSink::clear() {
 
     // Do not snap current_multiplier_: the callback keeps running through a flush.
 
-    if (this->unit_alive_()) {
-        // The consumer owns read_pos_, so it drains on its next read.
+    if (this->callback_running_()) {
+        // The consumer owns read_pos_, so it drains on its next read. Liveness, not unit_alive_():
+        // a lost device keeps being pulled, and drop() from this side would race that read.
         this->ring_.request_clear();
         return;
     }
@@ -1009,8 +1010,12 @@ void CoreAudioSink::discard_ring_tail_() {
         static_cast<uint32_t>(this->ring_.available() / this->bytes_per_frame_));
 }
 
+bool CoreAudioSink::callback_running_() const {
+    return this->unit_ != nullptr && this->running_;
+}
+
 bool CoreAudioSink::unit_alive_() const {
-    return this->unit_ != nullptr && this->running_ && !this->device_lost_.load();
+    return this->callback_running_() && !this->device_lost_.load();
 }
 
 size_t CoreAudioSink::ring_capacity_(double device_latency_s) const {
