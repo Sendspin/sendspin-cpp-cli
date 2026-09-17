@@ -383,6 +383,9 @@ bool PulseAudioSink::configure(uint32_t sample_rate, uint8_t channels, uint8_t b
 
     // Before anything can fail: recovery reopens at this format.
     this->last_format_ = {sample_rate, channels, bits_per_sample};
+    // A new stream starts the producer from zero buffered frames, so an outage gap left over from
+    // the last one is owed to nobody. Here rather than beside reset(), which a failed open skips.
+    this->recovery_.forget_discarded_frames();
 
     this->close_stream_();
     if (!this->conn_.ready()) {
@@ -422,7 +425,11 @@ size_t PulseAudioSink::write(const uint8_t* data, size_t length, uint32_t timeou
                                  ? this->bytes_per_frame_
                                  : static_cast<size_t>(this->last_format_.channels) *
                                        (static_cast<size_t>(this->last_format_.bit_depth) / 8U);
-        return (frame == 0) ? length : length - (length % frame);
+        const size_t consumed = (frame == 0) ? length : length - (length % frame);
+        if (frame != 0) {
+            this->recovery_.discard_frames(static_cast<uint32_t>(consumed / frame));
+        }
+        return consumed;
     }
 
     const size_t bytes_per_frame = this->bytes_per_frame_;
@@ -495,6 +502,7 @@ size_t PulseAudioSink::write(const uint8_t* data, size_t length, uint32_t timeou
 
     int64_t finish_us = 0;
     bool have_timing = false;
+    uint32_t gap_frames = 0;
     if (frames_done > 0 && this->stream_ != nullptr) {
         // pa_stream_get_latency() is the server's own measure of time until queued audio plays.
         const MainloopLock ml(this->conn_.mainloop());
@@ -503,13 +511,29 @@ size_t PulseAudioSink::write(const uint8_t* data, size_t length, uint32_t timeou
         if (pa_stream_get_latency(this->stream_, &latency_us, &negative) == 0 && negative == 0) {
             finish_us = now_us() + static_cast<int64_t>(latency_us);
             have_timing = true;
+            // Taken with the timestamp, under the same lock, so no report can land between the
+            // outage being retired and the first real playback being reported.
+            gap_frames = this->recovery_.take_discarded_frames();
         }
     }
 
+    // Frames that reached a stream which then died will never be reported, so they join the gap.
+    // A clear() during the wait is a flush rather than a loss -- the player has dropped those
+    // frames already -- and is told apart by the generation. A poll() that closed and reopened the
+    // stream during the wait moves the generation too and so is taken for a flush: that rare case
+    // under-counts.
+    if (frames_done > 0 && !have_timing &&
+        (this->stream_ == nullptr ||
+         (this->stream_failed_.load() && this->stream_generation_ == generation))) {
+        this->recovery_.discard_frames(static_cast<uint32_t>(frames_done));
+    }
+
     lock.unlock();
-    // Outside the lock, so a callback that touches the sink cannot deadlock.
+    // Outside the lock, so a callback that touches the sink cannot deadlock. One report for the
+    // gap and this write together: the player keeps only the last timestamp, so a separate gap
+    // report could lose it.
     if (have_timing && this->on_frames_played) {
-        this->on_frames_played(static_cast<uint32_t>(frames_done), finish_us);
+        this->on_frames_played(frames_with_gap(gap_frames, frames_done), finish_us);
     }
     return frames_done * bytes_per_frame;
 }
@@ -523,6 +547,10 @@ void PulseAudioSink::clear() {
     // A flush ends a parked write()'s stream.
     ++this->stream_generation_;
     this->space_available_.notify_all();
+
+    // Also before the early return: the player zeroes its buffered-frame count with a flush, so
+    // the gap is owed to nobody. Only the gap -- the recovery budget is configure()'s to refill.
+    this->recovery_.forget_discarded_frames();
 
     if (this->stream_ == nullptr) {
         return;

@@ -18,6 +18,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <limits>
 
 namespace sendspin_cli {
 
@@ -87,5 +88,36 @@ private:
     std::atomic<bool> rescan_owed_{false};
     int64_t rescan_at_ms_{NOT_STAMPED};
 };
+
+/// @brief Carries an outage gap from a sink's locked write() to a callback that takes no lock.
+///
+/// PortAudioSink and PipeWireSink report playback from a realtime callback, which SinkRecovery's
+/// locking rule puts out of its reach. So write() moves the gap in here, under the sink's lock,
+/// once the stream is alive again, and the callback takes it with the first report that has a
+/// timestamp to retire it against. Saturates rather than wraps, like discard_frames().
+class OutageGapHandoff {
+public:
+    /// Producer side, under the sink's lock. Safe against a concurrent take().
+    void add(uint32_t frames);
+
+    /// Consumer side, from the audio callback: the whole gap, leaving none behind.
+    uint32_t take();
+
+    /// For a stream that ended before its gap was retired; see forget_discarded_frames().
+    void forget();
+
+private:
+    std::atomic<uint32_t> frames_{0};
+};
+
+/// @brief The count for one on_frames_played() report that retires `gap_frames` alongside
+/// `played_frames`.
+///
+/// Saturated rather than wrapped: the report is 32-bit and a gap can already sit at the ceiling.
+constexpr uint32_t frames_with_gap(uint32_t gap_frames, uint64_t played_frames) {
+    const uint64_t total = static_cast<uint64_t>(gap_frames) + played_frames;
+    const uint64_t ceiling = std::numeric_limits<uint32_t>::max();
+    return static_cast<uint32_t>((total < ceiling) ? total : ceiling);
+}
 
 }  // namespace sendspin_cli

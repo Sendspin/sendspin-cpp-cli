@@ -107,6 +107,30 @@ void SinkRecovery::escalate_() {
     }
 }
 
+void OutageGapHandoff::add(uint32_t frames) {
+    if (frames == 0) {
+        return;
+    }
+    uint32_t current = this->frames_.load();
+    // A compare-exchange rather than load-then-store: the callback can take() between the two, and
+    // a plain store would hand back the gap it just retired.
+    while (true) {
+        const uint32_t room = std::numeric_limits<uint32_t>::max() - current;
+        const uint32_t next = current + ((frames < room) ? frames : room);
+        if (this->frames_.compare_exchange_weak(current, next)) {
+            return;
+        }
+    }
+}
+
+uint32_t OutageGapHandoff::take() {
+    return this->frames_.exchange(0);
+}
+
+void OutageGapHandoff::forget() {
+    this->frames_.store(0);
+}
+
 int64_t SinkRecovery::delay_for_(int attempts_made) {
     int64_t delay = SINK_RESCAN_DELAY_MS;
     // Doubled in a loop rather than shifted, so raising SINK_RESCAN_ATTEMPTS cannot overflow.

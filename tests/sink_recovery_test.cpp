@@ -151,6 +151,48 @@ TEST(SinkRecovery, ResetClearsTheDiscardedGap) {
     EXPECT_EQ(recovery.take_discarded_frames(), 0U);
 }
 
+TEST(OutageGapHandoff, HandsTheGapToTheCallbackOnce) {
+    OutageGapHandoff handoff;
+    handoff.add(48'000U);
+    handoff.add(1'000U);
+
+    // A second take() would be a second report of the same outage, which is the playhead jump
+    // this exists to prevent in the other direction.
+    EXPECT_EQ(handoff.take(), 49'000U);
+    EXPECT_EQ(handoff.take(), 0U);
+}
+
+TEST(OutageGapHandoff, SaturatesInsteadOfWrapping) {
+    OutageGapHandoff handoff;
+    handoff.add(std::numeric_limits<uint32_t>::max() - 10U);
+    handoff.add(100U);
+
+    EXPECT_EQ(handoff.take(), std::numeric_limits<uint32_t>::max());
+}
+
+TEST(OutageGapHandoff, ForgettingDropsAGapTheCallbackHasNotTaken) {
+    OutageGapHandoff handoff;
+    handoff.add(48'000U);
+
+    // What clear() and configure() do: the player starts the next stream from zero, so a gap
+    // still waiting for the callback is owed to nobody.
+    handoff.forget();
+    EXPECT_EQ(handoff.take(), 0U);
+
+    // And the next outage is counted from nothing rather than refused.
+    handoff.add(480U);
+    EXPECT_EQ(handoff.take(), 480U);
+}
+
+TEST(OutageGapHandoff, TheReportCountSaturatesInsteadOfWrapping) {
+    EXPECT_EQ(frames_with_gap(0U, 480U), 480U);
+    EXPECT_EQ(frames_with_gap(672'000U, 480U), 672'480U);
+    EXPECT_EQ(frames_with_gap(std::numeric_limits<uint32_t>::max() - 5U, 480U),
+              std::numeric_limits<uint32_t>::max());
+    EXPECT_EQ(frames_with_gap(1U, std::numeric_limits<uint64_t>::max() - 1U),
+              std::numeric_limits<uint32_t>::max());
+}
+
 TEST(SinkRecovery, EveryFurtherWriteOfTheOutageIsToldToDiscard) {
     SinkRecovery recovery;
     escalate(recovery);
