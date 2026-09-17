@@ -12,18 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-/// @file pcm_volume_test.cpp
-/// @brief The Q32 software volume both real backends share
-///
-/// Arithmetic on byte buffers, so nothing here opens a device: the taper and -- the part
-/// worth pinning down -- the 24-bit unpack/sign-extend/repack round trip.
+/// The Q32 software volume every scaling backend shares.
 
 #include "pcm_volume.h"
 
 #include <gtest/gtest.h>
 
 #include <cmath>
-
 #include <cstdint>
 #include <vector>
 
@@ -45,9 +40,7 @@ int32_t unpacked24(const std::vector<uint8_t>& bytes) {
     return sample;
 }
 
-// ---------------------------------------------------------------------------
 // q32_gain_for(): the taper
-// ---------------------------------------------------------------------------
 
 TEST(Q32GainFor, FullVolumeIsUnitySoCallersCanSkipScalingEntirely) {
     EXPECT_EQ(q32_gain_for(100, false), Q32_ONE);
@@ -62,28 +55,20 @@ TEST(Q32GainFor, MuteAndZeroAreBothSilence) {
 }
 
 TEST(Q32GainFor, TheTaperIsTheSpecCurve) {
-    // The spec's `amplitude = (volume / 100)^1.5`, pinned on the two volumes where that has an
-    // exact answer rather than on a rounded decimal: (1/4)^1.5 is exactly 1/8, and (1/25)^1.5 is
-    // exactly 1/125. If either of these drifts, the curve has changed.
+    // Exact anchors of (volume / 100)^1.5: (1/4)^1.5 = 1/8 and (1/25)^1.5 = 1/125.
     EXPECT_EQ(q32_gain_for(25, false), Q32_ONE / 8);
     EXPECT_EQ(q32_gain_for(4, false), Q32_ONE / 125);
 
-    // And at half the slider, where the answer is irrational: 0.5^1.5 = 0.35355..., so within a
-    // count or two of rounding.
+    // 0.5^1.5 = 0.35355..., within rounding.
     EXPECT_NEAR(static_cast<double>(q32_gain_for(50, false)),
                 0.3535533905932738 * static_cast<double>(Q32_ONE), 2.0);
 }
 
 TEST(Q32GainFor, TheTaperIsNotUpstreamsQuadraticOne) {
-    // Guarding a deliberate divergence, so it cannot be "tidied" back. Upstream's
-    // update_volume_multiplier_() uses (volume/100)^2, which the spec's own note rules out by
-    // defining volume as perceived loudness. Quadratic would put volume 50 at a quarter of full
-    // scale; the spec puts it at 0.354, about 3 dB louder.
+    // Guards the deliberate ^1.5: upstream's ^2 would put volume 50 at a quarter.
     EXPECT_NE(q32_gain_for(50, false), Q32_ONE / 4);
     EXPECT_GT(q32_gain_for(50, false), Q32_ONE / 4);
 
-    // The divergence widens as the slider drops -- 6 dB at volume 25, where quadratic gives 1/16
-    // and the spec gives 1/8.
     EXPECT_EQ(q32_gain_for(25, false), 2 * (Q32_ONE / 16));
 }
 
@@ -98,23 +83,18 @@ TEST(Q32GainFor, TheTaperIsMonotonicAndNeverAmplifies) {
 }
 
 TEST(Q32GainFor, AVolumeIsPerceivedLoudnessRatherThanAmplitude) {
-    // The property the exponent exists to give, stated as the spec states it: "volume 50 should
-    // be perceived as half as loud as volume 100". Perceived loudness goes as amplitude^(1/1.5),
-    // so inverting the curve must recover the volume ratio -- which is what makes the number on a
-    // controller's slider mean something to a listener.
+    // Inverting the curve must recover the volume ratio: 50 is half as loud as 100.
     const auto perceived = [](uint8_t volume) {
-        return std::pow(static_cast<double>(q32_gain_for(volume, false)) /
-                            static_cast<double>(Q32_ONE),
-                        1.0 / 1.5);
+        return std::pow(
+            static_cast<double>(q32_gain_for(volume, false)) / static_cast<double>(Q32_ONE),
+            1.0 / 1.5);
     };
     EXPECT_NEAR(perceived(50) / perceived(100), 0.5, 0.001);
     EXPECT_NEAR(perceived(25) / perceived(100), 0.25, 0.001);
     EXPECT_NEAR(perceived(75) / perceived(100), 0.75, 0.001);
 }
 
-// ---------------------------------------------------------------------------
 // apply_volume(): per bit depth
-// ---------------------------------------------------------------------------
 
 TEST(ApplyVolume, UnityLeavesEverySampleAlone) {
     for (const uint8_t bytes_per_sample : {1, 2, 3, 4}) {
@@ -148,8 +128,7 @@ TEST(ApplyVolume, SixteenBitScalesSymmetrically) {
 }
 
 TEST(ApplyVolume, TwentyFourBitSignExtendsBeforeScaling) {
-    // The trap in packed 24-bit: without sign-extending bit 23 first, a negative sample reads
-    // as a large positive one and scaling flips it to a loud, wrong value.
+    // Packed 24-bit needs sign extension from bit 23, or negatives scale wrong.
     for (const int32_t sample : {8388607, 1000, 0, -1000, -8388608, -1}) {
         std::vector<uint8_t> data = packed24(sample);
         apply_volume(data.data(), data.size(), 3, Q32_ONE / 4);
@@ -178,64 +157,50 @@ TEST(ApplyVolume, ThirtyTwoBitQuartersWithoutOverflowing) {
 }
 
 TEST(ApplyVolume, ATrailingPartialSampleIsLeftAlone) {
-    // Five bytes at 16-bit is two whole samples and a stray byte. Scaling the stray would
-    // corrupt the sample it belongs to, whose other half arrives in the next buffer.
+    // A trailing partial sample is left alone.
     std::vector<uint8_t> data = {0x00, 0x40, 0x00, 0x40, 0xAB};
     apply_volume(data.data(), data.size(), 2, Q32_ONE / 4);
     EXPECT_EQ(data[4], 0xAB);
 }
 
 TEST(ApplyVolume, AnUnsupportedDepthChangesNothing) {
-    // Better to play the stream at full volume than to shred it: no backend asks for a depth
-    // that is not 1, 2, 3 or 4 bytes, and corrupting the buffer would be the louder failure.
+    // An unsupported width leaves the buffer untouched.
     std::vector<uint8_t> data = {0x11, 0x22, 0x33, 0x44, 0x55};
     const std::vector<uint8_t> before = data;
     apply_volume(data.data(), data.size(), 5, Q32_ONE / 2);
     EXPECT_EQ(data, before);
 }
 
-// ---------------------------------------------------------------------------
 // volume_ramp_step(): the slew rate
-// ---------------------------------------------------------------------------
 
 TEST(VolumeRampStep, AFullScaleChangeTakesTheRampDuration) {
-    // The property the constant names: stepping from silence to unity at this rate must take
-    // VOLUME_RAMP_MS, so the step is what carries the whole scale across that many frames.
     for (const uint32_t rate : {22050U, 44100U, 48000U, 96000U, 192000U}) {
         const uint64_t step = volume_ramp_step(rate);
         ASSERT_GT(step, 0U) << rate;
         const size_t ramp_frames = (static_cast<size_t>(rate) * VOLUME_RAMP_MS) / 1000U;
         EXPECT_EQ(ramped_gain(0, Q32_ONE, step, ramp_frames), Q32_ONE) << rate;
-        // And not appreciably sooner: one frame short must still be below unity, or the ramp is
-        // finishing early and the constant means nothing.
+        // One frame short must still be below unity.
         EXPECT_LT(ramped_gain(0, Q32_ONE, step, ramp_frames - 1), Q32_ONE) << rate;
     }
 }
 
 TEST(VolumeRampStep, ASmallerChangeIsProportionallyQuicker) {
-    // It is a slew *rate*, not a duration. Quarter of the distance, quarter of the frames --
-    // which is what lets the step be derived from the format alone, without reading the gain the
-    // ramp is currently at.
+    // A slew rate: a quarter of the distance takes a quarter of the frames.
     const uint64_t step = volume_ramp_step(48000);
     const size_t ramp_frames = (48000U * VOLUME_RAMP_MS) / 1000U;
     EXPECT_EQ(ramped_gain(Q32_ONE - (Q32_ONE / 4), Q32_ONE, step, ramp_frames / 4), Q32_ONE);
 }
 
 TEST(VolumeRampStep, ARateTooLowToRampAcrossSnapsInstead) {
-    // 0 means "do not ramp", which both consumers read as "snap". A sink with no format has no
-    // rate, and that must not become a division by zero or a ramp that never terminates.
+    // 0 means snap, never a division by zero.
     EXPECT_EQ(volume_ramp_step(0), 0U);
     EXPECT_EQ(ramped_gain(0, Q32_ONE, volume_ramp_step(0), 1), Q32_ONE);
 }
 
-// ---------------------------------------------------------------------------
 // ramped_gain(): the ramp's single arithmetic definition
-// ---------------------------------------------------------------------------
 
 TEST(RampedGain, SteppingNFramesAtOnceMatchesNSingleSteps) {
-    // The property AlsaAudioSink::write() depends on: it scales a whole buffer but commits the
-    // advance for the frames it really wrote, so the closed form has to agree with the per-frame
-    // walk the scaler took. If these diverge, a partial write leaves a gain discontinuity.
+    // The closed form must match the per-frame walk, or a partial write leaves a discontinuity.
     const uint64_t step = volume_ramp_step(44100);
     for (const std::pair<uint64_t, uint64_t>& ends : std::vector<std::pair<uint64_t, uint64_t>>{
              {0, Q32_ONE}, {Q32_ONE, 0}, {Q32_ONE / 8, Q32_ONE / 2}, {Q32_ONE / 2, Q32_ONE / 8}}) {
@@ -250,12 +215,10 @@ TEST(RampedGain, SteppingNFramesAtOnceMatchesNSingleSteps) {
 
 TEST(RampedGain, NeverOvershootsInEitherDirection) {
     const uint64_t step = volume_ramp_step(44100);
-    // Far more frames than the ramp needs, both ways. Saturating rather than passing the target
-    // is what stops a fall from wrapping through zero into a very loud gain.
+    // Saturates, so a fall cannot wrap through zero.
     EXPECT_EQ(ramped_gain(0, Q32_ONE, step, 1000000), Q32_ONE);
     EXPECT_EQ(ramped_gain(Q32_ONE, 0, step, 1000000), 0U);
-    // A step larger than the whole distance, which is the case an unclamped subtraction would
-    // underflow on.
+    // A step larger than the distance must not underflow.
     EXPECT_EQ(ramped_gain(10, 0, Q32_ONE, 1), 0U);
     EXPECT_EQ(ramped_gain(Q32_ONE - 10, Q32_ONE, Q32_ONE, 1), Q32_ONE);
 }
@@ -278,14 +241,10 @@ TEST(RampedGain, AlreadyAtTheTargetStaysThere) {
     EXPECT_EQ(ramped_gain(Q32_ONE / 3, 0, step, 0), Q32_ONE / 3);
 }
 
-// ---------------------------------------------------------------------------
 // apply_volume_ramp(): scaling while the gain moves
-// ---------------------------------------------------------------------------
 
 TEST(ApplyVolumeRamp, EveryChannelOfOneFrameGetsTheSameGain) {
-    // The reason the step is per frame rather than per sample. A ramp that advanced per sample
-    // would scale a stereo frame's left and right by different gains, which is an amplitude skew
-    // between channels -- a moving image shift, and worse than the click being removed.
+    // Per frame, not per sample: channels of one frame share a gain.
     constexpr uint8_t CHANNELS = 4;
     constexpr size_t FRAMES = 64;
     std::vector<int16_t> samples(FRAMES * CHANNELS, 20000);
@@ -315,8 +274,7 @@ TEST(ApplyVolumeRamp, TheReturnedGainIsWhereTheRampReached) {
 }
 
 TEST(ApplyVolumeRamp, AStartEqualToTheEndAgreesWithApplyVolume) {
-    // The steady state has to be bit-identical to the unramped path, or every volume would sound
-    // slightly different depending on which function scaled it.
+    // The steady state must be bit-identical to apply_volume().
     for (const uint64_t gain : {uint64_t{0}, Q32_ONE / 8, Q32_ONE / 3, Q32_ONE}) {
         for (const uint8_t bytes_per_sample : {1, 2, 3, 4}) {
             std::vector<uint8_t> ramped = {0x01, 0x80, 0xFF, 0x7F, 0x00, 0x23,
@@ -334,8 +292,7 @@ TEST(ApplyVolumeRamp, AStartEqualToTheEndAgreesWithApplyVolume) {
 }
 
 TEST(ApplyVolumeRamp, ReachingTheTargetMidBufferScalesTheRestAtTheTarget) {
-    // The tail is handed to apply_volume() in one pass rather than walked frame by frame, so this
-    // is what pins that the switch happens at the right sample and not one early or late.
+    // Pins the switch to the one-pass tail at the right sample.
     constexpr size_t FRAMES = 200;
     std::vector<int16_t> ramped(FRAMES, 8000);
     std::vector<int16_t> expected = ramped;
@@ -352,8 +309,7 @@ TEST(ApplyVolumeRamp, ReachingTheTargetMidBufferScalesTheRestAtTheTarget) {
 }
 
 TEST(ApplyVolumeRamp, RampsEveryBitDepthIncludingPacked24) {
-    // Packed 24-bit is the depth with a hand-rolled unpack/repack, so the ramp has to be shown to
-    // move through it rather than only through the widths a plain pointer cast reaches.
+    // Packed 24-bit uses a hand-rolled unpack, so cover it too.
     constexpr size_t FRAMES = 32;
     for (const uint8_t bytes_per_sample : {1, 2, 3, 4}) {
         std::vector<uint8_t> data(FRAMES * bytes_per_sample, 0);
@@ -368,8 +324,7 @@ TEST(ApplyVolumeRamp, RampsEveryBitDepthIncludingPacked24) {
         apply_volume_ramp(data.data(), data.size(), bytes_per_sample, 1, 0, Q32_ONE,
                           Q32_ONE / (FRAMES * 2));
 
-        // Rising through the buffer: the last frame must be louder than the first. Compared on the
-        // most significant byte, which is where the magnitude lives at every depth.
+        // Compared on the most significant byte.
         const uint8_t first = data[bytes_per_sample - 1];
         const uint8_t last = data[((FRAMES - 1) * bytes_per_sample) + bytes_per_sample - 1];
         EXPECT_LT(first, last) << "no ramp at bytes_per_sample "
@@ -378,8 +333,7 @@ TEST(ApplyVolumeRamp, RampsEveryBitDepthIncludingPacked24) {
 }
 
 TEST(ApplyVolumeRamp, ATrailingPartialFrameIsLeftAlone) {
-    // Same rule apply_volume() follows for a partial sample: the rest of the frame arrives in the
-    // next buffer, and scaling half of it now would corrupt it.
+    // A trailing partial frame is left alone.
     std::vector<uint8_t> data = {0x00, 0x40, 0x00, 0x40, 0x11, 0x22};
     // 16-bit stereo is 4 bytes a frame, so six bytes is one whole frame and half of another.
     apply_volume_ramp(data.data(), data.size(), 2, 2, 0, Q32_ONE, Q32_ONE / 100);
@@ -388,8 +342,7 @@ TEST(ApplyVolumeRamp, ATrailingPartialFrameIsLeftAlone) {
 }
 
 TEST(ApplyVolumeRamp, NoFrameWidthLeavesTheDataAndTheGainAlone) {
-    // A sink that has lost its format must not have its ramp silently marked as finished: the gain
-    // comes back unchanged, so whatever it still owed is still owed.
+    // No frame width: the gain comes back unchanged, still owed.
     std::vector<uint8_t> data = {0x11, 0x22, 0x33, 0x44};
     const std::vector<uint8_t> before = data;
     EXPECT_EQ(apply_volume_ramp(data.data(), data.size(), 0, 2, Q32_ONE / 4, Q32_ONE, 1),
@@ -400,8 +353,7 @@ TEST(ApplyVolumeRamp, NoFrameWidthLeavesTheDataAndTheGainAlone) {
 }
 
 TEST(ApplyVolumeRamp, ASnapStepAppliesTheTargetFromTheFirstFrame) {
-    // step 0 is "no ramp", which volume_ramp_step() returns for a sink with no rate. Every frame
-    // must then be at the target rather than at the old gain.
+    // step 0 snaps every frame to the target.
     std::vector<int16_t> samples(8, 4000);
     std::vector<int16_t> expected = samples;
     apply_volume(reinterpret_cast<uint8_t*>(expected.data()), expected.size() * sizeof(int16_t), 2,

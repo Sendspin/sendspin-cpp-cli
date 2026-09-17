@@ -56,9 +56,7 @@ KeyValueStatus read_key_value_file(const std::string& path, std::vector<KeyValue
         ++number;
         std::string line(buffer);
 
-        // A line that filled the buffer with no '\n' is either over-long or the last line of a
-        // file with no trailing newline. Only the first is a problem, and the missing '\n' is
-        // what tells them apart -- so the length is tested rather than the terminator.
+        // A full buffer without '\n' is over-long unless it is the unterminated last line.
         const bool complete = !line.empty() && line.back() == '\n';
         if (!complete && line.size() > MAX_KEY_VALUE_LINE_BYTES) {
             malformed_line = number;
@@ -68,9 +66,7 @@ KeyValueStatus read_key_value_file(const std::string& path, std::vector<KeyValue
         if (complete) {
             line.pop_back();
         }
-        // A file written on Windows, or copied through something that rewrote its line endings.
-        // Stripped rather than refused: the content is unambiguous, and a value with a stray
-        // '\r' on the end fails much further away, as an unopenable path or an unknown device.
+        // CRLF line endings: strip the '\r' rather than refuse.
         if (!line.empty() && line.back() == '\r') {
             line.pop_back();
         }
@@ -100,8 +96,7 @@ KeyValueStatus read_key_value_file(const std::string& path, std::vector<KeyValue
 
     std::fclose(file);
     if (status != KeyValueStatus::Ok) {
-        // Nothing partial is handed back: a caller that refuses the file must not also be able
-        // to act on the half of it that parsed.
+        // Hand back nothing partial from a refused file.
         entries.clear();
     }
     return status;

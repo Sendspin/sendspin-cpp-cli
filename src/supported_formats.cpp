@@ -29,46 +29,25 @@ using sendspin::SendspinCodecFormat;
 
 namespace {
 
-/// The only shape an Opus stream can reach here.
-///
-/// The decoder hands `opus_decode()` an `int16_t` buffer, so 16-bit is the only depth on that
-/// path whatever the device would take; 48 kHz is the rate Opus is carried at; and
-/// `opus_decoder_init()` takes mono or stereo only, so a device offering nothing narrower
-/// than 4 channels cannot be sent Opus at all.
+/// The only shape the Opus decoder can produce: 48 kHz, 16-bit, mono or stereo.
 constexpr uint32_t OPUS_RATE = 48000;
 constexpr uint8_t OPUS_BIT_DEPTH = 16;
 constexpr uint8_t OPUS_MAX_CHANNELS = 2;
 
-// The order the advertisement goes out in. It is a ranking, not a set: the protocol has
-// `supported_formats` in priority order, first preferred, and a server that honours that plays
-// whatever sits at the front of the list it can encode -- Music Assistant's `aiosendspin`
-// takes `filter_encodable_formats(...)[0]` and never looks further. Emitting the probe ladders
-// in their own ascending order therefore handed it the worst entry the device would take: on
-// the ALSA `default` PCM, which accepts everything, that is FLAC at 22050 Hz.
-//
-// The three ladders below rank the same entries instead. They only ever reorder -- narrowing
-// the list would take away formats a server, and a user picking one by hand, can still ask for.
+// Advertisement ranking: servers take the first entry they can encode, so order matters.
 
-/// Lossless first; then Opus, which is the one worth having where bandwidth is the
-/// constraint; then PCM, which costs the most bytes on the wire for no gain over FLAC.
+/// Lossless first, then Opus, then PCM.
 constexpr std::array<SendspinCodecFormat, 3> CODEC_PREFERENCE{
     SendspinCodecFormat::FLAC, SendspinCodecFormat::OPUS, SendspinCodecFormat::PCM};
 
-/// 48 kHz ahead of 44.1 kHz, so the preferred rate is also the one rate Opus can be carried
-/// at; then the high-resolution rates, each ahead of its 44.1 kHz-family sibling to keep the
-/// whole ladder in the 48 kHz family the head sits in; then the two rates below CD, which
-/// nothing should be defaulted into and which are the reason this ladder exists at all.
+/// 48 kHz and 44.1 kHz first, then the high-resolution rates, then the rates below CD.
 constexpr std::array<uint32_t, 8> RATE_PREFERENCE{48000,  44100,  96000, 88200,
                                                   192000, 176400, 32000, 22050};
 
-/// 16-bit first, which is what most streams are mastered at and what every decoder here packs
-/// natively; then the deeper paths; then 8-bit last, so it can never lead. A server that
-/// cannot encode 8-bit drops those entries itself, but one that can should not be steered
-/// into them.
+/// 16-bit first, then deeper, with 8-bit last so it never leads.
 constexpr std::array<uint8_t, 4> DEPTH_PREFERENCE{16, 24, 32, 8};
 
-/// The channel count to advertise: stereo where the device takes it, its narrowest count
-/// otherwise. Zero when the device takes no probed count at all.
+/// Stereo where the device takes it, else its narrowest count; 0 when it takes none.
 uint8_t advertised_channels(const std::vector<uint8_t>& channels) {
     if (channels.empty()) {
         return 0;
@@ -76,7 +55,6 @@ uint8_t advertised_channels(const std::vector<uint8_t>& channels) {
     if (std::find(channels.begin(), channels.end(), 2) != channels.end()) {
         return 2;
     }
-    // Ascending, so the front is the narrowest -- mono on a device that has one output.
     return channels.front();
 }
 
@@ -87,10 +65,7 @@ std::size_t preference_rank(const std::array<T, N>& ladder, const T& value) {
                                     ladder.begin());
 }
 
-/// `values` reordered to `ladder`'s order, with anything the ladder does not name left at the
-/// end in the order it arrived. A stable sort rather than a rebuild from the ladder, because
-/// a sort is a permutation by construction: a device reporting a rate or depth outside the
-/// probe ladders still gets it advertised, last, rather than silently dropped.
+/// `values` stably sorted into `ladder`'s order; values the ladder does not name go last.
 template <typename T, std::size_t N>
 std::vector<T> in_preference_order(std::vector<T> values, const std::array<T, N>& ladder) {
     std::stable_sort(values.begin(), values.end(), [&ladder](const T& left, const T& right) {
@@ -158,10 +133,7 @@ const char* spec_codec_name(SendspinCodecFormat codec) {
     return "unsupported";
 }
 
-/// Reads one numeric field of a format spec: digits only, non-empty, within `max`.
-///
-/// Digits-only for the reason cli.cpp's parse_port() gives: strtoul would take " 48000",
-/// "+48000" and read "-1" as a huge unsigned, and a spec is four plain numbers or a typo.
+/// Reads one numeric spec field: digits only, non-empty, within `max`.
 bool parse_format_field(const std::string& text, unsigned long max, unsigned long& value) {
     if (text.empty() || text.find_first_not_of("0123456789") != std::string::npos) {
         return false;
@@ -170,8 +142,7 @@ bool parse_format_field(const std::string& text, unsigned long max, unsigned lon
     return value > 0 && value <= max;
 }
 
-/// Whether two advertised entries name the same format. The struct has no operator== of its
-/// own, and this is the one place that wants one.
+/// Whether two advertised entries name the same format.
 bool same_format(const AudioSupportedFormatObject& left, const AudioSupportedFormatObject& right) {
     return left.codec == right.codec && left.channels == right.channels &&
            left.sample_rate == right.sample_rate && left.bit_depth == right.bit_depth;
@@ -181,8 +152,7 @@ bool same_format(const AudioSupportedFormatObject& left, const AudioSupportedFor
 
 bool parse_format_spec(const std::string& spec, AudioSupportedFormatObject& out,
                        std::string& error) {
-    // Split on every colon and then count, so a fifth field is the same shape error a
-    // missing one is rather than being silently dropped.
+    // Split on every colon, so a fifth field is refused rather than dropped.
     std::vector<std::string> parts;
     size_t begin = 0;
     while (true) {
@@ -218,8 +188,6 @@ bool parse_format_spec(const std::string& spec, AudioSupportedFormatObject& out,
     unsigned long depth = 0;
     if (!parse_format_field(parts[2], 32UL, depth) ||
         (depth != 8 && depth != 16 && depth != 24 && depth != 32)) {
-        // Checked here rather than left to the device match: no sink emits any other depth,
-        // so "the device does not advertise it" would blame the device for a typo.
         error = "'" + parts[2] + "' is not a bit depth this player can emit (8, 16, 24 or 32)";
         return false;
     }
@@ -229,11 +197,7 @@ bool parse_format_spec(const std::string& spec, AudioSupportedFormatObject& out,
         return false;
     }
 
-    // Checked here for the bit depth's reason, and with more force: an Opus entry at any other
-    // shape is not merely unadvertised, it is unreachable. supported_formats() emits Opus at
-    // OPUS_RATE / OPUS_BIT_DEPTH and no wider than OPUS_MAX_CHANNELS because that is all the
-    // decoder can produce, so opus:44100:24:2 would parse, miss every entry in the derived list,
-    // and refuse to start, blaming the device for a format no device could have been offered.
+    // Any other Opus shape could never be advertised, so refuse it here.
     if (out.codec == SendspinCodecFormat::OPUS &&
         (rate != OPUS_RATE || depth != OPUS_BIT_DEPTH || channels > OPUS_MAX_CHANNELS)) {
         error = "opus is decoded at " + std::to_string(OPUS_RATE) + " Hz, " +
@@ -308,9 +272,7 @@ std::vector<AudioSupportedFormatObject> pin_preferred_formats(
         return missing;
     }
 
-    // Last pin first, each rotated to the front, so the first pin ends up leading. Rotate rather
-    // than rebuild, so the result is a permutation by construction and everything unpinned keeps
-    // its ranked order.
+    // Rotate each pin to the front, last first, so the first pin leads.
     for (auto pin = preferred.rbegin(); pin != preferred.rend(); ++pin) {
         const auto entry =
             std::find_if(formats.begin(), formats.end(),
@@ -354,8 +316,6 @@ std::vector<AudioSupportedFormatObject> supported_formats(const SinkCapabilities
             }
             continue;
         }
-        // FLAC and PCM carry whatever the device takes: micro_flac packs at the stream's own
-        // depth, and PCM arrives already packed, so both reach every depth the sinks can map.
         for (const uint32_t rate : rates) {
             for (const uint8_t depth : depths) {
                 formats.push_back({codec, channels, rate, depth});

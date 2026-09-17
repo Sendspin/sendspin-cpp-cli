@@ -444,7 +444,7 @@ the five files that log, and `tests/daemon_test.cpp`:
   process acquires *any* resource — rather than as a list of three current call sites. All
   three are live: `make_audio_sink()` already probes the device
   (`src/audio_sink.cpp:258,267`) and `PortAudioSink` then holds a `PortAudioGuard` that
-  brings up the CoreAudio HAL's mach ports and helper threads, `start_server()` starts the
+  brings up the CoreAudio HAL's mach ports and helper threads, `start()` starts the
   sync task's `std::thread`, and a `DNSServiceRef` is a per-process connection to
   `mDNSResponder`/`avahi-daemon`. Only the forking thread survives a fork, so an item 7
   control socket or an item 8 config file cannot quietly land above the line without
@@ -494,7 +494,7 @@ the five files that log, and `tests/daemon_test.cpp`:
   mDNS daemon.
 
 **Three asks removed from this item rather than deferred**, all for one reason worth
-writing down: sendspin-cpp v0.7.0 logs through `src/platform/logging.h`'s bare
+writing down: sendspin-cpp v0.8.0 logs through `src/platform/logging.h`'s bare
 `fprintf(stderr, "E %s: " fmt "\n", tag, ...)` macros, gated on a single global
 `int ss_host_log_level`, with **no callback or sink hook**. Library lines cannot be
 reformatted, redirected or filtered per tag by any API call this layer can make.
@@ -614,7 +614,7 @@ stops the worse failure this item only documents: an operator running a player t
 authenticated. It is a breaking change for anyone passing such a URL today, which is why it is
 owed here rather than done here. Masking is what this item ships; refusing is the fix.
 
-**A third thing this item does not claim: the library's own dial lines.** sendspin-cpp v0.7.0
+**A third thing this item does not claim: the library's own dial lines.** sendspin-cpp v0.8.0
 logs the URL it is dialling at `info` from `ConnectionManager::connect_to()` and again at
 `error` from `SendspinClientConnection`, through the same sink-less `SS_LOG*` macros that put
 timestamps and per-tag filtering out of reach above — so those lines still carry whatever the
@@ -942,9 +942,9 @@ advertised an adjustable delay with nothing behind it, leaving a spec requiremen
   `ConnectionManager::fnv1_hash()`, which lives in the library's uninstalled `src/` — so we store
   the number we are handed and hand it back, and never compute it. Discovery's own tie-break
   needs the raw id, which the hash cannot be turned back into.
-- **`CliPersistenceProvider` is installed before `add_player()` and `start_server()`**, and
+- **`CliPersistenceProvider` is installed before `add_player()` and `start()`**, and
   neither is negotiable: the pointer is copied into `PlayerRole` at construction, and
-  `start_server()` is what loads the remembered hash. Installed after either, it is a provider
+  `start()` is what loads the remembered hash. Installed after either, it is a provider
   the library never asks.
 - **Volume and mute are the CLI's own half**, since the provider has no hook for either.
   `PlayerListener` writes through on every server change, and startup seeds the sink, the
@@ -1663,9 +1663,9 @@ locally settable, and volume changes are ramped. Split out of item 4.
 **This item's opening premise was wrong, and correcting it is part of what shipped.** It claimed
 `set_static_delay_adjustable(true)` was advertised with no `on_static_delay_changed()` override,
 so "a controller can offer the user a static delay this player then applies to nothing". Against
-sendspin-cpp v0.7.0 that is not true, and it never was: `SyncTask::decode_chunk()` subtracts
+sendspin-cpp v0.8.0 that is not true, and it never was: `SyncTask::decode_chunk()` subtracts
 `get_effective_static_delay_ms()` from every chunk's client timestamp
-(`_deps/sendspin-src/src/sync_task.cpp:593`), and that value becomes `decoded_timestamp`, which
+(`_deps/sendspin-src/src/sync_task.cpp:597`), and that value becomes `decoded_timestamp`, which
 is what `raw_error` is measured against — the drift correction itself. `get_effective_static_delay_ms()`
 returns the stored delay precisely *because* adjustability is on. So the delay was already being
 obeyed; the override was never the thing standing between the value and the audio path. A future
@@ -1681,7 +1681,7 @@ landed:
 - **`status` reports it**, as `static delay: <n> ms`, read from `PlayerRole::get_static_delay_ms()`
   rather than from a listener-held shadow. That is not a style choice: `update_static_delay()` does
   not invoke the listener (only a server's `set_static_delay` does,
-  `_deps/sendspin-src/src/player_role.cpp:396-400`), so a shadow would be stale the moment the
+  `_deps/sendspin-src/src/player_role.cpp:403-408`), so a shadow would be stale the moment the
   local knob below was used.
 - **`sendspin-cli delay <0-5000>`** sets it locally. The first *mutating* request answered without
   a server — `status` was previously the only locally answered one at all — which the spec
@@ -1736,7 +1736,7 @@ stdout sink stays a jump. Not an oversight.
 
 **The `DEFAULT_SINK_VOLUME` mismatch was already closed, so it was re-documented rather than
 fixed.** Item 8 made startup call `player.update_volume()`/`update_muted()` unconditionally, with
-the volume falling back to `DEFAULT_SINK_VOLUME`, before `start_server()` — so the role and the
+the volume falling back to `DEFAULT_SINK_VOLUME`, before `start()` — so the role and the
 sink agree from before the first `client/state`, and the disagreement four comments still
 described was no longer observable. Those four (`src/audio_sink.h`, `src/player_listener.h`,
 `src/control.h`, `src/main.cpp`'s `status()`) now describe the current arrangement, keeping the
@@ -1758,7 +1758,7 @@ reasons those members exist: `PlayerListener` is still the only thing that knows
 **One gap found while scoping this belongs upstream, not here.** `required_lead_time_ms` and
 `min_buffer_ms` are **REQUIRED** in `client/state` per `roles/player/v1.md` — the server uses them
 to decide how far ahead to send audio, scheduling the first chunk at least
-`min_buffer_ms + static_delay_ms` out — and sendspin-cpp v0.7.0 implements neither anywhere. A
+`min_buffer_ms + static_delay_ms` out — and sendspin-cpp v0.8.0 implements neither anywhere. A
 grep of the whole library, headers and sources, matches neither name. Nothing in this repo can
 supply them: `ClientPlayerStateObject`, which `PlayerRole::Impl::build_state_fields()` fills, has
 no field for either. It needs a library change, not a change here.
@@ -1877,7 +1877,7 @@ a backoff and a bounded retry, for the backends whose version of it is a server 
 than a device-list rebuild; PortAudio's remains the one attempt described here.
 
 No re-advertising of formats mid-session: `capabilities()` is answered once
-before `start_server()`, so a rescan does not change what the server was told, and the refusal
+before `start()`, so a rescan does not change what the server was told, and the refusal
 path that already names the device and the format it would not take stays the mitigation, as the
 comment on `capabilities()` has said since item 3. `NullAudioSink` is untouched, having no
 device to lose.
@@ -1996,14 +1996,14 @@ item, but it should not be lost.** The spec has moved inbound arbitration to an
 first `server/activate`, with "higher or equal is accepted, lower is rejected", plus a
 persisted last-*playback* server.
 
-Pinned `sendspin-cpp` v0.7.0 has **no `activities` and no `server/activate` at all**, and
+Pinned `sendspin-cpp` v0.8.0 has **no `activities` and no `server/activate` at all**, and
 still implements the older `connection_reason` DISCOVERY/PLAYBACK handoff. So this item is
 gated on a library that speaks the newer shape, and is likely to arrive with a
 `SENDSPIN_GIT_TAG` bump rather than on its own.
 
 Item 5's `src/last_server.{h,cpp}` is the nearest thing that exists today and is
 deliberately named for what it observes — the last server whose *handshake* completed, not
-its last *playback* server, which v0.7.0 gives no way to know.
+its last *playback* server, which v0.8.0 gives no way to know.
 
 ### 18. Native PulseAudio backend — *shipped (audible slice)*
 
@@ -2260,11 +2260,10 @@ no workaround either — the control socket answers questions, it does not annou
   polled from the main loop, next to mDNS and the control socket. A non-zero exit or a
   signal death is one `W hook:` line; a hook still running at shutdown is left to
   finish, because an amplifier half-switched is worse than an orphan.
-- **The stream's end is waited for on the way out.** `disconnect()` only enqueues it, and
-  it is `client.loop()` that delivers it, so without this a player killed mid-stream reaches
-  `return 0` with its stop hook unrun and the amplifier still on. The loop is pumped after
-  the disconnect until the listener reports the stream over, bounded by
-  `SHUTDOWN_DRAIN_MS` against a wait of about fifty, and says so and goes if that passes.
+- **The stream's end is waited for on the way out.** `client.stop()` goodbyes every peer and
+  delivers `on_stream_end()` before it returns, so the hook is queued by the time control comes
+  back and the `hooks.flush()` below runs it. Without that wait a player killed mid-stream would
+  reach `return 0` with its stop hook unrun and the amplifier still on.
   The stop hook it spawns is by definition the orphan case above: nothing waits on it.
 - **Fired on the stream lifecycle, not on the format being accepted**, through a
   `PlayerListener::on_stream_event` seam shaped like `AudioSink::on_frames_played`. A
@@ -2376,17 +2375,16 @@ detection may pick the wrong interface" — the same scenario, so it is worth sa
 is not the same lever. That value goes into `client/hello`'s `device_info`: it is identity,
 and it moves no socket.
 
-**Why this is more than "it listens broadly".** Pinned v0.7.2 has **no inbound
+**Why this is more than "it listens broadly".** Pinned v0.8.0 has **no inbound
 authentication of any kind**: no PSK, no pairing gate on the inbound path, and — per item
-17, whose text still cites v0.7.0, re-checked here at v0.7.2 — no `activities` /
-`server/activate` either, since it still runs the older `connection_reason` handoff.
+17 — no `activities` / `server/activate` either, since it still runs the older `connection_reason` handoff.
 `server_max_connections` is the only inbound limit, and it counts sockets rather than
 judging them. Reachability is therefore authorization: whatever reaches the listen port
 completes the handshake and drives the player, and a bind address would be the only such
 control the player itself offers.
 
 **That is a statement about the pinned library, not about Sendspin.** The spec
-authenticates in the handshake — pairing and a PSK, as item 6 records — and v0.7.2 does
+authenticates in the handshake — pairing and a PSK, as item 6 records — and v0.8.0 does
 not implement that half yet. This item's premise expires when it does.
 
 **In proportion.** Most installs sit behind NAT, where no interface holds a routable

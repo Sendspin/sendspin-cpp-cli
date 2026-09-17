@@ -14,36 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# Builds sendspin-cli for ARMv6 inside an emulated Raspbian container, for the job
-# in .github/workflows/build-armv6.yml. A Pi Zero, a Pi Zero W and an original Pi are ARM1176.
-#
-# Not a cross build, and that is not a preference. Debian and Ubuntu armhf are an ARMv7-A port,
-# so a cross toolchain's own crt1.o, crtbegin.o and every member of libgcc.a are ARMv7 and are
-# linked into the binary whatever -march said -- which is why scripts/build_arm32.sh refuses
-# armv6 by name. Raspbian's really are ARMv6, its gcc being configured --with-arch=armv6
-# --with-float=hard, so this passes no -march at all; and Raspbian publishes no cross toolchain.
-# Emulating the whole build is therefore the only route to an ARMv6 archive rather than the
-# slower of two, which is the opposite of the trade the linux-armv7 leg makes.
-#
-# A script rather than lines of YAML for the reason scripts/build_arm32.sh and
-# scripts/build_macos_pkg.sh are: the archive this leg publishes is the only build of this
-# project a Pi Zero owner will ever run, and a developer has to be able to reproduce it without
-# a runner -- which takes the image digest, --init, the uid and QEMU_CPU together, and a
-# workflow file is not somewhere anybody can run. It is also what puts them under ci.yml's
-# `shellcheck scripts/*.sh` job.
-#
-# Four verbs where build_arm32.sh has none, and the difference is what each owns. A cross build
-# is a *configuration*: once cmake has the flags, `cmake --build` over the directory is an
-# ordinary build and there is nothing left to remember. A container is a *location*, so it
-# colours every step after configure too -- the suite, the smoke test, the install that stages
-# the archive -- and each of those needs a way in.
-#
-# What this needs on the host:
-#
-#   docker
-#   a registered binfmt handler for 32-bit ARM, which .github/workflows/build-armv6.yml
-#     installs with docker/setup-qemu-action -- without it the container starts and nothing
-#     in it can run
+# Builds sendspin-cli for ARMv6 in an emulated Raspbian container, for build-armv6.yml.
+# Not a cross build: Debian armhf's libgcc and crt objects are ARMv7. Host needs docker and an ARM binfmt handler.
 #
 # Usage: scripts/build_armv6_container.sh start <image>
 #        scripts/build_armv6_container.sh configure <build-dir> [cmake option ...]
@@ -66,21 +38,12 @@ fail() {
     exit 1
 }
 
-# One container per checkout is enough -- the workflow that calls this runs one job on a runner of
-# its own, and a developer builds one thing at a time -- so the name is a constant rather than an
-# argument to thread through every verb.
 readonly CONTAINER='sendspin-cli-armv6'
 
-# Written rather than left to the image's own environment, which happens to set it too. The
-# emulator defaults to a Cortex-A15-class core and will execute ARMv7 instructions perfectly
-# happily, which would make it *more* permissive than the hardware this archive is for: an
-# illegal instruction would surface on a Pi Zero rather than in the suite. Everything this
-# script runs gets it, not just the tests, because a cmake try_run probe asking what the CPU can
-# do runs at configure time and would otherwise be answered for the wrong CPU.
+# Pinned so the emulator refuses ARMv7 instructions, at configure-time probes as well as in tests.
 readonly QEMU_CPU_MODEL='arm1176'
 
-# A home the build owns, so that anything writing under $HOME does not meet the image's root-owned
-# one and fail on EACCES for a reason that has nothing to do with this build.
+# A build-owned $HOME, so writes there do not hit the image's root-owned one.
 readonly BUILD_HOME='/home/build'
 
 command -v docker >/dev/null 2>&1 ||
@@ -97,10 +60,7 @@ running() {
     [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null)" = 'true' ]
 }
 
-# The workspace is bind-mounted at the path it already has rather than at some /work of its own,
-# which is what lets every absolute path survive the boundary: FETCHCONTENT_BASE_DIR and DESTDIR
-# are handed in by the caller, and CMakeCache.txt records the build directory it was configured
-# in. A container mounting it elsewhere would configure at one path and build at another.
+# The workspace mounts at its own path, so absolute paths recorded in the build stay valid.
 in_container() {
     running || fail "no running $CONTAINER container -- run '$0 start <image>' first"
 
@@ -109,18 +69,12 @@ in_container() {
         --env "QEMU_CPU=$QEMU_CPU_MODEL"
     )
 
-    # Forwarded explicitly because `docker exec` inherits nothing from the caller. This one is
-    # workflow-level `env:` in build-armv6.yml, so losing it silently would leave an already
-    # emulated build compiling one translation unit at a time.
+    # docker exec inherits nothing from the caller.
     if [ -n "${CMAKE_BUILD_PARALLEL_LEVEL:-}" ]; then
         env_args+=(--env "CMAKE_BUILD_PARALLEL_LEVEL=$CMAKE_BUILD_PARALLEL_LEVEL")
     fi
 
-    # As the invoking user rather than as root, and both halves matter. Three StateStore cases
-    # assert that an unwritable directory is refused, which root is refused nothing by -- they
-    # fail as root for a reason that is not about the code. And everything written into the
-    # bind-mounted workspace has to be owned by the user the runner's own steps read it back as,
-    # the cache save among them.
+    # As the invoking user: StateStore tests need a non-root user, and the runner reads outputs back.
     docker exec \
         --user "$(id -u):$(id -g)" \
         --workdir "$PWD" \
@@ -135,28 +89,13 @@ case "$VERB" in
         IMAGE=$1
         readonly IMAGE
 
-        # Pulled as its own command so that an unreachable registry or a digest that no longer
-        # resolves says so, rather than surfacing as a failure to start a container.
-        #
-        # --platform is spelled out even though the digest names a single-architecture manifest,
-        # because without it docker reports the mismatch against the host as a warning on every
-        # command and a warning nobody can act on is noise in a log that is read when something
-        # is wrong.
+        # Pulled separately so a registry failure says so; --platform silences a mismatch warning.
         docker pull --platform linux/arm/v6 "$IMAGE"
 
-        # Removed rather than reused: a container left by an earlier run holds that run's
-        # packages and that run's user, and a build that quietly inherits them is not the build
-        # this describes. `|| true` is safe here because the run below fails on a name clash.
+        # Never reuse a previous run's container.
         docker rm --force "$CONTAINER" >/dev/null 2>&1 || true
 
-        # --init is load-bearing, not hygiene. Without a reaping PID 1 a daemon that has already
-        # exited stays a zombie, `kill -0` keeps answering for it, and scripts/smoke_test.sh
-        # reports a player that outlived SIGTERM -- a failure that looks like ARMv6 and is not.
-        #
-        # --entrypoint because the image's own is balena's device-provisioning script, which has
-        # nothing to answer for in a build container. `docker exec` bypasses an entrypoint
-        # anyway, so this only settles what the container holds open -- but settling it is worth
-        # a flag when the alternative is a build that depends on what that script does next.
+        # --init reaps exited daemons, or smoke_test.sh sees zombies as live; --entrypoint skips balena's.
         docker run \
             --detach \
             --init \
@@ -168,11 +107,7 @@ case "$VERB" in
             "$IMAGE" \
             infinity >/dev/null
 
-        # Proven here, where the message can name the cause, rather than left to surface as a
-        # `docker exec` complaining that the container is not running. `docker run` succeeds
-        # whether or not the kernel can execute what it started: with no handler registered the
-        # `sleep` above is an ARM binary that cannot exec, and the container is gone by the time
-        # anything else looks at it. That is by far the likeliest way this fails.
+        # docker run succeeds even when binfmt cannot exec ARM, so check the container is running.
         running || {
             docker logs "$CONTAINER" 2>&1 || true
             fail "the container exited as soon as it started. The usual cause is no binfmt
@@ -181,9 +116,7 @@ case "$VERB" in
     tonistiigi/binfmt --install arm' does the same"
         }
 
-        # A passwd entry at the invoking user's own id, so that in_container() above has a user
-        # to be. Reused where the image already carries one at that id rather than replaced:
-        # what this needs is an entry and a home, not a particular name.
+        # A passwd entry at the invoking uid, reusing one the image already has.
         docker exec "$CONTAINER" sh -c '
             set -eu
             getent group "$2" >/dev/null || groupadd --gid "$2" build
@@ -192,9 +125,7 @@ case "$VERB" in
             install -d -o "$1" -g "$2" -m 0755 "$3"
         ' sh "$(id -u)" "$(id -g)" "$BUILD_HOME"
 
-        # git and ca-certificates for FetchContent, which clones what the cache did not restore;
-        # pkg-config because it is what finds PortAudio, PipeWire and PulseAudio, so a change in
-        # the image should fail here rather than produce a player with no audio backend.
+        # git/ca-certificates for FetchContent, pkg-config to find the audio backends.
         docker exec "$CONTAINER" sh -c '
             set -eu
             apt-get update
@@ -211,10 +142,7 @@ case "$VERB" in
                 libavahi-compat-libdnssd-dev
         '
 
-        # Proven here, where the message can name the cause, rather than left to surface further
-        # down wearing cmake's name. Two facts carry this whole leg, and neither is a flag: that
-        # the container really executes ARM under the emulator, and that its compiler targets
-        # ARMv6 by configuration -- which is why nothing here passes -march.
+        # The container must really run ARM, and its compiler must target ARMv6 by default.
         machine="$(in_container uname -m)"
         echo 'What the container reports:'
         printf '%s\n' "$machine"
@@ -247,29 +175,8 @@ case "$VERB" in
         shift
         readonly BUILD_DIR
 
-        # Two facts about this toolchain, both of them properties of the machine and its
-        # compiler rather than of this project -- which is why they belong here, for the reason
-        # build_arm32.sh owns the armv7 -march rather than leaving it to the caller.
-        #
-        # -latomic: ARMv6 has no LDREXD, so every 64-bit atomic becomes a libatomic call -- from
-        # src/pulse_sink.cpp, src/player_listener.cpp and sendspin-cpp's own
-        # connection_manager.cpp -- and the link fails on __atomic_load_8 without it. The ARMv7
-        # leg needs nothing of the kind because ARMv7 has LDREXD. It goes in
-        # CMAKE_CXX_STANDARD_LIBRARIES rather than CMAKE_EXE_LINKER_FLAGS, which places it ahead
-        # of the objects that reference it and leaves the linker to discard it as unused.
-        #
-        # -Wno-error=restrict: Raspbian's gcc 12.2.0 has a -Wrestrict false positive on
-        # `line += " " + std::to_string(...)`, at src/control_common.cpp:391 and :401 and at
-        # tests/cli_test.cpp:1133 -- the third site 32-bit-specific, the warning turning on a
-        # memcpy size the compiler folds differently where size_t is `unsigned int`. This
-        # demotes that one diagnostic and leaves -Werror standing over everything else, so an
-        # ARMv6-only warning nobody has met yet still fails the leg.
-        #
-        # The `-Wno-error=` form is what makes that possible, and it is not interchangeable with
-        # `-Wno-restrict`. CMAKE_CXX_FLAGS lands before the `-Wall -Wextra -Wpedantic -Werror`
-        # CMakeLists.txt adds with target_compile_options, and a later -Wall turns a warning
-        # disabled earlier back on -- where a later blanket -Werror does not re-promote a
-        # diagnostic an earlier -Wno-error= has already exempted.
+        # -latomic in CMAKE_CXX_STANDARD_LIBRARIES: ARMv6 lacks LDREXD, and linker flags would place it too early.
+        # -Wno-error=restrict (not -Wno-restrict): works around a gcc 12.2 false positive while a later -Wall stays on.
         in_container cmake -B "$BUILD_DIR" \
             -DCMAKE_CXX_STANDARD_LIBRARIES=-latomic \
             -DCMAKE_CXX_FLAGS=-Wno-error=restrict \
@@ -286,10 +193,7 @@ case "$VERB" in
     stop)
         [ "$#" -eq 0 ] || fail "usage: $0 stop"
 
-        # Nothing to remove is reported rather than refused. This is the one verb a caller runs
-        # unconditionally to tidy up -- .github/workflows/build-armv6.yml runs it with
-        # `if: always()` -- so a run that failed before the container existed must not fail
-        # again here, wearing a message about the wrong thing.
+        # Nothing to remove is not an error: this runs under if: always().
         if docker inspect "$CONTAINER" >/dev/null 2>&1; then
             docker rm --force "$CONTAINER" >/dev/null
             printf 'build_armv6_container: removed %s\n' "$CONTAINER"

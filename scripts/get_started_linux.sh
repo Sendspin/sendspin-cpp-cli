@@ -14,51 +14,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# Installs a released sendspin-cli on a Linux host and sets its systemd unit up.
-#
-# One script for every Linux host, a Raspberry Pi included, because a Pi *is* an ordinary
-# Linux box here: it takes whichever archive its architecture names -- `linux-arm64` on a
-# 64-bit OS, `linux-armv7` or `linux-armv6` on a 32-bit one -- and installs it the way a
-# server takes `linux-x86_64`. What is genuinely Pi-specific is advice -- the `audio` group,
-# and that the headphone jack and HDMI are separate cards -- and that is printed at the end
-# when a Pi is what this is running on. A second script would have been this one with two
-# paragraphs changed, and the two would have drifted.
-#
-# The archive is GitHub's, verified against the release's own SHA256SUMS, and unpacked with
-# the member-selected `tar` form README documents -- naming `<name>/usr` is what leaves
-# BUILD-INFO.txt in the archive instead of writing it to `/`.
-#
-# The unit runs the player as an unprivileged `sendspin-cli` account, which the payload
-# *declares* in usr/local/lib/sysusers.d/sendspin-cli.conf and cannot *create* -- a tarball has
-# no postinst. So `systemd-sysusers` is run here, which is the one command README, BUILD-INFO.txt
-# and the release notes all tell an operator to run once, reading the fragment this script has
-# just installed. It is idempotent, so a re-run costs nothing. Skipping it would leave a unit
-# that does not start at all: `systemctl status` reports 217/USER, and a get-started script that
-# enables a unit it has made unstartable is not one.
-#
-# WHAT IT DELIBERATELY DOES NOT DO IS START A PLAYER THAT CANNOT PLAY. A systemd *system*
-# unit has no user session, so there is no PipeWire or PulseAudio for ALSA's `default` PCM
-# to follow, and the device that opens fine from your shell usually will not open under
-# `systemctl` -- README's "The systemd unit" says to expect exactly that. The unit's
-# `Restart=on-failure`/`RestartSec=5` would then retry it every five seconds, forever, while
-# this script printed congratulations. So the unit is *enabled* but only *started* once an
-# `output` has been chosen: with one already in /etc/sendspin-cli.conf this installs and
-# restarts, and without one it stops after listing the host's devices and prints the two
-# commands that finish the job. That is this repo's refuse-rather-than-limp habit -- the same
-# reason a bad `-s` port stops the player instead of dialling the default.
-#
-# Nothing here runs as root without saying so first: every privileged command is printed in
-# full, and then either confirmed at a terminal or authorised up front with --yes.
-#
-# One asymmetry worth naming, in the spirit of the one .github/workflows/ci.yml names about
-# itself: the `shellcheck` job there lints every script under scripts/, and the other four are
-# also *run* by a build -- smoke_test.sh on each publishing leg, build_arm32.sh on the
-# cross-compiled 32-bit ARM one, build_macos_pkg.sh on the macOS one, and
-# build_armv6_container.sh throughout .github/workflows/build-armv6.yml. This is the one script
-# CI lints but never executes. A CI
-# leg for it would want a runner willing to take a payload into `/` and a sound card to then
-# not find, so what it has instead is the container run recorded in the pull request that
-# added it.
+# Installs a released sendspin-cli on a Linux host and enables its systemd unit.
+# Verifies SHA256SUMS, creates the service account, and starts the player only once an `output` is configured.
+# Every root command is printed first and confirmed, or pre-authorised with --yes.
 #
 # Usage: scripts/get_started_linux.sh [--version <tag>] [--yes]
 #
@@ -77,9 +35,7 @@
 
 set -euo pipefail
 
-# The repository releases are taken from. A constant rather than an environment knob: a
-# get-started script that can be pointed at any repository is a get-started script that can
-# be pointed at somebody else's binary.
+# Fixed so this script can never install someone else's binary.
 readonly REPO='Sendspin/sendspin-cpp-cli'
 
 readonly UNIT='sendspin-cli'
@@ -104,9 +60,7 @@ step() {
     printf '\n==> %s\n' "$*"
 }
 
-# ==============================================================================
 # What was asked for
-# ==============================================================================
 
 VERSION_TAG=''
 ASSUME_YES='no'
@@ -123,8 +77,7 @@ while [ "$#" -gt 0 ]; do
             shift
             ;;
         -h | --help)
-            # The usage block above, printed rather than restated -- a second copy is one to
-            # forget. Everything from the `# Usage:` line to the end of the header.
+            # Prints the header's usage block.
             sed -n '/^# Usage:/,/^$/ s/^#\{1,2\} \{0,1\}//p' "$0"
             exit 0
             ;;
@@ -136,9 +89,7 @@ done
 
 readonly VERSION_TAG ASSUME_YES
 
-# ==============================================================================
 # Is this a host this can work on at all
-# ==============================================================================
 
 [ "$(uname -s)" = 'Linux' ] ||
     fail "Linux only -- this installs a systemd unit. On macOS take the installer .pkg from
@@ -149,20 +100,9 @@ for tool in tar sed grep; do
         fail "'$tool' is not on \$PATH, and this cannot install anything without it"
 done
 
-# `uname -m` names the *kernel*, and on a Raspberry Pi the kernel and the userland routinely
-# disagree: `arm_64bit` defaults to 1 on a Pi 4, a Pi 400 and a CM4, so a 32-bit armhf install
-# on one of those boots a 64-bit kernel and reports `aarch64` with not a single 64-bit library
-# on the disk. Choosing on that answer hands it the arm64 archive, whose loader
-# (/lib/ld-linux-aarch64.so.1) is not there -- and the binary dies with a "No such file or
-# directory" naming a file that plainly exists.
-#
-# So the archive is chosen by the *userland*, and `uname -m` is kept for the one question the
-# userland cannot answer: which ARM instruction set the CPU has.
+# Pick the archive by userland, not uname -m: a Pi with a 64-bit kernel can run a 32-bit userland.
 MACHINE="$(uname -m)"
 
-# dpkg answers it outright, and it is on every distribution these archives are built against.
-# Where it is absent, the width of a userland binary paired with the kernel's family is the
-# same answer arrived at the long way -- `getconf` is part of libc, so one of the two is here.
 if command -v dpkg >/dev/null 2>&1; then
     USERLAND="$(dpkg --print-architecture)"
 elif command -v getconf >/dev/null 2>&1; then
@@ -170,10 +110,7 @@ elif command -v getconf >/dev/null 2>&1; then
         64:x86_64 | 64:amd64) USERLAND='amd64' ;;
         64:aarch64 | 64:arm64) USERLAND='arm64' ;;
         32:aarch64 | 32:arm64 | 32:arm*) USERLAND='armhf' ;;
-        # Left empty rather than filled in from `$MACHINE`, which would be this block's own
-        # mistake made twice: a 32-bit x86 userland under an x86-64 kernel reports `x86_64`,
-        # and passing that on hands it the 64-bit archive. What cannot be identified is
-        # refused below.
+        # Unidentified userlands are refused below, never guessed from the kernel.
         *) USERLAND='' ;;
     esac
 else
@@ -181,8 +118,7 @@ else
     userland from the 64-bit kernel it may be running under"
 fi
 
-# The release archives are named for the CI leg that built them rather than for the userland,
-# so every spelling of an architecture maps onto the one leg that serves it.
+# Archives are named for the CI leg that built them.
 case "$USERLAND" in
     amd64 | x86_64)
         LEG='linux-x86_64'
@@ -191,22 +127,7 @@ case "$USERLAND" in
         LEG='linux-arm64'
         ;;
     armhf)
-        # 32-bit ARM, where which archive to take is a question about the CPU rather than the
-        # userland -- and this is the one `uname -m` answers well. An ARMv6 board cannot run a
-        # 64-bit kernel at all, so `armv6l` here is the CPU speaking rather than a 32-bit kernel
-        # on newer hardware.
-        #
-        # A Pi Zero, a Pi Zero W or an original Pi is an ARM1176, and the ARMv7 archive's
-        # instructions would be illegal there, so those boards take an archive of their own
-        # rather than the nearest one.
-        #
-        # Below ARMv6 there is still nothing, and that stays a refusal with the whole answer in
-        # it: "unsupported architecture" on a Pi sends people looking for a download that does
-        # not exist. Every pre-v6 spelling is named rather than left to the `armv7` fallback
-        # below, because that fallback is what an unrecognised machine reaches -- and `armv4l`
-        # falling into it would install a binary that traps. Bare `arm` is refused with them
-        # because it names no instruction set at all, which the getconf branch above can
-        # produce for any 32-bit ARM kernel.
+        # 32-bit ARM: the CPU decides between ARMv6 and ARMv7; anything older is refused.
         case "$MACHINE" in
             armv6*)
                 LEG='linux-armv6'
@@ -235,16 +156,14 @@ case "$USERLAND" in
 esac
 readonly MACHINE USERLAND LEG
 
-# systemd being *booted* rather than merely installed, which is what decides whether there is
-# anything to enable. A container or a chroot without it still gets the binary.
+# Booted systemd, not merely installed.
 HAVE_SYSTEMD='no'
 if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
     HAVE_SYSTEMD='yes'
 fi
 readonly HAVE_SYSTEMD
 
-# A Pi answers here and nothing else does. `/proc/device-tree/model` is a NUL-terminated
-# string out of the device tree, so the NUL is stripped rather than carried into a message.
+# /proc/device-tree/model is NUL-terminated.
 PI_MODEL=''
 if [ -r /proc/device-tree/model ]; then
     model="$(tr -d '\0' </proc/device-tree/model)"
@@ -254,8 +173,7 @@ if [ -r /proc/device-tree/model ]; then
 fi
 readonly PI_MODEL
 
-# Everything privileged goes through here, so there is exactly one place that decides how root
-# is reached and exactly one place that could ever run something unannounced.
+# The one place root is reached.
 SUDO=''
 if [ "$(id -u)" -ne 0 ]; then
     command -v sudo >/dev/null 2>&1 ||
@@ -265,9 +183,7 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 readonly SUDO
 
-# What a printed command line is prefixed with: `sudo ` where one is needed, and nothing at
-# all where this is already root -- an empty $SUDO expanded inline leaves every printed
-# command indented one space further than the last, and a sentence ending "that needs ."
+# `sudo ` or nothing, so printed commands are not misindented when already root.
 readonly SUDO_P="${SUDO:+$SUDO }"
 
 as_root() {
@@ -291,19 +207,10 @@ else
     say '  systemd:      no -- the unit will be installed but nothing started'
 fi
 
-# ==============================================================================
 # The payload
-# ==============================================================================
 
-# The tag of the newest release, on stdout, or a diagnostic naming which of the ways this can
-# come back empty it was.
-#
-# Read off the `/releases/latest` redirect rather than out of the JSON API, which matters for
-# three reasons. It needs no `jq`, absent on a fresh Raspberry Pi OS Lite. It is not subject
-# to the API's 60-an-hour unauthenticated rate limit, which is per source address and so is
-# shared by everything behind one NAT. And it is the only form that can tell "this repository
-# has published no releases" -- which redirects to the releases index -- apart from "there is
-# no such repository", which is a 404: the API answers 404 to both.
+# The newest release tag, read off the /releases/latest redirect: no jq, no API rate limit,
+# and it tells "no releases" apart from "no such repository".
 resolve_latest_tag() {
     local headers status location
     headers="$WORK_DIR/latest.headers"
@@ -323,13 +230,7 @@ resolve_latest_tag() {
             ;;
     esac
 
-    # curl folds the header name to lower case for `-w`, but the raw header file keeps whatever
-    # the server sent, so the match is case-insensitive.
-    #
-    # `|| true` is load-bearing rather than sloppy: with no `location:` line at all, `grep` exits
-    # 1, `pipefail` carries that out of the pipeline, and `set -e` would kill the script *before*
-    # the guard below could say why. A redirect with no Location is exactly the case that guard
-    # exists for, so it must survive long enough to run.
+    # `|| true`: under pipefail a missing location line would kill the script before the guard.
     location="$( (grep -i '^location:' "$headers" || true) | tail -n 1 | tr -d '\r' |
         awk '{print $2}')"
     [ -n "$location" ] ||
@@ -340,8 +241,6 @@ resolve_latest_tag() {
             printf '%s\n' "${location##*/releases/tag/}"
             ;;
         *)
-            # The state this repository is actually in at the time of writing, so it gets a
-            # real answer rather than a shrug.
             fail "$REPO has published no releases yet, so there is nothing to download.
     Until it has, either build from source -- https://github.com/$REPO#build -- or stage a
     payload of your own and point this script at it:
@@ -356,8 +255,7 @@ if [ -n "${SENDSPIN_CLI_TARBALL:-}" ]; then
     step 'Using the payload you supplied'
     [ -f "$SENDSPIN_CLI_TARBALL" ] ||
         fail "SENDSPIN_CLI_TARBALL names '$SENDSPIN_CLI_TARBALL', which is not a file"
-    # Made absolute before anything else, because `tar -C /` below would otherwise resolve a
-    # relative path against `/`.
+    # Absolute, since tar -C / would resolve a relative path against /.
     TARBALL="$(cd "$(dirname "$SENDSPIN_CLI_TARBALL")" && pwd)/$(basename "$SENDSPIN_CLI_TARBALL")"
     say "  $TARBALL"
     say ''
@@ -373,9 +271,6 @@ else
     done
 
     if [ -n "$VERSION_TAG" ]; then
-        # Taken as given rather than looked up: a tag that does not exist fails at the
-        # download below, naming the file it could not find, which is the same answer one
-        # round trip earlier would have given.
         TAG=$VERSION_TAG
     else
         TAG="$(resolve_latest_tag)"
@@ -394,18 +289,12 @@ else
         fail "$TAG carries $ARCHIVE but no SHA256SUMS, so there is nothing to verify it
     against. Refusing to install an unverified binary"
 
-    # Asserted rather than assumed, in the way build.yml asserts the payload's own file list:
-    # `--ignore-missing` below skips a listed file that is absent, so a SHA256SUMS that never
-    # mentions this archive at all would leave `sha256sum` with nothing to check. It does exit
-    # non-zero when that leaves it with no file verified -- but "the checksum file does not
-    # cover this download" deserves to be said in those words rather than as `-c` failing.
+    # --ignore-missing would pass a SHA256SUMS that omits this archive, so check it is listed.
     awk -v want="$ARCHIVE" '$2 == want { found = 1 } END { exit !found }' \
         "$WORK_DIR/SHA256SUMS" ||
         fail "the SHA256SUMS published with $TAG does not list $ARCHIVE, so there is no
     checksum to verify it against. Nothing has been installed"
 
-    # --ignore-missing because SHA256SUMS covers every archive the release carries and this
-    # host has taken one of them.
     (cd "$WORK_DIR" && sha256sum --ignore-missing -c SHA256SUMS) ||
         fail "$ARCHIVE does not match the checksum $TAG publishes for it. Nothing has been
     installed. Download it again; if it fails a second time, say so on the issue tracker
@@ -415,18 +304,9 @@ else
 fi
 readonly TARBALL
 
-# ==============================================================================
 # What this is about to do as root
-# ==============================================================================
 
-# Read off the archive rather than derived from its filename: a payload staged by hand is
-# named whatever its author called it, and the member `tar` is asked to extract has to be one
-# that is really in there.
-#
-# Listed once into a variable, and every question below asked of *that* rather than of a
-# second `tar`. Not tidiness: `tar -tzf … | grep -q` is a pipeline whose reader exits on the
-# first match, which leaves tar killed by SIGPIPE -- and under `set -o pipefail` that is a
-# failed check on an archive that is perfectly fine.
+# Listed once: `tar | grep -q` dies of SIGPIPE, which pipefail reports as failure.
 ARCHIVE_LIST="$(tar -tzf "$TARBALL")"
 readonly ARCHIVE_LIST
 
@@ -442,35 +322,22 @@ grep -Fqx "$PAYLOAD_ROOT/usr/local/bin/sendspin-cli" <<<"$ARCHIVE_LIST" ||
     with DESTDIR from a build configured for the /usr/local prefix:
     DESTDIR=/tmp/stage cmake --install build --component sendspin-cli"
 
-# Read off the archive rather than assumed present, so the plan printed below is the plan that
-# runs. Every Linux payload the CI publishes carries the fragment beside the unit, but a payload
-# staged from an older tree does not, and a `systemd-sysusers` announced and then not needed
-# would be the one command in that list an operator could not account for.
+# Read off the archive so the printed plan matches what runs.
 PAYLOAD_HAS_SYSUSERS='no'
 if grep -Fqx "$PAYLOAD_ROOT/usr/local/lib/sysusers.d/sendspin-cli.conf" <<<"$ARCHIVE_LIST"; then
     PAYLOAD_HAS_SYSUSERS='yes'
 fi
 readonly PAYLOAD_HAS_SYSUSERS
 
-# Only where there is a systemd to have an account for. The account is the unit's requirement
-# and nothing else here needs it, so a container without systemd gets the binary and no user.
+# Only where systemd can use the account.
 CREATE_USER='no'
 if [ "$HAVE_SYSTEMD" = 'yes' ] && [ "$PAYLOAD_HAS_SYSUSERS" = 'yes' ]; then
     CREATE_USER='yes'
 fi
 readonly CREATE_USER
 
-# An `output` already chosen is what decides whether the player is started at the end, so it
-# is settled here -- before anything is installed -- and reported in the plan below.
-#
-# /etc/sendspin-cli.conf alone, and not the two $HOME paths that also come first in the search
-# order: this is about the *system* unit, whose process gets whatever HOME systemd hands root,
-# and guessing at that would be worse than naming the one file the unit's own documentation
-# tells an operator to edit. A line is a comment when its first non-blank character is `#`, so
-# an indented `#output = …` is correctly not a match.
-# Read through as_root because /etc/sendspin-cli.conf need not be world-readable: an
-# unprivileged `grep` on an unreadable file exits 2, which would read here as "no output is
-# configured" and quietly leave a properly configured player stopped.
+# An `output` in /etc/sendspin-cli.conf decides whether the player starts at the end.
+# Read as root: the file may be unreadable, and grep's exit 2 would look like "no output".
 CONFIG_HAS_OUTPUT='no'
 if as_root test -f "$CONFIG" &&
     as_root grep -Eq '^[[:space:]]*output[[:space:]]*=' "$CONFIG"; then
@@ -526,8 +393,7 @@ if [ "$ASSUME_YES" != 'yes' ]; then
         fail 'stdin is not a terminal, so there is nobody to confirm those commands with.
     Re-run with --yes if you have read them and want them run'
     printf '\nRun them? [y/N] '
-    # `|| fail` for SC1's reason: a closed stdin makes `read` exit non-zero, and `set -e` would
-    # otherwise end the run with no word about why nothing was installed.
+    # `|| fail`: set -e would otherwise exit silently on a closed stdin.
     read -r answer || fail 'stdin closed before an answer arrived; nothing was installed'
     case "$answer" in
         y | Y | yes | YES) ;;
@@ -535,19 +401,13 @@ if [ "$ASSUME_YES" != 'yes' ]; then
     esac
 fi
 
-# ==============================================================================
 # Install
-# ==============================================================================
 
 step 'Installing'
-# Idempotent by construction: this overwrites whatever is at those paths, so re-running the
-# script is how you upgrade. `--strip-components=1` drops the archive's own top level, so
-# every remaining path is the path the file installs to.
+# Idempotent, so re-running upgrades.
 as_root tar -xzf "$TARBALL" --strip-components=1 -C / "$PAYLOAD_ROOT/usr"
 
-# Checked before the binary is run rather than after: every Linux payload carries the unit, so
-# its absence means a macOS archive was unpacked here -- and running the binary first would
-# answer that with the dynamic loader's message instead of this one.
+# A missing unit means a macOS archive; say so before the loader does.
 [ -f "$UNIT_FILE" ] ||
     fail "the payload installed no unit at $UNIT_FILE -- a macOS archive on a Linux host would
     look exactly like this. Take the $LEG one"
@@ -572,10 +432,7 @@ fi
 
 step 'Setting the service up'
 
-# Before daemon-reload and enable, because this is what makes the unit startable at all: it
-# names User=sendspin-cli, and 217/USER is what an operator gets instead of a player if the
-# account is missing. `systemd-sysusers` with no argument reads every fragment on the search
-# path, /usr/local/lib/sysusers.d included, so it needs no path to the file just installed.
+# Before daemon-reload: the unit's User= needs the account.
 if [ "$CREATE_USER" = 'yes' ]; then
     command -v systemd-sysusers >/dev/null 2>&1 ||
         fail "the unit runs as '$SERVICE_USER' and 'systemd-sysusers' is not on \$PATH to
@@ -585,19 +442,14 @@ if [ "$CREATE_USER" = 'yes' ]; then
 
     as_root systemd-sysusers
 
-    # Asserted rather than assumed: sysusers exits 0 with nothing done if it read no fragment,
-    # and the failure that follows would be 217/USER at the end of an install that said it
-    # worked. `getent passwd` and not `id`, which on some hosts answers out of a cache.
+    # sysusers exits 0 even if it read nothing, so check the account exists.
     getent passwd "$SERVICE_USER" >/dev/null ||
         fail "'systemd-sysusers' ran and there is still no '$SERVICE_USER' account, so the unit
     would report 217/USER rather than starting. $SYSUSERS_FILE is what it should have read"
 
     say "  user:    $SERVICE_USER (unprivileged; the unit's User=)"
 else
-    # The payload carried no fragment, which is an older tree -- and an older tree's unit runs
-    # as root and names no User=. Read the installed unit rather than trusting that pairing: a
-    # unit naming an account nothing here can create is 217/USER after an install that said it
-    # worked, and this is the one place left to catch it.
+    # No fragment in the payload: make sure the installed unit names no User= we cannot create.
     unit_user="$(sed -n 's/^[[:space:]]*User=[[:space:]]*//p' "$UNIT_FILE" | tail -n 1)"
     if [ -n "$unit_user" ] && ! getent passwd "$unit_user" >/dev/null; then
         fail "$UNIT_FILE runs as '$unit_user' and no such account exists, while this payload
@@ -611,18 +463,13 @@ as_root systemctl daemon-reload
 as_root systemctl enable "$UNIT"
 say "  enabled: $UNIT starts on boot"
 
-# ==============================================================================
 # Start it, or say what is still owed
-# ==============================================================================
 
 if [ "$CONFIG_HAS_OUTPUT" = 'yes' ]; then
-    # `restart` and not `start`: this is also the upgrade path, and an already-running player
-    # would otherwise keep serving the binary that has just been replaced underneath it.
+    # restart, not start, so an upgrade replaces the running binary.
     as_root systemctl restart "$UNIT"
 
-    # Asked once rather than polled: the unit is Type=simple, so `restart` returns before
-    # systemd has decided anything, and a device that will not open takes about a second to
-    # say so.
+    # Type=simple returns immediately; a failing device takes about a second to show.
     sleep 2
     if systemctl is-active --quiet "$UNIT"; then
         step "$UNIT is running"
@@ -633,9 +480,7 @@ if [ "$CONFIG_HAS_OUTPUT" = 'yes' ]; then
         say "  $CONFIG names an output, so this is that device failing to open rather"
         say "  than the usual first-install case. What it said:"
         say ''
-        # Through as_root like every other privileged read, and emptiness treated as failure:
-        # a user outside `systemd-journal` gets no lines and exit 0, which would print a blank
-        # block at the exact moment the operator most needs to be told something.
+        # Empty output counts as failure: users outside systemd-journal get nothing and exit 0.
         journal="$(as_root journalctl -u "$UNIT" --no-pager -n 15 2>/dev/null || true)"
         if [ -n "$journal" ]; then
             printf '%s\n' "$journal" | sed 's/^/    /'
@@ -654,9 +499,7 @@ else
     as_root "$BINARY" -l 2>&1 | sed 's/^/  /'
 fi
 
-# ==============================================================================
 # What to do next
-# ==============================================================================
 
 step 'Next'
 if [ "$CONFIG_HAS_OUTPUT" != 'yes' ]; then

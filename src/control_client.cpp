@@ -12,15 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-/// @file control_client.cpp
-/// @brief The subcommand half: connect, send one line, print the reply, exit
-///
-/// Deliberately the whole of a subcommand run. Nothing here opens an audio device, starts a
-/// WebSocket server, takes a pidfile or touches mDNS -- `sendspin-cli status` must be able to
-/// ask a running player what it is doing without competing with it for any of that.
-///
-/// Diagnostics go to stderr as plain `error:` lines rather than through the tagged logger, for
-/// the reason the flag parser's do: this answers a command line, it does not record a run.
+/// Subcommand client: connect, send one line, print the reply. Opens nothing else.
 
 #include "control.h"
 
@@ -39,9 +31,6 @@ namespace sendspin_cli {
 namespace {
 
 /// The longest reply this will read, in bytes.
-///
-/// A bound for the same reason the daemon bounds its request: the peer decides how much to
-/// send, and a `status` block is a few hundred bytes.
 constexpr size_t MAX_REPLY_BYTES = 64 * 1024;
 
 /// Everything up to the first newline, and everything after it.
@@ -56,16 +45,9 @@ void split_first_line(const std::string& reply, std::string& first, std::string&
     rest = reply.substr(newline + 1);
 }
 
-/// Connects to `path`, or explains why there is nothing there.
-///
-/// The distinctions this function exists to keep, because each wants a different action:
-/// ENOENT is no socket at all; ECONNREFUSED is a socket file with nothing accepting behind it,
-/// which is a player that died without unlinking *or* a listener whose queue is momentarily
-/// full; EACCES is a player that is there and will not talk to this user.
+/// Connects to `path`, or explains why not: no socket, nothing accepting, or no permission.
 int connect_to_socket(const std::string& path, std::string& error) {
-    // Checked here as well as at parse time, because what follows is a memcpy into a fixed
-    // array: the parser refusing an over-long --control-socket is an invariant held two files
-    // away, and the cost of not relying on it is one comparison.
+    // Re-checked because a memcpy into sun_path follows.
     if (!control_socket_path_fits(path)) {
         error = "control socket path '" + path + "' does not fit a Unix socket address (" +
                 std::to_string(control_socket_path_limit() - 1) + " bytes)";
@@ -94,9 +76,6 @@ int connect_to_socket(const std::string& path, std::string& error) {
                 "note that a non-default --port moves the default path, so the same --port has "
                 "to be given here";
     } else if (reason == ECONNREFUSED) {
-        // A socket file with nothing behind it. Worth telling apart from ENOENT: the file's
-        // presence means a player was here, so the operator is looking for a crash or a busy
-        // listener rather than for a path they got wrong.
         error = path +
                 " exists but nothing accepted the connection: either the player it belonged to "
                 "is gone and left the file behind, or it already has as many control connections "
@@ -158,17 +137,10 @@ bool read_reply(int fd, std::string& reply, std::string& error) {
 
 ControlStatus run_control_subcommand(const ControlRequest& request, const std::string& path,
                                      const std::string& absent_reason, std::FILE* out) {
-    // A daemon that goes away between our connect() and our write() -- because it was at its
-    // connection cap, or is shutting down -- makes that write raise SIGPIPE, whose default
-    // disposition would kill this process with signal 13 instead of letting the EPIPE below
-    // report itself. Ignored here rather than for the whole binary, and rather than reached for
-    // per-call with MSG_NOSIGNAL/SO_NOSIGPIPE, which are spelled differently on Linux and macOS.
-    // This process does nothing else with a pipe or a socket.
+    // A daemon closing before our write would raise SIGPIPE; ignore it and report EPIPE.
     std::signal(SIGPIPE, SIG_IGN);
 
     if (path.empty()) {
-        // No socket to try, and the reason names the fix -- either the daemon was told
-        // --no-control, or this host gave it nowhere to put one.
         std::fprintf(stderr, "error: %s\n",
                      absent_reason.empty()
                          ? "there is no control socket to talk to: this player was started with "
@@ -184,14 +156,10 @@ ControlStatus run_control_subcommand(const ControlRequest& request, const std::s
         return ControlStatus::NoDaemon;
     }
 
-    // The request is fully formed before the connection is made, so nothing here can fail on
-    // the command's own shape -- the parser already refused anything that could.
     const bool sent = write_all(fd, encode_control_request(request) + "\n", error);
 
     std::string reply;
-    // Attempted even after a failed write: the daemon may have replied `error` and closed,
-    // which is what a short write against a closed peer usually means, and that reply is a
-    // better diagnostic than our own guess at what went wrong.
+    // Read even after a failed write: the daemon's `error` reply beats our guess.
     const bool received = read_reply(fd, reply, error);
     ::close(fd);
 
@@ -215,9 +183,6 @@ ControlStatus run_control_subcommand(const ControlRequest& request, const std::s
     ControlStatus status = ControlStatus::Ok;
     std::string reason;
     if (!decode_control_reply(first_line, status, reason)) {
-        // Something is listening on that path and it is not a sendspin-cli daemon. Worth
-        // saying outright: the alternative is printing whatever it sent as though it were
-        // a status.
         std::fprintf(stderr, "error: %s answered '%s', which is not a sendspin-cli reply\n",
                      path.c_str(), first_line.c_str());
         return ControlStatus::Failed;
@@ -227,8 +192,6 @@ ControlStatus run_control_subcommand(const ControlRequest& request, const std::s
         std::fprintf(stderr, "error: %s\n", reason.c_str());
         return status;
     }
-    // stdout rather than the log, because this is the answer to a question rather than a record
-    // of a run -- so `sendspin-cli status | grep track` works.
     std::fwrite(payload.data(), 1, payload.size(), out);
     return ControlStatus::Ok;
 }

@@ -12,13 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-/// @file sink_recovery_test.cpp
-/// @brief What a sink whose device died mid-stream is allowed to try, and when it must stop
-///
-/// The decision half of every device-backed sink's recovery, which lives away from the sinks
-/// precisely so it can be tested here: src/portaudio_sink.cpp, src/pulse_sink.cpp and
-/// src/pipewire_sink.cpp are each compiled only where their library is, and this binary is built
-/// everywhere. Nothing below opens a device or reads a clock.
+/// SinkRecovery: what a sink whose device died mid-stream may try, and when it must stop.
 
 #include "sink_recovery.h"
 
@@ -30,22 +24,16 @@
 namespace sendspin_cli {
 namespace {
 
-/// An arbitrary monotonic starting point. Nothing depends on its value -- only on the
-/// differences -- which is the point of the class taking now_ms rather than reading a clock.
+/// An arbitrary monotonic start; only differences matter.
 constexpr int64_t T0 = 1'000'000;
 
-/// Drives a fresh recovery to the state a failed in-place reopen leaves it in: the inline
-/// attempt spent, the rescan owed and not yet stamped with a deadline.
-///
-/// By reference rather than returned, because SinkRecovery holds an atomic and so is neither
-/// copyable nor movable.
+/// Drives a fresh recovery to where a failed in-place reopen leaves it: rescan owed, unstamped.
 void escalate(SinkRecovery& recovery) {
     ASSERT_TRUE(recovery.reopen_due());
     recovery.reopen_done(false);
 }
 
-/// Ticks the main loop from `from_ms` until the rescan fires, or until `limit_ms` proves it will
-/// not. Ticks are 10 ms, as the real loop's are.
+/// Ticks every 10 ms from `from_ms` until the rescan fires or `limit_ms` passes.
 /// @return The time the rescan fired at, or -1 if it never did.
 int64_t rescan_fires_at(SinkRecovery& recovery, int64_t from_ms, int64_t limit_ms) {
     for (int64_t now = from_ms; now <= limit_ms; now += 10) {
@@ -68,7 +56,6 @@ TEST(SinkRecovery, TriesTheInPlaceReopenFirstAndOnlyOnce) {
     SinkRecovery recovery;
 
     EXPECT_TRUE(recovery.reopen_due());
-    // The reopen is what write() is doing right now, so nothing else is owed yet.
     EXPECT_FALSE(recovery.pending());
 }
 
@@ -93,8 +80,7 @@ TEST(SinkRecovery, ReturnsTheDiscardedGapOnceWhenADeviceComesBack) {
     SinkRecovery recovery;
     escalate(recovery);
 
-    // Fourteen seconds at the reporter's 48 kHz: these writes were accepted to prevent the
-    // producer spinning, but no DAC played them.
+    // Fourteen seconds at 48 kHz, accepted while no DAC played them.
     recovery.discard_frames(14U * 48'000U);
 
     EXPECT_EQ(recovery.take_discarded_frames(), 672'000U);
@@ -127,8 +113,7 @@ TEST(SinkRecovery, ForgettingTheDiscardedGapLeavesTheBudgetAlone) {
     escalate(recovery);
     recovery.discard_frames(48'000U);
 
-    // What a flush does with no device open. A flush is not a stream that got a device running,
-    // so the outage it happened in is still owed exactly what it was before.
+    // What a flush does with no device open: the outage is still owed what it was.
     recovery.forget_discarded_frames();
 
     EXPECT_EQ(recovery.take_discarded_frames(), 0U);
@@ -212,8 +197,7 @@ TEST(SinkRecovery, EveryFurtherWriteOfTheOutageIsToldToDiscard) {
     SinkRecovery recovery;
     escalate(recovery);
 
-    // write() asks once per buffer -- around fifty times a second -- and every one of them after
-    // the first must be told no, or a dead device would be reopened on each.
+    // write() asks per buffer; every ask after the first must be told no.
     for (int i = 0; i < 100; ++i) {
         EXPECT_FALSE(recovery.reopen_due()) << "write " << i;
     }
@@ -225,8 +209,7 @@ TEST(SinkRecovery, TheRescanWaitsOutTheDelayBeforeItFires) {
     SinkRecovery recovery;
     escalate(recovery);
 
-    // The deadline is stamped by the first tick after the escalation, not by the escalation
-    // itself -- that happens on a thread with no business reading the loop's clock.
+    // The first tick after escalation stamps the deadline.
     EXPECT_FALSE(recovery.rescan_due(T0));
     EXPECT_FALSE(recovery.rescan_due(T0 + SINK_RESCAN_DELAY_MS - 10));
     EXPECT_TRUE(recovery.pending());
@@ -250,10 +233,7 @@ TEST(SinkRecovery, ACallerThatReportsNothingGetsExactlyOneRescan) {
     escalate(recovery);
     ASSERT_GE(rescan_fires_at(recovery, T0, T0 + 10 * SINK_RESCAN_DELAY_MS), T0);
 
-    // PortAudioSink's contract, and the reason the reporting call could be added without
-    // touching it: a rebuilt device list leaves the same nothing behind whatever it found, so
-    // that backend reports rescan_done(true) and nothing re-arms. Asserted with no report at all
-    // as well, because a caller that forgets must degrade to this rather than to a retry loop.
+    // A caller that never reports gets exactly one rescan, as PortAudioSink relies on.
     EXPECT_FALSE(recovery.reopen_due());
     EXPECT_FALSE(recovery.pending());
     EXPECT_EQ(rescan_fires_at(recovery, T0, T0 + 100 * SINK_RESCAN_DELAY_MS), -1);
@@ -275,19 +255,13 @@ TEST(SinkRecovery, AFailedRescanIsTriedAgainAfterALongerDelay) {
     SinkRecovery recovery;
     escalate(recovery);
 
-    // What a restarting sound server needs, and what a device-list rebuild does not: the server
-    // was still down when the first attempt landed, and nothing about that says the next one
-    // will fail too.
     const int64_t first = rescan_fires_at(recovery, T0, T0 + 10 * SINK_RESCAN_DELAY_MS);
     ASSERT_EQ(first, T0 + SINK_RESCAN_DELAY_MS);
 
     recovery.rescan_done(false);
     EXPECT_TRUE(recovery.pending());
 
-    // Twice the first delay, not the same one: the rate has to fall as an outage lengthens, or a
-    // server that never comes back costs the main loop a fixed share of every second. Asserted as
-    // the firing time rather than by asking early, because the first ask after a failure is what
-    // stamps the deadline -- an extra one would move it.
+    // Twice the first delay. Measured by firing time: an extra early ask would move the deadline.
     const int64_t second = rescan_fires_at(recovery, first, first + 10 * SINK_RESCAN_DELAY_MS);
     EXPECT_EQ(second, first + (2 * SINK_RESCAN_DELAY_MS));
 }
@@ -307,9 +281,7 @@ TEST(SinkRecovery, TheRetriesRunOutAndTheDelayStopsGrowing) {
         EXPECT_LE(delay, SINK_RESCAN_MAX_DELAY_MS)
             << "attempt " << attempt << " waited past the ceiling";
         if (attempt == SINK_RESCAN_ATTEMPTS) {
-            // Pinned rather than merely bounded above: without this the whole loop would still
-            // pass for a delay_for_() that never grew at all, or one that clamped to the wrong
-            // figure. The last attempt is the one that must have reached the ceiling.
+            // Pinned, not just bounded, so a delay that never grew cannot pass.
             EXPECT_EQ(delay, SINK_RESCAN_MAX_DELAY_MS);
         }
         previous_delay = delay;
@@ -318,8 +290,6 @@ TEST(SinkRecovery, TheRetriesRunOutAndTheDelayStopsGrowing) {
         now = fired_at;
     }
 
-    // The cap, and it is the code's rather than a promise's: an outage that outlived every
-    // attempt was not going to be answered by asking the same question again.
     EXPECT_FALSE(recovery.pending());
     EXPECT_EQ(rescan_fires_at(recovery, now, now + 100 * SINK_RESCAN_DELAY_MS), -1);
 }
@@ -333,14 +303,12 @@ TEST(SinkRecovery, ReportingOnAnAttemptThatIsNotOutstandingDoesNothing) {
     recovery.rescan_done(false);
     ASSERT_TRUE(recovery.pending());
 
-    // A second report for the same attempt must not buy a second retry, or a sink with two exit
-    // paths that both report would burn its budget at twice the rate its delays assume.
+    // A duplicate report must not buy a second retry.
     recovery.rescan_done(false);
     EXPECT_EQ(rescan_fires_at(recovery, fired_at, fired_at + 10 * SINK_RESCAN_DELAY_MS),
               fired_at + (2 * SINK_RESCAN_DELAY_MS));
 
-    // And a report that arrives after a configure() has already answered the outage is ignored
-    // rather than re-arming a recovery against a stream that is playing.
+    // A report after reset() must not re-arm recovery.
     recovery.reset();
     recovery.rescan_done(false);
     EXPECT_FALSE(recovery.pending());
@@ -357,9 +325,7 @@ TEST(SinkRecovery, ResetPutsTheWholeRetryBudgetBack) {
     }
     ASSERT_FALSE(recovery.pending());
 
-    // A configure() that got a stream running answers the outage more completely than any number
-    // of reconnects could, so the count goes back to zero along with everything else -- including
-    // the delay, which starts again at SINK_RESCAN_DELAY_MS rather than at the ceiling.
+    // reset() also returns the delay to SINK_RESCAN_DELAY_MS.
     recovery.reset();
     escalate(recovery);
 
@@ -370,9 +336,7 @@ TEST(SinkRecovery, ResetPutsTheWholeRetryBudgetBack) {
 TEST(SinkRecovery, AStreamThatDiesAgainGoesStraightToTheRescan) {
     SinkRecovery recovery;
 
-    // The device came back, and then immediately went away again -- half-present hardware, a
-    // dock mid-handshake. Reopening a second time would be the same call against the same cached
-    // device list, fifty times a second, so the budget must not have refilled.
+    // Came back and died again: the reopen budget must not have refilled.
     ASSERT_TRUE(recovery.reopen_due());
     recovery.reopen_done(true);
 
@@ -404,8 +368,6 @@ TEST(SinkRecovery, ResetDuringAnOutageCancelsWhatWasOwed) {
     escalate(recovery);
     ASSERT_TRUE(recovery.pending());
 
-    // A configure() that got a stream running answers the outage more completely than any
-    // recovery could, so what was owed is no longer owed to anybody.
     recovery.reset();
 
     EXPECT_FALSE(recovery.pending());

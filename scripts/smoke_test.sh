@@ -14,16 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# Boot-level checks for a built sendspin-cli: that it runs, comes up on its port, forks under
-# -z, refuses a second instance holding the same -P, survives an mDNS daemon it cannot reach,
-# exits 0 on SIGTERM, and answers its control socket.
-#
-# Deliberately outside the CTest suite rather than an addition to it. Nothing in tests/ opens
-# a device, a socket or the mDNS daemon, which is what keeps `ctest --test-dir build` runnable
-# on any bare machine; everything here needs a real process -- a fork, a file lock held across
-# two of them, a listening port, a signal -- and registering it as a test would erode that
-# boundary rather than respect it. This checks that the binary *boots*; what it does once a
-# server talks to it is the unit suite's subject, not this one's.
+# Boot-level checks for a built sendspin-cli, kept out of CTest because they need real processes, ports and signals.
 #
 # Usage: scripts/smoke_test.sh [path-to-sendspin-cli]
 
@@ -32,10 +23,7 @@ set -euo pipefail
 BIN="${1:-build/sendspin-cli}"
 readonly BIN
 
-# High enough to be clear of anything a developer is plausibly running. One per phase for the
-# checks that run concurrently with each other, so a socket still in TIME_WAIT from the phase
-# before cannot fail the next one; the control-socket checks share PORT_CONTROL because they run
-# strictly in sequence and each waits for its own player to exit.
+# High ports, one per concurrently running phase so TIME_WAIT cannot collide.
 readonly PORT_FOREGROUND=39281
 readonly PORT_DAEMON=39282
 readonly PORT_DAEMON_SECOND=39283
@@ -47,43 +35,26 @@ readonly PORT_DELAY=39288
 
 readonly MDNS_INSTANCE="sendspin-cli-smoke"
 
-# Sized for a loaded shared CI runner rather than for a developer's laptop: the cost of being
-# generous is paid only when something is already wrong, and every wait below returns as soon
-# as its condition holds.
+# Generous for loaded CI runners; every wait returns as soon as its condition holds.
 readonly BOOT_TIMEOUT_S=20
 readonly EXIT_TIMEOUT_S=15
 
 WORK_DIR="$(mktemp -d)"
 readonly WORK_DIR
 
-# A second, deliberately *short* directory, used only as $XDG_RUNTIME_DIR for the control-socket
-# checks. A Unix socket address holds 104 bytes on macOS, and macOS's own `mktemp -d` already
-# spends 63 of them -- so the default leaf (`sendspin-cli-<port>.sock`, 23 more) would leave the
-# check measuring the path limit rather than the feature. Created by mktemp, so it is 0700 and
-# owned by this user, which is the property the daemon expects of $XDG_RUNTIME_DIR.
+# A short runtime dir: macOS socket paths are limited to 104 bytes and mktemp's default is long.
 CONTROL_DIR="$(mktemp -d /tmp/sscli-smoke.XXXXXX)"
 readonly CONTROL_DIR
 
-# Every player started below writes what it remembers -- its volume, its static delay, the server
-# it last handshook with -- so the state directory is pinned inside the scratch tree and exported
-# once, for every child. Without this the suite would read and rewrite the state of whoever is
-# running it, and one leg's remembered volume would then leak into the next.
+# Pinned state dir, so the suite never touches the invoking user's state.
 XDG_STATE_HOME="$WORK_DIR/state-home"
 export XDG_STATE_HOME
 mkdir -p "$XDG_STATE_HOME"
 
-# And the same argument for the *config*, which every check below except check_config_file has to be
-# insulated from. The search reaches $XDG_CONFIG_HOME, $HOME/.config and /etc/sendspin-cli.conf, and
-# unlike the state directory that last one cannot be pointed somewhere else -- so exporting a
-# variable is not enough and every invocation names a config instead. /dev/null always exists,
-# always parses, and always holds nothing, which is exactly the guarantee wanted. Without this, a
-# host carrying any config file has every leg silently running on options this script never wrote,
-# and a stray `port` or `no-control` key fails them in ways that read as product bugs.
+# Every invocation names /dev/null as config: /etc/sendspin-cli.conf cannot be redirected by env.
 readonly NO_CONFIG=(--config /dev/null)
 
-# Every check stops what it started on the way through, but fail() exits from wherever it is
-# called -- so the pids are tracked and swept here as well, to leave no player holding a port
-# after a failure.
+# Tracked so fail() can sweep every started player.
 STARTED_PIDS=()
 
 cleanup() {
@@ -104,13 +75,7 @@ pass() {
     printf 'smoke: ok -- %s\n' "$*"
 }
 
-# ==============================================================================
-# Waiting
-# ==============================================================================
-#
-# Polling loops rather than timeout(1), which is coreutils and so is absent on macOS. They are
-# also what a fixed `sleep N` cannot be: correct on a runner slow enough to need the whole
-# deadline, and immediate on one that is not.
+# Waiting: polling loops, since timeout(1) is absent on macOS.
 
 # Waits until `pattern` (an ERE) appears in `file`, or `limit` seconds pass.
 wait_for_line() {
@@ -126,10 +91,7 @@ wait_for_line() {
     return 1
 }
 
-# Waits until `file` exists *and is not empty*, or `limit` seconds pass.
-#
-# Non-empty rather than merely present, because the pidfile is created, then locked, then
-# written: testing for existence alone would race the write and read back nothing.
+# Waits until `file` is non-empty, or `limit` seconds pass; the pidfile is created before it is written.
 wait_for_nonempty_file() {
     local file=$1 limit=$2
     local waited=0
@@ -171,8 +133,7 @@ wait_for_absent() {
     return 1
 }
 
-# Waits for a pid to disappear, or `limit` seconds pass. Used for the daemon, which forked
-# away from this shell and so is nothing this script can wait(2) on.
+# Waits for a pid to disappear, or `limit` seconds pass; for the forked daemon.
 wait_for_gone() {
     local pid=$1 limit=$2
     local waited=0
@@ -186,9 +147,7 @@ wait_for_gone() {
     return 1
 }
 
-# Reaps a child of this shell and returns its exit status. One that outlives the deadline is
-# killed and reported as 124 -- the status timeout(1) would have used -- so a player that
-# ignores SIGTERM fails the run instead of hanging it.
+# Reaps a child and returns its status; past the deadline it is killed and reported as 124.
 await_child() {
     local pid=$1 limit=$2
     if ! wait_for_gone "$pid" "$limit"; then
@@ -201,10 +160,7 @@ await_child() {
     return "$status"
 }
 
-# Whether this host has a daemon for the player to register with. mDNSResponder is always up
-# on macOS. The socket is an exact proxy on Linux rather than an approximate one because
-# libavahi-compat-libdnssd is the only dns_sd this build has there, and that socket is what it
-# connects to; a daemon is present only if the image or the workflow put it there.
+# Whether an mDNS daemon is available: always on macOS, the avahi socket on Linux.
 mdns_daemon_present() {
     if [ "$(uname -s)" = "Darwin" ]; then
         return 0
@@ -212,9 +168,7 @@ mdns_daemon_present() {
     [ -S /run/avahi-daemon/socket ] || [ -S /var/run/avahi-daemon/socket ]
 }
 
-# ==============================================================================
 # Checks
-# ==============================================================================
 
 check_version_and_help() {
     local out
@@ -249,16 +203,14 @@ check_daemon_pidfile() {
     local log="$WORK_DIR/daemon.log"
     local second_err="$WORK_DIR/second-instance.err"
 
-    # -z returns in the *parent* as soon as the child is forked, so this exit status says only
-    # that the fork happened. What says the daemon is really up is the pidfile and the log.
+    # -z returns once forked; the pidfile and log prove the daemon is up.
     "$BIN" -z -P "$pidfile" -f "$log" --no-mdns --no-control -o null --port "$PORT_DAEMON" "${NO_CONFIG[@]}" ||
         fail "-z exited $? instead of forking"
 
     wait_for_nonempty_file "$pidfile" "$BOOT_TIMEOUT_S" ||
         fail "no pidfile at $pidfile within ${BOOT_TIMEOUT_S}s"
 
-    # Read now and kept: the daemon unlinks its pidfile on the way out, so reading it after the
-    # signal would find nothing to signal.
+    # Read now: the daemon unlinks its pidfile on exit.
     local pid
     pid="$(cat "$pidfile")"
     STARTED_PIDS+=("$pid")
@@ -268,8 +220,7 @@ check_daemon_pidfile() {
         fail "daemon never logged that it was listening. Log: $(cat "$log")"
     pass "-z forks and -P writes a pidfile holding a live pid"
 
-    # A different --port on purpose, so what refuses the second instance is provably the lock
-    # on the pidfile and not the listening socket.
+    # A different port, so only the pidfile lock can refuse it.
     if "$BIN" -z -P "$pidfile" --no-mdns --no-control -o null --port "$PORT_DAEMON_SECOND" "${NO_CONFIG[@]}" \
         >/dev/null 2>"$second_err"; then
         fail "a second instance on the same -P was allowed to start"
@@ -296,11 +247,7 @@ check_default_mdns_boot() {
     wait_for_line "$log" "listening on port $PORT_MDNS" "$BOOT_TIMEOUT_S" ||
         fail "no ready log from the default configuration within ${BOOT_TIMEOUT_S}s. Log: $(cat "$log")"
 
-    # Which of the three outcomes is the correct one is a property of the build *and* of the
-    # host, and both are read rather than assumed. Asserting only the branch this happens to
-    # take would mean the check quietly starts testing another one the day a runner image gains
-    # -- or loses -- an mDNS daemon, or the day it is pointed at a -DSENDSPIN_CLI_WITH_MDNS=OFF
-    # build, which is a configuration CI really does produce.
+    # The expected outcome depends on the build and the host, so read both.
     if grep -q 'mDNS: none' "$log"; then
         wait_for_line "$log" 'no mDNS support' "$BOOT_TIMEOUT_S" ||
             fail "this build has no mDNS and did not say so. Log: $(cat "$log")"
@@ -315,8 +262,6 @@ check_default_mdns_boot() {
         pass "the default configuration warns and retries where no mDNS daemon is running"
     fi
 
-    # The whole point of that warning: an advertisement that cannot be made is not fatal, so
-    # the player must still be serving its port.
     kill -0 "$pid" 2>/dev/null ||
         fail "the player exited rather than carrying on without an advertisement. Log: $(cat "$log")"
 
@@ -329,19 +274,12 @@ check_default_mdns_boot() {
 }
 
 # The control socket at its default path: created, private, answering, and gone again.
-#
-# Everything here needs two processes -- a listening socket in one and a connect() from another --
-# which is exactly what tests/ does not do, and why this lives in the smoke test.
 check_control_socket() {
     local log="$WORK_DIR/control.log"
     local socket="$CONTROL_DIR/sendspin-cli-$PORT_CONTROL.sock"
     local status_out="$WORK_DIR/control-status.out"
     local second_err="$WORK_DIR/control-second.err"
 
-    # $XDG_RUNTIME_DIR is the first source the default path is built from, and setting it here is
-    # what makes this check platform-independent -- check_missing_runtime_dir() covers what happens
-    # when it is unset. What no source will ever be is /tmp: a world-writable directory would let
-    # any local account drive the player.
     XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" --no-mdns -o null --port "$PORT_CONTROL" "${NO_CONFIG[@]}" \
         >"$log" 2>&1 &
     local pid=$!
@@ -352,8 +290,7 @@ check_control_socket() {
     wait_for_socket "$socket" "$BOOT_TIMEOUT_S" ||
         fail "no control socket at $socket within ${BOOT_TIMEOUT_S}s. Log: $(cat "$log")"
 
-    # 0600 explicitly, because bind() applies the umask and a daemon's is 0022 -- so getting this
-    # wrong leaves the socket connectable by every local account rather than merely untidy.
+    # 0600 despite the daemon's 0022 umask.
     local mode
     case "$(uname -s)" in
         Darwin) mode="$(stat -f '%Lp' "$socket")" ;;
@@ -362,27 +299,20 @@ check_control_socket() {
     [ "$mode" = "600" ] || fail "the control socket is mode $mode, not 600"
     pass "the control socket appears at its default path, mode 0600"
 
-    # A `status` against a player with no server connection: it has to answer, say it is not
-    # connected, and still report what it knows locally.
     XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" status --port "$PORT_CONTROL" "${NO_CONFIG[@]}" >"$status_out" 2>&1 ||
         fail "status exited $? against a running player. Output: $(cat "$status_out")"
     grep -q '^name: ' "$status_out" || fail "status printed no name: $(cat "$status_out")"
     grep -q '^server: not connected' "$status_out" ||
         fail "status did not report the missing server connection: $(cat "$status_out")"
-    # Group and player volume are separate, labelled lines -- `vol` moves the group, so one
-    # ambiguous `volume:` would leave a reader unable to tell which number it had moved.
     grep -q '^group volume: ' "$status_out" ||
         fail "status printed no group volume line: $(cat "$status_out")"
     grep -q '^player volume: ' "$status_out" ||
         fail "status printed no player volume line: $(cat "$status_out")"
-    # Always present, whether or not anybody has set it: the role holds a figure from startup, and
-    # `delay` can change it, so an invisible setting would leave a user unable to see what they did.
     grep -q '^static delay: [0-9]* ms$' "$status_out" ||
         fail "status printed no static delay line: $(cat "$status_out")"
     pass "status round-trips over the control socket, naming both volumes and the static delay"
 
-    # A transport command with no server behind it must say *that*, and not "unsupported":
-    # a dropped connection empties supported_commands, so the naive answer is the wrong one.
+    # Must say "not connected", not "unsupported".
     local pause_err="$WORK_DIR/control-pause.err"
     if XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" pause --port "$PORT_CONTROL" "${NO_CONFIG[@]}" \
         >/dev/null 2>"$pause_err"; then
@@ -392,8 +322,7 @@ check_control_socket() {
         fail "pause blamed something other than the missing connection: $(cat "$pause_err")"
     pass "a transport command with no server reports the connection, not the command"
 
-    # A second instance on the same socket is refused, in the same words -P uses -- and refused
-    # before it opens a device or a port, which is why the lock is taken where it is.
+    # Refused before opening a device or port, in -P's words.
     if XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" --no-mdns -o null \
         --port "$PORT_CONTROL_SECOND" --control-socket "$socket" "${NO_CONFIG[@]}" \
         >/dev/null 2>"$second_err"; then
@@ -403,10 +332,7 @@ check_control_socket() {
         fail "the second instance was refused without saying why: $(cat "$second_err")"
     pass "a second instance on the same control socket is refused"
 
-    # And refused at the *terminal* under -z, which is the case that needs the pre-fork probe:
-    # ControlSocket::open() runs in the child, so without one the refusal would land in a log the
-    # shell has stopped watching -- and with no -f, nowhere at all. -P is probed pre-fork for
-    # exactly this reason, and README.md claims parity with it.
+    # Refused at the terminal under -z, via the pre-fork probe.
     local second_z_err="$WORK_DIR/control-second-z.err"
     if XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" -z --no-mdns -o null \
         --port "$PORT_CONTROL_SECOND" --control-socket "$socket" "${NO_CONFIG[@]}" \
@@ -427,11 +353,7 @@ check_control_socket() {
     pass "the control socket is removed on SIGTERM"
 }
 
-# A socket file left by a SIGKILLed daemon needs no manual cleanup.
-#
-# The case the sibling flock() exists for: unlink-then-bind alone would race a *live* daemon's
-# socket away, and connecting to probe is a TOCTOU -- so the lock is what makes "stale" and "in
-# use" different answers rather than a guess.
+# A socket left by a SIGKILLed daemon needs no manual cleanup.
 check_stale_control_socket() {
     local socket="$CONTROL_DIR/stale.sock"
     local first="$WORK_DIR/stale-first.log"
@@ -443,9 +365,7 @@ check_stale_control_socket() {
     wait_for_socket "$socket" "$BOOT_TIMEOUT_S" ||
         fail "no control socket at $socket within ${BOOT_TIMEOUT_S}s. Log: $(cat "$first")"
 
-    # SIGKILL, so no cleanup runs: the file is left behind and the lock dies with the descriptor.
-    # Reaped straight away rather than through wait_for_gone(), so bash does not print its own
-    # "Killed: 9" job notice into the middle of the run's output.
+    # Reaped at once so bash prints no "Killed" notice.
     kill -KILL "$pid"
     wait "$pid" 2>/dev/null || true
     [ -e "$socket" ] || fail "expected a stale socket file at $socket after SIGKILL"
@@ -486,13 +406,7 @@ check_no_control() {
         fail "SIGTERM did not stop the --no-control run. Log: $(cat "$log")"
 }
 
-# With no $XDG_RUNTIME_DIR, either the platform supplies a private directory of its own or there
-# is no default path at all -- and in the second case the player still serves audio, which is the
-# whole point of a warning rather than a refusal.
-#
-# Which outcome is correct is a property of the platform, so it is read off the run rather than
-# assumed: macOS's launchd sets no $XDG_RUNTIME_DIR ever, so the fallback is what makes the
-# default path work there at all.
+# With no $XDG_RUNTIME_DIR: a platform fallback (macOS) or no socket, and audio either way.
 check_missing_runtime_dir() {
     local log="$WORK_DIR/no-runtime-dir.log"
 
@@ -504,8 +418,6 @@ check_missing_runtime_dir() {
         fail "no ready log within ${BOOT_TIMEOUT_S}s. Log: $(cat "$log")"
 
     if grep -q '^I control: Listening on ' "$log"; then
-        # A platform fallback answered. The socket has to be real, private, and reachable by a
-        # subcommand that was given no path either -- which is the whole point of having one.
         local socket
         socket="$(sed -n 's/^I control: Listening on //p' "$log" | head -1)"
         wait_for_socket "$socket" "$BOOT_TIMEOUT_S" ||
@@ -523,8 +435,6 @@ check_missing_runtime_dir() {
                 ;;
         esac
         [ "$mode" = "600" ] || fail "the fallback socket is mode $mode, not 600"
-        # The directory is what stops another local account reaching the socket on a platform
-        # that does not enforce socket-inode permissions on connect().
         [ "$owner" = "$(id -u)" ] ||
             fail "the fallback directory $(dirname "$socket") is owned by uid $owner, not $(id -u)"
         case "$socket" in
@@ -537,9 +447,7 @@ check_missing_runtime_dir() {
     else
         wait_for_line "$log" '^W control: .*XDG_RUNTIME_DIR' "$BOOT_TIMEOUT_S" ||
             fail "no control socket and no warning about why. Log: $(cat "$log")"
-        # There is deliberately no /tmp fallback anywhere: it is world-writable, and a socket
-        # there would let any local account pause playback and switch this endpoint out of its
-        # group.
+        # Never a /tmp fallback.
         if grep -q '/tmp' "$log"; then
             fail "the missing-runtime-dir path mentions /tmp. Log: $(cat "$log")"
         fi
@@ -565,7 +473,7 @@ check_subcommand_without_a_player() {
     if "$BIN" status --control-socket "$socket" "${NO_CONFIG[@]}" >/dev/null 2>"$err"; then
         fail "status succeeded against a socket nothing is listening on"
     fi
-    # 3 rather than 1: a script has to be able to tell "no player" from a bad command line.
+    # 3, distinct from a bad command line.
     local status=0
     "$BIN" status --control-socket "$socket" "${NO_CONFIG[@]}" >/dev/null 2>&1 || status=$?
     [ "$status" -eq 3 ] || fail "expected exit 3 for a missing player, got $status"
@@ -575,11 +483,7 @@ check_subcommand_without_a_player() {
     pass "a subcommand with no player exits 3 and starts nothing"
 }
 
-# A player configured entirely from a file, reached by a subcommand that repeats none of it.
-#
-# The whole point of the config surface, and the one part of it no unit test can reach: the
-# subcommand is a *separate process*, so it has to find the same socket by reading the same file.
-# Get the merge wrong and this exits 3 against a player that is running and healthy.
+# A player configured from a file, found by a subcommand that repeats no flags.
 check_config_file() {
     local config_home="$WORK_DIR/config-home"
     local config="$config_home/sendspin-cli/config"
@@ -588,9 +492,7 @@ check_config_file() {
     local socket="$CONTROL_DIR/sendspin-cli-$PORT_CONFIG.sock"
 
     mkdir -p "$config_home/sendspin-cli"
-    # Deliberately exercises a comment, a blank line, a long alias's key, and a boolean -- and puts
-    # the port in the file rather than on the command line, since that is what the subcommand below
-    # has to pick up to find the socket at all.
+    # Covers a comment, a blank line, a long alias key, a boolean, and the port.
     cat >"$config" <<EOF
 # a player configured entirely from a file
 name = smoke-from-config
@@ -601,8 +503,7 @@ no-mdns = true
 buffer-ms = 250
 EOF
 
-    # $XDG_CONFIG_HOME is the first layer of the search, so this exercises the real search order
-    # rather than --config. Both processes get it, because both have to reach the same file.
+    # The real search order, via $XDG_CONFIG_HOME, for both processes.
     XDG_CONFIG_HOME="$config_home" XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" >"$log" 2>&1 &
     local pid=$!
     STARTED_PIDS+=("$pid")
@@ -616,32 +517,27 @@ EOF
     wait_for_socket "$socket" "$BOOT_TIMEOUT_S" ||
         fail "no control socket at $socket within ${BOOT_TIMEOUT_S}s. Log: $(cat "$log")"
 
-    # Not one flag repeated: the subcommand reads the same config and derives the same socket path.
     XDG_CONFIG_HOME="$config_home" XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" status \
         >"$status_out" 2>&1 ||
         fail "status exited $? against a config-configured player. Output: $(cat "$status_out")"
     grep -q '^name: smoke-from-config' "$status_out" ||
         fail "status reached a different player than the config describes: $(cat "$status_out")"
-    # And it must not scold the operator about flags they never typed.
     if grep -q 'a subcommand reads only' "$status_out"; then
         fail "status warned about daemon-only flags that came from a config file"
     fi
     pass "a player configured from a file comes up, and a subcommand finds it with no flags"
 
-    # A broken config is refused rather than half-applied, and says where to look.
     local broken="$WORK_DIR/broken.conf"
     local broken_err="$WORK_DIR/broken.err"
     printf '# fine\nbuffer-ms = 5\n' >"$broken"
     if "$BIN" --config "$broken" >/dev/null 2>"$broken_err"; then
         fail "a config with an out-of-range buffer-ms started a player"
     fi
-    # -F rather than a pattern: the path comes from mktemp -d /tmp/sscli-smoke.XXXXXX and so
-    # contains a '.', which as a regex would match more than it means to.
+    # -F: the mktemp path contains a '.'.
     grep -qF "$broken:2:" "$broken_err" ||
         fail "the refusal did not name the file and line: $(cat "$broken_err")"
     grep -q 'expected 10-2000' "$broken_err" ||
         fail "the refusal did not use --buffer-ms's own message: $(cat "$broken_err")"
-    # And --help still works with that same file in place, which is what makes it fixable.
     "$BIN" --config "$broken" --help >/dev/null 2>&1 ||
         fail "--help stopped working because of a broken config"
     pass "a broken config is refused naming file and line, and --help still explains itself"
@@ -650,16 +546,7 @@ EOF
     await_child "$pid" "$EXIT_TIMEOUT_S" >/dev/null 2>&1 || true
 }
 
-# `delay` reaches the player role, shows up in `status`, and survives a restart.
-#
-# The only end-to-end proof that the local knob gets all the way through: the subcommand's line,
-# the daemon's own re-parse, PlayerRole::update_static_delay(), CliPersistenceProvider, the state
-# file, and PlayerRole::get_static_delay_ms() on the way back out. Nothing in tests/ crosses more
-# than one of those.
-#
-# --state-dir is explicit rather than left to the XDG search, and that is what makes the restart
-# assertion mean anything: a CI leg with no $XDG_STATE_HOME and no $HOME has nowhere to write, and
-# the check would pass vacuously against a delay that was never persisted at all.
+# `delay` reaches the role, shows in `status`, and survives a restart under an explicit --state-dir.
 check_static_delay() {
     local log="$WORK_DIR/delay.log"
     local relog="$WORK_DIR/delay-restart.log"
@@ -671,11 +558,7 @@ check_static_delay() {
 
     local -a player=(--no-mdns -o null --port "$PORT_DELAY" --state-dir "$state_dir")
 
-    # --static-delay on a genuinely first run, against a state directory nothing has written yet.
-    # This is the only check that proves the flag reaches PlayerRoleConfig at all -- the unit tests
-    # stop at Options, and the precedence check below would still pass if the assignment in main()
-    # were deleted. It also pins the ordering: the role loads initial_static_delay_ms during
-    # add_player(), so a flag applied after that would be read too late and silently do nothing.
+    # --static-delay on a first run: the only check that the flag reaches the role before add_player().
     local seeded_dir="$WORK_DIR/delay-seeded"
     local seeded_out="$WORK_DIR/delay-seeded.out"
     mkdir -p "$seeded_dir"
@@ -707,14 +590,12 @@ check_static_delay() {
     wait_for_socket "$socket" "$BOOT_TIMEOUT_S" ||
         fail "no control socket at $socket within ${BOOT_TIMEOUT_S}s. Log: $(cat "$log")"
 
-    # Nothing remembered yet, so the delay starts off.
     XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" status --port "$PORT_DELAY" "${NO_CONFIG[@]}" \
         >"$out" 2>&1 || fail "status exited $?. Output: $(cat "$out")"
     grep -q '^static delay: 0 ms$' "$out" ||
         fail "a player with nothing remembered did not report a zero delay: $(cat "$out")"
 
-    # And it is settable with no server connected, exactly as `status` is readable -- which is the
-    # whole reason it is answered locally rather than sent as a controller command.
+    # Settable with no server connected.
     XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" delay 250 --port "$PORT_DELAY" "${NO_CONFIG[@]}" \
         >/dev/null 2>&1 || fail "delay 250 exited $? against a player with no server"
 
@@ -724,8 +605,7 @@ check_static_delay() {
         fail "delay 250 did not reach the player role: $(cat "$out")"
     pass "delay reaches the player role with no server connected, and status shows it"
 
-    # Refused at the client, before a socket is opened: the library would clamp 5001 to 5000 and
-    # report success, so this is the check that the bound is really this player's.
+    # Refused at the client; the library would clamp.
     local refusal="$WORK_DIR/delay-refusal.err"
     if XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" delay 5001 --port "$PORT_DELAY" "${NO_CONFIG[@]}" \
         >/dev/null 2>"$refusal"; then
@@ -745,8 +625,7 @@ check_static_delay() {
     [ "$status" -eq 0 ] ||
         fail "SIGTERM left exit status $status (124 means it never exited). Log: $(cat "$log")"
 
-    # The spec requires a client to persist this across restarts, so the same player started again
-    # against the same state directory has to come back with it.
+    # Persisted across a restart.
     XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" "${player[@]}" "${NO_CONFIG[@]}" >"$relog" 2>&1 &
     pid=$!
     STARTED_PIDS+=("$pid")
@@ -762,8 +641,7 @@ check_static_delay() {
         fail "the delay did not survive a restart: $(cat "$out")"
     pass "a locally set delay survives a restart through the state store"
 
-    # And --static-delay loses to it, which is the precedence --help promises: the flag is a
-    # first-run default, and this run is not the first.
+    # A remembered delay beats --static-delay.
     local flagged="$WORK_DIR/delay-flag-status.out"
     kill -TERM "$pid"
     await_child "$pid" "$EXIT_TIMEOUT_S" >/dev/null 2>&1 || true

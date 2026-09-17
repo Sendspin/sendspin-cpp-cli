@@ -12,13 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-/// @file control_common.cpp
-/// @brief The parts of the control channel that are pure data work
-///
-/// Separate from control_socket.cpp and control_client.cpp so the decisions that matter --
-/// which argument shapes are legal, which requests the server will actually act on, what
-/// `status` says, where one line ends -- are testable without binding a socket. The same split
-/// mdns_common.cpp makes, and for the same reason: `tests/` deliberately opens nothing.
+/// The control channel's pure data work, testable without a socket.
 
 #include "control.h"
 
@@ -45,11 +39,7 @@ namespace {
 /// The `on|off` values `mute` and `shuffle` take.
 constexpr const char* ON_OFF = "on|off";
 
-/// The reply status line's machine-readable kinds, one per ControlStatus that crosses the wire.
-///
-/// A token rather than the numeric status, so a reply read by hand still says what happened.
-/// `Ok` and `NoDaemon` are absent on purpose: `ok` has its own line shape, and nothing is
-/// listening to say "no daemon" in the first place -- that one is the client's own conclusion.
+/// Reply status tokens for each ControlStatus that crosses the wire.
 struct ReplyKind {
     ControlStatus status;
     const char* token;
@@ -62,9 +52,6 @@ constexpr ReplyKind REPLY_KINDS[] = {
 };
 
 /// Parses a non-negative decimal integer, digits only, at most `max`.
-///
-/// Digits-only for the reason `cli.cpp`'s parse_port() gives: strtoull would accept " 50" and
-/// "+50", and read "-1" as a huge unsigned that fails the range check only by accident.
 bool parse_unsigned(const std::string& text, uint64_t max, uint64_t& value) {
     if (text.empty() || text.find_first_not_of("0123456789") != std::string::npos) {
         return false;
@@ -85,9 +72,7 @@ bool parse_int32(const std::string& text, int32_t& value) {
     const bool signed_form = negative || (!text.empty() && text.front() == '+');
     const std::string digits = signed_form ? text.substr(1) : text;
     uint64_t magnitude = 0;
-    // The negative range is one wider than the positive one, and `seek-rel -2147483648` is a
-    // legal offset -- so the bound is applied before the sign is, rather than by negating a
-    // value that has already had to fit.
+    // The bound is applied before the sign, so INT32_MIN still fits.
     const uint64_t limit = negative ? 2147483648ULL : 2147483647ULL;
     if (!parse_unsigned(digits, limit, magnitude)) {
         return false;
@@ -144,14 +129,11 @@ std::string command_name(ControlCommand command) {
             return subcommand.name;
         }
     }
-    // Unreachable while the table covers the enum, which ControlSubcommands.
-    // EveryCommandInTheEnumHasARow pins down by walking the enum's whole range. Named rather
-    // than asserted: a reply is not worth aborting a daemon for.
+    // Unreachable while the table covers the enum.
     return "?";
 }
 
-/// `<mm>:<ss>`, or `<h>:<mm>:<ss>` past an hour. Milliseconds are dropped: a position read by
-/// a human wants the same resolution a player's display gives it.
+/// `<mm>:<ss>`, or `<h>:<mm>:<ss>` past an hour.
 std::string format_clock(uint32_t milliseconds) {
     const uint32_t total_seconds = milliseconds / 1000U;
     const uint32_t hours = total_seconds / 3600U;
@@ -183,8 +165,7 @@ std::string format_volume(bool known, uint8_t volume, bool muted) {
     return std::to_string(static_cast<unsigned>(volume)) + (muted ? " (muted)" : "");
 }
 
-/// What qualifies the player's own volume, naming who chose it. Empty for a server's own figure,
-/// which needs no explaining and is the only one of the three anybody asserted.
+/// Qualifier naming who chose the player's volume; empty for a server's own figure.
 const char* volume_source_note(VolumeSource source) {
     switch (source) {
         case VolumeSource::Restored:
@@ -200,9 +181,6 @@ const char* volume_source_note(VolumeSource source) {
 }  // namespace
 
 const std::vector<ControlSubcommand>& control_subcommands() {
-    // Function-local rather than a file-scope constant, so the vector is built on first use
-    // rather than during static initialization -- and so the help strings live next to the
-    // arity they describe.
     static const std::vector<ControlSubcommand> table = {
         {"status", ControlCommand::Status, 0, nullptr, "What this player and its group are doing"},
         {"play", ControlCommand::Play, 0, nullptr, "Resume or start playback"},
@@ -253,23 +231,22 @@ std::string control_subcommand_list() {
 
 bool split_subcommand(int argc, char* const argv[], ControlInvocation& out, std::string& error) {
     out = ControlInvocation{};
-    // A flag, or nothing at all: a daemon run, which is what every existing command line is.
+    // A flag or nothing: a daemon run.
     if (argc < 2 || argv[1][0] == '-') {
         return true;
     }
 
     const ControlSubcommand* subcommand = find_control_subcommand(argv[1]);
     if (subcommand == nullptr) {
-        error = "unknown subcommand '" + std::string(argv[1]) + "' -- expected one of: " +
-                control_subcommand_list();
+        error = "unknown subcommand '" + std::string(argv[1]) +
+                "' -- expected one of: " + control_subcommand_list();
         return false;
     }
 
-    // Taken out of argv by count rather than by looking for the next flag, because the
-    // argument may itself look exactly like one: `seek-rel -5000`.
+    // Taken by count, since the argument may look like a flag.
     if (static_cast<unsigned>(argc) < 2U + subcommand->arity) {
-        error = std::string("'") + subcommand->name + "' needs an argument: " +
-                subcommand->name + " " + subcommand->argument;
+        error = std::string("'") + subcommand->name + "' needs an argument: " + subcommand->name +
+                " " + subcommand->argument;
         return false;
     }
 
@@ -282,11 +259,11 @@ bool split_subcommand(int argc, char* const argv[], ControlInvocation& out, std:
 }
 
 bool parse_control_request(const std::string& name, const std::vector<std::string>& args,
-                          ControlRequest& out, std::string& error) {
+                           ControlRequest& out, std::string& error) {
     const ControlSubcommand* subcommand = find_control_subcommand(name);
     if (subcommand == nullptr) {
-        error = "unknown subcommand '" + name + "' -- expected one of: " +
-                control_subcommand_list();
+        error =
+            "unknown subcommand '" + name + "' -- expected one of: " + control_subcommand_list();
         return false;
     }
     if (args.size() != subcommand->arity) {
@@ -319,9 +296,7 @@ bool parse_control_request(const std::string& name, const std::vector<std::strin
         }
         case ControlCommand::Delay: {
             uint64_t delay = 0;
-            // Refused rather than clamped, which is the whole reason this repo carries its own
-            // bound: PlayerRole::update_static_delay() would silently take 9000 down to 5000 and
-            // report success for a delay nobody asked for.
+            // Refused, not clamped: the library would silently clamp to 5000.
             if (!parse_unsigned(value, MAX_STATIC_DELAY_MS, delay)) {
                 return reject("a static delay in milliseconds, from 0 to " +
                               std::to_string(MAX_STATIC_DELAY_MS));
@@ -340,8 +315,7 @@ bool parse_control_request(const std::string& name, const std::vector<std::strin
         }
         case ControlCommand::Seek: {
             uint64_t position = 0;
-            // Bounded by the field the library carries it in. The server's own `seek_max_ms`
-            // is a tighter bound that only the daemon knows -- see control_refusal().
+            // The server's seek_max_ms is checked by the daemon.
             if (!parse_unsigned(value, 4294967295ULL, position)) {
                 return reject("a non-negative position in milliseconds, at most 4294967295 "
                               "(use seek-rel for a relative move)");
@@ -351,11 +325,7 @@ bool parse_control_request(const std::string& name, const std::vector<std::strin
         }
         case ControlCommand::SeekRelative: {
             int32_t offset = 0;
-            // Bounded only by int32_t, deliberately. The server does not bound a relative
-            // seek, and this client has no reliable view of the *group's* position to bound it
-            // against: get_track_progress_ms() is this endpoint's own interpolated progress,
-            // so refusing an offset against it would refuse legitimate commands whenever the
-            // shadow was stale.
+            // Bounded only by int32_t: there is no reliable group position to bound against.
             if (!parse_int32(value, offset)) {
                 return reject("an offset in milliseconds from -2147483648 to 2147483647");
             }
@@ -379,8 +349,7 @@ bool parse_control_request(const std::string& name, const std::vector<std::strin
         case ControlCommand::Switch:
             break;
     }
-    // Only reachable if the table gave an arity of 1 to a command with no argument to read,
-    // which is a table bug rather than a user error.
+    // Only a table bug reaches here.
     error = std::string("'") + subcommand->name + "' takes no argument";
     return false;
 }
@@ -429,12 +398,9 @@ bool split_control_line(const std::string& line, std::string& name,
 std::optional<SendspinControllerCommand> protocol_command(const ControlRequest& request) {
     switch (request.command) {
         case ControlCommand::Status:
-            // Answered out of the daemon's own shadows; nothing goes to the server.
             return std::nullopt;
         case ControlCommand::Delay:
-            // This endpoint's own player-role state, set through PlayerRole::update_static_delay()
-            // -- which republishes `client/state` itself, so the server still learns the new value
-            // without a controller command carrying it.
+            // Set on the player role, which republishes client/state itself.
             return std::nullopt;
         case ControlCommand::Play:
             return SendspinControllerCommand::PLAY;
@@ -455,8 +421,7 @@ std::optional<SendspinControllerCommand> protocol_command(const ControlRequest& 
         case ControlCommand::SeekRelative:
             return SendspinControllerCommand::SEEK_RELATIVE;
         case ControlCommand::Repeat:
-            // Three commands rather than one with a parameter, which is why `repeat` cannot be
-            // a plain pass-through: the mode *is* the command.
+            // Each mode is its own protocol command.
             switch (request.repeat.value_or(SendspinRepeatMode::OFF)) {
                 case SendspinRepeatMode::ONE:
                     return SendspinControllerCommand::REPEAT_ONE;
@@ -467,7 +432,7 @@ std::optional<SendspinControllerCommand> protocol_command(const ControlRequest& 
             }
             return SendspinControllerCommand::REPEAT_OFF;
         case ControlCommand::Shuffle:
-            // Likewise: `off` is its own command rather than a false-valued parameter.
+            // Likewise, each shuffle state is its own command.
             return request.flag.value_or(false) ? SendspinControllerCommand::SHUFFLE
                                                 : SendspinControllerCommand::UNSHUFFLE;
         case ControlCommand::Switch:
@@ -478,11 +443,9 @@ std::optional<SendspinControllerCommand> protocol_command(const ControlRequest& 
 
 ClientCommandControllerObject to_client_command(const ControlRequest& request) {
     ClientCommandControllerObject command;
-    // Only reached for a request that has one, since the daemon checks protocol_command()
-    // first; the value_or keeps a table bug from being undefined behaviour.
+    // value_or only guards a table bug; the daemon checks protocol_command() first.
     command.command = protocol_command(request).value_or(SendspinControllerCommand::PLAY);
-    // Set unconditionally rather than per command: the library ignores the fields a command
-    // does not use, and only the field the parser filled in is ever present.
+    // The library ignores fields a command does not use.
     command.volume = request.volume;
     command.muted = request.command == ControlCommand::Mute ? request.flag : std::nullopt;
     command.position_ms = request.position_ms;
@@ -494,17 +457,11 @@ bool control_refusal(const ControlRequest& request, const ControllerSnapshot& sn
                      ControlStatus& status, std::string& reason) {
     const std::optional<SendspinControllerCommand> command = protocol_command(request);
     if (!command.has_value()) {
-        // A locally answered request -- `status` or `delay`. None of the checks below apply, since
-        // nothing about it is sent: a daemon with no server connection is exactly when reading
-        // `status` is most useful, and a speaker's own delay is no less settable for having
-        // nothing playing through it.
+        // Locally answered: none of the checks below apply.
         return false;
     }
 
-    // Ahead of the supported_commands test, and that order is the whole point:
-    // on_controller_state_clear() empties supported_commands when the connection drops, so a
-    // gate that looked there first would answer "pause is not supported" when the truth is
-    // that nothing is connected.
+    // Before the supported_commands check, which a disconnect empties.
     if (!snapshot.connected) {
         status = ControlStatus::NotConnected;
         reason = "this player is not connected to a Sendspin server, so there is nothing to "
@@ -521,15 +478,11 @@ bool control_refusal(const ControlRequest& request, const ControllerSnapshot& sn
                  "': it is not in the supported_commands this connection published, so sending "
                  "it would be ignored";
         if (supported.empty()) {
-            // Distinguished from a genuine absence, because the two need different actions:
-            // this one resolves itself when the first server/state arrives.
             reason += ". The server has published no commands at all yet";
         }
         return true;
     }
 
-    // The only bound the server publishes. A relative seek is deliberately not checked against
-    // it -- see the note in parse_control_request().
     if (request.command == ControlCommand::Seek && snapshot.seek_max_ms.has_value() &&
         request.position_ms.value_or(0) > *snapshot.seek_max_ms) {
         status = ControlStatus::Usage;
@@ -550,18 +503,16 @@ std::string format_status(const StatusSnapshot& snapshot) {
     if (!snapshot.connected) {
         append_line(out, "server", "not connected");
     } else if (snapshot.server_name.empty()) {
-        // A completed handshake with no name yet: still connected, and saying so beats a
-        // blank value that reads like a missing field.
-        append_line(out, "server", "connected (" + (snapshot.server_id.empty()
-                                                        ? std::string("no identity yet")
-                                                        : snapshot.server_id) +
-                                       ")");
+        append_line(
+            out, "server",
+            "connected (" +
+                (snapshot.server_id.empty() ? std::string("no identity yet") : snapshot.server_id) +
+                ")");
     } else {
         append_line(out, "server", snapshot.server_name + " (connected)");
     }
 
-    // The group's transport state, from the metadata progress rather than guessed at. The
-    // speed is per-mille, so 1000 is normal playback and 0 is paused.
+    // playback_speed is per-mille: 1000 is normal, 0 is paused.
     if (!snapshot.playback_speed.has_value()) {
         append_line(out, "state", "unknown");
     } else if (*snapshot.playback_speed == 0) {
@@ -573,9 +524,7 @@ std::string format_status(const StatusSnapshot& snapshot) {
                     "playing (speed " + std::to_string(*snapshot.playback_speed) + "/1000)");
     }
 
-    // Deliberately its own line rather than folded into `state`: this is whether audio is
-    // arriving at *this* endpoint, which a player dropped from the group loses while the
-    // group keeps playing.
+    // Whether audio arrives here, separate from the group's transport state.
     append_line(out, "stream", snapshot.streaming ? "receiving" : "idle");
 
     if (snapshot.title.empty() && snapshot.artist.empty()) {
@@ -593,48 +542,29 @@ std::string format_status(const StatusSnapshot& snapshot) {
     } else {
         const std::string position = format_clock(*snapshot.progress_ms);
         const uint32_t duration = snapshot.duration_ms.value_or(0);
-        // A zero duration is a live or unknown-length stream rather than a zero-length track,
-        // so it is named instead of printed as 0:00.
-        std::string reading = duration == 0 ? position + " / unknown"
-                                            : position + " / " + format_clock(duration);
-        // While the group is playing, the library interpolates forward from the last progress the
-        // server sent rather than knowing the position -- and a server that does not resend
-        // progress after a seek leaves that anchor stale, so the figure drifts by however far the
-        // seek moved. Observed against a real server: absolute and relative seeks both moved the
-        // audio while this number carried on climbing from the old anchor. Marked rather than
-        // fixed, because only the server can re-anchor it.
+        // A zero duration is a live or unknown-length stream.
+        std::string reading =
+            duration == 0 ? position + " / unknown" : position + " / " + format_clock(duration);
+        // Interpolated while playing, and stale after a seek until the server resends progress.
         if (snapshot.playback_speed.value_or(0) != 0) {
             reading += " (estimated)";
         }
         append_line(out, "position", reading);
     }
 
-    append_line(out, "group volume",
-                format_volume(snapshot.group_state_known, snapshot.group_volume,
-                              snapshot.group_muted));
-    // Alongside the volume because they come from the same object and are changed by the same
-    // kind of command -- and because `repeat`/`shuffle` would otherwise be the only subcommands
-    // whose effect `status` cannot show.
-    append_line(out, "repeat", snapshot.group_state_known
-                                   ? repeat_mode_name(snapshot.group_repeat)
-                                   : "unknown");
-    append_line(out, "shuffle", snapshot.group_state_known ? (snapshot.group_shuffle ? "on" : "off")
-                                                           : "unknown");
-    // Always known: it is this process's own state, whether or not a server is connected. What is
-    // *not* always known is whether anybody chose it, so an untouched player says so rather than
-    // presenting a default as a setting.
+    append_line(
+        out, "group volume",
+        format_volume(snapshot.group_state_known, snapshot.group_volume, snapshot.group_muted));
+    append_line(out, "repeat",
+                snapshot.group_state_known ? repeat_mode_name(snapshot.group_repeat) : "unknown");
+    append_line(out, "shuffle",
+                snapshot.group_state_known ? (snapshot.group_shuffle ? "on" : "off") : "unknown");
     append_line(out, "player volume",
                 format_volume(true, snapshot.player_volume, snapshot.player_muted) +
                     volume_source_note(snapshot.player_volume_source));
-    // Beside the player's own volume, since both are this endpoint's rather than the group's -- and
-    // reported at all because `delay` changes it, so an invisible effect would leave a user unable
-    // to see what they had just set or to put it back.
     append_line(out, "static delay",
                 std::to_string(static_cast<unsigned>(snapshot.static_delay_ms)) + " ms");
 
-    // One line rather than a qualifier on each field, so the block stays scannable. It earns its
-    // place: every field above it that comes from the server can silently lag, and a reader who
-    // has just changed something otherwise concludes the command failed.
     if (snapshot.connected) {
         append_line(out, "note",
                     "state, position, repeat and shuffle are the server's last report; a server "
@@ -642,13 +572,11 @@ std::string format_status(const StatusSnapshot& snapshot) {
     }
 
     if (snapshot.format.has_value()) {
-        append_line(out, "output",
-                    snapshot.output + " (" + std::to_string(snapshot.format->sample_rate) +
-                        " Hz / " +
-                        std::to_string(static_cast<unsigned>(snapshot.format->channels)) +
-                        " ch / " +
-                        std::to_string(static_cast<unsigned>(snapshot.format->bit_depth)) +
-                        "-bit)");
+        append_line(
+            out, "output",
+            snapshot.output + " (" + std::to_string(snapshot.format->sample_rate) + " Hz / " +
+                std::to_string(static_cast<unsigned>(snapshot.format->channels)) + " ch / " +
+                std::to_string(static_cast<unsigned>(snapshot.format->bit_depth)) + "-bit)");
     } else {
         append_line(out, "output", snapshot.output);
     }
@@ -657,17 +585,12 @@ std::string format_status(const StatusSnapshot& snapshot) {
 }
 
 std::string encode_control_reply(ControlStatus status, const std::string& reason,
-                                const std::string& payload) {
+                                 const std::string& payload) {
     if (status == ControlStatus::Ok) {
         return "ok\n" + payload;
     }
 
-    // The first newline is the whole of this format's framing, so a reason carrying one would
-    // turn the rest of it into payload -- and the client would print a diagnostic as though it
-    // were part of a status. True by construction today, since every reason is one line and the
-    // only interpolated values come from a request line that by definition holds no newline; but
-    // that is an invariant held in another file, which is the argument that already earned
-    // connect_to_socket() its own bound check.
+    // A newline in the reason would turn the rest into payload.
     std::string one_line = reason;
     std::replace(one_line.begin(), one_line.end(), '\n', ' ');
     std::replace(one_line.begin(), one_line.end(), '\r', ' ');
@@ -677,8 +600,7 @@ std::string encode_control_reply(ControlStatus status, const std::string& reason
             return "error " + std::string(kind.token) + ": " + one_line + "\n" + payload;
         }
     }
-    // NoDaemon never crosses the wire -- there is nothing at the other end to send it -- so a
-    // status with no token is a bug here rather than a reply worth shaping.
+    // NoDaemon never crosses the wire.
     return "error failed: " + one_line + "\n" + payload;
 }
 
@@ -710,9 +632,7 @@ bool decode_control_reply(const std::string& line, ControlStatus& status, std::s
             return true;
         }
     }
-    // A well-formed reply naming a kind this build does not know: a newer daemon against an
-    // older subcommand. The reason is still the useful part, so it is kept and the status
-    // degrades to a plain failure rather than the whole reply being discarded.
+    // Unknown kind from a newer daemon: keep the reason, degrade to Failed.
     status = ControlStatus::Failed;
     return true;
 }
@@ -721,20 +641,16 @@ LineState LineAssembler::feed(const char* data, size_t length) {
     for (size_t index = 0; index < length; ++index) {
         const char byte = data[index];
         if (byte == '\0') {
-            // A text protocol, and a NUL is how a truncated C string or a binary peer arrives.
-            // Refused rather than carried, so nothing downstream has to be NUL-safe.
+            // NUL means a truncated C string or a binary peer.
             return LineState::Invalid;
         }
         if (byte == '\n') {
             this->line_ = std::move(this->buffer_);
             this->buffer_.clear();
-            // A '\r' from a peer with CRLF line endings, which `printf 'status\r\n' | socat`
-            // produces on some shells.
+            // Tolerate CRLF.
             if (!this->line_.empty() && this->line_.back() == '\r') {
                 this->line_.pop_back();
             }
-            // Anything after the newline is dropped: one command per connection, so a second
-            // line is a peer talking out of turn rather than a pipeline to honour.
             return LineState::Ready;
         }
         if (this->buffer_.size() >= MAX_CONTROL_LINE_BYTES) {
@@ -749,9 +665,7 @@ LineState LineAssembler::finish() {
     if (this->buffer_.empty()) {
         return LineState::Incomplete;
     }
-    // A peer that wrote its request and shut the write side down without a newline. Taking it
-    // is what makes `printf status | socat - UNIX-CONNECT:...` work, and costs nothing: the
-    // bytes are already bounded, and end-of-input is as unambiguous a terminator as '\n'.
+    // A peer that shut its write side without a newline still sent a whole request.
     this->line_ = std::move(this->buffer_);
     this->buffer_.clear();
     if (!this->line_.empty() && this->line_.back() == '\r') {
@@ -776,10 +690,7 @@ const char* line_state_reason(LineState state) {
 
 bool is_private_runtime_dir(const std::string& path, std::string& reason) {
     struct stat info = {};
-    // stat() rather than lstat(), so a symlink is judged by what it *points at*. That is the
-    // safe direction here and the useful one: a link to a world-writable directory fails the
-    // mode test below and a link into someone else's tree fails the ownership test, while
-    // lstat() would instead refuse a legitimately symlinked $XDG_RUNTIME_DIR for being a link.
+    // stat(), not lstat(): judge a symlink by its target, so a linked runtime dir still works.
     if (::stat(path.c_str(), &info) != 0) {
         reason = "cannot stat " + path + ": " + std::strerror(errno);
         return false;
@@ -788,15 +699,12 @@ bool is_private_runtime_dir(const std::string& path, std::string& reason) {
         reason = path + " is not a directory";
         return false;
     }
-    // The effective uid rather than the real one, because that is whose credentials the socket
-    // will be created with and whom the kernel will compare a peer against.
+    // The effective uid, whose credentials create the socket.
     if (info.st_uid != ::geteuid()) {
         reason = path + " is owned by uid " + std::to_string(info.st_uid) + ", not by this user";
         return false;
     }
     if ((info.st_mode & (S_IWGRP | S_IWOTH)) != 0) {
-        // The whole point: a directory anyone else can write to is one where the socket can be
-        // replaced or unlinked, whatever mode the socket itself carries.
         reason = path + " is writable by its group or by everyone";
         return false;
     }
@@ -805,20 +713,15 @@ bool is_private_runtime_dir(const std::string& path, std::string& reason) {
 
 std::string control_platform_runtime_dir(std::string& rejection) {
 #ifdef __APPLE__
-    // confstr() rather than getenv("TMPDIR"): the two normally name the same per-user directory,
-    // but only this one cannot be pointed somewhere else by the environment.
+    // confstr(), not $TMPDIR, which the environment could redirect.
     char buffer[PATH_MAX] = {};
     const size_t length = ::confstr(_CS_DARWIN_USER_TEMP_DIR, buffer, sizeof(buffer));
-    // 0 is failure; a value above the buffer size means the answer was truncated, which is a
-    // path this cannot use rather than one to guess at.
+    // 0 is failure; larger than the buffer means truncated.
     if (length == 0 || length > sizeof(buffer)) {
         return {};
     }
     std::string path(buffer);
-    // confstr() returns this one with a trailing slash, and every path built here joins with its
-    // own '/'. Left in, the socket path would carry a '//' that is harmless to bind but makes two
-    // spellings of one socket -- and the subcommand compares nothing, so it would simply look odd
-    // in a log and in a diagnostic.
+    // Strip confstr()'s trailing slash so the path has one spelling.
     while (path.size() > 1 && path.back() == '/') {
         path.pop_back();
     }
@@ -826,16 +729,11 @@ std::string control_platform_runtime_dir(std::string& rejection) {
     if (path.empty()) {
         return {};
     }
-    // Kept rather than discarded: is_private_runtime_dir() knows exactly what was wrong -- a
-    // group-writable directory, or one macOS has pruned away -- and "could not be used" on its
-    // own leaves an operator with nothing to act on.
     if (!is_private_runtime_dir(path, rejection)) {
         return {};
     }
     return path;
 #else
-    // Elsewhere $XDG_RUNTIME_DIR is the convention, and its absence is a real absence rather
-    // than a platform difference to paper over. Nothing was tried, so nothing was rejected.
     static_cast<void>(rejection);
     return {};
 #endif
@@ -846,11 +744,7 @@ ControlRuntimeDir control_runtime_dir() {
 
     const char* value = std::getenv("XDG_RUNTIME_DIR");
     if (value != nullptr && value[0] != '\0') {
-        // Honoured rather than verified: this is the user saying where their runtime files go,
-        // and refusing it would break legitimate setups this code cannot anticipate. But it is
-        // still *checked*, because the socket's own 0600 is not the whole story if the directory
-        // holding it is group-writable -- a systemd unit with RuntimeDirectoryMode=0775 gets
-        // exactly that. Used and said out loud, rather than used silently or refused outright.
+        // Honoured even if group-writable, but warned about.
         result.path = value;
         std::string reason;
         if (!is_private_runtime_dir(result.path, reason)) {
@@ -871,21 +765,17 @@ std::string control_socket_path(const std::string& runtime_dir, uint16_t port) {
     if (runtime_dir.empty()) {
         return {};
     }
-    return runtime_dir + "/" + CONTROL_SOCKET_PREFIX + std::to_string(port) +
-           CONTROL_SOCKET_SUFFIX;
+    return runtime_dir + "/" + CONTROL_SOCKET_PREFIX + std::to_string(port) + CONTROL_SOCKET_SUFFIX;
 }
 
-std::string control_socket_absent_reason(const ControlRuntimeDir& runtime, const std::string& path) {
+std::string control_socket_absent_reason(const ControlRuntimeDir& runtime,
+                                         const std::string& path) {
     if (runtime.path.empty()) {
-        // A candidate that was found and refused says so, since that is actionable where "not
-        // set" is not: the directory exists and something about it is wrong.
         if (!runtime.rejection.empty()) {
             return "this host's own per-user directory cannot hold a control socket: " +
                    runtime.rejection +
                    ". Give --control-socket <path> to choose one, or --no-control to stop asking";
         }
-        // Names both sources where there are two, so the reader is not sent to check an
-        // environment variable their platform never sets in the first place.
 #ifdef __APPLE__
         return "$XDG_RUNTIME_DIR is not set and this host's own per-user temporary directory "
                "could not be used, so there is nowhere user-private to put a control socket. "
@@ -906,14 +796,12 @@ std::string control_socket_absent_reason(const ControlRuntimeDir& runtime, const
 }
 
 bool control_socket_path_fits(const std::string& path) {
-    // The terminating NUL has to fit too: bind() takes sun_path as a C string, and a path that
-    // exactly fills the array leaves nowhere for it.
+    // Room for the terminating NUL too.
     return !path.empty() && path.size() < control_socket_path_limit();
 }
 
 size_t control_socket_path_limit() {
-    // 104 on macOS and the BSDs, 108 on Linux. Read off the struct rather than written down,
-    // since it is the only number bind() actually honours.
+    // 104 on macOS and the BSDs, 108 on Linux.
     return sizeof(sockaddr_un::sun_path);
 }
 

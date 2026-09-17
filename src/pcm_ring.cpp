@@ -50,9 +50,7 @@ size_t PcmRingBuffer::read(uint8_t* dest, size_t len) {
         return 0;
     }
 
-    // A clear the producer asked for is carried out here, on the consumer's side, so that
-    // read_pos_ keeps its single writer. Doing it from the producer would let the consumer
-    // compute an available count from a position that moved under it.
+    // Cleared on the consumer side so read_pos_ keeps a single writer.
     if (this->clear_requested_.load(std::memory_order_acquire)) {
         this->clear_requested_.store(false, std::memory_order_relaxed);
         this->read_pos_.store(this->write_pos_.load(std::memory_order_acquire),
