@@ -28,15 +28,16 @@ inline constexpr int64_t SINK_RESCAN_DELAY_MS = 2000;
 /// Ceiling the doubling delay between retried rescans grows to.
 inline constexpr int64_t SINK_RESCAN_MAX_DELAY_MS = 30000;
 
-/// Rescan attempts allowed per configured stream.
+/// Rescan attempts allowed before the budget is refilled.
 inline constexpr int SINK_RESCAN_ATTEMPTS = 5;
 
 /// Decides when a sink reopens a dead device in place and when it rescans or reconnects.
-/// Budget is per configured stream: one reopen, then up to SINK_RESCAN_ATTEMPTS rescans.
+/// Budget: one reopen, then up to SINK_RESCAN_ATTEMPTS rescans. Only a recovered rescan or a newly
+/// configured stream refills it; a recovered reopen leaves the next outage the rescans alone.
 /// Every method but pending() must be called under the lock that serialises the sink's stream.
 class SinkRecovery {
 public:
-    /// Whether write() should reopen the device in place; true at most once per stream.
+    /// Whether write() should reopen the device in place; true at most once per refill.
     /// @return true if the caller should reopen now and report to reopen_done().
     bool reopen_due();
 
@@ -48,9 +49,13 @@ public:
     /// @return true once the delay is up; again only after rescan_done(false).
     bool rescan_due(int64_t now_ms);
 
-    /// Records the second attempt's outcome; a one-shot backend reports true regardless.
+    /// Records the second attempt's outcome; a recovery refills the budget for the next outage.
     /// A report with no attempt outstanding does nothing.
     void rescan_done(bool recovered);
+
+    /// Ends the outstanding attempt with nothing refilled and nothing more owed: a shutdown, or a
+    /// one-shot backend's failure. A call with no attempt outstanding does nothing.
+    void rescan_abandoned();
 
     /// Brings an owed rescan forward to the next tick, for a backend whose OS has told it the
     /// device list changed. Never arms one that is not owed, and the attempt it releases still
@@ -75,6 +80,8 @@ public:
 
 private:
     void escalate_();
+    /// Refills the attempt budget, leaving the discarded-frame count alone.
+    void refill_();
 
     static constexpr int64_t NOT_STAMPED = INT64_MIN;
 

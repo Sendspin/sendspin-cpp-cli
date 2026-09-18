@@ -32,6 +32,10 @@ readonly PORT_CONTROL=39285
 readonly PORT_CONTROL_SECOND=39286
 readonly PORT_CONFIG=39287
 readonly PORT_DELAY=39288
+readonly PORT_REDACTION=39289
+
+# Not a phase port: the address the redaction check dials, chosen so nothing answers it.
+readonly PORT_NO_SERVER=39290
 
 readonly MDNS_INSTANCE="sendspin-cli-smoke"
 
@@ -665,6 +669,38 @@ check_static_delay() {
     await_child "$pid" "$EXIT_TIMEOUT_S" >/dev/null 2>&1 || true
 }
 
+# A -s URL carrying credentials is logged with them masked, and no line of ours prints them.
+# The library's own `sendspin.*` lines are excluded: v0.7.0+ logs the dialled URL through a bare
+# fprintf with no sink hook, so nothing here can redact them -- see docs/ROADMAP.md.
+check_credential_redaction() {
+    local log="$WORK_DIR/redaction.log"
+    local out="$WORK_DIR/redaction.out"
+    # Not a real credential, and it never leaves this host: PORT_NO_SERVER answers nothing, so the
+    # dial fails before a byte is sent. On the command line because that is the leak being tested.
+    local secret="s3cr3t-not-a-real-password"
+
+    "$BIN" --no-mdns --no-control -o null --port "$PORT_REDACTION" "${NO_CONFIG[@]}" \
+        -f "$log" -s "ws://smoke:$secret@127.0.0.1:$PORT_NO_SERVER/sendspin" >"$out" 2>&1 &
+    local pid=$!
+    STARTED_PIDS+=("$pid")
+
+    wait_for_line "$log" "Connecting to" "$BOOT_TIMEOUT_S" ||
+        fail "no dial line within ${BOOT_TIMEOUT_S}s. Log: $(cat "$log")"
+
+    # -F, because the mask and the address are both regex metacharacters written literally.
+    grep -qF "Connecting to ws://smoke:***@127.0.0.1:$PORT_NO_SERVER/sendspin" "$log" ||
+        fail "the dial line did not mask the -s userinfo: $(grep 'Connecting to' "$log")"
+
+    local leaked
+    leaked="$(grep -hv ' sendspin\.[^ :]*:' "$log" "$out" | grep -F "$secret" || true)"
+    [ -z "$leaked" ] ||
+        fail "a sendspin-cli log line printed the -s password: $leaked"
+    pass "the dial line masks a -s URL's userinfo, and no line of ours written by then holds it"
+
+    kill -TERM "$pid" 2>/dev/null || true
+    await_child "$pid" "$EXIT_TIMEOUT_S" >/dev/null 2>&1 || true
+}
+
 main() {
     [ -x "$BIN" ] ||
         fail "no executable at '$BIN' -- pass the path to sendspin-cli as the first argument"
@@ -681,6 +717,7 @@ main() {
     check_missing_runtime_dir
     check_static_delay
     check_config_file
+    check_credential_redaction
     printf 'smoke: every check passed\n'
 }
 

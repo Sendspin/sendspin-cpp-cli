@@ -306,26 +306,18 @@ TEST(ConfigPrecedence, AcceptsEveryBooleanSpelling) {
 // The long aliases, so every config key is a flag name
 
 TEST(LongAliases, EachBehavesExactlyLikeItsLetter) {
-    std::vector<std::string> args = {"--output",    "null",       "--name",    "kitchen",
-                                     "--pidfile",   "/run/x.pid", "--logfile", "/var/log/x.log",
-                                     "--log-level", "debug"};
-#ifdef SENDSPIN_CLI_HAVE_MDNS
-    // --server only parses in a build that can discover a server.
-    args.insert(args.end(), {"--server", "mdns:Living Room"});
-#endif
-    Parse parse(args);
+    Parse parse({"--output", "null", "--name", "kitchen", "--server", "192.168.12.2", "--pidfile",
+                 "/run/x.pid", "--logfile", "/var/log/x.log", "--log-level", "debug"});
 
     ASSERT_TRUE(parse.ok()) << parse.diagnostics();
     EXPECT_EQ(parse.options().device, "null");
     EXPECT_EQ(parse.options().name, "kitchen");
+    EXPECT_EQ(parse.options().server, "192.168.12.2");
     EXPECT_EQ(parse.options().pidfile, "/run/x.pid");
     EXPECT_EQ(parse.options().logfile, "/var/log/x.log");
     EXPECT_EQ(parse.options().log_level, LogLevel::DEBUG);
-#ifdef SENDSPIN_CLI_HAVE_MDNS
-    EXPECT_EQ(parse.options().server, "mdns:Living Room");
-    EXPECT_TRUE(parse.options().discover);
-    EXPECT_EQ(parse.options().discover_name, "Living Room");
-#endif
+    // And the whole resolution downstream ran over them, exactly as for the letters.
+    EXPECT_EQ(parse.options().server_url, "ws://192.168.12.2:8927/sendspin");
 }
 
 TEST(LongAliases, AreListedByHelpAlongsideTheConfigSearchPath) {
@@ -364,7 +356,7 @@ TEST(ConfigRefusals, ABadValueGetsTheFlagsOwnMessagePrefixedWithTheLine) {
              {"buffer-ms = 0", "invalid --buffer-ms '0' -- expected 10-2000"},
              {"static-delay = 5001", "invalid --static-delay '5001' -- expected 0-5000"},
              {"port = 99999", "invalid --port '99999' -- expected 1-65535"},
-             {"server = music.local", "connecting to an address with -s was removed"},
+             {"server = music.local:abc", "'abc' is not a port number"},
              {"log-level = shouty", "unknown log level 'shouty'"},
              {"name =", "-n needs a non-empty value"},
              {"no-mdns = perhaps", "invalid --no-mdns 'perhaps'"},
@@ -429,18 +421,30 @@ TEST(ConfigRefusals, TheRunShapeCannotComeFromAFile) {
 
 // A configured value reaches every resolution a typed one does
 
-TEST(ConfigMerge, AConfiguredAddressIsRefusedWithoutQuotingIt) {
+TEST(ConfigMerge, AConfiguredServerSuppressesTheAdvertisementAndResolves) {
     ScratchDir scratch;
     ASSERT_TRUE(scratch.created());
-    const std::string config =
-        scratch.write("config", "server = ws://u:s3cr3t@music.local:8927/sendspin\n");
+    const std::string config = scratch.write("config", "server = music.local\n");
 
     Parse parse({}, config);
 
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    // The reason the merge marks options as supplied rather than only setting them: left unmarked,
+    // this player would dial *and* advertise, and server_url would never have been filled.
+    EXPECT_FALSE(parse.options().advertises());
+    EXPECT_TRUE(parse.options().was_given(Opt::Server));
+    EXPECT_EQ(parse.options().server_url, "ws://music.local:8927/sendspin");
+}
+
+TEST(ConfigMerge, AConfiguredAddressIsRefusedWithoutQuotingIt) {
+    ScratchDir scratch;
+    ASSERT_TRUE(scratch.created());
+    const std::string config = scratch.write("config", "server = u:s3cr3t@host:notaport\n");
+
+    Parse parse({}, config);
+
+    // A bad address fails loudly and names the line, but never quotes the credential.
     EXPECT_FALSE(parse.ok());
-    EXPECT_NE(parse.diagnostics().find("connecting to an address with -s was removed"),
-              std::string::npos)
-        << parse.diagnostics();
     EXPECT_NE(parse.diagnostics().find(config + ":1:"), std::string::npos) << parse.diagnostics();
     EXPECT_EQ(parse.diagnostics().find("s3cr3t"), std::string::npos) << parse.diagnostics();
 }

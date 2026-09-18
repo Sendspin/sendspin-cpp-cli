@@ -65,7 +65,12 @@ void SinkRecovery::rescan_done(bool recovered) {
         return;
     }
     this->rescan_in_flight_ = false;
-    if (recovered || this->rescan_attempts_ >= SINK_RESCAN_ATTEMPTS) {
+    if (recovered) {
+        // The gap stays owed: only the next timed write can retire it.
+        this->refill_();
+        return;
+    }
+    if (this->rescan_attempts_ >= SINK_RESCAN_ATTEMPTS) {
         this->rescan_spent_ = true;
         this->rescan_owed_.store(false, std::memory_order_relaxed);
         return;
@@ -73,6 +78,14 @@ void SinkRecovery::rescan_done(bool recovered) {
     // Owe another; the next tick stamps a longer deadline.
     this->rescan_at_ms_ = NOT_STAMPED;
     this->rescan_owed_.store(true, std::memory_order_relaxed);
+}
+
+void SinkRecovery::rescan_abandoned() {
+    if (!this->rescan_in_flight_) {
+        return;
+    }
+    this->rescan_in_flight_ = false;
+    this->rescan_spent_ = true;
 }
 
 void SinkRecovery::rescan_soon() {
@@ -102,6 +115,11 @@ void SinkRecovery::forget_discarded_frames() {
 }
 
 void SinkRecovery::reset() {
+    this->refill_();
+    this->discarded_frames_ = 0;
+}
+
+void SinkRecovery::refill_() {
     this->reopen_spent_ = false;
     this->rescan_spent_ = false;
     this->rescan_in_flight_ = false;
@@ -109,7 +127,6 @@ void SinkRecovery::reset() {
     this->rescan_attempts_ = 0;
     this->rescan_owed_.store(false, std::memory_order_relaxed);
     this->rescan_at_ms_ = NOT_STAMPED;
-    this->discarded_frames_ = 0;
 }
 
 void SinkRecovery::escalate_() {

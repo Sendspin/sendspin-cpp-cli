@@ -59,18 +59,18 @@ private:
 /// The last dial, and what SENDSPIN_SERVER_URL may honestly claim of it.
 class LastDial {
 public:
-    /// Records that connect_to() has just been called with `url` for `server_id`.
+    /// Records connect_to() with `url`; `server_id` empty for a literal -s dial, unverifiable.
     void note_dial(const std::string& url, const std::string& server_id);
 
     /// Forgets the dial: the connection it could have described is gone.
     void note_lost();
 
-    /// The dialled URL, or empty unless a live dial named `connected_server_id`.
+    /// The dialled URL: a literal dial answers always, a discovery dial only for its own id.
     std::string url_for(const std::string& connected_server_id) const;
 
 private:
     std::string url_;
-    std::string server_id_;  ///< who url_ was expected to reach
+    std::string server_id_;  ///< who url_ was expected to reach; empty means a literal dial
 };
 
 }  // namespace sendspin_cli

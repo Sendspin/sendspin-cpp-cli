@@ -26,10 +26,11 @@
 
 namespace sendspin_cli {
 
-/// The WebSocket path this player serves and advertises.
+/// The WebSocket path this player serves and advertises, and that -s fills into a bare host.
 inline constexpr const char* SENDSPIN_PATH = "/sendspin";
 
 /// The `-s` prefix that asks for mDNS discovery; the name follows the first colon.
+/// Reserved only before the first colon, so a bare `-s mdns` is still a host named mdns.
 inline constexpr const char* DISCOVERY_PREFIX = "mdns:";
 
 /// The -o default: the most direct real backend this build has, else `null`.
@@ -93,7 +94,7 @@ struct Options {
     /// --manufacturer / --product-name <text>: device info sent in `client/hello`.
     std::string manufacturer{"sendspin-cpp-cli"};
     std::string product_name{"sendspin-cli"};
-    std::string server;     ///< -s mdns:[<name>]: discover a server and dial it
+    std::string server;     ///< -s <server>: dial this address, or mdns:[<name>] to discover one
     bool daemonize{false};  ///< -z: detach and run in the background
     std::string pidfile;    ///< -P <path>: write our pid here
     std::string logfile;    ///< -f <path>: send log output to this file
@@ -146,6 +147,9 @@ struct Options {
     /// The words after the subcommand, exactly its arity.
     std::vector<std::string> subcommand_args;
 
+    /// The WebSocket URL `server` resolved to; empty for discovery and when -s was not given.
+    std::string server_url;
+
     /// True when -s asked for discovery.
     bool discover{false};
 
@@ -185,6 +189,19 @@ void print_usage(std::FILE* out, const char* prog);
 
 /// Prints our version and the sendspin-cpp tag this binary was built against.
 void print_version(std::FILE* out);
+
+/// Turns a -s address into a WebSocket URL, or explains why it cannot.
+/// Accepts a full ws:// or wss:// URL as written, else `<host>[:<port>]`, filling the /sendspin
+/// path and the server's default port (8927, not this player's 8928). IPv6 literals must be
+/// bracketed. Rejects rather than guesses, so a bad address fails before the daemon dials.
+/// @param error Set to a human-readable reason when the return value is false.
+bool parse_server_url(const std::string& server, std::string& url, std::string& error);
+
+/// A server URL that is safe to log: its userinfo masked to a fixed `***`.
+/// A username is kept (`ws://user:***@host`); a lone field, indistinguishable from a token,
+/// goes whole (`ws://***@host`). The authority ends at the first `/`, `?` or `#`, so an `@`
+/// in a path is left alone. A value with no userinfo comes back unchanged.
+std::string redact_url_userinfo(const std::string& url);
 
 /// Reads `mdns:<name>` or a bare `mdns:` from a -s value.
 /// @param name Set to the TXT `name` filter, empty when none was given.
