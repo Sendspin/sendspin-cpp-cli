@@ -136,6 +136,27 @@ bool parse_port(const std::string& str, uint16_t& port) {
     return true;
 }
 
+/// True if `s` is a valid URI scheme: ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ).
+/// A "://" not preceded by one is not a scheme delimiter but sits inside a bare authority, so
+/// treating that prefix as a scheme would echo userinfo (a ':' and an '@') into a diagnostic.
+bool is_uri_scheme(const std::string& s) {
+    if (s.empty()) {
+        return false;
+    }
+    const char first = s.front();
+    if (!((first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z'))) {
+        return false;
+    }
+    for (const char c : s) {
+        const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                        (c >= '0' && c <= '9') || c == '+' || c == '-' || c == '.';
+        if (!ok) {
+            return false;
+        }
+    }
+    return true;
+}
+
 /// Parses a buffer size in milliseconds: digits only, MIN_BUFFER_MS to MAX_BUFFER_MS.
 bool parse_buffer_ms(const std::string& str, uint32_t& buffer_ms) {
     if (!is_all_digits(str)) {
@@ -1036,8 +1057,10 @@ bool parse_server_url(const std::string& server, std::string& url, std::string& 
     const std::string shown = redact_url_userinfo(server);
 
     // A scheme means the caller spelled out the whole URL; only the scheme is ours to check.
+    // A "://" whose prefix is not a real scheme is userinfo's own, so it falls through to be read
+    // (and rejected) as a bare authority rather than echoed as a scheme.
     const size_t scheme_end = server.find("://");
-    if (scheme_end != std::string::npos) {
+    if (scheme_end != std::string::npos && is_uri_scheme(server.substr(0, scheme_end))) {
         const std::string scheme = server.substr(0, scheme_end);
         if (scheme != "ws" && scheme != "wss") {
             error = "-s '" + shown + "': Sendspin runs over WebSocket, so the scheme must be " +
@@ -1075,6 +1098,13 @@ bool parse_server_url(const std::string& server, std::string& url, std::string& 
             has_port = true;
         }
     } else {
+        // The bare form is <host>[:<port>]; a path or credentials need a full ws:// URL, not one
+        // guessed by pasting the default port after them.
+        if (server.find_first_of("/@?#") != std::string::npos) {
+            error = "-s '" + shown +
+                    "': a bare host takes no path or credentials -- use a full ws:// or wss:// URL";
+            return false;
+        }
         const size_t colon = server.find(':');
         if (colon == std::string::npos) {
             host = server;
@@ -1111,8 +1141,13 @@ bool parse_server_url(const std::string& server, std::string& url, std::string& 
 std::string redact_url_userinfo(const std::string& url) {
     // The authority is the only place userinfo can live: after the scheme, or at the front when
     // there is none, ending at the first delimiter so an '@' in a path is not read as a separator.
+    // A "://" not preceded by a real scheme is userinfo's own, so the authority starts at the
+    // front.
     const size_t scheme_end = url.find("://");
-    const size_t begin = scheme_end == std::string::npos ? 0 : scheme_end + 3;
+    const size_t begin =
+        (scheme_end != std::string::npos && is_uri_scheme(url.substr(0, scheme_end)))
+            ? scheme_end + 3
+            : 0;
     const size_t end = url.find_first_of("/?#", begin);
     const std::string authority =
         url.substr(begin, end == std::string::npos ? std::string::npos : end - begin);

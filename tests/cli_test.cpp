@@ -650,21 +650,26 @@ TEST(ParseServerUrl, Accepted) {
 
 TEST(ParseServerUrl, Rejected) {
     const char* cases[] = {
-        "",              // nothing at all
-        "host:abc",      // not a port
-        "host:",         // a truncated line, not a request for the default
-        ":8927",         // no host
-        "host:0",        // ports are 1-65535
-        "host:70000",    // ditto
-        "::1",           // an IPv6 literal must be bracketed to be told from host:port
-        "[::1",          // unterminated bracket
-        "[::1]junk",     // trailing text where a port belongs
-        "[]",            // no host
-        "[]:8927",       // ditto
-        "http://host",   // Sendspin is WebSocket only
-        "https://host",  // ditto
-        "ws://",         // a scheme naming no server
-        "wss://",        // ditto
+        "",                       // nothing at all
+        "host:abc",               // not a port
+        "host:",                  // a truncated line, not a request for the default
+        ":8927",                  // no host
+        "host:0",                 // ports are 1-65535
+        "host:70000",             // ditto
+        "::1",                    // an IPv6 literal must be bracketed to be told from host:port
+        "[::1",                   // unterminated bracket
+        "[::1]junk",              // trailing text where a port belongs
+        "[]",                     // no host
+        "[]:8927",                // ditto
+        "http://host",            // Sendspin is WebSocket only
+        "https://host",           // ditto
+        "ws://",                  // a scheme naming no server
+        "wss://",                 // ditto
+        "host/path",              // a bare host takes no path
+        "token@host",             // ...nor credentials
+        "host?x",                 // ...nor a query
+        "host#x",                 // ...nor a fragment
+        "alice:s3cr3t@host://x",  // userinfo before a stray '://' is not a scheme
     };
 
     for (const char* input : cases) {
@@ -698,6 +703,8 @@ TEST(RedactUrlUserinfo, MasksTheSecretAndKeepsTheRest) {
         // A rejected -s value never had a scheme, so a bare authority is read as one.
         {"alice:s3cr3t@host", "alice:***@host"},
         {"s3cr3t@host", "***@host"},
+        // A "://" after userinfo is not a scheme delimiter, so the authority still starts at front.
+        {"alice:s3cr3t@host://x", "alice:***@host://x"},
     };
 
     for (const auto& [input, expected] : cases) {
@@ -748,6 +755,7 @@ TEST(RedactUrlUserinfo, NoRejectionReasonQuotesACredential) {
         "[::1]alice:s3cr3t@host",             // a fragment after the closing bracket
         "[::1]:s3cr3t@host",                  // ...and one that reads as a port
         ":s3cr3t@host",                       // no host before the port
+        "alice:s3cr3t@host://x",              // userinfo before a stray '://', not a scheme
     };
 
     for (const char* input : cases) {

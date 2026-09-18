@@ -169,8 +169,9 @@ Nothing needs configuring on the server side.
 To go the other way and have the player dial the server instead, set `server` in the config:
 
 ```ini
+# Pick one — a repeated key takes its last value, so keep a single `server` line:
 server = 192.168.1.10          # a host, port 8927 assumed
-server = mdns:Music Assistant  # or discover one by its advertised name
+#server = mdns:Music Assistant  # or discover one by its advertised name
 ```
 
 Any `server` value turns the mDNS advertisement off. That is the spec's rule rather than a
