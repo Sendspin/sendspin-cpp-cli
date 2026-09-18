@@ -717,7 +717,7 @@ void AlsaAudioSink::poll(int64_t now_ms) {
     }
     if (this->stopping_.load()) {
         // stop() can land during the open above; release the device now.
-        this->recovery_.rescan_done(true);  // shutting down; there is nothing left to retry for
+        this->recovery_.rescan_abandoned();  // shutting down; there is nothing left to retry for
         this->close_device_();
         return;
     }

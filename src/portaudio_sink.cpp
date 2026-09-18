@@ -577,9 +577,6 @@ void PortAudioSink::poll(int64_t now_ms) {
     if (!this->recovery_.rescan_due(now_ms)) {
         return;
     }
-    // Reported up front and always as recovered: a device-list rebuild is one-shot.
-    this->recovery_.rescan_done(true);
-
     const StreamFormat format = this->last_format_;
     // The stream goes first whatever happens next: Pa_Terminate() with one open is undefined,
     // and every PaDeviceIndex -- device_index_ among them, which this clears -- dies with it.
@@ -592,6 +589,7 @@ void PortAudioSink::poll(int64_t now_ms) {
         // PortAudio is down, so the sink is inert until it comes back.
         cli_log(LogLevel::ERROR, "portaudio: could not restart PortAudio to look for '%s': %s",
                 this->name().c_str(), this->pa_.error());
+        this->recovery_.rescan_abandoned();  // a device-list rebuild is one-shot
         return;
     }
 
@@ -602,16 +600,20 @@ void PortAudioSink::poll(int64_t now_ms) {
                 "portaudio: '%s' is still gone after a device rescan -- discarding until the "
                 "next stream (%s)",
                 this->name().c_str(), error.c_str());
+        this->recovery_.rescan_abandoned();
         return;
     }
     if (!this->open_stream_(device, format.sample_rate, format.channels, format.bit_depth)) {
-        return;  // open_stream_() has already said why, once
+        this->recovery_.rescan_abandoned();  // open_stream_() has already said why, once
+        return;
     }
     if (this->stopping_.load()) {
         // stop() can land during the slow cycle above; release the device now.
+        this->recovery_.rescan_abandoned();
         this->close_stream_();
         return;
     }
+    this->recovery_.rescan_done(true);
     // Name the device found: a rescan can renumber indices.
     const PaDeviceInfo* info = Pa_GetDeviceInfo(device);
     cli_log(LogLevel::INFO, "portaudio: '%s' is back after a device rescan, on '%s'",
