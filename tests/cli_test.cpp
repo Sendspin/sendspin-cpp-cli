@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-/// parse_options(): what the flag surface accepts and rejects.
+/// parse_options() and parse_server_url(): what the flag surface accepts and rejects.
 
 #include "cli.h"
 
@@ -36,21 +36,13 @@ using sendspin::LogLevel;
 // Every flag reaches its field
 
 TEST(ParseOptions, EachFlagSetsItsField) {
-    std::vector<std::string> args = {
-        "-o", "null",  "-n", "kitchen",        "-z",     "-P",  "/run/x.pid",
-        "-d", "debug", "-f", "/var/log/x.log", "--port", "9000"};
-#ifdef SENDSPIN_CLI_HAVE_MDNS
-    // -s only parses in a build that can discover a server.
-    args.insert(args.end(), {"-s", "mdns:hifi"});
-#endif
-    Parse parse(args);
+    Parse parse({"-o", "null", "-n", "kitchen", "-s", "192.168.12.2", "-z", "-P", "/run/x.pid",
+                 "-d", "debug", "-f", "/var/log/x.log", "--port", "9000"});
 
     ASSERT_TRUE(parse.ok()) << parse.diagnostics();
     EXPECT_EQ(parse.options().device, "null");
     EXPECT_EQ(parse.options().name, "kitchen");
-#ifdef SENDSPIN_CLI_HAVE_MDNS
-    EXPECT_EQ(parse.options().server, "mdns:hifi");
-#endif
+    EXPECT_EQ(parse.options().server, "192.168.12.2");
     EXPECT_TRUE(parse.options().daemonize);
     EXPECT_EQ(parse.options().pidfile, "/run/x.pid");
     EXPECT_EQ(parse.options().log_level, LogLevel::DEBUG);
@@ -75,7 +67,7 @@ TEST(ParseOptions, DefaultsWhenNothingIsGiven) {
     EXPECT_FALSE(parse.options().daemonize);
     EXPECT_FALSE(parse.options().list_devices);
     EXPECT_TRUE(parse.options().server.empty());
-    EXPECT_FALSE(parse.options().discover);
+    EXPECT_TRUE(parse.options().server_url.empty());
     // -n falls back to the hostname, so the one thing promised is that it is not empty.
     EXPECT_FALSE(parse.options().name.empty());
 }
@@ -612,78 +604,160 @@ TEST(ParseOptions, MissingValueNamesTheOptionNotTheCluster) {
         << long_form.diagnostics();
 }
 
-// -s takes no address
+// -s, through the parser
 
-/// How many times `needle` occurs in `text`.
-size_t occurrences(const std::string& text, const std::string& needle) {
-    size_t count = 0;
-    for (size_t at = text.find(needle); at != std::string::npos; at = text.find(needle, at + 1)) {
-        ++count;
-    }
-    return count;
+TEST(ParseOptions, ServerIsResolvedDuringParsing) {
+    Parse parse({"-s", "192.168.12.2"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_EQ(parse.options().server, "192.168.12.2");
+    EXPECT_EQ(parse.options().server_url, "ws://192.168.12.2:8927/sendspin");
 }
 
-TEST(ParseOptions, AnAddressIsRefusedWithTheRemoval) {
-    const char* addresses[] = {
-        "music.local",
-        "music.local:8927",
-        "ws://host:8927/sendspin",
-        "wss://host/sendspin",
-        "192.168.12.2",
-        "[::1]:8927",
-        "hifi:8927",
-        "",
-    };
-
-    for (const char* address : addresses) {
-        for (const char* flag : {"-s", "--server"}) {
-            Parse parse({flag, address});
-
-            EXPECT_FALSE(parse.ok()) << flag << " '" << address << "' was accepted";
-            const std::string diagnostics = parse.diagnostics();
-            EXPECT_NE(diagnostics.find("error: connecting to an address with -s was removed"),
-                      std::string::npos)
-                << flag << " '" << address << "': " << diagnostics;
-            EXPECT_EQ(occurrences(diagnostics, "error:"), 1U) << diagnostics;
-            EXPECT_EQ(occurrences(diagnostics, "\n"), 1U) << diagnostics;
-#ifdef SENDSPIN_CLI_HAVE_MDNS
-            EXPECT_NE(diagnostics.find("-s mdns:<name>"), std::string::npos) << diagnostics;
-            EXPECT_NE(diagnostics.find("let a server discover this player"), std::string::npos)
-                << diagnostics;
-#else
-            EXPECT_NE(diagnostics.find("point a server at"), std::string::npos) << diagnostics;
-#endif
-        }
-    }
-}
-
-TEST(ParseOptions, ABareMdnsIsRefusedWithAHint) {
-    // The one address most likely to be the discovery form with its colon left off.
-    Parse parse({"-s", "mdns"});
+TEST(ParseOptions, BadServerFailsTheWholeParse) {
+    Parse parse({"-s", "host:abc"});
 
     EXPECT_FALSE(parse.ok());
-    EXPECT_NE(parse.diagnostics().find("connecting to an address with -s was removed"),
-              std::string::npos)
-        << parse.diagnostics();
-    EXPECT_NE(parse.diagnostics().find("Did you mean -s mdns:?"), std::string::npos)
-        << parse.diagnostics();
+    EXPECT_NE(parse.diagnostics().find("error:"), std::string::npos);
+    EXPECT_NE(parse.diagnostics().find("host:abc"), std::string::npos);
 }
 
-TEST(ParseOptions, TheRemovalNeverQuotesTheValue) {
-    // Addresses may carry credentials, so they are never quoted.
-    const char* addresses[] = {
-        "ws://u:s3cr3t@host/sendspin",
-        "u:s3cr3t@host:8927",
-        "s3cr3t@host",
-        "s3cr3t.local",
+// -s, as a matrix over parse_server_url()
+
+TEST(ParseServerUrl, Accepted) {
+    const std::pair<const char*, const char*> cases[] = {
+        // A bare host takes the server's port (8927), not this player's serve port (8928).
+        {"192.168.12.2", "ws://192.168.12.2:8927/sendspin"},
+        {"192.168.12.2:8927", "ws://192.168.12.2:8927/sendspin"},
+        {"music.local:9000", "ws://music.local:9000/sendspin"},
+        // A full URL is the caller's to get right, path and all.
+        {"ws://host:9000/sendspin", "ws://host:9000/sendspin"},
+        {"wss://host/sendspin", "wss://host/sendspin"},
+        // A bracketed IPv6 literal keeps its brackets in the URL.
+        {"[::1]:8927", "ws://[::1]:8927/sendspin"},
+        {"[::1]", "ws://[::1]:8927/sendspin"},
+        {"[2001:db8::1]:9000", "ws://[2001:db8::1]:9000/sendspin"},
     };
 
-    for (const char* address : addresses) {
-        Parse parse({"-s", address});
+    for (const auto& [input, expected] : cases) {
+        std::string url;
+        std::string error;
 
-        ASSERT_FALSE(parse.ok()) << "accepted '" << address << "'";
-        EXPECT_EQ(parse.diagnostics().find("s3cr3t"), std::string::npos)
-            << "'" << address << "' was refused with: " << parse.diagnostics();
+        ASSERT_TRUE(parse_server_url(input, url, error)) << input << ": " << error;
+        EXPECT_EQ(url, expected) << input;
+    }
+}
+
+TEST(ParseServerUrl, Rejected) {
+    const char* cases[] = {
+        "",              // nothing at all
+        "host:abc",      // not a port
+        "host:",         // a truncated line, not a request for the default
+        ":8927",         // no host
+        "host:0",        // ports are 1-65535
+        "host:70000",    // ditto
+        "::1",           // an IPv6 literal must be bracketed to be told from host:port
+        "[::1",          // unterminated bracket
+        "[::1]junk",     // trailing text where a port belongs
+        "[]",            // no host
+        "[]:8927",       // ditto
+        "http://host",   // Sendspin is WebSocket only
+        "https://host",  // ditto
+        "ws://",         // a scheme naming no server
+        "wss://",        // ditto
+    };
+
+    for (const char* input : cases) {
+        std::string url;
+        std::string error;
+
+        EXPECT_FALSE(parse_server_url(input, url, error)) << "accepted '" << input << "'";
+        EXPECT_FALSE(error.empty()) << "no reason given for '" << input << "'";
+    }
+}
+
+// redact_url_userinfo(): what a logged server URL is allowed to say
+
+TEST(RedactUrlUserinfo, MasksTheSecretAndKeepsTheRest) {
+    const std::pair<const char*, const char*> cases[] = {
+        // A user:password pair keeps its username: the line names which endpoint was dialled.
+        {"ws://alice:s3cr3t@host:8927/sendspin", "ws://alice:***@host:8927/sendspin"},
+        {"wss://alice:s3cr3t@host/sendspin", "wss://alice:***@host/sendspin"},
+        // One field with no colon could be a bearer token, so the whole of it goes.
+        {"ws://s3cr3t@host:8927/sendspin", "ws://***@host:8927/sendspin"},
+        // A password may hold colons, so the split is on the *first* one.
+        {"ws://alice:s3c:r3t@host/sendspin", "ws://alice:***@host/sendspin"},
+        // The authority splits on the *last* '@', a host being unable to contain one.
+        {"ws://alice:s3c@r3t@host/sendspin", "ws://alice:***@host/sendspin"},
+        // A bracketed IPv6 host keeps its brackets and its own colons.
+        {"ws://alice:s3cr3t@[2001:db8::1]:8927/sendspin",
+         "ws://alice:***@[2001:db8::1]:8927/sendspin"},
+        {"ws://s3cr3t@[::1]:8927/sendspin", "ws://***@[::1]:8927/sendspin"},
+        // No username is still a secret to hide.
+        {"ws://:s3cr3t@host/sendspin", "ws://:***@host/sendspin"},
+        // A rejected -s value never had a scheme, so a bare authority is read as one.
+        {"alice:s3cr3t@host", "alice:***@host"},
+        {"s3cr3t@host", "***@host"},
+    };
+
+    for (const auto& [input, expected] : cases) {
+        EXPECT_EQ(redact_url_userinfo(input), expected) << input;
+        EXPECT_EQ(redact_url_userinfo(input).find("s3cr3t"), std::string::npos)
+            << "the secret survived in '" << input << "'";
+    }
+}
+
+TEST(RedactUrlUserinfo, LeavesAloneWhatHoldsNoSecret) {
+    const char* unchanged[] = {
+        // Nothing to hide.
+        "",
+        "ws://host:8927/sendspin",
+        "wss://[2001:db8::1]:8927/sendspin",
+        "host:8927",
+        "mdns:Living room",
+        // A scheme naming nothing, and other fragments a rejected -s value arrives as.
+        "ws://",
+        "::1",
+        "[::1",
+        // An empty userinfo, and an empty password: masking either would invent a secret.
+        "ws://@host:8927/sendspin",
+        "ws://alice:@host:8927/sendspin",
+        // The authority ends at the first '/', '?' or '#', so an '@' past it is not a separator.
+        "ws://host:8927/sendspin@1",
+        "ws://host:8927//alice:s3cr3t@evil/x",
+        "ws://host:8927/sendspin?token=a@b",
+        "ws://host:8927/sendspin#a@b",
+        // An unencoded '/', '?' or '#' inside userinfo ends the authority early, so the value
+        // comes back whole -- a malformed URL RFC 3986 requires percent-encoded, not masked.
+        "ws://alice:aGVsbG8/d29ybGQ=@host:8927/sendspin",
+    };
+
+    for (const char* input : unchanged) {
+        EXPECT_EQ(redact_url_userinfo(input), input);
+    }
+}
+
+// A value that does not parse is the one most likely mistyped around a password, so assert over
+// the reason rather than per message, covering a rejection added later without listing it here.
+TEST(RedactUrlUserinfo, NoRejectionReasonQuotesACredential) {
+    const char* cases[] = {
+        "alice:s3cr3t@host",                  // userinfo lands in the port field
+        "alice:s3cr3t@2001:db8::1",           // ...and in the bracket-it-yourself advice
+        "http://alice:s3cr3t@host/sendspin",  // the wrong scheme
+        "ws://",                              // a scheme and nothing else
+        "[::1]alice:s3cr3t@host",             // a fragment after the closing bracket
+        "[::1]:s3cr3t@host",                  // ...and one that reads as a port
+        ":s3cr3t@host",                       // no host before the port
+    };
+
+    for (const char* input : cases) {
+        std::string url;
+        std::string error;
+
+        ASSERT_FALSE(parse_server_url(input, url, error)) << "accepted '" << input << "'";
+        ASSERT_FALSE(error.empty()) << "no reason given for '" << input << "'";
+        EXPECT_EQ(error.find("s3cr3t"), std::string::npos)
+            << "'" << input << "' was refused with: " << error;
     }
 }
 
@@ -706,7 +780,7 @@ TEST(ParseDiscoverySpec, SplitsOnTheFirstColonOnly) {
 }
 
 TEST(ParseDiscoverySpec, LeavesEveryOtherFormAlone) {
-    // Only the exact `mdns:` prefix is the discovery form.
+    // Only the exact `mdns:` prefix is the discovery form; a bare `mdns` is still an address.
     const char* addresses[] = {
         "hifi:8927", "mdns", "mdnsx:8927", "192.168.1.10", "ws://mdns:8927/sendspin", "",
     };
@@ -724,6 +798,8 @@ TEST(ParseOptions, DiscoveryReachesTheOptions) {
     ASSERT_TRUE(parse.ok()) << parse.diagnostics();
     EXPECT_TRUE(parse.options().discover);
     EXPECT_EQ(parse.options().discover_name, "Living room");
+    // There is no URL until a server has actually been found.
+    EXPECT_TRUE(parse.options().server_url.empty());
 #else
     EXPECT_FALSE(parse.ok());
     EXPECT_NE(parse.diagnostics().find("error:"), std::string::npos);
@@ -743,6 +819,23 @@ TEST(ParseOptions, DiscoveryWithNoNameFilter) {
 #endif
 }
 
+TEST(ParseOptions, AHostWithAColonIsStillAHost) {
+    // The reserved prefix must not regress this: `hifi:8927` is a host and a port.
+    Parse parse({"-s", "hifi:8927"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_FALSE(parse.options().discover);
+    EXPECT_EQ(parse.options().server_url, "ws://hifi:8927/sendspin");
+}
+
+TEST(ParseOptions, ABareMdnsIsStillAHost) {
+    Parse parse({"-s", "mdns"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_FALSE(parse.options().discover);
+    EXPECT_EQ(parse.options().server_url, "ws://mdns:8927/sendspin");
+}
+
 // The two connection modes are exclusive
 
 TEST(ParseOptions, AdvertisesByDefault) {
@@ -753,13 +846,24 @@ TEST(ParseOptions, AdvertisesByDefault) {
 }
 
 TEST(ParseOptions, AnyServerSuppressesTheAdvertisement) {
-    for (const char* server : {"mdns:", "mdns:Living room"}) {
+    // The spec's rule, so it holds for every -s form -- there is deliberately no flag that turns
+    // the advertisement back on alongside one.
+    const char* servers[] = {"192.168.1.10", "host:9000", "ws://host:9000/sendspin", "[::1]"};
+
+    for (const char* server : servers) {
         Parse parse({"-s", server});
-#ifdef SENDSPIN_CLI_HAVE_MDNS
         ASSERT_TRUE(parse.ok()) << server << ": " << parse.diagnostics();
-#endif
         EXPECT_FALSE(parse.options().advertises()) << server;
     }
+}
+
+TEST(ParseOptions, DiscoverySuppressesTheAdvertisementToo) {
+    Parse parse({"-s", "mdns:"});
+
+#ifdef SENDSPIN_CLI_HAVE_MDNS
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+#endif
+    EXPECT_FALSE(parse.options().advertises());
 }
 
 TEST(ParseOptions, NoMdnsSuppressesTheAdvertisementWithoutAServer) {
@@ -804,17 +908,15 @@ TEST(ParseOptions, MdnsNameNeedsAValue) {
         << parse.diagnostics();
 }
 
-#ifdef SENDSPIN_CLI_HAVE_MDNS
 TEST(ParseOptions, MdnsNameWithAServerWarnsButStillStarts) {
     // Inert with -s, so warned rather than refused.
-    Parse parse({"-s", "mdns:", "--mdns-name", "Kitchen"});
+    Parse parse({"-s", "192.168.1.10", "--mdns-name", "Kitchen"});
 
     ASSERT_TRUE(parse.ok()) << parse.diagnostics();
     EXPECT_NE(parse.diagnostics().find("warning:"), std::string::npos) << parse.diagnostics();
     EXPECT_NE(parse.diagnostics().find("--mdns-name is unused with -s"), std::string::npos)
         << parse.diagnostics();
 }
-#endif
 
 TEST(ParseOptions, MdnsNameAloneDoesNotWarn) {
     Parse parse({"--mdns-name", "Kitchen"});
@@ -1093,22 +1195,12 @@ TEST(ParseOptions, TracksWhichOptionsWereExplicitlyGiven) {
 }
 
 TEST(ParseOptions, ExplicitlyGivenTracksEveryOption) {
-    std::vector<std::string> args = {"-o",      "null",  "-l",          "-n",
-                                     "kitchen", "-z",    "-P",          "/run/x.pid",
-                                     "-d",      "debug", "-f",          "/var/log/x.log",
-                                     "--port",  "9000",  "--buffer-ms", "200"};
-    std::vector<Opt> given = {Opt::Device,    Opt::ListDevices, Opt::Name,
-                              Opt::Daemonize, Opt::Pidfile,     Opt::Logfile,
-                              Opt::LogLevel,  Opt::Port,        Opt::BufferMs};
-#ifdef SENDSPIN_CLI_HAVE_MDNS
-    // -s only parses in a build that can discover a server.
-    args.insert(args.end(), {"-s", "mdns:"});
-    given.push_back(Opt::Server);
-#endif
-    Parse parse(args);
+    Parse parse({"-o", "null", "-l", "-n", "kitchen", "-s", "host", "-z", "-P", "/run/x.pid", "-d",
+                 "debug", "-f", "/var/log/x.log", "--port", "9000", "--buffer-ms", "200"});
 
     ASSERT_TRUE(parse.ok()) << parse.diagnostics();
-    for (const Opt opt : given) {
+    for (const Opt opt : {Opt::Device, Opt::ListDevices, Opt::Name, Opt::Server, Opt::Daemonize,
+                          Opt::Pidfile, Opt::Logfile, Opt::LogLevel, Opt::Port, Opt::BufferMs}) {
         EXPECT_TRUE(parse.options().was_given(opt))
             << "option " << static_cast<unsigned>(opt) << " not recorded as given";
     }

@@ -150,13 +150,14 @@ std::vector<sendspin::AudioSupportedFormatObject> advertised_formats(const Audio
     return formats;
 }
 
-/// The outbound (-s) mode: choose a discovered server, dial it, and keep redialling.
+/// The outbound (-s) mode: dial the configured address or a discovered server, and keep redialling.
 class OutboundMode {
 public:
     /// `store` must outlive this mode, and is where the chosen server is remembered.
     OutboundMode(const Options& opts, MdnsService& mdns, StateStore& store)
         : opts_(opts), mdns_(mdns), store_(store), remembered_(store.last_server()) {
-        if (!this->remembered_.empty()) {
+        // Only meaningful when discovering: an address leaves nothing to choose between.
+        if (!this->remembered_.empty() && opts.discover) {
             log_line(LogLevel::INFO, LOG_TAG_OUTBOUND,
                      "Last server used was \"%s\" -- it wins if it turns up among the candidates",
                      this->remembered_.c_str());
@@ -184,8 +185,14 @@ public:
 
         std::string url;
         std::string server_id;
-        if (!this->choose(url, server_id)) {
-            return;
+        if (this->opts_.discover) {
+            if (!this->choose(url, server_id)) {
+                return;
+            }
+        } else {
+            url = this->opts_.server_url;
+            log_line(LogLevel::INFO, LOG_TAG_OUTBOUND, "Connecting to %s",
+                     redact_url_userinfo(url).c_str());
         }
 
         // Stamped before dialling, so the backoff measures from the attempt's start.
@@ -214,9 +221,10 @@ private:
             return false;
         }
         server_id = chosen->instance;
+        // Redacted for one spelling with the address log line, though a discovered URL has none.
         log_line(LogLevel::INFO, LOG_TAG_OUTBOUND,
-                 "Connecting to %s (server \"%s\") -- chosen because %s", url.c_str(),
-                 chosen->instance.c_str(), reason.c_str());
+                 "Connecting to %s (server \"%s\") -- chosen because %s",
+                 redact_url_userinfo(url).c_str(), chosen->instance.c_str(), reason.c_str());
         return true;
     }
 
@@ -433,8 +441,8 @@ void start_advertising(MdnsService& mdns, const Options& opts) {
 
     if (!mdns_available()) {
         log_line(LogLevel::INFO, LOG_TAG_MDNS,
-                 "This build has no mDNS support, so it can neither be discovered nor discover a "
-                 "server: point a server at ws://<this-host>:%u%s. See docs/ROADMAP.md.",
+                 "This build has no mDNS support, so it cannot be discovered: point a server at "
+                 "ws://<this-host>:%u%s, or dial one with -s. See docs/ROADMAP.md.",
                  opts.port, SENDSPIN_PATH);
         return;
     }
@@ -673,14 +681,17 @@ int main(int argc, char* argv[]) {
                                          player_listener, player, *sink);
 
     std::unique_ptr<OutboundMode> outbound;
-    if (opts.discover) {
-        std::string error;
-        if (!mdns.browse(error)) {
-            log_line(LogLevel::WARN, LOG_TAG_DISCOVERY, "%s -- retrying", error.c_str());
+    if (opts.was_given(Opt::Server)) {
+        // Discovery browses mDNS; an address dials without it.
+        if (opts.discover) {
+            std::string error;
+            if (!mdns.browse(error)) {
+                log_line(LogLevel::WARN, LOG_TAG_DISCOVERY, "%s -- retrying", error.c_str());
+            }
+            log_line(LogLevel::INFO, LOG_TAG_DISCOVERY, "Looking for a Sendspin server on %s%s%s%s",
+                     MDNS_SERVER_SERVICE, opts.discover_name.empty() ? "" : " named \"",
+                     opts.discover_name.c_str(), opts.discover_name.empty() ? "" : "\"");
         }
-        log_line(LogLevel::INFO, LOG_TAG_DISCOVERY, "Looking for a Sendspin server on %s%s%s%s",
-                 MDNS_SERVER_SERVICE, opts.discover_name.empty() ? "" : " named \"",
-                 opts.discover_name.c_str(), opts.discover_name.empty() ? "" : "\"");
         outbound = std::make_unique<OutboundMode>(opts, mdns, state_store);
     }
 

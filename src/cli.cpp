@@ -41,6 +41,13 @@ namespace {
 
 constexpr const char* FALLBACK_NAME = "sendspin-cli";
 
+/// The port a Sendspin *server* listens on, for -s to dial when none is given.
+/// Not DEFAULT_SERVER_PORT (8928): that is the port *this* player serves on.
+constexpr uint16_t DEFAULT_REMOTE_SERVER_PORT = 8927U;
+
+/// The fixed-width stand-in for a redacted secret in a logged URL.
+constexpr const char* USERINFO_MASK = "***";
+
 /// Long-only option values, outside the short-option alphabet.
 enum LongOnly {
     OPT_VERSION = 0x100,
@@ -254,7 +261,7 @@ bool apply_option(const SettableOption& option, const std::string& value, Option
             out.name = value;
             break;
         case Opt::Server:
-            // Emptiness is left to the -s resolution, which explains what -s takes.
+            // Emptiness is left to parse_server_url(), which explains what a server looks like.
             out.server = value;
             break;
         case Opt::Pidfile:
@@ -697,23 +704,7 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
     };
 
     if (error.empty() && out.was_given(Opt::Server)) {
-        if (!parse_discovery_spec(out.server, out.discover_name)) {
-            // Hard error; the value is not quoted, since an address can carry credentials.
-            std::string message = "connecting to an address with -s was removed: the Sendspin "
-                                  "spec only has a player connect to a server it has discovered.";
-            if (out.server == "mdns") {
-                message += " Did you mean -s mdns:?";
-            }
-#ifdef SENDSPIN_CLI_HAVE_MDNS
-            message += " Use -s mdns: for any server or -s mdns:<name> for one, or drop -s and "
-                       "let a server discover this player.";
-#else
-            message += " This build has no mDNS support, so it cannot discover one either: drop "
-                       "-s and point a server at ws://<this-host>:" +
-                       std::to_string(out.port) + SENDSPIN_PATH + ".";
-#endif
-            fail_for(Opt::Server, std::move(message));
-        } else {
+        if (parse_discovery_spec(out.server, out.discover_name)) {
             out.discover = true;
 #ifndef SENDSPIN_CLI_HAVE_MDNS
             // Refused at parse time rather than quietly discovering nothing.
@@ -722,10 +713,13 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
                      "-s mdns: needs mDNS, and this build has no mDNS support, so it cannot "
                      "discover a server. Rebuild with dns_sd.h available "
                      "(libavahi-compat-libdnssd-dev on Debian/Ubuntu, "
-                     "avahi-compat-libdns_sd-devel on Fedora), or drop -s and point a server at "
-                     "ws://<this-host>:" +
-                         std::to_string(out.port) + SENDSPIN_PATH + ".");
+                     "avahi-compat-libdns_sd-devel on Fedora), or give -s an address.");
 #endif
+        } else {
+            std::string reason;
+            if (!parse_server_url(out.server, out.server_url, reason)) {
+                fail_for(Opt::Server, std::move(reason));
+            }
         }
     }
 
@@ -842,12 +836,7 @@ void print_usage(std::FILE* out, const char* prog) {
     std::fprintf(out, "       %s <subcommand> [args] [--port <port>] [--control-socket <path>]\n\n",
                  prog);
     std::fprintf(out, "A headless Sendspin audio player. Listens for a Sendspin server to\n");
-#ifdef SENDSPIN_CLI_HAVE_MDNS
-    std::fprintf(out, "connect to it, or discovers one with -s %s and connects to it.\n\n",
-                 DISCOVERY_PREFIX);
-#else
-    std::fprintf(out, "connect to it.\n\n");
-#endif
+    std::fprintf(out, "connect to it, or dials one with -s.\n\n");
     std::fprintf(out, "With a subcommand, it instead talks to a player already running on this\n");
     std::fprintf(out,
                  "host over its control socket, and exits. The subcommand must come first.\n\n");
@@ -898,17 +887,25 @@ void print_usage(std::FILE* out, const char* prog) {
     std::fprintf(out, "                network interface MAC, which two players on one host\n");
     std::fprintf(out, "                would share: give each its own --id (and its own\n");
     std::fprintf(out, "                --port and --state-dir)\n");
-    std::fprintf(out, "  -s, --server %s[<name>]\n", DISCOVERY_PREFIX);
-    std::fprintf(out, "                Discover a Sendspin server over mDNS and connect to it,\n");
-    std::fprintf(out, "                retrying until it answers: -s %s<name> takes the one\n",
+    std::fprintf(out, "  -s, --server <server>\n");
+    std::fprintf(out, "                Connect out to <host>[:<port>] or a ws:// URL\n");
+    std::fprintf(out, "                (the server's port defaults to %u), retrying until it\n",
+                 DEFAULT_REMOTE_SERVER_PORT);
+    std::fprintf(out, "                answers. Any -s turns off the mDNS advertisement: the\n");
+    std::fprintf(out, "                spec forbids advertising %s while\n", MDNS_CLIENT_SERVICE);
+    std::fprintf(out, "                the client is the one initiating the connection\n");
+#ifdef SENDSPIN_CLI_HAVE_MDNS
+    std::fprintf(out, "                -s %s<name> instead discovers a server over mDNS,\n",
                  DISCOVERY_PREFIX);
-    std::fprintf(out, "                advertised under <name>, -s %s takes any. Turns off\n",
+    std::fprintf(out, "                by its advertised name; -s %s takes any server.\n",
                  DISCOVERY_PREFIX);
-    std::fprintf(out, "                the mDNS advertisement: the spec forbids advertising\n");
-    std::fprintf(out, "                %s while the client initiates the connection\n",
-                 MDNS_CLIENT_SERVICE);
-#ifndef SENDSPIN_CLI_HAVE_MDNS
-    std::fprintf(out, "                (needs mDNS, which this build does not have)\n");
+    std::fprintf(out, "                '%s' is reserved before the first colon only, so a\n",
+                 DISCOVERY_PREFIX);
+    std::fprintf(out, "                bare -s mdns is still a host called mdns\n");
+#else
+    std::fprintf(out, "                (-s %s<name> discovery needs mDNS, which this build\n",
+                 DISCOVERY_PREFIX);
+    std::fprintf(out, "                does not have)\n");
 #endif
     std::fprintf(out, "  -z            Fork into the background and detach from the terminal.\n");
     std::fprintf(out, "                Refuses -o stdout, whose output would go to /dev/null;\n");
@@ -1027,6 +1024,123 @@ bool parse_discovery_spec(const std::string& server, std::string& name) {
     }
     name = server.substr(prefix.size());
     return true;
+}
+
+bool parse_server_url(const std::string& server, std::string& url, std::string& error) {
+    if (server.empty()) {
+        error = "-s needs a server: <host>[:<port>], or a full ws:// URL";
+        return false;
+    }
+
+    // Every message quotes the value back, which may carry credentials, so it goes through here.
+    const std::string shown = redact_url_userinfo(server);
+
+    // A scheme means the caller spelled out the whole URL; only the scheme is ours to check.
+    const size_t scheme_end = server.find("://");
+    if (scheme_end != std::string::npos) {
+        const std::string scheme = server.substr(0, scheme_end);
+        if (scheme != "ws" && scheme != "wss") {
+            error = "-s '" + shown + "': Sendspin runs over WebSocket, so the scheme must be " +
+                    "ws:// or wss://, not " + scheme + "://";
+            return false;
+        }
+        if (scheme_end + 3 == server.size()) {
+            error = "-s '" + shown + "': a scheme but no host";
+            return false;
+        }
+        url = server;
+        return true;
+    }
+
+    std::string host;
+    std::string port_text;
+    bool has_port = false;
+
+    if (server.front() == '[') {
+        // A bracketed IPv6 literal keeps its brackets; only what follows ']' can be a port.
+        const size_t bracket = server.find(']');
+        if (bracket == std::string::npos) {
+            error = "-s '" + shown + "': unterminated '[' -- an IPv6 literal reads [::1]:8927";
+            return false;
+        }
+        host = server.substr(0, bracket + 1);
+        const std::string rest = server.substr(bracket + 1);
+        if (!rest.empty()) {
+            if (rest.front() != ':') {
+                error = "-s '" + shown + "': expected ':<port>' after ']', got '" +
+                        redact_url_userinfo(rest) + "'";
+                return false;
+            }
+            port_text = rest.substr(1);
+            has_port = true;
+        }
+    } else {
+        const size_t colon = server.find(':');
+        if (colon == std::string::npos) {
+            host = server;
+        } else if (server.find(':', colon + 1) != std::string::npos) {
+            // More than one colon and no brackets: an unbracketed IPv6 literal, which is ambiguous.
+            error = "-s '" + shown + "': an IPv6 literal must be bracketed -- try '[" + shown +
+                    "]' or '[" + shown + "]:<port>'";
+            return false;
+        } else {
+            host = server.substr(0, colon);
+            port_text = server.substr(colon + 1);
+            has_port = true;
+        }
+    }
+
+    // "[]" is as empty a host as "".
+    if (host.empty() || host == "[]") {
+        error = "-s '" + shown + "': no host before the port";
+        return false;
+    }
+
+    // The server default applies only when no ':' was written; a written empty port is truncated.
+    uint16_t port = DEFAULT_REMOTE_SERVER_PORT;
+    if (has_port && !parse_port(port_text, port)) {
+        error = "-s '" + shown + "': '" + redact_url_userinfo(port_text) +
+                "' is not a port number (expected 1-65535)";
+        return false;
+    }
+
+    url = "ws://" + host + ":" + std::to_string(port) + SENDSPIN_PATH;
+    return true;
+}
+
+std::string redact_url_userinfo(const std::string& url) {
+    // The authority is the only place userinfo can live: after the scheme, or at the front when
+    // there is none, ending at the first delimiter so an '@' in a path is not read as a separator.
+    const size_t scheme_end = url.find("://");
+    const size_t begin = scheme_end == std::string::npos ? 0 : scheme_end + 3;
+    const size_t end = url.find_first_of("/?#", begin);
+    const std::string authority =
+        url.substr(begin, end == std::string::npos ? std::string::npos : end - begin);
+
+    // The *last* '@': a host holds none, so anything before the final one is userinfo.
+    const size_t at = authority.rfind('@');
+    if (at == std::string::npos) {
+        return url;
+    }
+    const std::string userinfo = authority.substr(0, at);
+
+    // The *first* ':': everything after it is the password, colons and all.
+    const size_t colon = userinfo.find(':');
+    std::string masked;
+    if (colon == std::string::npos) {
+        // Nothing to hide, or a lone field that could be a bearer token and so goes whole.
+        if (userinfo.empty()) {
+            return url;
+        }
+        masked = USERINFO_MASK;
+    } else if (colon + 1 == userinfo.size()) {
+        // A username and an empty password: masking would invent a secret that is not there.
+        return url;
+    } else {
+        masked = userinfo.substr(0, colon + 1) + USERINFO_MASK;
+    }
+
+    return url.substr(0, begin) + masked + url.substr(begin + at);
 }
 
 std::string default_client_name() {

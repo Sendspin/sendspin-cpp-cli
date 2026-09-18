@@ -77,7 +77,8 @@ void LastDial::note_lost() {
 }
 
 std::string LastDial::url_for(const std::string& connected_server_id) const {
-    if (this->server_id_.empty() || this->server_id_ != connected_server_id) {
+    // A literal dial has no id to check, so it is taken at its word; a discovery dial must match.
+    if (!this->server_id_.empty() && this->server_id_ != connected_server_id) {
         return {};
     }
     return this->url_;
