@@ -28,16 +28,16 @@ inline constexpr int64_t SINK_RESCAN_DELAY_MS = 2000;
 /// Ceiling the doubling delay between retried rescans grows to.
 inline constexpr int64_t SINK_RESCAN_MAX_DELAY_MS = 30000;
 
-/// Rescan attempts allowed per outage.
+/// Rescan attempts allowed before the budget is refilled.
 inline constexpr int SINK_RESCAN_ATTEMPTS = 5;
 
 /// Decides when a sink reopens a dead device in place and when it rescans or reconnects.
-/// Budget is per outage: one reopen, then up to SINK_RESCAN_ATTEMPTS rescans. A recovered rescan
-/// or a newly configured stream refills it.
+/// Budget: one reopen, then up to SINK_RESCAN_ATTEMPTS rescans. Only a recovered rescan or a newly
+/// configured stream refills it; a recovered reopen leaves the next outage the rescans alone.
 /// Every method but pending() must be called under the lock that serialises the sink's stream.
 class SinkRecovery {
 public:
-    /// Whether write() should reopen the device in place; true at most once per outage.
+    /// Whether write() should reopen the device in place; true at most once per refill.
     /// @return true if the caller should reopen now and report to reopen_done().
     bool reopen_due();
 

@@ -2500,9 +2500,10 @@ line at all.
 `src/pulse_sink.cpp`, `src/pipewire_sink.cpp`, `src/portaudio_sink.cpp`) and
 `tests/sink_recovery_test.cpp`:
 
-- **The budget is per outage, not per stream.** `rescan_done(true)` now refills it — the
-  in-place reopen and the whole rescan ladder, back to `SINK_RESCAN_DELAY_MS` — the same intent
-  `reopen_done(true)` already had for its own path.
+- **A recovered rescan refills the budget** — the in-place reopen and the whole rescan ladder,
+  back to `SINK_RESCAN_DELAY_MS` — the same intent `reopen_done(true)` already had for its own
+  path. A recovered reopen still refills nothing, so the outage after it goes straight to the
+  rescan, and that rescan's recovery refills both.
 - **The outage gap survives the refill.** Only the attempt bookkeeping refills; the
   discarded-frame count is not `reset()`'s to drop here, since the first timed write still owes
   the player that gap, and a device that dies again before one adds to it.
