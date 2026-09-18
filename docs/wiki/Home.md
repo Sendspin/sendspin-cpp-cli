@@ -26,8 +26,8 @@ I mdns: advertising _sendspin._tcp as "living-room" on port 8928 (path /sendspin
 ```
 
 That is the whole of the usual setup: nothing to configure on either end. A Sendspin
-server discovers the advertisement and dials in. `-s mdns:` inverts it: this player
-discovers a server and dials it, which the protocol treats as the other of two mutually exclusive
+server discovers the advertisement and dials in. `-s <server>` inverts it and makes this
+player the one dialling, which the protocol treats as the other of two mutually exclusive
 modes — see [Connection modes](Advanced-Usage#connection-modes).
 
 Audio goes out through ALSA (the Linux default) or PortAudio (the cross-platform one, and
