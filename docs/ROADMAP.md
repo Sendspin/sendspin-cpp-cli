@@ -2485,3 +2485,45 @@ hand-entered address is neither, so it went.
   credential-redaction check went with them.
 - **`SENDSPIN_SERVER_URL` is answered only for the server_id the dial chose.** `LastDial` has
   no "literal URL, taken at its word" case left; a dial with no id answers nothing.
+
+### 28. A second device outage in one stream never recovers — *shipped (hardware pass still owed)*
+
+Found by item 27's CoreAudio hardware pass — two unplugs in one run, the first back in 190 ms,
+the second never — but it belongs to item 14 and sits in the shared `SinkRecovery`, so every
+device-backed sink had it. **A rescan that succeeded retired the budget instead of restoring
+it**: `rescan_done()` sent a recovered rescan and an exhausted one down the same branch, and
+`reopen_spent_` was still set from the first outage. On the second, `reopen_due()` declined,
+`escalate_()` found the rescan spent, and the sink discarded until the next track with no log
+line at all.
+
+**Shipped** in `src/sink_recovery.{h,cpp}`, its callers (`src/alsa_sink.cpp`,
+`src/pulse_sink.cpp`, `src/pipewire_sink.cpp`, `src/portaudio_sink.cpp`) and
+`tests/sink_recovery_test.cpp`:
+
+- **The budget is per outage, not per stream.** `rescan_done(true)` now refills it — the
+  in-place reopen and the whole rescan ladder, back to `SINK_RESCAN_DELAY_MS` — the same intent
+  `reopen_done(true)` already had for its own path.
+- **The outage gap survives the refill.** Only the attempt bookkeeping refills; the
+  discarded-frame count is not `reset()`'s to drop here, since the first timed write still owes
+  the player that gap, and a device that dies again before one adds to it.
+- **A device that never comes back still gives up.** Within one outage the budget is unchanged —
+  one reopen, then `SINK_RESCAN_ATTEMPTS` rescans on the doubling delay — and only a real
+  recovery refills it.
+- **`rescan_abandoned()` for an attempt that did not recover anything.** The shutdown paths in
+  ALSA, PulseAudio and PipeWire used to report `rescan_done(true)` when `stop()` landed
+  mid-attempt, which would now refill; they abandon instead. PortAudio used to report `true` up
+  front whatever happened; it now abandons on each failure and reports `true` only when the
+  stream is really back, so its rebuild stays one-shot per outage.
+
+**A flapping device is not given a floor of its own.** One that recovers and dies again,
+repeatedly, now keeps recovering — which is what it is doing — and the loop is already paced:
+each outage spends the in-place reopen at most once, the next one has to wait out
+`SINK_RESCAN_DELAY_MS` before its rescan, and a refill never shortens that below the base delay.
+So the main loop pays at most one rescan per two seconds whatever the device does. A cap on
+recoveries per stream would turn a flaky cable back into the silence this item removes.
+
+The regression tests (`ASecondOutageInTheSameStreamRecovers`,
+`EveryOutageAfterARecoveryStillGivesUp`, `TheDiscardedGapSurvivesTheRefillIntoTheNextOutage`)
+fail against the old helper and pass against the new one. **Still owed:** two unplug/replug
+cycles in one stream on real hardware — ALSA first, since it has the most users, then CoreAudio
+with item 27's harness.
