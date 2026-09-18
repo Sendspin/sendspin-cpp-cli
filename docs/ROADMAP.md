@@ -2547,7 +2547,8 @@ frameworks, so the binary links only what every Mac already has.
   `SinkRecovery::rescan_soon()` brings the owed rescan forward to the next tick. Without it the
   backoff alone decides, and the hardware pass measured what that costs: a device physically back
   at 21 s was not reopened until 41 s, because the 2 s ladder had already doubled past it. The
-  attempt still counts against the budget, so a burst of plug events cannot spin.
+  attempt still counts against the budget, so a burst of plug events cannot spin. Measured on
+  hardware at **190 ms** from replug to reopen, against the ~11.5 s the ladder would have waited.
 - **A moved system default is followed, and is not a recovery.** A bare `-o coreaudio` also
   listens on `kAudioHardwarePropertyDefaultOutputDevice`; `poll()` reopens on the new device
   with the ring tail accounted as an outage gap. Deliberately outside `SinkRecovery`'s budget:
@@ -2611,6 +2612,17 @@ A second round settled the two things the first left open, and turned up the lis
   first round could not measure this because the harness restarted its pacing clock every 0.5 s
   and lost ~5000 ppm of its own.
 
+Two things the pass turned up that are **not this backend's**:
+
+- **A second outage in one stream never recovers** — item 28. Found here, but it predates this
+  backend and sits in the shared `SinkRecovery`, so every device-backed sink has it.
+- **A single pop as the unit starts**, on two different DACs and through both harness commands.
+  The data path was ruled out: both multipliers start at `Q32_ONE` so the first callback takes the
+  unity fast path with no gain step, and `PcmRingBuffer::read()` zero-fills the tail the first
+  callback cannot fill, so what leaves the sink is silence followed by a phase-0 sine. That points
+  at the device un-muting when the unit starts rather than at anything here, and two unrelated DACs
+  doing it agrees. Recorded rather than chased.
+
 Underneath the pass, CI carries the rest: the backend compiles clean under `-Werror` on the
 `macos-arm64` leg, that leg's `otool -L` guard reports only CoreAudio, AudioToolbox,
 CoreFoundation, `libc++` and `libSystem` — so the dyld abort this item exists to fix cannot come
@@ -2621,3 +2633,33 @@ which is exactly why the pass above had to be run by hand.
 The harness it was run with is not in the tree: it lives with the pass's own notes, because a
 sink suite that exercises `AudioSink` implementations themselves is item 12's job, not a
 throwaway driver's.
+
+### 28. A second device outage in one stream never recovers — *open*
+
+Found by item 27's hardware pass, but it belongs to item 14: `SinkRecovery` gives a stream one
+in-place reopen and one rescan ladder, and **a rescan that succeeds retires the budget instead of
+restoring it**. So the first outage in a stream recovers and every one after it is permanent
+silence until the next track.
+
+`rescan_done()` puts a recovered rescan and an exhausted one down the same branch:
+
+```cpp
+if (recovered || this->rescan_attempts_ >= SINK_RESCAN_ATTEMPTS) {
+    this->rescan_spent_ = true;
+```
+
+`reopen_spent_` is still set from the first outage and only `reset()` clears it, so on the second
+outage `reopen_due()` declines and hands off to `escalate_()`, which is guarded by
+`!rescan_spent_` and does nothing. Zero attempts, no log line, straight to "discarding audio until
+a stream reconfigures it". `reopen_done()` already carries the right intent for its own path —
+*"The rescan stays in hand for the next outage"* — and a recovered rescan wants the same.
+
+**Every device-backed sink has this**, since all four report `rescan_done(true)` on success:
+`alsa_sink.cpp:720,725`, `portaudio_sink.cpp:581`, `pipewire_sink.cpp:563,568` and
+`coreaudio_sink.cpp:712`. It is reachable in ordinary use — a flaky cable, a dock that
+renumerates, or a listener who unplugs twice in one track.
+
+Deliberately not fixed in item 27: it is pre-existing, it is shared, and a change here alters
+recovery for three backends that item's pass never touched. It wants its own brief and a hardware
+pass per backend. The fix is likely small — restore the budget on a recovered rescan rather than
+retire it — but the blast radius is not.
