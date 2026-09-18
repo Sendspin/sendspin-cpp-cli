@@ -233,7 +233,7 @@ TEST(SinkRecovery, ACallerThatReportsNothingGetsExactlyOneRescan) {
     escalate(recovery);
     ASSERT_GE(rescan_fires_at(recovery, T0, T0 + 10 * SINK_RESCAN_DELAY_MS), T0);
 
-    // A caller that never reports gets exactly one rescan, as PortAudioSink relies on.
+    // A caller that never reports gets exactly one rescan.
     EXPECT_FALSE(recovery.reopen_due());
     EXPECT_FALSE(recovery.pending());
     EXPECT_EQ(rescan_fires_at(recovery, T0, T0 + 100 * SINK_RESCAN_DELAY_MS), -1);
@@ -249,6 +249,84 @@ TEST(SinkRecovery, ASuccessfulRescanIsNotRetried) {
 
     EXPECT_FALSE(recovery.pending());
     EXPECT_EQ(rescan_fires_at(recovery, fired_at, fired_at + 100 * SINK_RESCAN_DELAY_MS), -1);
+}
+
+TEST(SinkRecovery, ASecondOutageInTheSameStreamRecovers) {
+    SinkRecovery recovery;
+    escalate(recovery);
+    int64_t now = rescan_fires_at(recovery, T0, T0 + 10 * SINK_RESCAN_DELAY_MS);
+    ASSERT_GT(now, 0);
+    recovery.rescan_done(false);
+    now = rescan_fires_at(recovery, now, now + 10 * SINK_RESCAN_DELAY_MS);
+    ASSERT_GT(now, 0);
+    recovery.rescan_done(true);
+
+    // The device died again: the reopen is back in hand, and so is a fresh ladder.
+    escalate(recovery);
+    EXPECT_TRUE(recovery.pending());
+    EXPECT_EQ(rescan_fires_at(recovery, now, now + 10 * SINK_RESCAN_DELAY_MS),
+              now + SINK_RESCAN_DELAY_MS);
+}
+
+TEST(SinkRecovery, EveryOutageAfterARecoveryStillGivesUp) {
+    SinkRecovery recovery;
+    escalate(recovery);
+    int64_t now = rescan_fires_at(recovery, T0, T0 + 10 * SINK_RESCAN_DELAY_MS);
+    ASSERT_GT(now, 0);
+    recovery.rescan_done(true);
+
+    escalate(recovery);
+    for (int attempt = 0; attempt < SINK_RESCAN_ATTEMPTS; ++attempt) {
+        now = rescan_fires_at(recovery, now, now + 100 * SINK_RESCAN_DELAY_MS);
+        ASSERT_GT(now, 0) << "attempt " << attempt << " never fired";
+        recovery.rescan_done(false);
+    }
+
+    EXPECT_FALSE(recovery.pending());
+    EXPECT_FALSE(recovery.reopen_due());
+    EXPECT_EQ(rescan_fires_at(recovery, now, now + 100 * SINK_RESCAN_DELAY_MS), -1);
+}
+
+TEST(SinkRecovery, TheDiscardedGapSurvivesTheRefillIntoTheNextOutage) {
+    SinkRecovery recovery;
+    escalate(recovery);
+    recovery.discard_frames(48'000U);
+    ASSERT_GE(rescan_fires_at(recovery, T0, T0 + 10 * SINK_RESCAN_DELAY_MS), T0);
+    recovery.rescan_done(true);
+
+    // Died again before a timed write took the first gap: both are still owed.
+    escalate(recovery);
+    recovery.discard_frames(1'000U);
+
+    EXPECT_EQ(recovery.take_discarded_frames(), 49'000U);
+}
+
+TEST(SinkRecovery, AnAbandonedRescanRefillsNothing) {
+    SinkRecovery recovery;
+    escalate(recovery);
+    const int64_t fired_at = rescan_fires_at(recovery, T0, T0 + 10 * SINK_RESCAN_DELAY_MS);
+    ASSERT_GT(fired_at, 0);
+
+    recovery.rescan_abandoned();
+
+    EXPECT_FALSE(recovery.pending());
+    EXPECT_FALSE(recovery.reopen_due());
+    EXPECT_EQ(rescan_fires_at(recovery, fired_at, fired_at + 100 * SINK_RESCAN_DELAY_MS), -1);
+
+    // A late recovered report has no attempt to answer, so it cannot refill either.
+    recovery.rescan_done(true);
+    EXPECT_FALSE(recovery.reopen_due());
+}
+
+TEST(SinkRecovery, AbandoningWithNothingOutstandingDoesNothing) {
+    SinkRecovery recovery;
+    escalate(recovery);
+
+    recovery.rescan_abandoned();
+
+    EXPECT_TRUE(recovery.pending());
+    EXPECT_EQ(rescan_fires_at(recovery, T0, T0 + 10 * SINK_RESCAN_DELAY_MS),
+              T0 + SINK_RESCAN_DELAY_MS);
 }
 
 TEST(SinkRecovery, AFailedRescanIsTriedAgainAfterALongerDelay) {
