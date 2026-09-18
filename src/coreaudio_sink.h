@@ -89,9 +89,10 @@ private:
     /// Reopens on the system default's new device, for a bare -o coreaudio. Not a recovery: a
     /// move is an ordinary event, so it must not spend the budget an outage needs.
     void follow_default_();
-    /// Adds the frames still in the ring to the outage gap: the player has counted them, and the
-    /// lost unit recovery is about to close will never report them. Only for those closes --
-    /// stop(), configure() and clear() end the stream the gap belonged to. Caller holds mutex_.
+    /// Stops the callback, then adds the frames still in the ring to the outage gap: the player
+    /// has counted them, and the lost unit recovery is about to close will never report them.
+    /// Only for those closes -- stop(), configure() and clear() end the stream the gap belonged
+    /// to. Caller holds mutex_.
     void discard_ring_tail_();
     /// True while the render callback is still being driven. Caller holds mutex_.
     /// Liveness only: a lost device does not stop the callback, so this stays true until the
@@ -106,8 +107,8 @@ private:
 
     /// Starts listening for the open device's death, and for default-output moves when following
     /// the default. Caller holds mutex_; listeners are removed by close_unit_().
-    /// Removal does not wait an in-flight listener out, unlike PortAudio's stream close, so a
-    /// notification can still land on the atomics just after the sink is destroyed.
+    /// Removal does not wait an in-flight notification out, which is why stop() drops the
+    /// listeners long before the destructor runs.
     void add_listeners_(AudioDeviceID device);
     void remove_listeners_();
 

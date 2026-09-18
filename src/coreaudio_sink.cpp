@@ -862,10 +862,8 @@ bool CoreAudioSink::open_unit_(AudioDeviceID device, uint32_t sample_rate, uint8
         this->stream_rate_ = actual.mSampleRate;
     }
 
-    // The render timestamp is when the hardware consumes the buffer, not when it reaches the
-    // speaker, so the presentation latency goes on top -- unlike PortAudio's outputBufferDacTime.
-    // Not the safety offset: that is the margin the HAL schedules ahead by, so it is already in
-    // how far in the future the timestamp sits, and adding it would count it twice.
+    // Presentation latency goes on top of the render timestamp; the safety offset must not, since
+    // the HAL has already scheduled the buffer that far ahead.
     const double device_rate = nominal_sample_rate(device);
     double latency_s = 0.0;
     if (device_rate > 0.0) {
@@ -1013,6 +1011,12 @@ bool CoreAudioSink::reopen_in_place_() {
 }
 
 void CoreAudioSink::discard_ring_tail_() {
+    // Stopped first: a callback draining between the count and close_unit_()'s own stop would
+    // report those frames as played on top of the gap they are counted into here.
+    if (this->callback_running_()) {
+        AudioOutputUnitStop(this->unit_);
+        this->running_ = false;
+    }
     if (this->bytes_per_frame_ == 0) {
         return;  // no unit, so close_unit_() has already emptied the ring
     }
@@ -1060,6 +1064,13 @@ void CoreAudioSink::add_listeners_(AudioDeviceID device) {
         noErr) {
         this->listening_alive_ = true;
         this->listening_device_ = device;
+    } else {
+        // Nothing else sets device_lost_, so without this a death is never noticed and recovery
+        // never runs. Still worth playing through; the user just has to restart the stream.
+        cli_log(LogLevel::WARN,
+                "coreaudio: '%s' will not report its own death -- playback will not recover by "
+                "itself if it goes away",
+                device_name(device).c_str());
     }
 
     if (this->device_.empty()) {

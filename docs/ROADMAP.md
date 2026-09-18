@@ -2493,7 +2493,7 @@ hand-entered address is neither, so it went.
 - **`SENDSPIN_SERVER_URL` is answered only for the server_id the dial chose.** `LastDial` has
   no "literal URL, taken at its word" case left; a dial with no id answers nothing.
 
-### 27. Native CoreAudio backend — *shipped (hardware pass still owed)*
+### 27. Native CoreAudio backend — *shipped*
 
 The shipped macOS binary aborted at launch on any Mac without Homebrew's PortAudio:
 
