@@ -2566,16 +2566,53 @@ frameworks, so the binary links only what every Mac already has.
   what keeps a device pinned at 48 kHz playing 44.1 kHz content without stealing it from
   whatever else is using it.
 
-**What has and has not been exercised.** It compiles clean under `-Werror` on CI's
-`macos-arm64` leg — which is the first compiler that saw it, since it was written on Linux,
-where it is not built — and that leg's `otool -L` guard reports only CoreAudio, AudioToolbox,
-CoreFoundation, `libc++` and `libSystem`, so the dyld abort this item exists to fix cannot
-come back unnoticed. The parser-level `-o coreaudio[:...]` forms and the Linux
-reserved-backend refusal are covered in `tests/device_spec_test.cpp` and run on every leg.
-None of that opens a device. Still owed, on a Mac with real output:
-a clean tone at 48 kHz/16-bit, 44.1 kHz/24-bit and 44.1 kHz/32-bit; exact `on_frames_played`
-accounting against the wall clock; a DAC offset plausible against the device's reported
-latency; a mid-stream format change and recovery from a refused one; volume, mute, the ramp
-across a change and the shutdown latch; a default-output move and an unplug while playing; and
-a real Sendspin server driving it end to end. Item 3 shipped without that last one and said so;
-this item should not.
+**What has and has not been exercised.** A hardware pass was run on a MacBook Pro (M5 Pro,
+macOS 26.6.2) against built-in speakers, a USB interface and a DisplayPort monitor. **It plays.**
+What it proved:
+
+- **Clean tone at 48 kHz/16-bit, 44.1 kHz/24-bit and 44.1 kHz/32-bit**, no clicks or dropouts,
+  and `otool -L` on the binary lists only system frameworks — on a machine that *has* Homebrew,
+  which is what makes that result mean something.
+- **`on_frames_played` does not accumulate error**: −35 ppm over five minutes. Short runs read
+  worse in ppm (−372 ppm over 30 s) only because each stream leaves a fixed ~10–18 ms tail in the
+  ring at `stop()` that never reached the DAC and so is never reported. That is the intended
+  behaviour — the gap is deliberately not carried across `stop()`/`configure()`/`clear()`, each of
+  which ends the stream it belonged to — and `PortAudioSink` does the same. A fixed ms error over
+  a short window simply reads as a large ppm.
+- **The DAC offset is sound.** 37.95 ms mean against a reported device latency of 15.6 ms:
+  positive, above the latency, same order, tight min/max — and it held on a second device
+  (23.40 ms mean against 1.0 ms latency). Resampling 44.1→48 kHz added **+0.72 ms**, which is the
+  audio unit's converter latency showing up exactly where it should and nowhere else, settling the
+  one term the research could not.
+- **Recovery works.** The system default was moved five times mid-stream and was followed every
+  time without a restart; the USB device was unplugged and replugged and reopened itself. The
+  reopen gaps are reflected in the drift rather than swallowed.
+- **A real Sendspin server drove it end to end** — Music Assistant, several minutes of real music,
+  sync settling rather than walking, controller volume, pause, resume, next and seek. **A second
+  player in the same group was in phase**, which is the only real test the DAC offset has, and the
+  thing item 3 shipped without.
+
+Still open after that pass:
+
+- **The volume ramp.** The full→half change was heard as a step or click. The arithmetic is not at
+  fault — `volume_ramp_step(48000)` is 4473925 Q32/frame and 100→50 is a genuine 621-frame ramp —
+  and mute, which is the *slowest* ramp at a full 20 ms, was reported clean. The likeliest reading
+  is the slew rate being fast rather than absent, since `VOLUME_RAMP_MS` is a full-scale time and
+  100→50 is 12.9 ms. `open_unit_()` now logs the step at `debug` so the two cases can be told
+  apart without ears; a second listen is owed before anything is changed, and if it is the slew
+  rate then it belongs to item 13, which owns it for all three backends.
+- **The outage-gap figure.** The harness's own `recovery` driver restarted its pacing clock every
+  0.5 s, leaving the ring dry between slices — ~5000 ppm of loss and audible popping with no
+  outage at all, which swamped the measurement. Fixed in the harness; the number is owed from a
+  re-run. The sink's recovery *mechanisms* are not in doubt, only the accounting figure.
+
+Underneath the pass, CI carries the rest: the backend compiles clean under `-Werror` on the
+`macos-arm64` leg, that leg's `otool -L` guard reports only CoreAudio, AudioToolbox,
+CoreFoundation, `libc++` and `libSystem` — so the dyld abort this item exists to fix cannot come
+back unnoticed — and the parser-level `-o coreaudio[:...]` forms and the Linux reserved-backend
+refusal are covered in `tests/device_spec_test.cpp` on every leg. None of that opens a device,
+which is exactly why the pass above had to be run by hand.
+
+The harness it was run with is not in the tree: it lives with the pass's own notes, because a
+sink suite that exercises `AudioSink` implementations themselves is item 12's job, not a
+throwaway driver's.

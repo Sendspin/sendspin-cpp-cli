@@ -718,7 +718,8 @@ void CoreAudioSink::poll(int64_t now_ms) {
 void CoreAudioSink::set_volume(uint8_t volume) {
     this->volume_.store(volume > 100 ? 100 : volume);
     this->update_target_multiplier_();
-    cli_log(LogLevel::DEBUG, "coreaudio: volume now %u", this->volume_.load());
+    cli_log(LogLevel::DEBUG, "coreaudio: volume now %u (gain %.4f)", this->volume_.load(),
+            static_cast<double>(this->target_multiplier_.load()) / static_cast<double>(Q32_ONE));
 }
 
 void CoreAudioSink::set_muted(bool muted) {
@@ -893,6 +894,9 @@ bool CoreAudioSink::open_unit_(AudioDeviceID device, uint32_t sample_rate, uint8
     this->running_ = true;
 
     this->failed_.store(false);
+    // Spelled out because a zero step snaps, which is audible but hard to tell from a fast ramp.
+    cli_log(LogLevel::DEBUG, "coreaudio: volume ramp %llu Q32/frame, %u ms for a full-scale change",
+            static_cast<unsigned long long>(this->ramp_step_), VOLUME_RAMP_MS);
     cli_log(LogLevel::INFO,
             "coreaudio: '%s' (%s) open at %u Hz, %u ch, %u-bit (%zu bytes/frame, "
             "%zu-byte ring, %.1f ms output latency)",
