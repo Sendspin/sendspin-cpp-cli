@@ -346,13 +346,13 @@ TEST(LastDial, StartsWithNothingToExport) {
     EXPECT_EQ(dial.url_for("srv-1"), "");
 }
 
-TEST(LastDial, ADialWithNoServerIdAnswersNothing) {
-    // A dial with no server id has nothing to check against, so it exports nothing.
+TEST(LastDial, ALiteralUrlIsTakenAtItsWord) {
+    // A literal -s dial has no id and promises nothing about who answers, so it exports as dialled.
     LastDial dial;
     dial.note_dial("ws://hifi:8927/sendspin", "");
 
-    EXPECT_EQ(dial.url_for("srv-1"), "");
-    EXPECT_EQ(dial.url_for(""), "");
+    EXPECT_EQ(dial.url_for("srv-1"), "ws://hifi:8927/sendspin");
+    EXPECT_EQ(dial.url_for(""), "ws://hifi:8927/sendspin");
 }
 
 TEST(LastDial, ADiscoveryDialAnswersOnlyForTheServerItDialled) {

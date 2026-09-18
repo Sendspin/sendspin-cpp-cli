@@ -14,9 +14,9 @@ daemonization.
 - Boots a `SendspinClient` with the `player`, `metadata` and `controller` roles, starts its
   WebSocket server, pumps `client.loop()`, and shuts down cleanly on `SIGINT`/`SIGTERM`.
 - Speaks both of the protocol's connection modes, and keeps them exclusive as the spec
-  requires: it advertises `_sendspin._tcp` over mDNS by default, and `-s mdns:` instead
-  discovers a server on `_sendspin-server._tcp` and dials it — retrying with a backoff
-  until it answers (item 5). A typed-in address is no longer accepted (item 26).
+  requires: it advertises `_sendspin._tcp` over mDNS by default, and `-s` instead dials out —
+  either a typed-in address or a `mdns:` server it discovers on `_sendspin-server._tcp` —
+  retrying with a backoff until it answers (item 5, item 26).
 - Defines the `AudioSink` seam (`src/audio_sink.h`) and plays real audio through it:
   auto-detected ALSA (item 2), PortAudio (item 3), PulseAudio (item 18) and PipeWire
   (item 19) backends, with the device-less null/stdout sink as the fallback, so the
@@ -2460,71 +2460,33 @@ CLI can reach around it — so the flag cannot be expressed by any other route. 
 on its own. **Not expected to move soon.**
 
 
-### 26. `-s` takes no address — *shipped*
+### 26. Direct-address dialling, removed then restored alongside `mdns:` — *shipped*
 
-`-s` used to take a typed-in address — `<host>[:<port>]` or a `ws://` URL — beside its
-`mdns:` discovery form. The spec has exactly two ways to connect: the server discovers the
+`-s` briefly took only its `mdns:` discovery form: a typed-in `<host>[:<port>]` or `ws://`
+URL was removed because the spec has exactly two ways to connect — the server discovers the
 client through its `_sendspin._tcp` advertisement, or the client discovers the server on
-`_sendspin-server._tcp` and connects "using the advertised address and path". Dialling a
-hand-entered address is neither, so it went.
+`_sendspin-server._tcp` and connects "using the advertised address and path" — and a
+hand-entered address is neither.
+
+That removal is **reversed by choice**: direct-address dialling is restored beside discovery,
+because pointing a player straight at a known server is worth more here than matching the
+spec's connection model exactly. This is a deliberate divergence, not a spec-conformance gap.
 
 **Shipped** in `src/cli.{h,cpp}`, `src/main.cpp`, `src/outbound.{h,cpp}`,
 `tests/cli_test.cpp`, `tests/config_file_test.cpp`, `tests/discovery_test.cpp` and
 `scripts/smoke_test.sh`:
 
-- **`-s mdns:[<name>]` is the only form**, typed or as `server =` in a config file, and it
-  behaves as it did: browse, pick with the last-server tie-break, dial on the retry pacer's
-  backoff, advertisement suppressed.
-- **Anything else is a hard error at parse time**, not a warning, so an install still
-  configured with an address fails loudly rather than quietly changing how it connects. From a
-  config file the error names the file and line, and a bare `mdns` is asked whether it meant
-  `mdns:`.
-- **The error does not quote the value.** An address was where credentials got typed, and
-  `redact_url_userinfo()` went with `parse_server_url()`: a discovered URL is built from a
-  resolved address, a port and a TXT `path`, and has no userinfo to mask. The smoke test's
-  credential-redaction check went with them.
-- **`SENDSPIN_SERVER_URL` is answered only for the server_id the dial chose.** `LastDial` has
-  no "literal URL, taken at its word" case left; a dial with no id answers nothing.
-
-### 28. A second device outage in one stream never recovers — *shipped (hardware pass still owed)*
-
-Found by item 27's CoreAudio hardware pass — two unplugs in one run, the first back in 190 ms,
-the second never — but it belongs to item 14 and sits in the shared `SinkRecovery`, so every
-device-backed sink had it. **A rescan that succeeded retired the budget instead of restoring
-it**: `rescan_done()` sent a recovered rescan and an exhausted one down the same branch, and
-`reopen_spent_` was still set from the first outage. On the second, `reopen_due()` declined,
-`escalate_()` found the rescan spent, and the sink discarded until the next track with no log
-line at all.
-
-**Shipped** in `src/sink_recovery.{h,cpp}`, its callers (`src/alsa_sink.cpp`,
-`src/pulse_sink.cpp`, `src/pipewire_sink.cpp`, `src/portaudio_sink.cpp`) and
-`tests/sink_recovery_test.cpp`:
-
-- **A recovered rescan refills the budget** — the in-place reopen and the whole rescan ladder,
-  back to `SINK_RESCAN_DELAY_MS` — the same intent `reopen_done(true)` already had for its own
-  path. A recovered reopen still refills nothing, so the outage after it goes straight to the
-  rescan, and that rescan's recovery refills both.
-- **The outage gap survives the refill.** Only the attempt bookkeeping refills; the
-  discarded-frame count is not `reset()`'s to drop here, since the first timed write still owes
-  the player that gap, and a device that dies again before one adds to it.
-- **A device that never comes back still gives up.** Within one outage the budget is unchanged —
-  one reopen, then `SINK_RESCAN_ATTEMPTS` rescans on the doubling delay — and only a real
-  recovery refills it.
-- **`rescan_abandoned()` for an attempt that did not recover anything.** The shutdown paths in
-  ALSA, PulseAudio and PipeWire used to report `rescan_done(true)` when `stop()` landed
-  mid-attempt, which would now refill; they abandon instead. PortAudio used to report `true` up
-  front whatever happened; it now abandons on each failure and reports `true` only when the
-  stream is really back, so its rebuild stays one-shot per outage.
-
-**A flapping device is not given a floor of its own.** One that recovers and dies again,
-repeatedly, now keeps recovering — which is what it is doing — and the loop is already paced:
-each outage spends the in-place reopen at most once, the next one has to wait out
-`SINK_RESCAN_DELAY_MS` before its rescan, and a refill never shortens that below the base delay.
-So the main loop pays at most one rescan per two seconds whatever the device does. A cap on
-recoveries per stream would turn a flaky cable back into the silence this item removes.
-
-The regression tests (`ASecondOutageInTheSameStreamRecovers`,
-`EveryOutageAfterARecoveryStillGivesUp`, `TheDiscardedGapSurvivesTheRefillIntoTheNextOutage`)
-fail against the old helper and pass against the new one. **Still owed:** two unplug/replug
-cycles in one stream on real hardware — ALSA first, since it has the most users, then CoreAudio
-with item 27's harness.
+- **`-s <address>` dials directly again**, typed or as `server =` in a config file: a bare
+  host (server default port 8927), `host:port`, a full `ws://`/`wss://` URL, or a bracketed
+  IPv6 literal. `parse_server_url()` resolves it once at parse time, so a bad address fails
+  before the daemon starts.
+- **`-s mdns:[<name>]` still discovers**, unchanged: browse, pick with the last-server
+  tie-break, dial on the retry pacer's backoff. `mdns:` is reserved only before the first
+  colon, so `hifi:8927` is a host and a bare `-s mdns` is a host named `mdns`.
+- **Any `-s` suppresses the advertisement**, address or discovery — the invariant
+  `advertises()` keeps, so no new code path advertises while an address is configured.
+- **A parse error never quotes the credential.** An address can carry userinfo, so
+  `redact_url_userinfo()` masks it out of every message and every line the player logs. The
+  smoke test's credential-redaction check covers the dial line.
+- **`SENDSPIN_SERVER_URL`** answers a discovery dial only for the `server_id` it chose, and a
+  literal-address dial (no id, unverifiable) at its word — `LastDial` carries both cases.

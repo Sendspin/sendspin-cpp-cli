@@ -31,7 +31,8 @@
 # The port this player's own WebSocket server listens on, for a server that connects in.
 #port = 8928
 
-# Discover a server and dial it: mdns: for any, mdns:<name> for one. Disables advertising.
+# Dial a server instead of waiting to be found: <host>[:<port>], a ws:// URL, or mdns:<name> to
+# discover one by its advertised name. Any value here disables advertising, as -s does.
 #server = mdns:Living Room
 
 # Latency added after the audio port, 0-5000 ms. A first-run default: a remembered delay wins.
