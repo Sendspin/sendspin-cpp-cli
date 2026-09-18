@@ -148,9 +148,13 @@ private:
     std::atomic<bool> device_lost_{false};
     /// Set by the property listener when the system default output moves; poll() clears it.
     std::atomic<bool> default_moved_{false};
+    /// Set by the property listener when a device is added or removed anywhere on the host.
+    /// Kept until a rescan is owed, so a replug during the backoff is not waited out.
+    std::atomic<bool> devices_changed_{false};
     /// Whether each listener is registered, so each is removed exactly once. Guarded by mutex_.
     bool listening_alive_{false};
     bool listening_default_{false};
+    bool listening_devices_{false};
     /// The device the death listener is registered on. Guarded by mutex_.
     AudioDeviceID listening_device_{kAudioObjectUnknown};
 

@@ -40,14 +40,18 @@ bool SinkRecovery::rescan_due(int64_t now_ms) {
     if (!this->rescan_owed_.load(std::memory_order_relaxed)) {
         return false;
     }
-    if (this->rescan_at_ms_ == NOT_STAMPED) {
-        // Stamped on the first tick after escalation; the delay grows with attempts made.
-        this->rescan_at_ms_ = now_ms + delay_for_(this->rescan_attempts_);
-        return false;
+    // The backoff is only for waiting out a device nothing has said anything about.
+    if (!this->rescan_immediate_) {
+        if (this->rescan_at_ms_ == NOT_STAMPED) {
+            // Stamped on the first tick after escalation; the delay grows with attempts made.
+            this->rescan_at_ms_ = now_ms + delay_for_(this->rescan_attempts_);
+            return false;
+        }
+        if (now_ms < this->rescan_at_ms_) {
+            return false;
+        }
     }
-    if (now_ms < this->rescan_at_ms_) {
-        return false;
-    }
+    this->rescan_immediate_ = false;
     ++this->rescan_attempts_;
     this->rescan_in_flight_ = true;
     // In flight: nothing more is owed until rescan_done() reports.
@@ -69,6 +73,13 @@ void SinkRecovery::rescan_done(bool recovered) {
     // Owe another; the next tick stamps a longer deadline.
     this->rescan_at_ms_ = NOT_STAMPED;
     this->rescan_owed_.store(true, std::memory_order_relaxed);
+}
+
+void SinkRecovery::rescan_soon() {
+    // Not while one is in flight: it is already running, and rescan_done() re-stamps after it.
+    if (this->rescan_owed_.load(std::memory_order_relaxed) && !this->rescan_in_flight_) {
+        this->rescan_immediate_ = true;
+    }
 }
 
 bool SinkRecovery::pending() const {
@@ -94,6 +105,7 @@ void SinkRecovery::reset() {
     this->reopen_spent_ = false;
     this->rescan_spent_ = false;
     this->rescan_in_flight_ = false;
+    this->rescan_immediate_ = false;
     this->rescan_attempts_ = 0;
     this->rescan_owed_.store(false, std::memory_order_relaxed);
     this->rescan_at_ms_ = NOT_STAMPED;

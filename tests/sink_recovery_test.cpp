@@ -266,6 +266,76 @@ TEST(SinkRecovery, AFailedRescanIsTriedAgainAfterALongerDelay) {
     EXPECT_EQ(second, first + (2 * SINK_RESCAN_DELAY_MS));
 }
 
+// rescan_soon(): the OS saying the device list moved, instead of waiting out the backoff.
+
+TEST(SinkRecovery, ADeviceListChangeFiresTheRescanWithoutWaitingOutTheDelay) {
+    SinkRecovery recovery;
+    escalate(recovery);
+
+    // Stamps the deadline, which is still a long way off.
+    ASSERT_FALSE(recovery.rescan_due(T0));
+    recovery.rescan_soon();
+
+    // The very next tick, rather than T0 + SINK_RESCAN_DELAY_MS.
+    EXPECT_TRUE(recovery.rescan_due(T0 + 10));
+}
+
+TEST(SinkRecovery, ADeviceListChangeSkipsTheBackoffExactlyOnce) {
+    SinkRecovery recovery;
+    escalate(recovery);
+
+    ASSERT_FALSE(recovery.rescan_due(T0));
+    recovery.rescan_soon();
+    ASSERT_TRUE(recovery.rescan_due(T0 + 10));
+    recovery.rescan_done(false);
+
+    // The next attempt is back on the ladder: one notification buys one attempt, not a spin.
+    const int64_t next = rescan_fires_at(recovery, T0 + 10, T0 + (100 * SINK_RESCAN_DELAY_MS));
+    EXPECT_EQ(next, T0 + 10 + (2 * SINK_RESCAN_DELAY_MS));
+}
+
+TEST(SinkRecovery, ADeviceListChangeArmsNothingWhenNoRescanIsOwed) {
+    SinkRecovery recovery;
+
+    // Nothing has died, so there is nothing to bring forward.
+    recovery.rescan_soon();
+    EXPECT_FALSE(recovery.pending());
+    EXPECT_FALSE(recovery.rescan_due(T0));
+    EXPECT_FALSE(recovery.rescan_due(T0 + (100 * SINK_RESCAN_DELAY_MS)));
+}
+
+TEST(SinkRecovery, ADeviceListChangeStillSpendsTheAttemptBudget) {
+    SinkRecovery recovery;
+    escalate(recovery);
+
+    // A burst of notifications must not buy unlimited attempts.
+    int fired = 0;
+    for (int64_t now = T0; now < T0 + (1000 * SINK_RESCAN_DELAY_MS); now += 10) {
+        recovery.rescan_soon();
+        if (recovery.rescan_due(now)) {
+            ++fired;
+            recovery.rescan_done(false);
+        }
+    }
+    EXPECT_EQ(fired, SINK_RESCAN_ATTEMPTS);
+    EXPECT_FALSE(recovery.pending());
+}
+
+TEST(SinkRecovery, ADeviceListChangeDoesNotDisturbARescanInFlight) {
+    SinkRecovery recovery;
+    escalate(recovery);
+
+    const int64_t fired = rescan_fires_at(recovery, T0, T0 + (10 * SINK_RESCAN_DELAY_MS));
+    ASSERT_GT(fired, 0);
+
+    // In flight: the attempt is already running, so this must not queue a second one.
+    recovery.rescan_soon();
+    EXPECT_FALSE(recovery.rescan_due(fired + 10));
+
+    recovery.rescan_done(true);
+    EXPECT_FALSE(recovery.pending());
+}
+
 TEST(SinkRecovery, TheRetriesRunOutAndTheDelayStopsGrowing) {
     SinkRecovery recovery;
     escalate(recovery);

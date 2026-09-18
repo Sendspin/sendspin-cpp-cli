@@ -2542,6 +2542,12 @@ frameworks, so the binary links only what every Mac already has.
   directly, so there is no `Pa_Terminate()`/`Pa_Initialize()` and no index renumbering: the
   listener flags the death off its HAL thread, `write()` spends the one in-place reopen, and
   `poll()` retries on `SinkRecovery`'s backoff.
+- **A replug is a notification too, not just a timeout.** A dying device says so itself; a
+  returning one cannot, so `kAudioHardwarePropertyDevices` is listened to as well and
+  `SinkRecovery::rescan_soon()` brings the owed rescan forward to the next tick. Without it the
+  backoff alone decides, and the hardware pass measured what that costs: a device physically back
+  at 21 s was not reopened until 41 s, because the 2 s ladder had already doubled past it. The
+  attempt still counts against the budget, so a burst of plug events cannot spin.
 - **A moved system default is followed, and is not a recovery.** A bare `-o coreaudio` also
   listens on `kAudioHardwarePropertyDefaultOutputDevice`; `poll()` reopens on the new device
   with the ring tail accounted as an outage gap. Deliberately outside `SinkRecovery`'s budget:
@@ -2592,19 +2598,18 @@ What it proved:
   player in the same group was in phase**, which is the only real test the DAC offset has, and the
   thing item 3 shipped without.
 
-Still open after that pass:
+A second round settled the two things the first left open, and turned up the listener gap above:
 
-- **The volume ramp.** The full→half change was heard as a step or click. The arithmetic is not at
-  fault — `volume_ramp_step(48000)` is 4473925 Q32/frame and 100→50 is a genuine 621-frame ramp —
-  and mute, which is the *slowest* ramp at a full 20 ms, was reported clean. The likeliest reading
-  is the slew rate being fast rather than absent, since `VOLUME_RAMP_MS` is a full-scale time and
-  100→50 is 12.9 ms. `open_unit_()` now logs the step at `debug` so the two cases can be told
-  apart without ears; a second listen is owed before anything is changed, and if it is the slew
-  rate then it belongs to item 13, which owns it for all three backends.
-- **The outage-gap figure.** The harness's own `recovery` driver restarted its pacing clock every
-  0.5 s, leaving the ring dry between slices — ~5000 ppm of loss and audible popping with no
-  outage at all, which swamped the measurement. Fixed in the harness; the number is owed from a
-  re-run. The sink's recovery *mechanisms* are not in doubt, only the accounting figure.
+- **The volume ramp is fine**, and the first round's "FAIL" was against a wrong expectation: 20 ms
+  is what a *full-scale* change takes, so 100→50 is 12.9 ms. `open_unit_()` now logs the step at
+  `debug` (4473925 Q32/frame at 48 kHz, non-zero, so ramping rather than snapping), and mute — the
+  largest change and therefore the slowest ramp — is clean. What is audible on full→half is the
+  slew rate, which is item 13's and shared by all three backends.
+- **The outage gap is reported, not swallowed.** Across a ~10 s unplug the reported frame count
+  froze exactly, then jumped by 33.9 s of audio in one step on replug; of roughly 30 s of silence
+  only ~84 ms went permanently unaccounted, and the residual is flat rather than growing. The
+  first round could not measure this because the harness restarted its pacing clock every 0.5 s
+  and lost ~5000 ppm of its own.
 
 Underneath the pass, CI carries the rest: the backend compiles clean under `-Werror` on the
 `macos-arm64` leg, that leg's `otool -L` guard reports only CoreAudio, AudioToolbox,

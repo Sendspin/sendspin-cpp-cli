@@ -682,6 +682,11 @@ void CoreAudioSink::poll(int64_t now_ms) {
     if (this->last_format_.sample_rate == 0) {
         return;  // nothing was ever configured, so there is nothing to reopen at
     }
+    // Cleared only once a rescan is owed, so a replug that lands before the escalation still
+    // counts; a stale flag costs one early attempt and nothing else.
+    if (this->devices_changed_.exchange(false)) {
+        this->recovery_.rescan_soon();
+    }
     if (!this->recovery_.rescan_due(now_ms)) {
         return;
     }
@@ -882,6 +887,7 @@ bool CoreAudioSink::open_unit_(AudioDeviceID device, uint32_t sample_rate, uint8
 
     // Cleared before the listeners go on, so a death between the two is not lost.
     this->device_lost_.store(false);
+    this->devices_changed_.store(false);
     this->add_listeners_(device);
 
     err = AudioOutputUnitStart(unit);
@@ -1064,6 +1070,14 @@ void CoreAudioSink::add_listeners_(AudioDeviceID device) {
             this->listening_default_ = true;
         }
     }
+
+    // A device that died tells us so itself; a device that comes back cannot, so the host's
+    // device list is what turns a replug into a reopen instead of a wait on the backoff.
+    const AudioObjectPropertyAddress devices = address_of(kAudioHardwarePropertyDevices);
+    if (AudioObjectAddPropertyListener(kAudioObjectSystemObject, &devices,
+                                       &CoreAudioSink::property_listener, this) == noErr) {
+        this->listening_devices_ = true;
+    }
 }
 
 void CoreAudioSink::remove_listeners_() {
@@ -1081,6 +1095,12 @@ void CoreAudioSink::remove_listeners_() {
                                           &CoreAudioSink::property_listener, this);
         this->listening_default_ = false;
     }
+    if (this->listening_devices_) {
+        const AudioObjectPropertyAddress devices = address_of(kAudioHardwarePropertyDevices);
+        AudioObjectRemovePropertyListener(kAudioObjectSystemObject, &devices,
+                                          &CoreAudioSink::property_listener, this);
+        this->listening_devices_ = false;
+    }
 }
 
 OSStatus CoreAudioSink::property_listener(AudioObjectID /*object*/, UInt32 count,
@@ -1096,6 +1116,9 @@ OSStatus CoreAudioSink::property_listener(AudioObjectID /*object*/, UInt32 count
                 break;
             case kAudioHardwarePropertyDefaultOutputDevice:
                 self->default_moved_.store(true);
+                break;
+            case kAudioHardwarePropertyDevices:
+                self->devices_changed_.store(true);
                 break;
             default:
                 break;
