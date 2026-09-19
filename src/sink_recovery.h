@@ -57,6 +57,11 @@ public:
     /// one-shot backend's failure. A call with no attempt outstanding does nothing.
     void rescan_abandoned();
 
+    /// Brings an owed rescan forward to the next tick, for a backend whose OS has told it the
+    /// device list changed. Never arms one that is not owed, and the attempt it releases still
+    /// counts against the budget, so a burst of notifications stays bounded.
+    void rescan_soon();
+
     /// True while a rescan is still owed. The one method safe to call without the lock.
     bool pending() const;
 
@@ -88,6 +93,8 @@ private:
     bool rescan_spent_{false};
     /// Set from handing out an attempt until rescan_done(); blocks re-arming and double counting.
     bool rescan_in_flight_{false};
+    /// Set by rescan_soon(); makes the next rescan_due() skip the backoff exactly once.
+    bool rescan_immediate_{false};
     int rescan_attempts_{0};
     /// Frames accepted with no device to play them, not yet retired; see discard_frames().
     uint32_t discarded_frames_{0};

@@ -34,6 +34,7 @@ jobs:
             runner: ubuntu-24.04
             arm32: ''
             with_mdns: 'ON'
+            with_portaudio: 'ON'
             with_pulse: 'ON'
             with_pipewire: 'ON'
             expect_probe: 'Failed'
@@ -48,6 +49,7 @@ jobs:
             runner: ubuntu-24.04-arm
             arm32: ''
             with_mdns: 'ON'
+            with_portaudio: 'ON'
             with_pulse: 'ON'
             with_pipewire: 'ON'
             expect_probe: 'Failed'
@@ -63,6 +65,7 @@ jobs:
             runner: ubuntu-24.04
             arm32: 'armv7'
             with_mdns: 'ON'
+            with_portaudio: 'ON'
             with_pulse: 'ON'
             with_pipewire: 'ON'
             expect_probe: 'Failed'
@@ -78,12 +81,13 @@ jobs:
             runner: macos-14
             arm32: ''
             with_mdns: 'ON'
+            with_portaudio: 'OFF'
             with_pulse: 'OFF'
             with_pipewire: 'OFF'
             expect_probe: 'Success'
-            expect_backends: '^-- sendspin-cli audio backends: null, stdout, portaudio$'
+            expect_backends: '^-- sendspin-cli audio backends: null, stdout, coreaudio$'
             expect_mdns: '^-- sendspin-cli mDNS: dns_sd \(Bonjour, built in\)$'
-            runtime_packages: 'portaudio (brew). Bonjour is part of macOS.'
+            runtime_packages: 'none. CoreAudio, AudioToolbox and Bonjour are all part of macOS.'
             publish: true
             avahi: false
             systemd: false
@@ -93,6 +97,7 @@ jobs:
             runner: ubuntu-24.04
             arm32: ''
             with_mdns: 'OFF'
+            with_portaudio: 'ON'
             with_pulse: 'OFF'
             with_pipewire: 'OFF'
             expect_backends: '^-- sendspin-cli audio backends: null, stdout, alsa, portaudio$'
@@ -200,10 +205,6 @@ jobs:
           echo 'A 32-bit ARM binary runs on this host.'
           rm -f binfmt-probe binfmt-probe.c
 
-      - name: Install build dependencies (macOS)
-        if: runner.os == 'macOS'
-        run: brew install portaudio pkgconf
-
       # Fetched sources and subbuild stamps only, never build outputs; keyed per leg and by CMakeLists.txt.
       - name: Cache the fetched sources
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
@@ -216,6 +217,7 @@ jobs:
       - name: Configure
         env:
           WITH_MDNS: ${{ matrix.with_mdns }}
+          WITH_PORTAUDIO: ${{ matrix.with_portaudio }}
           WITH_PULSE: ${{ matrix.with_pulse }}
           WITH_PIPEWIRE: ${{ matrix.with_pipewire }}
           DEPS_DIR: ${{ github.workspace }}/.deps
@@ -226,6 +228,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release
             -DSENDSPIN_CLI_WERROR=ON
             -DSENDSPIN_CLI_WITH_MDNS="$WITH_MDNS"
+            -DSENDSPIN_CLI_WITH_PORTAUDIO="$WITH_PORTAUDIO"
             -DSENDSPIN_CLI_WITH_PULSE="$WITH_PULSE"
             -DSENDSPIN_CLI_WITH_PIPEWIRE="$WITH_PIPEWIRE"
             -DFETCHCONTENT_BASE_DIR="$DEPS_DIR"
@@ -551,6 +554,35 @@ jobs:
             echo '::error::the staged sendspin-cli is not executable'
             exit 1
           }
+
+      # What would have caught the dyld abort: a Homebrew load command is a dependency no clean
+      # Mac has, and CI never sees it because the runner installed it.
+      - name: Assert the macOS binary loads nothing that is not part of macOS
+        if: matrix.publish && runner.os == 'macOS'
+        env:
+          NAME: ${{ steps.package.outputs.name }}
+        run: |
+          binary="stage/$NAME/usr/local/bin/sendspin-cli"
+          echo 'What the staged binary loads:'
+          otool -L "$binary"
+
+          # Each dependency is a tab-indented line whose first field is the install name; the
+          # header line naming the binary itself is not indented.
+          otool -L "$binary" | sed -n 's|^\t\([^ ]*\).*|\1|p' >load-commands.txt
+
+          status=0
+          while read -r path; do
+            case "$path" in
+              /usr/lib/*|/System/Library/Frameworks/*|/System/Library/PrivateFrameworks/*) ;;
+              *)
+                echo "::error::the binary loads $path, which is not part of macOS -- a Mac without it aborts at launch"
+                status=1
+                ;;
+            esac
+          done <load-commands.txt
+
+          rm -f load-commands.txt
+          exit "$status"
 
       # Install at the real prefix and verify the unit (not on cross legs: MemoryDenyWriteExecute= forbids qemu-user).
       # After Package, or a root-owned install manifest in build/ breaks the unprivileged staging install.

@@ -56,6 +56,9 @@ FetchContent_MakeAvailable(sendspin)
 # Each backend is auto-detected; OFF forces it out.
 option(SENDSPIN_CLI_WITH_ALSA "Build the ALSA output backend if libasound is available" ON)
 
+# macOS only; the frameworks it needs are part of the system, so there is nothing to install.
+option(SENDSPIN_CLI_WITH_COREAUDIO "Build the CoreAudio output backend on macOS" ON)
+
 option(SENDSPIN_CLI_WITH_PORTAUDIO
     "Build the PortAudio output backend if libportaudio is available" ON)
 
@@ -67,6 +70,7 @@ option(SENDSPIN_CLI_WITH_PIPEWIRE
 
 set(SENDSPIN_CLI_BACKENDS null stdout)
 set(SENDSPIN_CLI_ALSA_ENABLED OFF)
+set(SENDSPIN_CLI_COREAUDIO_ENABLED OFF)
 set(SENDSPIN_CLI_PORTAUDIO_ENABLED OFF)
 set(SENDSPIN_CLI_PULSE_ENABLED OFF)
 set(SENDSPIN_CLI_PIPEWIRE_ENABLED OFF)
@@ -84,6 +88,12 @@ if(SENDSPIN_CLI_WITH_ALSA)
             "sendspin-cli: libasound not found -- building without the ALSA backend. "
             "Install alsa-lib-devel (Fedora) or libasound2-dev (Debian) to enable it.")
     endif()
+endif()
+
+if(SENDSPIN_CLI_WITH_COREAUDIO AND APPLE)
+    # CoreAudio and AudioToolbox ship with macOS, so there is nothing to find.
+    set(SENDSPIN_CLI_COREAUDIO_ENABLED ON)
+    list(APPEND SENDSPIN_CLI_BACKENDS coreaudio)
 endif()
 
 if(SENDSPIN_CLI_WITH_PORTAUDIO)
@@ -275,6 +285,13 @@ if(SENDSPIN_CLI_ALSA_ENABLED)
     target_sources(sendspin-cli-core PRIVATE src/alsa_sink.cpp)
     target_link_libraries(sendspin-cli-core PUBLIC ALSA::ALSA)
     target_compile_definitions(sendspin-cli-core PUBLIC SENDSPIN_CLI_HAVE_ALSA)
+endif()
+
+if(SENDSPIN_CLI_COREAUDIO_ENABLED)
+    target_sources(sendspin-cli-core PRIVATE src/coreaudio_sink.cpp)
+    target_link_libraries(sendspin-cli-core PUBLIC
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework CoreFoundation")
+    target_compile_definitions(sendspin-cli-core PUBLIC SENDSPIN_CLI_HAVE_COREAUDIO)
 endif()
 
 if(SENDSPIN_CLI_PORTAUDIO_ENABLED)

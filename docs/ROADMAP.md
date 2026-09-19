@@ -18,9 +18,9 @@ daemonization.
   either a typed-in address or a `mdns:` server it discovers on `_sendspin-server._tcp` —
   retrying with a backoff until it answers (item 5, item 26).
 - Defines the `AudioSink` seam (`src/audio_sink.h`) and plays real audio through it:
-  auto-detected ALSA (item 2), PortAudio (item 3), PulseAudio (item 18) and PipeWire
-  (item 19) backends, with the device-less null/stdout sink as the fallback, so the
-  binary still runs where there is no sound card.
+  auto-detected ALSA (item 2), CoreAudio (item 27), PortAudio (item 3), PulseAudio
+  (item 18) and PipeWire (item 19) backends, with the device-less null/stdout sink as the
+  fallback, so the binary still runs where there is no sound card.
 - Parses the command-line flag surface: `-o -l -n -s -z -P -d -f --port --buffer-ms
   --no-mdns --mdns-name --help --version`, validating every value at parse time and
   refusing to start on a bad one (item 1).
@@ -134,8 +134,15 @@ the item that owns it, rather than as a loose follow-up here:
 
 ### 3. PortAudio backend — *shipped (audible slice)*
 
-The cross-platform backend (macOS and Linux), and the only way this player makes noise on
-macOS, where there is no ALSA at all. Upstream's `examples/common/portaudio_sink.cpp` was
+> **macOS moved off this backend in item 27.** The released macOS binary inherited
+> Homebrew's absolute install name for `libportaudio.2.dylib` and aborted under `dyld` on
+> any Mac without it — a dependency CI could never see, because the runner had brewed it.
+> A native CoreAudio sink needs only frameworks every Mac already has, so PortAudio is now
+> built `OFF` on the macOS release leg. Everything below still describes the Linux build,
+> and a Mac configured with `-DSENDSPIN_CLI_WITH_PORTAUDIO=ON` still gets both.
+
+The cross-platform backend (macOS and Linux), and for its first two releases the only way
+this player made noise on macOS, where there is no ALSA at all. Upstream's `examples/common/portaudio_sink.cpp` was
 the reference, but it is not an `AudioSink`, has no device selection, and logs with bare
 `fprintf(stderr)` — so it was ported into `src/` rather than compiled out of the
 FetchContent tree, whose `examples/` path is not a stable interface.
@@ -2490,3 +2497,187 @@ spec's connection model exactly. This is a deliberate divergence, not a spec-con
   smoke test's credential-redaction check covers the dial line.
 - **`SENDSPIN_SERVER_URL`** answers a discovery dial only for the `server_id` it chose, and a
   literal-address dial (no id, unverifiable) at its word — `LastDial` carries both cases.
+
+### 27. Native CoreAudio backend — *shipped*
+
+The shipped macOS binary aborted at launch on any Mac without Homebrew's PortAudio:
+
+```
+dyld[38468]: Library not loaded: /opt/homebrew/opt/portaudio/lib/libportaudio.2.dylib
+Referenced from: /usr/local/bin/sendspin-cli
+```
+
+CI brewed `portaudio` on the `macos-14` runner and then smoke-tested the `.pkg` on that same
+runner, so the one host that could have caught it was the one host guaranteed not to. The fix
+is not to bundle the dylib but to stop needing it: CoreAudio and AudioToolbox are system
+frameworks, so the binary links only what every Mac already has.
+
+**Shipped** in `src/coreaudio_sink.{h,cpp}`, built on macOS with nothing to find
+(`-DSENDSPIN_CLI_WITH_COREAUDIO=OFF` forces it out):
+
+- An `AudioSink` over AUHAL (`kAudioUnitSubType_HALOutput`), modelled on
+  `src/portaudio_sink.{h,cpp}` — the other callback-driven sink — and reusing
+  `PcmRingBuffer`, `pcm_volume.{h,cpp}` and `SinkRecovery`/`OutageGapHandoff` rather than
+  reimplementing them. The four invariants `portaudio_sink.h` writes down come from the
+  `AudioSink` contract, not from PortAudio, so they are carried across unchanged.
+- **Sync feedback through the render callback's `AudioTimeStamp`.** PortAudio hands the
+  callback `outputBufferDacTime` against `currentTime`; AUHAL hands a Mach absolute time, so
+  the distance is taken in Mach ticks and converted through `mach_timebase_info()`. That
+  timestamp is when the hardware *consumes* the buffer rather than when it reaches the speaker,
+  so `kAudioDevicePropertyLatency`, `kAudioStreamPropertyLatency` and the unit's converter
+  latency go on top — unlike PortAudio, where `outputBufferDacTime` already carries them and
+  adding them would count twice. **`kAudioDevicePropertySafetyOffset` is deliberately not in
+  that sum**: it is the margin the HAL schedules ahead by, so it is already in how far in the
+  future the timestamp sits. Adding it too is an easy mistake — it cost this backend a
+  systematic ~33-64 frames before the timestamp's meaning was checked — and it is why a
+  whole-path latency figure of the kind mpv computes, which also folds in
+  `kAudioDevicePropertyBufferFrameSize`, is the wrong thing to add to a per-buffer timestamp.
+- **8/16/24/32-bit** through a packed signed little-endian `AudioStreamBasicDescription` on
+  the unit's input scope, letting the AU convert to whatever the device is running. That is
+  what keeps every depth the decoders emit without a converter of our own, and
+  `capabilities()` probes the three ladders by setting each candidate format on a scratch
+  unit — the same question a stream asks.
+- **`-o coreaudio[:<device>]`**, with PortAudio's device grammar exactly: bare means this
+  host's current default output, `coreaudio:2` an index as `-l` prints it, and
+  `coreaudio:<name>` a full case-insensitive match, with an ambiguous name refused naming the
+  candidates. The device is re-resolved at every stream, and `-o` defaults to `coreaudio`
+  wherever it is the most direct backend, so a bare run plays on a Mac.
+- **In-place device recovery without the rescan cycle item 14 needed.** An `AudioDeviceID` is
+  stable, and `AudioObjectAddPropertyListener` reports `kAudioDevicePropertyDeviceIsAlive`
+  directly, so there is no `Pa_Terminate()`/`Pa_Initialize()` and no index renumbering: the
+  listener flags the death off its HAL thread, `write()` spends the one in-place reopen, and
+  `poll()` retries on `SinkRecovery`'s backoff.
+- **A replug is a notification too, not just a timeout.** A dying device says so itself; a
+  returning one cannot, so `kAudioHardwarePropertyDevices` is listened to as well and
+  `SinkRecovery::rescan_soon()` brings the owed rescan forward to the next tick. Without it the
+  backoff alone decides, and the hardware pass measured what that costs: a device physically back
+  at 21 s was not reopened until 41 s, because the 2 s ladder had already doubled past it. The
+  attempt still counts against the budget, so a burst of plug events cannot spin. Measured on
+  hardware at **190 ms** from replug to reopen, against the ~11.5 s the ladder would have waited.
+- **A moved system default is followed, and is not a recovery.** A bare `-o coreaudio` also
+  listens on `kAudioHardwarePropertyDefaultOutputDevice`; `poll()` reopens on the new device
+  with the ring tail accounted as an outage gap. Deliberately outside `SinkRecovery`'s budget:
+  a default move is an ordinary event, and spending the reopen on it would leave a real outage
+  in the same track with nothing left.
+- **The guard that would have caught this.** CI's macOS leg runs `otool -L` over the staged
+  binary and fails on any load command outside `/usr/lib` and `/System`. Worth having whatever
+  the backend is, and it is the only part of this item a runner can prove — every
+  `scripts/smoke_test.sh` invocation is `-o null`, so no runner opens a device.
+- CI's `macos-arm64` leg no longer runs `brew install portaudio pkgconf`, its
+  `expect_backends` is `null, stdout, coreaudio`, and its `runtime_packages` is the fact that
+  there are none. `with_portaudio` joins the matrix on **every** leg, since a key missing from
+  one reads as false.
+
+**Not in this slice:**
+
+- **Removing PortAudio.** It stays in the tree and stays `ON` everywhere but the macOS release
+  leg; `-o portaudio` still works on Linux, and a Mac that asks for it still builds both.
+  Deleting it is a separate call once CoreAudio has field time.
+- **Hardware volume** → item 15, as for every other backend.
+- **Setting the device's nominal rate to match the stream.** The AU resamples instead, which is
+  what keeps a device pinned at 48 kHz playing 44.1 kHz content without stealing it from
+  whatever else is using it.
+
+**What has and has not been exercised.** A hardware pass was run on a MacBook Pro (M5 Pro,
+macOS 26.6.2) against built-in speakers, a USB interface and a DisplayPort monitor. **It plays.**
+What it proved:
+
+- **Clean tone at 48 kHz/16-bit, 44.1 kHz/24-bit and 44.1 kHz/32-bit**, no clicks or dropouts,
+  and `otool -L` on the binary lists only system frameworks — on a machine that *has* Homebrew,
+  which is what makes that result mean something.
+- **`on_frames_played` does not accumulate error**: −35 ppm over five minutes. Short runs read
+  worse in ppm (−372 ppm over 30 s) only because each stream leaves a fixed ~10–18 ms tail in the
+  ring at `stop()` that never reached the DAC and so is never reported. That is the intended
+  behaviour — the gap is deliberately not carried across `stop()`/`configure()`/`clear()`, each of
+  which ends the stream it belonged to — and `PortAudioSink` does the same. A fixed ms error over
+  a short window simply reads as a large ppm.
+- **The DAC offset is sound.** 37.95 ms mean against a reported device latency of 15.6 ms:
+  positive, above the latency, same order, tight min/max — and it held on a second device
+  (23.40 ms mean against 1.0 ms latency). Resampling 44.1→48 kHz added **+0.72 ms**, which is the
+  audio unit's converter latency showing up exactly where it should and nowhere else, settling the
+  one term the research could not.
+- **Recovery works.** The system default was moved five times mid-stream and was followed every
+  time without a restart; the USB device was unplugged and replugged and reopened itself. The
+  reopen gaps are reflected in the drift rather than swallowed.
+- **A real Sendspin server drove it end to end** — Music Assistant, several minutes of real music,
+  sync settling rather than walking, controller volume, pause, resume, next and seek. **A second
+  player in the same group was in phase**, which is the only real test the DAC offset has, and the
+  thing item 3 shipped without.
+
+A second round settled the two things the first left open, and turned up the listener gap above:
+
+- **The volume ramp is fine**, and the first round's "FAIL" was against a wrong expectation: 20 ms
+  is what a *full-scale* change takes, so 100→50 is 12.9 ms. `open_unit_()` now logs the step at
+  `debug` (4473925 Q32/frame at 48 kHz, non-zero, so ramping rather than snapping), and mute — the
+  largest change and therefore the slowest ramp — is clean. What is audible on full→half is the
+  slew rate, which is item 13's and shared by all three backends.
+- **The outage gap is reported, not swallowed.** Across a ~10 s unplug the reported frame count
+  froze exactly, then jumped by 33.9 s of audio in one step on replug; of roughly 30 s of silence
+  only ~84 ms went permanently unaccounted, and the residual is flat rather than growing. The
+  first round could not measure this because the harness restarted its pacing clock every 0.5 s
+  and lost ~5000 ppm of its own.
+
+Two things the pass turned up that are **not this backend's**:
+
+- **A second outage in one stream never recovers** — item 28. Found here, but it predates this
+  backend and sits in the shared `SinkRecovery`, so every device-backed sink has it.
+- **A single pop as the unit starts**, on two different DACs and through both harness commands.
+  The data path was ruled out: both multipliers start at `Q32_ONE` so the first callback takes the
+  unity fast path with no gain step, and `PcmRingBuffer::read()` zero-fills the tail the first
+  callback cannot fill, so what leaves the sink is silence followed by a phase-0 sine. That points
+  at the device un-muting when the unit starts rather than at anything here, and two unrelated DACs
+  doing it agrees. Recorded rather than chased.
+
+Underneath the pass, CI carries the rest: the backend compiles clean under `-Werror` on the
+`macos-arm64` leg, that leg's `otool -L` guard reports only CoreAudio, AudioToolbox,
+CoreFoundation, `libc++` and `libSystem` — so the dyld abort this item exists to fix cannot come
+back unnoticed — and the parser-level `-o coreaudio[:...]` forms and the Linux reserved-backend
+refusal are covered in `tests/device_spec_test.cpp` on every leg. None of that opens a device,
+which is exactly why the pass above had to be run by hand.
+
+The harness it was run with is not in the tree: it lives with the pass's own notes, because a
+sink suite that exercises `AudioSink` implementations themselves is item 12's job, not a
+throwaway driver's.
+
+### 28. A second device outage in one stream never recovers — *shipped (hardware pass still owed)*
+
+Found by item 27's CoreAudio hardware pass — two unplugs in one run, the first back in 190 ms,
+the second never — but it belongs to item 14 and sits in the shared `SinkRecovery`, so every
+device-backed sink had it. **A rescan that succeeded retired the budget instead of restoring
+it**: `rescan_done()` sent a recovered rescan and an exhausted one down the same branch, and
+`reopen_spent_` was still set from the first outage. On the second, `reopen_due()` declined,
+`escalate_()` found the rescan spent, and the sink discarded until the next track with no log
+line at all.
+
+**Shipped** in `src/sink_recovery.{h,cpp}`, its callers (`src/alsa_sink.cpp`,
+`src/pulse_sink.cpp`, `src/pipewire_sink.cpp`, `src/portaudio_sink.cpp`) and
+`tests/sink_recovery_test.cpp`:
+
+- **The budget is per outage, not per stream.** `rescan_done(true)` now refills it — the
+  in-place reopen and the whole rescan ladder, back to `SINK_RESCAN_DELAY_MS` — the same intent
+  `reopen_done(true)` already had for its own path.
+- **The outage gap survives the refill.** Only the attempt bookkeeping refills; the
+  discarded-frame count is not `reset()`'s to drop here, since the first timed write still owes
+  the player that gap, and a device that dies again before one adds to it.
+- **A device that never comes back still gives up.** Within one outage the budget is unchanged —
+  one reopen, then `SINK_RESCAN_ATTEMPTS` rescans on the doubling delay — and only a real
+  recovery refills it.
+- **`rescan_abandoned()` for an attempt that did not recover anything.** The shutdown paths in
+  ALSA, PulseAudio and PipeWire used to report `rescan_done(true)` when `stop()` landed
+  mid-attempt, which would now refill; they abandon instead. PortAudio used to report `true` up
+  front whatever happened; it now abandons on each failure and reports `true` only when the
+  stream is really back, so its rebuild stays one-shot per outage.
+
+**A flapping device is not given a floor of its own.** One that recovers and dies again,
+repeatedly, now keeps recovering — which is what it is doing — and the loop is already paced:
+each outage spends the in-place reopen at most once, the next one has to wait out
+`SINK_RESCAN_DELAY_MS` before its rescan, and a refill never shortens that below the base delay.
+So the main loop pays at most one rescan per two seconds whatever the device does. A cap on
+recoveries per stream would turn a flaky cable back into the silence this item removes.
+
+The regression tests (`ASecondOutageInTheSameStreamRecovers`,
+`EveryOutageAfterARecoveryStillGivesUp`, `TheDiscardedGapSurvivesTheRefillIntoTheNextOutage`)
+fail against the old helper and pass against the new one. **Still owed:** two unplug/replug
+cycles in one stream on real hardware — ALSA first, since it has the most users, then CoreAudio
+with item 27's harness.
+

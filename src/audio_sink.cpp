@@ -21,6 +21,10 @@
 #include "alsa_sink.h"
 #endif
 
+#ifdef SENDSPIN_CLI_HAVE_COREAUDIO
+#include "coreaudio_sink.h"
+#endif
+
 #ifdef SENDSPIN_CLI_HAVE_PORTAUDIO
 #include "portaudio_sink.h"
 #endif
@@ -64,6 +68,9 @@ constexpr BuiltBackend BUILT_BACKENDS[] = {
 #ifdef SENDSPIN_CLI_HAVE_ALSA
     {"alsa", SinkBackend::Alsa, DeviceArg::Required},
 #endif
+#ifdef SENDSPIN_CLI_HAVE_COREAUDIO
+    {"coreaudio", SinkBackend::CoreAudio, DeviceArg::Optional},
+#endif
 #ifdef SENDSPIN_CLI_HAVE_PORTAUDIO
     {"portaudio", SinkBackend::PortAudio, DeviceArg::Optional},
 #endif
@@ -88,6 +95,10 @@ constexpr ReservedBackend RESERVED_BACKENDS[] = {
     {"alsa",
      "the ALSA backend is not in this build -- libasound was missing, or it was configured "
      "with -DSENDSPIN_CLI_WITH_ALSA=OFF",
+     nullptr},
+    {"coreaudio",
+     "the CoreAudio backend is not in this build -- it is macOS-only, and even there it can "
+     "be configured out with -DSENDSPIN_CLI_WITH_COREAUDIO=OFF",
      nullptr},
     {"portaudio",
      "the PortAudio backend is not in this build -- libportaudio was missing, or it was "
@@ -257,6 +268,9 @@ bool resolve_device_spec(const std::string& spec, DeviceSpec& out, std::string& 
     return true;
 #else
     error = "unknown output device '" + spec + "' -- this build has: " + audio_backend_list();
+#ifdef SENDSPIN_CLI_HAVE_COREAUDIO
+    error += ". A CoreAudio device needs its prefix: -o coreaudio:" + spec;
+#endif
 #ifdef SENDSPIN_CLI_HAVE_PORTAUDIO
     error += ". A PortAudio device needs its prefix: -o portaudio:" + spec;
 #endif
@@ -311,6 +325,16 @@ std::unique_ptr<AudioSink> make_audio_sink(const std::string& device,
 #else
             break;  // unreachable: resolve_device_spec() never yields Alsa without the backend
 #endif
+        case SinkBackend::CoreAudio:
+#ifdef SENDSPIN_CLI_HAVE_COREAUDIO
+            // Probed now so a typo fails at startup, not at the first stream.
+            if (!CoreAudioSink::probe(spec.device, error)) {
+                return nullptr;
+            }
+            return std::make_unique<CoreAudioSink>(spec.device, buffer_ms);
+#else
+            break;  // unreachable, for the same reason as Alsa above
+#endif
         case SinkBackend::PortAudio:
 #ifdef SENDSPIN_CLI_HAVE_PORTAUDIO
             if (!PortAudioSink::probe(spec.device, error)) {
@@ -351,6 +375,9 @@ void print_audio_devices(std::FILE* out) {
     std::fprintf(out, "  null      discard audio; needs no sound card at all\n");
     std::fprintf(out, "  stdout    raw interleaved PCM on stdout, e.g. | aplay -f cd\n");
     std::fprintf(out, "  -         alias for stdout\n");
+#ifdef SENDSPIN_CLI_HAVE_COREAUDIO
+    std::fprintf(out, "  coreaudio this host's default output device, whatever it currently is\n");
+#endif
 #ifdef SENDSPIN_CLI_HAVE_PORTAUDIO
     std::fprintf(out, "  portaudio this host's default output device, whatever it currently is\n");
 #endif
@@ -376,10 +403,9 @@ void print_audio_devices(std::FILE* out) {
 #else
     std::fprintf(out, "  3. anything else would be an ALSA PCM name, but this build has no ALSA\n"
                       "     backend, so only the forms above resolve here.\n");
-#ifdef SENDSPIN_CLI_HAVE_PORTAUDIO
-    std::fprintf(out,
-                 "     A PortAudio device is reached through its prefix, never bare -- see the\n"
-                 "     device list below.\n");
+#if defined(SENDSPIN_CLI_HAVE_COREAUDIO) || defined(SENDSPIN_CLI_HAVE_PORTAUDIO)
+    std::fprintf(out, "     A CoreAudio or PortAudio device is reached through its prefix, never\n"
+                      "     bare -- see the device list below.\n");
 #endif
 #endif
 
@@ -442,6 +468,23 @@ void print_audio_devices(std::FILE* out) {
                  "node is marked as the default: where a playback stream lands with no target\n"
                  "named is the graph's own routing decision, taken per stream and changeable\n"
                  "while one is running.\n");
+#endif
+
+#ifdef SENDSPIN_CLI_HAVE_COREAUDIO
+    std::fprintf(out, "\nCoreAudio output devices on this host (-o coreaudio:<index|name>):\n");
+    CoreAudioSink::list_devices(out);
+    std::fprintf(out,
+                 "\nThe name is the form worth writing down. An index is a position in the list\n"
+                 "above, so it shifts as devices come and go; a name is matched in full and\n"
+                 "case-insensitively, and one that matches more than one device is refused\n"
+                 "rather than guessed at. -o coreaudio with no device at all follows this\n"
+                 "host's default output, resolved afresh at every stream and again whenever\n"
+                 "macOS moves the default while one is playing.\n"
+                 "\nInput-only devices are left out, since -o cannot play through them. The\n"
+                 "rate on the device's own line is the one it is running at; the rates below it\n"
+                 "are what the output unit will take, asked for the same way a stream would\n"
+                 "ask. Only the four formats sendspin-cli can emit are shown, and the unit\n"
+                 "converts on top of them where the device itself will not take one.\n");
 #endif
 
 #ifdef SENDSPIN_CLI_HAVE_PORTAUDIO

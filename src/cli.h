@@ -36,6 +36,8 @@ inline constexpr const char* DISCOVERY_PREFIX = "mdns:";
 /// The -o default: the most direct real backend this build has, else `null`.
 #ifdef SENDSPIN_CLI_HAVE_ALSA
 inline constexpr const char* DEFAULT_OUTPUT_DEVICE = "default";
+#elif defined(SENDSPIN_CLI_HAVE_COREAUDIO)
+inline constexpr const char* DEFAULT_OUTPUT_DEVICE = "coreaudio";
 #elif defined(SENDSPIN_CLI_HAVE_PORTAUDIO)
 inline constexpr const char* DEFAULT_OUTPUT_DEVICE = "portaudio";
 #elif defined(SENDSPIN_CLI_HAVE_PULSE)

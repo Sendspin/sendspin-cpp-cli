@@ -30,9 +30,9 @@ server discovers the advertisement and dials in. `-s <server>` inverts it and ma
 player the one dialling, which the protocol treats as the other of two mutually exclusive
 modes — see [Connection modes](Advanced-Usage#connection-modes).
 
-Audio goes out through ALSA (the Linux default) or PortAudio (the cross-platform one, and
-the only way to make noise on macOS), with volume applied in software on a curve the spec
-names. The player is also driven from its own host over a Unix socket:
+Audio goes out through ALSA (the Linux default), CoreAudio (the macOS default) or PortAudio,
+PulseAudio and PipeWire where they are built in, with volume applied in software on a curve
+the spec names. The player is also driven from its own host over a Unix socket:
 
 ```console
 $ sendspin-cli status

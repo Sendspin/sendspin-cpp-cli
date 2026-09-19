@@ -119,6 +119,7 @@ enum class SinkBackend {
     Null,       ///< discard everything; needs no device
     Stdout,     ///< raw interleaved PCM on stdout; needs no device
     Alsa,       ///< an ALSA PCM, named by DeviceSpec::device
+    CoreAudio,  ///< a CoreAudio device by index or name, or this host's default if empty
     PortAudio,  ///< a PortAudio device by index or name, or this host's default if empty
     Pulse,      ///< a PulseAudio sink by name, or the server's own default if empty
     PipeWire,   ///< a PipeWire node by name, or the graph's own default routing if empty
