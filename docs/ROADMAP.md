@@ -2639,7 +2639,7 @@ The harness it was run with is not in the tree: it lives with the pass's own not
 sink suite that exercises `AudioSink` implementations themselves is item 12's job, not a
 throwaway driver's.
 
-### 28. A second device outage in one stream never recovers — *shipped (hardware pass still owed)*
+### 28. A second device outage in one stream never recovers — *shipped (ALSA hardware pass still owed)*
 
 Found by item 27's CoreAudio hardware pass — two unplugs in one run, the first back in 190 ms,
 the second never — but it belongs to item 14 and sits in the shared `SinkRecovery`, so every
@@ -2677,7 +2677,13 @@ recoveries per stream would turn a flaky cable back into the silence this item r
 
 The regression tests (`ASecondOutageInTheSameStreamRecovers`,
 `EveryOutageAfterARecoveryStillGivesUp`, `TheDiscardedGapSurvivesTheRefillIntoTheNextOutage`)
-fail against the old helper and pass against the new one. **Still owed:** two unplug/replug
-cycles in one stream on real hardware — ALSA first, since it has the most users, then CoreAudio
-with item 27's harness.
+fail against the old helper and pass against the new one.
+
+**CoreAudio is validated on hardware.** Two unplug/replug cycles in one stream on a USB DAC,
+through item 27's harness: the sink reopened 260 ms after the first replug and 180 ms after the
+second — the second being the one that recovered never before this fix, and faster than the
+first because the refill hands it an unspent in-place reopen. Both outage gaps were reported
+rather than swallowed (drift −5554 ms mid-outage, −96 ms five seconds after the replug), and the
+run settled on the same fixed ~90 ms end-of-stream tail a clean run shows. **Still owed:** the
+same two cycles on ALSA, which has the most users.
 
