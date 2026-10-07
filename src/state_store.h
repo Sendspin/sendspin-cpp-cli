@@ -13,7 +13,7 @@
 // limitations under the License.
 
 /// What the daemon remembers about itself across restarts, in a file only it writes.
-/// `last-server-hash` is opaque library data: store and hand it back, never compute it.
+/// Blobs are opaque library data, the device's private key among them: store and hand back.
 
 #pragma once
 
@@ -57,13 +57,9 @@ public:
     std::string last_server() const;
     bool set_last_server(const std::string& server_id);
 
-    /// The library's opaque last-played-server hash, as handed to us.
-    std::optional<uint32_t> last_server_hash() const;
-    bool set_last_server_hash(uint32_t hash);
-
-    /// This player's static delay in milliseconds.
-    std::optional<uint16_t> static_delay_ms() const;
-    bool set_static_delay_ms(uint16_t delay_ms);
+    /// The library's blob for `key`, stored as hex; nothing when absent or not hex.
+    std::optional<std::vector<uint8_t>> blob(const std::string& key) const;
+    bool set_blob(const std::string& key, const uint8_t* data, size_t len);
 
     /// The last applied gain, 0-100; volume and mute can each be absent independently.
     std::optional<uint8_t> volume() const;
@@ -84,6 +80,9 @@ private:
 
     /// A whole number up to `limit`, or nothing when absent or out of range.
     std::optional<uint64_t> get_number(const std::string& key, uint64_t limit) const;
+
+    /// Turns a pre-rc1 file's keys into today's, in memory; the next write makes it stick.
+    void migrate_legacy_keys();
 
     std::string path_;
     std::map<std::string, std::string> values_;

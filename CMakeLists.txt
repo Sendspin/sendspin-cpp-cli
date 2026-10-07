@@ -25,7 +25,7 @@ endif()
 
 # sendspin-cpp
 
-set(SENDSPIN_GIT_TAG "v0.8.0" CACHE STRING
+set(SENDSPIN_GIT_TAG "1d9ef34a97e5422ce634b162910e60001d213ced" CACHE STRING
     "sendspin-cpp git tag to build against")
 
 # player, metadata and controller (group transport verbs); no FORCE, so -D overrides still win.
@@ -410,6 +410,7 @@ if(SENDSPIN_CLI_BUILD_TESTS)
         tests/pcm_ring_test.cpp
         tests/pcm_volume_test.cpp
         tests/pipewire_sink_test.cpp
+        tests/player_listener_test.cpp
         tests/sink_recovery_test.cpp
         tests/state_store_test.cpp
         tests/supported_formats_test.cpp

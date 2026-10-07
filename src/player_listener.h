@@ -46,8 +46,8 @@ public:
     void on_volume_changed(uint8_t volume) override;
     void on_mute_changed(bool muted) override;
 
-    /// Logs a server-set static delay; the library already applies and persists it.
-    void on_static_delay_changed(uint16_t delay_ms) override;
+    /// Logs a server-set output delay; the library already applies and persists it.
+    void on_output_delay_changed(uint16_t delay_ms) override;
 
     /// True between a stream start and its end, even when the device refused the format.
     bool streaming() const {

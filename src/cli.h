@@ -67,7 +67,7 @@ enum class Opt : unsigned {
     LogLevel,       ///< -d, --log-level
     Port,           ///< --port
     BufferMs,       ///< --buffer-ms
-    StaticDelay,    ///< --static-delay
+    OutputDelay,    ///< --output-delay
     NoMdns,         ///< --no-mdns
     MdnsName,       ///< --mdns-name
     ControlSocket,  ///< --control-socket
@@ -76,10 +76,11 @@ enum class Opt : unsigned {
     Config,         ///< --config
     HookStart,      ///< --hook-start
     HookStop,       ///< --hook-stop
-    ClientId,       ///< --id
+    ClientId,       ///< --id, refused: the id is the device's public key
     Manufacturer,   ///< --manufacturer
     ProductName,    ///< --product-name
     AudioFormat,    ///< --audio-format
+    AllowUnpaired,  ///< --allow-unpaired
 };
 
 /// Everything the flag surface configures.
@@ -87,9 +88,6 @@ struct Options {
     std::string device{DEFAULT_OUTPUT_DEVICE};  ///< -o <device>: audio output backend
     bool list_devices{false};                   ///< -l: list output devices and exit
     std::string name;  ///< -n <name>: friendly name; defaults to the hostname
-
-    /// --id <id>: stable client_id; empty derives one from the interface MAC.
-    std::string client_id;
 
     /// --manufacturer / --product-name <text>: device info sent in `client/hello`.
     std::string manufacturer{"sendspin-cpp-cli"};
@@ -106,9 +104,12 @@ struct Options {
     /// --buffer-ms <ms>: buffer request, MIN_BUFFER_MS to MAX_BUFFER_MS; a sink may ignore it.
     uint32_t buffer_ms{DEFAULT_BUFFER_MS};
 
-    /// --static-delay <ms>: hardware latency after the audio port, 0 to MAX_STATIC_DELAY_MS.
+    /// --output-delay <ms>: hardware latency after the audio port, 0 to MAX_OUTPUT_DELAY_MS.
     /// A first-run default: a persisted delay wins.
-    uint16_t static_delay_ms{0};
+    uint16_t output_delay_ms{0};
+
+    /// --allow-unpaired: let a server play without pairing first.
+    bool allow_unpaired{false};
 
     /// --no-mdns: do not advertise `_sendspin._tcp`.
     bool no_mdns{false};

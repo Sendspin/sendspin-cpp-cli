@@ -74,6 +74,10 @@ void PlayerListener::on_stream_start() {
 }
 
 void PlayerListener::on_stream_end() {
+    // Also fires when the role is removed with no stream running; that is not a stop.
+    if (!this->streaming_) {
+        return;
+    }
     // Clear the flag before taking the counter, so a racing write cannot add to a spent total.
     const bool refused = this->stream_refused_.exchange(false, std::memory_order_relaxed);
     const uint64_t discarded = this->refused_bytes_.exchange(0, std::memory_order_relaxed);
@@ -107,8 +111,8 @@ void PlayerListener::on_mute_changed(bool muted) {
     this->persist_volume();
 }
 
-void PlayerListener::on_static_delay_changed(uint16_t delay_ms) {
-    cli_log(LogLevel::INFO, "Static delay set to %u ms by the server", delay_ms);
+void PlayerListener::on_output_delay_changed(uint16_t delay_ms) {
+    cli_log(LogLevel::INFO, "Output delay set to %u ms by the server", delay_ms);
 }
 
 void PlayerListener::restore_volume(uint8_t volume, bool muted) {

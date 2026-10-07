@@ -18,12 +18,15 @@
 
 #include "key_value_file.h"
 #include "scoped_env.h"
+#include "sendspin/persistence_keys.h"
 
 #include <gtest/gtest.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #include <cstdio>
+#include <cstring>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -108,14 +111,13 @@ TEST(StateStore, RoundTripsEveryKeyAcrossAReload) {
 
     StateStore store(scratch.file());
     ASSERT_TRUE(store.set_last_server("srv-abc123"));
-    ASSERT_TRUE(store.set_last_server_hash(0xDEADBEEFU));
-    ASSERT_TRUE(store.set_static_delay_ms(275));
+    const std::vector<uint8_t> key = {0x00, 0x0f, 0xa5, 0xff};
+    ASSERT_TRUE(store.set_blob("keypair", key.data(), key.size()));
     ASSERT_TRUE(store.set_volume_and_muted(42, true));
 
     const StateStore reloaded = loaded(scratch.file());
     EXPECT_EQ(reloaded.last_server(), "srv-abc123");
-    EXPECT_EQ(reloaded.last_server_hash(), 0xDEADBEEFU);
-    EXPECT_EQ(reloaded.static_delay_ms(), 275);
+    EXPECT_EQ(reloaded.blob("keypair"), key);
     EXPECT_EQ(reloaded.volume(), 42);
     EXPECT_EQ(reloaded.muted(), true);
 }
@@ -168,12 +170,13 @@ TEST(StateStore, SettingOneKeyKeepsTheOthers) {
 
     StateStore store(scratch.file());
     ASSERT_TRUE(store.set_volume_and_muted(30, false));
-    ASSERT_TRUE(store.set_static_delay_ms(120));
+    const uint8_t record[] = {0x12, 0x34};
+    ASSERT_TRUE(store.set_blob("rec_0", record, sizeof(record)));
 
     // Every set rewrites the whole file, so other keys must survive.
     const StateStore reloaded = loaded(scratch.file());
     EXPECT_EQ(reloaded.volume(), 30);
-    EXPECT_EQ(reloaded.static_delay_ms(), 120);
+    EXPECT_EQ(reloaded.blob("rec_0"), std::vector<uint8_t>({0x12, 0x34}));
 }
 
 TEST(StateStore, CreatesTheLeafDirectory) {
@@ -223,8 +226,7 @@ TEST(StateStore, AMissingFileIsNotAnError) {
     EXPECT_TRUE(store.last_server().empty());
     EXPECT_FALSE(store.volume().has_value());
     EXPECT_FALSE(store.muted().has_value());
-    EXPECT_FALSE(store.static_delay_ms().has_value());
-    EXPECT_FALSE(store.last_server_hash().has_value());
+    EXPECT_FALSE(store.blob("keypair").has_value());
 }
 
 TEST(StateStore, AnEmptyPathIsAcceptedAsHavingNoMemory) {
@@ -318,13 +320,87 @@ TEST(StateStore, AnOutOfRangeNumberReadsAsAbsentRatherThanBeingClamped) {
     const ScratchDir scratch;
     ASSERT_TRUE(scratch.created());
     // Out-of-range values read as absent.
-    write_file(scratch.file(),
-               "volume = 900\nstatic-delay-ms = 70000\nlast-server-hash = 99999999999\n");
+    write_file(scratch.file(), "volume = 900\nstatic-delay-ms = 70000\n");
 
     const StateStore store = loaded(scratch.file());
     EXPECT_FALSE(store.volume().has_value());
-    EXPECT_FALSE(store.static_delay_ms().has_value());
-    EXPECT_FALSE(store.last_server_hash().has_value());
+    EXPECT_FALSE(store.blob(sendspin::persistence_keys::OUTPUT_DELAY).has_value());
+}
+
+// Library blobs
+
+TEST(StateStore, ABlobThatIsNotHexReadsAsAbsent) {
+    const ScratchDir scratch;
+    ASSERT_TRUE(scratch.created());
+    write_file(scratch.file(), "blob-keypair = 0g\nblob-rec_0 = abc\nblob-rec_1 = AB\n");
+
+    const StateStore store = loaded(scratch.file());
+    EXPECT_FALSE(store.blob("keypair").has_value());
+    EXPECT_FALSE(store.blob("rec_0").has_value());
+    EXPECT_FALSE(store.blob("rec_1").has_value());
+}
+
+TEST(StateStore, ABlobWriteLeavesTheFileAt0600) {
+    const ScratchDir scratch;
+    ASSERT_TRUE(scratch.created());
+    StateStore store(scratch.file());
+    const std::vector<uint8_t> key(32, 0x5a);
+    ASSERT_TRUE(store.set_blob(sendspin::persistence_keys::KEYPAIR, key.data(), key.size()));
+
+    struct stat info{};
+    ASSERT_EQ(::stat(scratch.file().c_str(), &info), 0);
+    EXPECT_EQ(info.st_mode & 0777, 0600U);
+}
+
+// Upgrading a pre-rc1 state file
+
+/// The output-delay blob as milliseconds, or nothing when absent or the wrong size.
+std::optional<uint16_t> output_delay(const StateStore& store) {
+    const std::optional<std::vector<uint8_t>> blob =
+        store.blob(sendspin::persistence_keys::OUTPUT_DELAY);
+    if (!blob.has_value() || blob->size() != sizeof(uint16_t)) {
+        return std::nullopt;
+    }
+    uint16_t delay_ms = 0;
+    std::memcpy(&delay_ms, blob->data(), sizeof(delay_ms));
+    return delay_ms;
+}
+
+TEST(StateStore, ALegacyStaticDelaySeedsTheOutputDelayBlob) {
+    const ScratchDir scratch;
+    ASSERT_TRUE(scratch.created());
+    write_file(scratch.file(), "static-delay-ms = 275\nlast-server-hash = 3735928559\n");
+
+    StateStore store = loaded(scratch.file());
+    EXPECT_EQ(output_delay(store), 275);
+
+    // The next write drops both legacy keys from the file.
+    ASSERT_TRUE(store.set_volume_and_muted(10, false));
+    std::vector<KeyValueEntry> entries;
+    size_t malformed_line = 0;
+    ASSERT_EQ(read_key_value_file(scratch.file(), entries, malformed_line), KeyValueStatus::Ok);
+    for (const KeyValueEntry& entry : entries) {
+        EXPECT_NE(entry.key, "static-delay-ms");
+        EXPECT_NE(entry.key, "last-server-hash");
+    }
+    EXPECT_EQ(output_delay(loaded(scratch.file())), 275);
+}
+
+TEST(StateStore, ALegacyStaticDelayNeverReplacesAStoredOutputDelay) {
+    const ScratchDir scratch;
+    ASSERT_TRUE(scratch.created());
+    StateStore seeded(scratch.file());
+    const uint16_t stored_ms = 120;
+    uint8_t bytes[sizeof(stored_ms)];
+    std::memcpy(bytes, &stored_ms, sizeof(bytes));
+    ASSERT_TRUE(seeded.set_blob(sendspin::persistence_keys::OUTPUT_DELAY, bytes, sizeof(bytes)));
+
+    std::FILE* file = std::fopen(scratch.file().c_str(), "a");
+    ASSERT_NE(file, nullptr);
+    std::fputs("static-delay-ms = 275\n", file);
+    std::fclose(file);
+
+    EXPECT_EQ(output_delay(loaded(scratch.file())), 120);
 }
 
 TEST(StateStore, ANonNumericNumberReadsAsAbsent) {

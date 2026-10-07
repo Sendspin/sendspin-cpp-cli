@@ -172,14 +172,21 @@ TEST(ParseOptions, EmptyValuesAreRejected) {
     }
 }
 
-// Identity: --id, --manufacturer, --product-name
+// Identity: --manufacturer, --product-name, and the refused --id
+
+TEST(ParseOptions, IdIsRefusedBecauseTheIdIsNowTheDevicesKey) {
+    Parse parse({"--id", "kitchen-left"});
+
+    EXPECT_FALSE(parse.ok());
+    EXPECT_NE(parse.diagnostics().find("error: --id is no longer supported"), std::string::npos)
+        << parse.diagnostics();
+    EXPECT_NE(parse.diagnostics().find("status"), std::string::npos) << parse.diagnostics();
+}
 
 TEST(ParseOptions, IdentityFlagsSetTheirFields) {
-    Parse parse({"--id", "kitchen-left", "--manufacturer", "Acme Audio", "--product-name",
-                 "Acme Streamer"});
+    Parse parse({"--manufacturer", "Acme Audio", "--product-name", "Acme Streamer"});
 
     ASSERT_TRUE(parse.ok()) << parse.diagnostics();
-    EXPECT_EQ(parse.options().client_id, "kitchen-left");
     EXPECT_EQ(parse.options().manufacturer, "Acme Audio");
     EXPECT_EQ(parse.options().product_name, "Acme Streamer");
 }
@@ -188,8 +195,6 @@ TEST(ParseOptions, IdentityDefaultsSayWhatThisReallyIs) {
     Parse parse({});
 
     ASSERT_TRUE(parse.ok()) << parse.diagnostics();
-    // Empty, so the library derives the MAC-based id.
-    EXPECT_TRUE(parse.options().client_id.empty());
     EXPECT_EQ(parse.options().manufacturer, "sendspin-cpp-cli");
     EXPECT_EQ(parse.options().product_name, "sendspin-cli");
 }
@@ -344,59 +349,76 @@ TEST(ParseOptions, BufferMsNeedsAValue) {
         << parse.diagnostics();
 }
 
-// --static-delay
+// --output-delay
 
-TEST(ParseOptions, StaticDelayIsAccepted) {
+TEST(ParseOptions, OutputDelayIsAccepted) {
+    Parse parse({"--output-delay", "250"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_EQ(parse.options().output_delay_ms, 250U);
+    EXPECT_TRUE(parse.options().was_given(Opt::OutputDelay));
+}
+
+TEST(ParseOptions, TheOldStaticDelayFlagIsStillAccepted) {
     Parse parse({"--static-delay", "250"});
 
     ASSERT_TRUE(parse.ok()) << parse.diagnostics();
-    EXPECT_EQ(parse.options().static_delay_ms, 250U);
-    EXPECT_TRUE(parse.options().was_given(Opt::StaticDelay));
+    EXPECT_EQ(parse.options().output_delay_ms, 250U);
 }
 
-TEST(ParseOptions, StaticDelayDefaultsToNoDelay) {
+TEST(ParseOptions, AllowUnpairedIsOffUnlessAsked) {
+    Parse off({});
+    Parse on({"--allow-unpaired"});
+
+    ASSERT_TRUE(off.ok()) << off.diagnostics();
+    ASSERT_TRUE(on.ok()) << on.diagnostics();
+    EXPECT_FALSE(off.options().allow_unpaired);
+    EXPECT_TRUE(on.options().allow_unpaired);
+}
+
+TEST(ParseOptions, OutputDelayDefaultsToNoDelay) {
     Parse parse({});
 
     ASSERT_TRUE(parse.ok()) << parse.diagnostics();
-    EXPECT_EQ(parse.options().static_delay_ms, 0U);
-    EXPECT_FALSE(parse.options().was_given(Opt::StaticDelay));
+    EXPECT_EQ(parse.options().output_delay_ms, 0U);
+    EXPECT_FALSE(parse.options().was_given(Opt::OutputDelay));
 }
 
-TEST(ParseOptions, StaticDelayEdgesAreAccepted) {
+TEST(ParseOptions, OutputDelayEdgesAreAccepted) {
     // Zero is legal: it turns the delay off.
-    Parse low({"--static-delay", "0"});
-    Parse high({"--static-delay", std::to_string(MAX_STATIC_DELAY_MS)});
+    Parse low({"--output-delay", "0"});
+    Parse high({"--output-delay", std::to_string(MAX_OUTPUT_DELAY_MS)});
 
     ASSERT_TRUE(low.ok()) << low.diagnostics();
     ASSERT_TRUE(high.ok()) << high.diagnostics();
-    EXPECT_EQ(low.options().static_delay_ms, 0U);
-    EXPECT_EQ(high.options().static_delay_ms, MAX_STATIC_DELAY_MS);
+    EXPECT_EQ(low.options().output_delay_ms, 0U);
+    EXPECT_EQ(high.options().output_delay_ms, MAX_OUTPUT_DELAY_MS);
 }
 
-TEST(ParseOptions, StaticDelayBounds) {
+TEST(ParseOptions, OutputDelayBounds) {
     // Refused, not clamped: the library would silently clamp.
     for (const char* value :
          {"5001", "9000", "65536", "abc", "12x", "", "-1", " 250", "+250", "250.5"}) {
-        Parse parse({"--static-delay", value});
+        Parse parse({"--output-delay", value});
 
-        EXPECT_FALSE(parse.ok()) << "--static-delay accepted '" << value << "'";
+        EXPECT_FALSE(parse.ok()) << "--output-delay accepted '" << value << "'";
         const std::string diagnostics = parse.diagnostics();
-        EXPECT_NE(diagnostics.find("error: invalid --static-delay"), std::string::npos) << value;
+        EXPECT_NE(diagnostics.find("error: invalid --output-delay"), std::string::npos) << value;
         EXPECT_NE(diagnostics.find(std::string("'") + value + "'"), std::string::npos) << value;
-        EXPECT_NE(diagnostics.find("0-" + std::to_string(MAX_STATIC_DELAY_MS)), std::string::npos)
+        EXPECT_NE(diagnostics.find("0-" + std::to_string(MAX_OUTPUT_DELAY_MS)), std::string::npos)
             << value;
     }
 }
 
-TEST(ParseOptions, StaticDelayNeedsAValue) {
-    Parse parse({"--static-delay"});
+TEST(ParseOptions, OutputDelayNeedsAValue) {
+    Parse parse({"--output-delay"});
 
     ASSERT_FALSE(parse.ok());
-    EXPECT_NE(parse.diagnostics().find("option '--static-delay' needs a value"), std::string::npos)
+    EXPECT_NE(parse.diagnostics().find("option '--output-delay' needs a value"), std::string::npos)
         << parse.diagnostics();
 }
 
-TEST(ParseOptions, StaticDelayIsListedByHelpAsAFirstRunDefault) {
+TEST(ParseOptions, OutputDelayIsListedByHelpAsAFirstRunDefault) {
     // --help must say a remembered delay beats the flag.
     std::FILE* out = std::tmpfile();
     ASSERT_NE(out, nullptr);
@@ -410,11 +432,11 @@ TEST(ParseOptions, StaticDelayIsListedByHelpAsAFirstRunDefault) {
     }
     std::fclose(out);
 
-    EXPECT_NE(text.find("--static-delay"), std::string::npos);
+    EXPECT_NE(text.find("--output-delay"), std::string::npos);
     EXPECT_NE(text.find("FIRST-RUN DEFAULT"), std::string::npos)
         << "the precedence is not in --help";
     // Uses the constant, so a changed bound without a --help update fails.
-    EXPECT_NE(text.find("0-" + std::to_string(MAX_STATIC_DELAY_MS)), std::string::npos) << text;
+    EXPECT_NE(text.find("0-" + std::to_string(MAX_OUTPUT_DELAY_MS)), std::string::npos) << text;
     // The direction: audio is handed over earlier.
     EXPECT_NE(text.find("EARLIER"), std::string::npos)
         << "--help does not say which way the delay goes";

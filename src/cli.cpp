@@ -53,7 +53,7 @@ enum LongOnly {
     OPT_VERSION = 0x100,
     OPT_PORT,
     OPT_BUFFER_MS,
-    OPT_STATIC_DELAY,
+    OPT_OUTPUT_DELAY,
     OPT_NO_MDNS,
     OPT_MDNS_NAME,
     OPT_CONTROL_SOCKET,
@@ -66,6 +66,7 @@ enum LongOnly {
     OPT_MANUFACTURER,
     OPT_PRODUCT_NAME,
     OPT_AUDIO_FORMAT,
+    OPT_ALLOW_UNPAIRED,
 };
 
 /// An option a config file may set: its key (the long flag name) and how diagnostics name it.
@@ -88,7 +89,9 @@ const std::vector<SettableOption>& settable_options() {
         {Opt::LogLevel, "log-level", "-d"},
         {Opt::Port, "port", "--port"},
         {Opt::BufferMs, "buffer-ms", "--buffer-ms"},
-        {Opt::StaticDelay, "static-delay", "--static-delay"},
+        {Opt::OutputDelay, "output-delay", "--output-delay"},
+        // The pre-rc1 spelling; after the entry above, so diagnostics use the new one.
+        {Opt::OutputDelay, "static-delay", "--output-delay"},
         {Opt::NoMdns, "no-mdns", "--no-mdns"},
         {Opt::MdnsName, "mdns-name", "--mdns-name"},
         {Opt::ControlSocket, "control-socket", "--control-socket"},
@@ -100,6 +103,7 @@ const std::vector<SettableOption>& settable_options() {
         {Opt::Manufacturer, "manufacturer", "--manufacturer"},
         {Opt::ProductName, "product-name", "--product-name"},
         {Opt::AudioFormat, "audio-format", "--audio-format"},
+        {Opt::AllowUnpaired, "allow-unpaired", "--allow-unpaired"},
     };
     return table;
 }
@@ -170,13 +174,13 @@ bool parse_buffer_ms(const std::string& str, uint32_t& buffer_ms) {
     return true;
 }
 
-/// Parses a static delay in milliseconds: digits only, 0 to MAX_STATIC_DELAY_MS.
-bool parse_static_delay(const std::string& str, uint16_t& delay_ms) {
+/// Parses an output delay in milliseconds: digits only, 0 to MAX_OUTPUT_DELAY_MS.
+bool parse_output_delay(const std::string& str, uint16_t& delay_ms) {
     if (!is_all_digits(str)) {
         return false;
     }
     const unsigned long value = std::strtoul(str.c_str(), nullptr, 10);
-    if (value > MAX_STATIC_DELAY_MS) {
+    if (value > MAX_OUTPUT_DELAY_MS) {
         return false;
     }
     delay_ms = static_cast<uint16_t>(value);
@@ -316,10 +320,10 @@ bool apply_option(const SettableOption& option, const std::string& value, Option
                 return false;
             }
             break;
-        case Opt::StaticDelay:
-            if (!parse_static_delay(value, out.static_delay_ms)) {
-                error = "invalid --static-delay '" + value + "' -- expected 0-" +
-                        std::to_string(MAX_STATIC_DELAY_MS);
+        case Opt::OutputDelay:
+            if (!parse_output_delay(value, out.output_delay_ms)) {
+                error = "invalid --output-delay '" + value + "' -- expected 0-" +
+                        std::to_string(MAX_OUTPUT_DELAY_MS);
                 return false;
             }
             break;
@@ -355,11 +359,9 @@ bool apply_option(const SettableOption& option, const std::string& value, Option
             out.hook_stop = value;
             break;
         case Opt::ClientId:
-            if (empty_value()) {
-                return false;
-            }
-            out.client_id = value;
-            break;
+            error = "--id is no longer supported: the client id is derived from this device's "
+                    "key -- see 'sendspin-cli status'";
+            return false;
         case Opt::Manufacturer:
             if (empty_value()) {
                 return false;
@@ -383,6 +385,12 @@ bool apply_option(const SettableOption& option, const std::string& value, Option
         case Opt::NoMdns:
             if (!parse_bool(value, out.no_mdns)) {
                 error = "invalid --no-mdns '" + value + "' -- expected true or false";
+                return false;
+            }
+            break;
+        case Opt::AllowUnpaired:
+            if (!parse_bool(value, out.allow_unpaired)) {
+                error = "invalid --allow-unpaired '" + value + "' -- expected true or false";
                 return false;
             }
             break;
@@ -521,7 +529,8 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
         {"config", required_argument, nullptr, OPT_CONFIG},
         {"port", required_argument, nullptr, OPT_PORT},
         {"buffer-ms", required_argument, nullptr, OPT_BUFFER_MS},
-        {"static-delay", required_argument, nullptr, OPT_STATIC_DELAY},
+        {"output-delay", required_argument, nullptr, OPT_OUTPUT_DELAY},
+        {"static-delay", required_argument, nullptr, OPT_OUTPUT_DELAY},
         {"no-mdns", no_argument, nullptr, OPT_NO_MDNS},
         {"mdns-name", required_argument, nullptr, OPT_MDNS_NAME},
         {"control-socket", required_argument, nullptr, OPT_CONTROL_SOCKET},
@@ -533,6 +542,7 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
         {"manufacturer", required_argument, nullptr, OPT_MANUFACTURER},
         {"product-name", required_argument, nullptr, OPT_PRODUCT_NAME},
         {"audio-format", required_argument, nullptr, OPT_AUDIO_FORMAT},
+        {"allow-unpaired", no_argument, nullptr, OPT_ALLOW_UNPAIRED},
         {nullptr, 0, nullptr, 0},
     };
 
@@ -641,8 +651,8 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
             case OPT_BUFFER_MS:
                 apply(Opt::BufferMs, optarg);
                 break;
-            case OPT_STATIC_DELAY:
-                apply(Opt::StaticDelay, optarg);
+            case OPT_OUTPUT_DELAY:
+                apply(Opt::OutputDelay, optarg);
                 break;
             case OPT_NO_MDNS:
                 apply(Opt::NoMdns, "true");
@@ -668,6 +678,9 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
                 break;
             case OPT_ID:
                 apply(Opt::ClientId, optarg);
+                break;
+            case OPT_ALLOW_UNPAIRED:
+                apply(Opt::AllowUnpaired, "true");
                 break;
             case OPT_MANUFACTURER:
                 apply(Opt::Manufacturer, optarg);
@@ -800,10 +813,11 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
     // A subcommand starts no player: warn that daemon-only flags do nothing.
     if (!out.subcommand.empty()) {
         static constexpr Opt DAEMON_ONLY[] = {
-            Opt::Device,    Opt::Name,         Opt::Server,      Opt::Daemonize,   Opt::Pidfile,
-            Opt::Logfile,   Opt::LogLevel,     Opt::BufferMs,    Opt::NoMdns,      Opt::MdnsName,
-            Opt::NoControl, Opt::StateDir,     Opt::StaticDelay, Opt::HookStart,   Opt::HookStop,
-            Opt::ClientId,  Opt::Manufacturer, Opt::ProductName, Opt::AudioFormat,
+            Opt::Device,       Opt::Name,        Opt::Server,      Opt::Daemonize,
+            Opt::Pidfile,      Opt::Logfile,     Opt::LogLevel,    Opt::BufferMs,
+            Opt::NoMdns,       Opt::MdnsName,    Opt::NoControl,   Opt::StateDir,
+            Opt::OutputDelay,  Opt::HookStart,   Opt::HookStop,    Opt::ClientId,
+            Opt::Manufacturer, Opt::ProductName, Opt::AudioFormat, Opt::AllowUnpaired,
         };
         for (Opt opt : DAEMON_ONLY) {
             if (out.was_given(opt)) {
@@ -967,18 +981,23 @@ void print_usage(std::FILE* out, const char* prog) {
     std::fprintf(out, "                exclusive. A listed format the advertised list does\n");
     std::fprintf(out, "                not carry refuses to start -- run -l to see what the\n");
     std::fprintf(out, "                device reports -- not the same set as what goes out\n");
-    std::fprintf(out, "  --static-delay <ms>\n");
+    std::fprintf(out, "  --output-delay <ms>\n");
     std::fprintf(out, "                How much latency this endpoint's hardware adds AFTER the\n");
     std::fprintf(out, "                audio port -- an amplifier, an external speaker, a DSP.\n");
     std::fprintf(out, "                0-%u, default 0. The player hands audio to the device\n",
-                 MAX_STATIC_DELAY_MS);
+                 MAX_OUTPUT_DELAY_MS);
     std::fprintf(out, "                that much EARLIER to compensate, so the sound lands in\n");
     std::fprintf(out, "                sync with the group rather than late. It does not push\n");
     std::fprintf(out, "                this speaker later than the others.\n");
     std::fprintf(out, "                A FIRST-RUN DEFAULT only: a delay a server or\n");
     std::fprintf(out, "                'sendspin-cli delay' has set is remembered, and the\n");
     std::fprintf(out, "                remembered one wins over this flag every run after.\n");
-    std::fprintf(out, "                Use 'delay <ms>' to change a running player\n");
+    std::fprintf(out, "                Use 'delay <ms>' to change a running player.\n");
+    std::fprintf(out, "                --static-delay is still accepted as the old name\n");
+    std::fprintf(out, "  --allow-unpaired\n");
+    std::fprintf(out, "                Let a server that has not paired with this player play\n");
+    std::fprintf(out, "                on it. Off by default: every connection is encrypted,\n");
+    std::fprintf(out, "                and an unpaired server can connect but not play\n");
     std::fprintf(out, "  --no-mdns     Do not advertise over mDNS (no effect with -s, which\n");
     std::fprintf(out, "                already suppresses it)\n");
     std::fprintf(out, "  --mdns-name <name>\n");
@@ -1004,8 +1023,8 @@ void print_usage(std::FILE* out, const char* prog) {
     std::fprintf(out, "  --no-control  Do not listen on a control socket at all\n");
     std::fprintf(out, "  --state-dir <dir>\n");
     std::fprintf(out, "                Where this player keeps what it remembers across\n");
-    std::fprintf(out, "                restarts -- the last server, the static delay a server\n");
-    std::fprintf(out, "                set, and its volume and mute. Defaults to\n");
+    std::fprintf(out, "                restarts -- its identity key and pairings, the last\n");
+    std::fprintf(out, "                server, the output delay and its volume. Defaults to\n");
     std::fprintf(out, "                $XDG_STATE_HOME/sendspin-cli, or\n");
     std::fprintf(out, "                $HOME/.local/state/sendspin-cli. A systemd *system*\n");
     std::fprintf(out, "                unit has neither, so pair StateDirectory= with this\n");

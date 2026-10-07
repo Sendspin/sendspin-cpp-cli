@@ -30,7 +30,7 @@ struct HookContext {
     std::string server_name;  ///< SENDSPIN_SERVER_NAME: its friendly name
     /// SENDSPIN_SERVER_URL: the URL an -s run dialled, only for the server it dialled.
     std::string server_url;
-    std::string client_id;    ///< SENDSPIN_CLIENT_ID: this player's id, when --id chose one
+    std::string client_id;    ///< SENDSPIN_CLIENT_ID: this player's id, its public key
     std::string client_name;  ///< SENDSPIN_CLIENT_NAME: this player's friendly name
 };
 
