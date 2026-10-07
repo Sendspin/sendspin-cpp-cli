@@ -15,6 +15,7 @@
 #include "cli.h"
 
 #include "audio_sink.h"
+#include "audio_source.h"
 #include "config_file.h"
 #include "control.h"
 #include "log.h"
@@ -67,6 +68,7 @@ enum LongOnly {
     OPT_PRODUCT_NAME,
     OPT_AUDIO_FORMAT,
     OPT_ALLOW_UNPAIRED,
+    OPT_INPUT,
     OPT_PAIRING_CODE,
 };
 
@@ -83,6 +85,7 @@ struct SettableOption {
 const std::vector<SettableOption>& settable_options() {
     static const std::vector<SettableOption> table = {
         {Opt::Device, "output", "-o"},
+        {Opt::Input, "input", "--input"},
         {Opt::Name, "name", "-n"},
         {Opt::Server, "server", "-s"},
         {Opt::Pidfile, "pidfile", "-P"},
@@ -281,6 +284,14 @@ bool apply_option(const SettableOption& option, const std::string& value, Option
             }
             out.device = value;
             break;
+        case Opt::Input: {
+            InputSpec spec;
+            if (!resolve_input_spec(value, spec, error)) {
+                return false;
+            }
+            out.input = value;
+            break;
+        }
         case Opt::Name:
             if (empty_value()) {
                 return false;
@@ -536,6 +547,7 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
         {"version", no_argument, nullptr, OPT_VERSION},
         // Long aliases for the short letters, so every config key is a flag name.
         {"output", required_argument, nullptr, 'o'},
+        {"input", required_argument, nullptr, OPT_INPUT},
         {"name", required_argument, nullptr, 'n'},
         {"server", required_argument, nullptr, 's'},
         {"pidfile", required_argument, nullptr, 'P'},
@@ -710,6 +722,9 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
             case OPT_AUDIO_FORMAT:
                 apply(Opt::AudioFormat, optarg);
                 break;
+            case OPT_INPUT:
+                apply(Opt::Input, optarg);
+                break;
             case ':':
                 fail("option '" + offending_option(flag_argv, optind) + "' needs a value");
                 break;
@@ -837,7 +852,7 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
             Opt::NoMdns,       Opt::MdnsName,    Opt::NoControl,   Opt::StateDir,
             Opt::OutputDelay,  Opt::HookStart,   Opt::HookStop,    Opt::ClientId,
             Opt::Manufacturer, Opt::ProductName, Opt::AudioFormat, Opt::AllowUnpaired,
-            Opt::PairingCode,
+            Opt::Input,        Opt::PairingCode,
         };
         for (Opt opt : DAEMON_ONLY) {
             if (out.was_given(opt)) {
@@ -933,7 +948,18 @@ void print_usage(std::FILE* out, const char* prog) {
     std::fprintf(out, "                Anything else is an ALSA PCM name: -o hw:2,0, -o default\n");
 #endif
     std::fprintf(out, "                -l lists this host's devices and what they accept\n");
-    std::fprintf(out, "  -l            List output devices with their capabilities, and exit\n");
+    std::fprintf(out, "  --input <device>\n");
+    std::fprintf(out, "                Capture device to stream to the server: a microphone or\n");
+    std::fprintf(out, "                line-in. Read the way -o is, with <backend> one of: %s\n",
+                 input_backend_list().c_str());
+#ifdef SENDSPIN_CLI_HAVE_ALSA
+    std::fprintf(out, "                Anything else is an ALSA PCM name: --input default,\n");
+    std::fprintf(out, "                --input hw:1,0. Without --input nothing is captured\n");
+#else
+    std::fprintf(out, "                Without --input nothing is captured\n");
+#endif
+    std::fprintf(out, "  -l            List output and input devices with their capabilities,\n");
+    std::fprintf(out, "                and exit\n");
     std::fprintf(out, "  -n, --name <name>\n");
     std::fprintf(out, "                Friendly name (default: this host's name)\n");
     std::fprintf(out, "  --id <id>     Stable client id, which is what a server files this\n");

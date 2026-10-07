@@ -626,6 +626,15 @@ std::string format_status(const StatusSnapshot& snapshot) {
         append_line(out, "output", snapshot.output);
     }
 
+    if (!snapshot.input.empty()) {
+        append_line(
+            out, "input",
+            snapshot.input + " (" + std::to_string(snapshot.input_format.sample_rate) + " Hz / " +
+                std::to_string(static_cast<unsigned>(snapshot.input_format.channels)) + " ch / " +
+                std::to_string(static_cast<unsigned>(snapshot.input_format.bit_depth)) + "-bit), " +
+                (snapshot.input_streaming ? "streaming" : "idle"));
+    }
+
     return out;
 }
 

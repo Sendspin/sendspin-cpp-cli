@@ -104,4 +104,12 @@ private:
     std::uint64_t current_multiplier_{Q32_ONE};
 };
 
+/// Routes libasound's diagnostics to our logger; call before any snd_* that can fail.
+void install_alsa_error_handler();
+
+/// Prints the host's PCMs for one direction, each with its description and capabilities.
+/// @param reachable Whether the flag being listed for reaches a PCM by its bare name.
+void list_alsa_pcms(std::FILE* out, snd_pcm_stream_t stream,
+                    bool (*reachable)(const std::string& pcm));
+
 }  // namespace sendspin_cli

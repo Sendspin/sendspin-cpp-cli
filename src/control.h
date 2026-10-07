@@ -211,6 +211,10 @@ struct StatusSnapshot {
     uint16_t output_delay_ms{0};
 
     std::string output;  ///< the sink's name()
+
+    std::string input;  ///< --input's device; empty when there is no source role
+    StreamFormat input_format{};
+    bool input_streaming{false};  ///< the server has the input stream open
 };
 
 /// Formats a snapshot as `key: value` lines, newline-terminated.

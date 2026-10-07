@@ -33,6 +33,7 @@ readonly PORT_CONTROL_SECOND=39286
 readonly PORT_CONFIG=39287
 readonly PORT_DELAY=39288
 readonly PORT_REDACTION=39289
+readonly PORT_INPUT=39291
 
 # Not a phase port: the address the redaction check dials, chosen so nothing answers it.
 readonly PORT_NO_SERVER=39290
@@ -724,6 +725,42 @@ check_credential_redaction() {
     await_child "$pid" "$EXIT_TIMEOUT_S" >/dev/null 2>&1 || true
 }
 
+# --input with the device-less tone source: refused when malformed, reported by status.
+check_input() {
+    local log="$WORK_DIR/input.log"
+    local status_out="$WORK_DIR/input-status.out"
+    local bad_err="$WORK_DIR/input-bad.err"
+
+    if "$BIN" --no-mdns --no-control -o null --input tone:hw:0 --port "$PORT_INPUT" \
+        "${NO_CONFIG[@]}" >/dev/null 2>"$bad_err"; then
+        fail "--input tone:hw:0 was accepted"
+    fi
+    grep -q 'takes no device' "$bad_err" ||
+        fail "a bad --input spec was refused without saying why: $(cat "$bad_err")"
+    pass "a malformed --input is refused at parse time"
+
+    XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" --no-mdns -o null --input tone --port "$PORT_INPUT" \
+        "${NO_CONFIG[@]}" >"$log" 2>&1 &
+    local pid=$!
+    STARTED_PIDS+=("$pid")
+
+    wait_for_line "$log" "listening on port $PORT_INPUT" "$BOOT_TIMEOUT_S" ||
+        fail "no ready log with --input tone within ${BOOT_TIMEOUT_S}s. Log: $(cat "$log")"
+    wait_for_socket "$CONTROL_DIR/sendspin-cli-$PORT_INPUT.sock" "$BOOT_TIMEOUT_S" ||
+        fail "no control socket with --input tone within ${BOOT_TIMEOUT_S}s. Log: $(cat "$log")"
+    XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" status --port "$PORT_INPUT" "${NO_CONFIG[@]}" >"$status_out" 2>&1 ||
+        fail "status exited $? against a player with --input. Output: $(cat "$status_out")"
+    grep -q '^input: tone (48000 Hz / 2 ch / 16-bit), idle$' "$status_out" ||
+        fail "status did not report the idle input: $(cat "$status_out")"
+    pass "--input tone starts, and status reports the input idle until a server starts it"
+
+    kill -TERM "$pid"
+    local status=0
+    await_child "$pid" "$EXIT_TIMEOUT_S" || status=$?
+    [ "$status" -eq 0 ] ||
+        fail "SIGTERM with --input left exit status $status. Log: $(cat "$log")"
+}
+
 main() {
     [ -x "$BIN" ] ||
         fail "no executable at '$BIN' -- pass the path to sendspin-cli as the first argument"
@@ -741,6 +778,7 @@ main() {
     check_output_delay
     check_config_file
     check_credential_redaction
+    check_input
     printf 'smoke: every check passed\n'
 }
 

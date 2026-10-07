@@ -28,10 +28,11 @@ endif()
 set(SENDSPIN_GIT_TAG "1d9ef34a97e5422ce634b162910e60001d213ced" CACHE STRING
     "sendspin-cpp git tag or commit to build against")
 
-# player, metadata and controller (group transport verbs); no FORCE, so -D overrides still win.
+# player, metadata, controller (group transport verbs) and source; no FORCE, so -D overrides still win.
 set(SENDSPIN_ENABLE_PLAYER ON CACHE BOOL "Enable sendspin player role")
 set(SENDSPIN_ENABLE_METADATA ON CACHE BOOL "Enable sendspin metadata role")
 set(SENDSPIN_ENABLE_CONTROLLER ON CACHE BOOL "Enable sendspin controller role")
+set(SENDSPIN_ENABLE_SOURCE ON CACHE BOOL "Enable sendspin source role")
 set(SENDSPIN_ENABLE_COLOR OFF CACHE BOOL "Enable sendspin color role")
 set(SENDSPIN_ENABLE_ARTWORK OFF CACHE BOOL "Enable sendspin artwork role")
 set(SENDSPIN_ENABLE_VISUALIZER OFF CACHE BOOL "Enable sendspin visualizer role")
@@ -242,6 +243,7 @@ endif()
 add_library(sendspin-cli-core STATIC
     src/cli.cpp
     src/audio_sink.cpp
+    src/audio_source.cpp
     src/control_client.cpp
     src/control_common.cpp
     src/control_socket.cpp
@@ -252,6 +254,7 @@ add_library(sendspin-cli-core STATIC
     src/log.cpp
     src/mdns_common.cpp
     src/null_sink.cpp
+    src/null_source.cpp
     src/outbound.cpp
     src/pcm_ring.cpp
     src/pcm_volume.cpp
@@ -282,7 +285,7 @@ else()
 endif()
 
 if(SENDSPIN_CLI_ALSA_ENABLED)
-    target_sources(sendspin-cli-core PRIVATE src/alsa_sink.cpp)
+    target_sources(sendspin-cli-core PRIVATE src/alsa_sink.cpp src/alsa_source.cpp)
     target_link_libraries(sendspin-cli-core PUBLIC ALSA::ALSA)
     target_compile_definitions(sendspin-cli-core PUBLIC SENDSPIN_CLI_HAVE_ALSA)
 endif()
@@ -400,6 +403,7 @@ if(SENDSPIN_CLI_BUILD_TESTS)
     include(GoogleTest)
 
     add_executable(sendspin-cli-tests
+        tests/audio_source_test.cpp
         tests/cli_test.cpp
         tests/config_file_test.cpp
         tests/control_test.cpp

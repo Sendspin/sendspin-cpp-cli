@@ -17,6 +17,9 @@
 # Under the systemd system unit, `default` usually fails: name the card, e.g. hw:1,0.
 #output = default
 
+# Capture device to stream to the server (a microphone or line-in); unset captures nothing.
+#input = hw:1,0
+
 # Audio the output backend keeps buffered, 10-2000 ms. Raise it on a device that stutters.
 #buffer-ms = 100
 

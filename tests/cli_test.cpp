@@ -301,6 +301,45 @@ TEST(ParseOptions, PortEdgesAreAccepted) {
     EXPECT_EQ(high.options().port, 65535);
 }
 
+// --input
+
+TEST(ParseOptions, InputIsOffUnlessGiven) {
+    Parse parse({});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_TRUE(parse.options().input.empty());
+    EXPECT_FALSE(parse.options().was_given(Opt::Input));
+}
+
+TEST(ParseOptions, InputTakesADeviceLessSource) {
+    Parse parse({"--input", "tone"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_EQ(parse.options().input, "tone");
+    EXPECT_TRUE(parse.options().was_given(Opt::Input));
+}
+
+TEST(ParseOptions, ABadInputSpecIsRefusedAtTheFlag) {
+    Parse device_on_tone({"--input", "tone:hw:0"});
+    Parse unsupported({"--input", "pulse:mic"});
+    Parse empty({"--input", ""});
+
+    EXPECT_FALSE(device_on_tone.ok());
+    EXPECT_NE(device_on_tone.diagnostics().find("takes no device"), std::string::npos);
+    EXPECT_FALSE(unsupported.ok());
+    EXPECT_NE(unsupported.diagnostics().find("not supported yet"), std::string::npos);
+    EXPECT_FALSE(empty.ok());
+}
+
+#ifdef SENDSPIN_CLI_HAVE_ALSA
+TEST(ParseOptions, InputTakesABareAlsaNameWithoutOpeningIt) {
+    Parse parse({"--input", "hw:1,0"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_EQ(parse.options().input, "hw:1,0");
+}
+#endif
+
 // --buffer-ms
 
 TEST(ParseOptions, BufferMsIsAccepted) {

@@ -15,6 +15,7 @@
 /// sendspin-cli: a headless Sendspin player, and its own control-socket client.
 
 #include "audio_sink.h"
+#include "audio_source.h"
 #include "cli.h"
 #include "control.h"
 #include "daemon.h"
@@ -31,6 +32,7 @@
 #include <sendspin/controller_role.h>
 #include <sendspin/metadata_role.h>
 #include <sendspin/player_role.h>
+#include <sendspin/source_role.h>
 #include <sendspin/types.h>
 
 // For sigaction(), which <csignal> is not required to declare.
@@ -368,7 +370,7 @@ public:
                       const MetadataLogger& metadata_logger,
                       const PairingListener& pairing_listener,
                       const PlayerListener& player_listener, sendspin::PlayerRole& player,
-                      const AudioSink& sink)
+                      const AudioSink& sink, const SourceCapture* capture)
         : opts_(opts),
           client_(client),
           controller_(controller),
@@ -377,7 +379,8 @@ public:
           pairing_listener_(pairing_listener),
           player_listener_(player_listener),
           player_(player),
-          sink_(sink) {}
+          sink_(sink),
+          capture_(capture) {}
 
     std::string handle_control_request(const std::string& line) override {
         std::string name;
@@ -504,6 +507,11 @@ private:
         // From the role: `delay` changes it without invoking the listener.
         snapshot.output_delay_ms = this->player_.get_output_delay_ms();
         snapshot.output = this->sink_.name();
+        if (this->capture_ != nullptr) {
+            snapshot.input = this->capture_->name();
+            snapshot.input_format = this->capture_->format();
+            snapshot.input_streaming = this->capture_->streaming();
+        }
         return snapshot;
     }
 
@@ -517,6 +525,7 @@ private:
     /// Non-const only for `delay`.
     sendspin::PlayerRole& player_;
     const AudioSink& sink_;
+    const SourceCapture* capture_;  ///< null without --input
 };
 
 /// Binds the control socket, or logs why this run has none.
@@ -603,6 +612,7 @@ int main(int argc, char* argv[]) {
     }
     if (opts.list_devices) {
         print_audio_devices(stdout);
+        print_capture_devices(stdout);
         return 0;
     }
 
@@ -699,6 +709,24 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // Opened once here so a bad or busy --input stops the run before anything is advertised.
+    std::unique_ptr<AudioSource> source;
+    sendspin::SourceRoleConfig source_config;
+    StreamFormat capture_format{source_config.sample_rate, source_config.channels,
+                                source_config.bit_depth};
+    if (opts.was_given(Opt::Input)) {
+        std::string source_error;
+        source = make_audio_source(opts.input, capture_format, source_error);
+        if (!source) {
+            log_fatal(LOG_TAG_AUDIO, "%s", source_error.c_str());
+            return 1;
+        }
+        log_line(LogLevel::INFO, LOG_TAG_AUDIO, "Input device '%s' captures %u Hz / %u ch / %u-bit",
+                 source->name().c_str(), capture_format.sample_rate,
+                 static_cast<unsigned>(capture_format.channels),
+                 static_cast<unsigned>(capture_format.bit_depth));
+    }
+
     // Loaded before the client, since its values must be in place before anything is published.
     StateStore state_store(state_store_path(opts.state_dir));
     if (state_store.path().empty()) {
@@ -788,6 +816,21 @@ int main(int argc, char* argv[]) {
     // Always added: advertised roles are a property of the build, not of --no-control.
     sendspin::ControllerRole& controller = client.add_controller();
 
+    // After the client, so the capture thread is joined before the role it writes to is gone.
+    std::unique_ptr<SourceCapture> capture;
+    if (source) {
+        source_config.sample_rate = capture_format.sample_rate;
+        source_config.channels = capture_format.channels;
+        source_config.bit_depth = capture_format.bit_depth;
+        sendspin::SourceRole& source_role = client.add_source(source_config);
+        capture = std::make_unique<SourceCapture>(
+            *source, capture_format,
+            [&source_role](const uint8_t* data, size_t len, int64_t capture_time_us) {
+                return source_role.write_audio(data, len, capture_time_us);
+            });
+        source_role.set_listener(capture.get());
+    }
+
     PlayerListener player_listener(player, *sink, &state_store);
     MetadataLogger metadata_logger;
     PairingListener pairing_listener;
@@ -843,7 +886,8 @@ int main(int argc, char* argv[]) {
     start_advertising(mdns, opts);
 
     ControlDispatcher control_dispatcher(opts, client, controller, metadata, metadata_logger,
-                                         pairing_listener, player_listener, player, *sink);
+                                         pairing_listener, player_listener, player, *sink,
+                                         capture.get());
 
     std::unique_ptr<OutboundMode> outbound;
     if (opts.was_given(Opt::Server)) {

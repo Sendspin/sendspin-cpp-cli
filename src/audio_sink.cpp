@@ -193,7 +193,7 @@ void print_sink_capabilities(std::FILE* out, const SinkCapabilities& caps,
     std::fprintf(out, "      rates:    %s\n",
                  join_or(caps.rates, "(none of the probed rates)").c_str());
     std::fprintf(out, "      formats:  %s\n",
-                 formats.empty() ? "(none sendspin-cli can emit)" : formats.c_str());
+                 formats.empty() ? "(none sendspin-cli can use)" : formats.c_str());
     std::fprintf(out, "      channels: %s\n",
                  join_or(caps.channels, "(none of the probed counts)").c_str());
 }

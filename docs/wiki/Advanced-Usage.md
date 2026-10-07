@@ -52,6 +52,42 @@ rate and format for a device that refuses the stream as it arrives.
 a hardware device such as `hw:1,0` instead; the service does not have a logged-in
 desktop audio session.
 
+## Stream a microphone or line-in
+
+`--input` makes the player a Sendspin *source* as well: it captures from a sound card and
+streams that audio to the server, for a turntable on a line-in or a microphone in a room.
+
+```bash
+sendspin-cli -n den --input default
+sendspin-cli -n den --input hw:1,0
+```
+
+Nothing is captured until the server starts the source, and the device is released again
+when the server stops it. Without `--input` the player does not offer the source role at
+all.
+
+`sendspin-cli -l` lists capture devices in their own section, under the outputs, with the
+rates, formats and channel counts each takes. `--input` reads its argument the way `-o`
+does: `alsa:<device>`, or a bare ALSA name such as `default`, `hw:1,0` or `plughw:1,0`.
+Two names need no sound card: `tone` streams a 440 Hz test tone, which checks the path to
+the server without a microphone, and `null` streams silence.
+
+The capture format is chosen once at startup: 48000 Hz, stereo, 16-bit if the device
+takes it, otherwise the nearest it does take — a mono microphone is sent as mono. The
+startup log and `sendspin-cli status` both show what was chosen:
+
+```text
+input: hw:1,0 (48000 Hz / 2 ch / 16-bit), streaming
+```
+
+A device that cannot be opened — a wrong name, or a card another program holds — stops
+the player at startup with an error naming it. A device unplugged mid-stream is logged
+and reopened when it comes back; playback is not affected.
+
+Capture through PulseAudio, PipeWire, CoreAudio or PortAudio is not available yet, so
+capturing from a sound card needs a build with ALSA; `tone` and `null` work in any build.
+ALSA's own `pulse` and `pipewire` PCMs still work: `--input alsa:pulse`.
+
 ## Logging and background operation
 
 Run in the foreground with verbose diagnostics while investigating a problem:
