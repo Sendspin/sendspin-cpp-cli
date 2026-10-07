@@ -418,28 +418,33 @@ bool apply_option(const SettableOption& option, const std::string& value, Option
 /// @return false when there is an error to report.
 bool merge_config(const ConfigFile& config, bool subcommand_run, Options& out,
                   std::map<Opt, std::string>& origin, std::string& error, std::FILE* err) {
-    // Last wins within one file, resolved up front.
-    std::map<std::string, size_t> last_line;
+    const auto option_for = [](const std::string& key) -> const SettableOption* {
+        for (const SettableOption& candidate : settable_options()) {
+            if (key == candidate.key) {
+                return &candidate;
+            }
+        }
+        return nullptr;
+    };
+
+    // Last wins within one file, resolved up front; by option, so an alias counts as a repeat.
+    std::map<Opt, size_t> last_line;
     for (const KeyValueEntry& entry : config.entries) {
-        last_line[entry.key] = entry.line;
+        if (const SettableOption* option = option_for(entry.key)) {
+            last_line[option->opt] = entry.line;
+        }
     }
 
     for (const KeyValueEntry& entry : config.entries) {
         const std::string where = config.path + ":" + std::to_string(entry.line) + ": ";
 
-        const SettableOption* option = nullptr;
-        for (const SettableOption& candidate : settable_options()) {
-            if (entry.key == candidate.key) {
-                option = &candidate;
-                break;
-            }
-        }
+        const SettableOption* option = option_for(entry.key);
         if (option == nullptr) {
             // Unknown keys are fatal, including real flags that are not settable.
             error = where + "unknown key '" + entry.key + "'";
             return false;
         }
-        if (entry.line != last_line[entry.key]) {
+        if (entry.line != last_line[option->opt]) {
             continue;
         }
         // The command line wins.

@@ -234,6 +234,20 @@ TEST(ConfigPrecedence, TheOldStaticDelayKeyIsStillAccepted) {
     EXPECT_EQ(parse.options().output_delay_ms, 375U);
 }
 
+TEST(ConfigPrecedence, TheLastDelayKeyWinsWhicheverSpellingItUses) {
+    ScratchDir scratch;
+    ASSERT_TRUE(scratch.created());
+    const std::string new_last = scratch.write("a", "static-delay = 375\noutput-delay = 120\n");
+    const std::string old_last = scratch.write("b", "output-delay = 120\nstatic-delay = 375\n");
+
+    Parse first({}, new_last);
+    Parse second({}, old_last);
+    ASSERT_TRUE(first.ok()) << first.diagnostics();
+    ASSERT_TRUE(second.ok()) << second.diagnostics();
+    EXPECT_EQ(first.options().output_delay_ms, 120U);
+    EXPECT_EQ(second.options().output_delay_ms, 375U);
+}
+
 TEST(ConfigPrecedence, AllowUnpairedIsSettableAndOffByDefault) {
     ScratchDir scratch;
     ASSERT_TRUE(scratch.created());
