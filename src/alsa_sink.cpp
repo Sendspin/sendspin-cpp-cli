@@ -79,12 +79,6 @@ void alsa_error_handler(const char* file, int line, const char* function, int er
             (err != 0) ? snd_strerror(err) : "");
 }
 
-/// Installs the handler above exactly once, from whichever ALSA entry point runs first.
-void install_alsa_error_handler() {
-    static std::once_flag once;
-    std::call_once(once, [] { snd_lib_error_set_handler(&alsa_error_handler); });
-}
-
 int64_t now_us() {
     return std::chrono::duration_cast<std::chrono::microseconds>(
                std::chrono::steady_clock::now().time_since_epoch())
@@ -119,12 +113,12 @@ struct ProbeResult {
 };
 
 /// Asks one PCM what it will take without keeping it; failures come back as a status.
-ProbeResult probe_capabilities(const char* name) {
+ProbeResult probe_capabilities(const char* name, snd_pcm_stream_t stream) {
     ProbeResult result;
 
     snd_pcm_t* pcm = nullptr;
     // NONBLOCK, so an exclusively held card returns instead of blocking.
-    const int err = snd_pcm_open(&pcm, name, SND_PCM_STREAM_PLAYBACK, SND_PCM_NONBLOCK);
+    const int err = snd_pcm_open(&pcm, name, stream, SND_PCM_NONBLOCK);
     if (err == -EBUSY) {
         result.status = ProbeStatus::Busy;
         return result;
@@ -166,8 +160,8 @@ ProbeResult probe_capabilities(const char* name) {
 }
 
 /// Prints what one PCM will actually take, indented under its name in -l.
-void print_device_capabilities(std::FILE* out, const char* name) {
-    const ProbeResult result = probe_capabilities(name);
+void print_device_capabilities(std::FILE* out, const char* name, snd_pcm_stream_t stream) {
+    ProbeResult result = probe_capabilities(name, stream);
     switch (result.status) {
         case ProbeStatus::Busy:
             std::fprintf(out, "      (in use -- capabilities unknown)\n");
@@ -176,15 +170,25 @@ void print_device_capabilities(std::FILE* out, const char* name) {
             std::fprintf(out, "      (cannot open: %s)\n", result.detail.c_str());
             return;
         case ProbeStatus::NoInterleaved:
-            std::fprintf(out, "      (no interleaved playback configuration)\n");
+            std::fprintf(out, "      (no interleaved %s configuration)\n",
+                         stream == SND_PCM_STREAM_CAPTURE ? "capture" : "playback");
             return;
         case ProbeStatus::Ok:
             break;
+    }
+    if (stream == SND_PCM_STREAM_CAPTURE) {
+        // The source role sends no 8-bit PCM.
+        std::erase(result.caps.bit_depths, uint8_t{8});
     }
     print_sink_capabilities(out, result.caps, PROBE_FORMAT_NAMES);
 }
 
 }  // namespace
+
+void install_alsa_error_handler() {
+    static std::once_flag once;
+    std::call_once(once, [] { snd_lib_error_set_handler(&alsa_error_handler); });
+}
 
 AlsaAudioSink::AlsaAudioSink(std::string device, uint32_t buffer_ms)
     : device_(std::move(device)), buffer_ms_(buffer_ms) {}
@@ -224,7 +228,7 @@ SinkCapabilities AlsaAudioSink::capabilities() const {
     install_alsa_error_handler();
 
     // What this name accepts; a converting plug PCM like `default` reports nearly everything.
-    const ProbeResult result = probe_capabilities(this->device_.c_str());
+    const ProbeResult result = probe_capabilities(this->device_.c_str(), SND_PCM_STREAM_PLAYBACK);
     if (result.status != ProbeStatus::Ok) {
         cli_log(LogLevel::DEBUG,
                 "alsa: could not probe '%s' -- advertising everything sendspin-cli can emit",
@@ -235,7 +239,13 @@ SinkCapabilities AlsaAudioSink::capabilities() const {
 }
 
 void AlsaAudioSink::list_devices(std::FILE* out) {
+    list_alsa_pcms(out, SND_PCM_STREAM_PLAYBACK, &alsa_pcm_is_reachable);
+}
+
+void list_alsa_pcms(std::FILE* out, snd_pcm_stream_t stream,
+                    bool (*reachable)(const std::string& pcm)) {
     install_alsa_error_handler();
+    const char* direction = (stream == SND_PCM_STREAM_CAPTURE) ? "Input" : "Output";
 
     void** hints = nullptr;
     if (snd_device_name_hint(-1, "pcm", &hints) < 0 || hints == nullptr) {
@@ -248,12 +258,12 @@ void AlsaAudioSink::list_devices(std::FILE* out) {
         char* desc = snd_device_name_get_hint(*hint, "DESC");
         char* ioid = snd_device_name_get_hint(*hint, "IOID");
 
-        // A null IOID means the PCM does both directions; anything else must say Output.
-        const bool playback = (ioid == nullptr) || (std::strcmp(ioid, "Output") == 0);
-        // Skip PCM names -o reads as a backend prefix instead.
-        const bool shadowed = (name != nullptr) && !alsa_pcm_is_reachable(name);
+        // A null IOID means the PCM does both directions; anything else must name this one.
+        const bool wanted = (ioid == nullptr) || (std::strcmp(ioid, direction) == 0);
+        // Skip PCM names the flag reads as a backend prefix instead.
+        const bool shadowed = (name != nullptr) && !reachable(name);
 
-        if (name != nullptr && playback && !shadowed) {
+        if (name != nullptr && wanted && !shadowed) {
             std::fprintf(out, "  %s\n", name);
             for (const char* line = desc; line != nullptr && *line != '\0';) {
                 const char* end = std::strchr(line, '\n');
@@ -262,7 +272,7 @@ void AlsaAudioSink::list_devices(std::FILE* out) {
                 std::fprintf(out, "      %.*s\n", len, line);
                 line = (end != nullptr) ? end + 1 : nullptr;
             }
-            print_device_capabilities(out, name);
+            print_device_capabilities(out, name, stream);
         }
 
         std::free(name);
