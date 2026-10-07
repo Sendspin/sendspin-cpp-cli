@@ -146,12 +146,38 @@ TEST(ResolveInputSpec, DeviceLessNamesRefuseADevice) {
 }
 
 TEST(ResolveInputSpec, OutputOnlyBackendsAreRefusedByName) {
-    for (const char* spec : {"pulse", "pulse:mic", "pipewire:node", "coreaudio", "portaudio:1"}) {
+    for (const char* spec : {"pulse", "pulse:mic", "pipewire:node", "portaudio:1"}) {
         const std::string error = rejected(spec);
         EXPECT_NE(error.find("not supported yet"), std::string::npos) << spec;
         EXPECT_NE(error.find(input_backend_list()), std::string::npos) << spec;
     }
 }
+
+#ifdef SENDSPIN_CLI_HAVE_COREAUDIO
+TEST(ResolveInputSpec, BareCoreaudioMeansThisHostsDefaultInput) {
+    EXPECT_EQ(resolved("coreaudio").backend, SourceBackend::CoreAudio);
+    EXPECT_TRUE(resolved("coreaudio").device.empty());
+}
+
+TEST(ResolveInputSpec, CoreaudioTakesAnIndexOrAName) {
+    EXPECT_EQ(resolved("coreaudio:2").backend, SourceBackend::CoreAudio);
+    EXPECT_EQ(resolved("coreaudio:2").device, "2");
+    EXPECT_EQ(resolved("coreaudio:MacBook Pro Microphone").device, "MacBook Pro Microphone");
+    EXPECT_EQ(resolved("coreaudio:BlackHole 2ch: Aggregate").device, "BlackHole 2ch: Aggregate");
+}
+
+TEST(ResolveInputSpec, CoreaudioPrefixWithNothingAfterTheColonIsRejected) {
+    EXPECT_NE(rejected("coreaudio:").find("--input coreaudio on its own"), std::string::npos);
+}
+#else
+TEST(ResolveInputSpec, CoreaudioSaysItIsNotInThisBuild) {
+    for (const char* spec : {"coreaudio", "coreaudio:2", "coreaudio:MacBook Pro Microphone"}) {
+        const std::string error = rejected(spec);
+        EXPECT_NE(error.find("CoreAudio backend is not in this build"), std::string::npos) << spec;
+        EXPECT_NE(error.find(input_backend_list()), std::string::npos) << spec;
+    }
+}
+#endif
 
 #ifdef SENDSPIN_CLI_HAVE_ALSA
 TEST(ResolveInputSpec, BareNamesAreAlsaPcmsColonsAndAll) {
