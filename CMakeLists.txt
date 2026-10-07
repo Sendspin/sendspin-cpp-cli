@@ -445,4 +445,10 @@ if(SENDSPIN_CLI_BUILD_TESTS)
     target_link_libraries(sendspin-cli-tests PRIVATE sendspin-cli-core GTest::gtest_main)
     target_compile_options(sendspin-cli-tests PRIVATE ${SENDSPIN_CLI_WARNING_FLAGS})
     gtest_discover_tests(sendspin-cli-tests)
+
+    # No GoogleTest: ci.yml also cross-compiles this one file for a big-endian target.
+    add_executable(pcm-volume-le-check tests/pcm_volume_le_check.cpp src/pcm_volume.cpp)
+    target_include_directories(pcm-volume-le-check PRIVATE src)
+    target_compile_options(pcm-volume-le-check PRIVATE ${SENDSPIN_CLI_WARNING_FLAGS})
+    add_test(NAME pcm-volume-le-check COMMAND pcm-volume-le-check)
 endif()

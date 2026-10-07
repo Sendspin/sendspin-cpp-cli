@@ -50,6 +50,29 @@ jobs:
       - name: Check formatting
         run: scripts/format.sh --check
 
+  # pcm_volume.cpp promises little-endian PCM, which only a big-endian host can get wrong.
+  big-endian:
+    name: big-endian (mips)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Install the MIPS cross compiler and emulator
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y g++-mips-linux-gnu qemu-user-static
+
+      # Static, so qemu needs no MIPS sysroot.
+      - name: Build the volume check for big-endian MIPS
+        run: |
+          mips-linux-gnu-g++ -std=c++20 -O2 -Wall -Wextra -Werror -static -Isrc \
+            -o pcm-volume-le-check tests/pcm_volume_le_check.cpp src/pcm_volume.cpp
+
+      - name: Run it under QEMU
+        run: qemu-mips-static ./pcm-volume-le-check
+
   # The matrix lives in build.yml (shared with release.yml); linux-armv6 is in build-armv6.yml.
   build:
     uses: ./.github/workflows/build.yml
