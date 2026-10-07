@@ -139,6 +139,14 @@ ProbeResult probe_capabilities(const char* name, snd_pcm_stream_t stream) {
         return result;
     }
 
+    if (stream == SND_PCM_STREAM_CAPTURE) {
+        // Speech microphones often capture at nothing else.
+        for (const uint32_t rate : {8000U, 16000U}) {
+            if (snd_pcm_hw_params_test_rate(pcm, hw, rate, 0) == 0) {
+                result.caps.rates.push_back(rate);
+            }
+        }
+    }
     for (const uint32_t rate : PROBE_RATES) {
         if (snd_pcm_hw_params_test_rate(pcm, hw, rate, 0) == 0) {
             result.caps.rates.push_back(rate);
