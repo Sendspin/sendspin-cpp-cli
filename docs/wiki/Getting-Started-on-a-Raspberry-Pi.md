@@ -138,8 +138,8 @@ nothing for a player running as you.
   per step; debouncing is a known gap, listed under
   [`docs/ROADMAP.md`](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/docs/ROADMAP.md)
   item 8. If that worries you, point the state at the runtime directory, which is already a
-  tmpfs — and accept that volume, mute and the static delay are then forgotten across
-  reboots. It has to be a **drop-in** rather than a config key, because the unit passes
+  tmpfs — and accept that the player's identity and pairings, volume, mute and the output
+  delay are then forgotten across reboots. It has to be a **drop-in** rather than a config key, because the unit passes
   `--state-dir` itself and the command line wins (`sudo systemctl edit sendspin-cli`):
 
   ```ini
@@ -160,7 +160,7 @@ nothing for a player running as you.
 - **`avahi-daemon` is what provides mDNS on a Pi**, and Raspberry Pi OS ships it running. If
   you have turned it off, the player warns and retries rather than failing — but nothing will
   discover it until it is back.
-- **One player per Pi.** Two on one host need different `--id`, different `--port`,
+- **One player per Pi.** Two on one host need different `--port`,
   different `--state-dir` and different control sockets. It works; it is just not what a
   Pi is usually for.
 

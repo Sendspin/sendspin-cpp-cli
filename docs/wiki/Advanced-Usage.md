@@ -86,10 +86,10 @@ config file.
 `--buffer-ms` controls how much audio the output backend keeps queued, from 10 to 2000
 (default 100). Raise it if a busy host produces clicks or dropouts.
 
-`--static-delay <0-5000>` declares how much latency this endpoint's hardware adds
+`--output-delay <0-5000>` declares how much latency this endpoint's hardware adds
 *after* the audio port, so the player hands audio over that much earlier. It is a
 first-run default only: once a server or [`delay`](Controlling-the-Player) has set one,
-the remembered value wins.
+the remembered value wins. `--static-delay` is still accepted as the old name.
 
 `--audio-format <codec:rate:depth:channels>[,...]` lists preferred formats, comma-separated
 in priority order. They go to the front of the advertised list in that order:
@@ -108,13 +108,28 @@ what the device accepts.
 
 ## Identity
 
-`--id` sets the stable client id a server files this player's volume, group, and
-pairing under; `-n` is only the displayed name. Without it, the id is derived from the
-network interface MAC, which two players on one host would share. Run two players on
-one host with their own `--id`, `--port`, `--state-dir`, and control socket.
+The client id a server files this player's volume, group, and pairing under is the public
+half of a keypair the player generates on its first run and keeps in the
+[state file](Configuration#the-state-file); `-n` is only the displayed name.
+`sendspin-cli status` prints it. It cannot be chosen: `--id` is refused. Run two players on
+one host with their own `--port`, `--state-dir`, and control socket — the state directory is
+what gives each its own identity.
 
 `--manufacturer` and `--product-name` set what the player reports to servers, for a
 product that embeds this player and should be listed as itself.
+
+## Pairing and unpaired access
+
+Every connection is encrypted, and a server has to **pair** with the player before it may
+play on it. A server that has not paired can still connect, but stays idle; the `trust` line
+of `sendspin-cli status` reads `paired` or `unpaired` for the server connected now.
+
+`--allow-unpaired` (or `allow-unpaired = true`) lets any server on the network play without
+pairing. It is off by default, and the player says so once at startup:
+
+```
+I cli: A server must pair with this player before it can play -- pass --allow-unpaired to let any server play
+```
 
 ## Stream hooks
 

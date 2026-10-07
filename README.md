@@ -42,6 +42,8 @@ sendspin-cli -n living-room
 ```
 
 It advertises itself on the local network and waits for a Sendspin server to connect.
+Connections are encrypted, and a server must pair with the player before it can play;
+`--allow-unpaired` lets any server on the network play without pairing.
 For a Linux system-service installation, the quick-start guide explains how to enable
 and check the service.
 
@@ -63,6 +65,7 @@ sendspin-cli -n living-room -s music.local
 | `-n, --name <name>` | The friendly name a server displays. Defaults to this host's name. |
 | `-o, --output <device>` | Which sound card to play through. `-l` lists this host's devices and what they accept. |
 | `--audio-format <codec:rate:depth:channels>[,...]` | Formats to offer first, in priority order, e.g. `flac:48000:24:2,pcm:48000:24:2`. Everything else the player normally offers still follows, and a server uses the first format it can encode, so it can still fall back to a later one. This sets a preference, not a restriction. |
+| `--allow-unpaired` | Let a server play without pairing with this player first. Off by default. |
 | `-s, --server <host[:port]>` | Connect out to a server rather than waiting to be discovered, or `mdns:[<name>]` to discover one over mDNS. Turns off the mDNS advertisement. |
 
 Any of these can go in a config file instead of on the command line — see

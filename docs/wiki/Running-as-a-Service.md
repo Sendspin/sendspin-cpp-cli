@@ -70,7 +70,7 @@ path would come from:
 | Unit directive | Flag it pairs with | Without the pair |
 |---|---|---|
 | `RuntimeDirectory=sendspin-cli` | `--control-socket /run/sendspin-cli/control.sock` | no `$XDG_RUNTIME_DIR`, so no control socket — one warning, and the player carries on |
-| `StateDirectory=sendspin-cli` | `--state-dir /var/lib/sendspin-cli` | no `$XDG_STATE_HOME`, so volume, mute and the static delay are forgotten every restart |
+| `StateDirectory=sendspin-cli` | `--state-dir /var/lib/sendspin-cli` | no `$XDG_STATE_HOME`, so the player's identity and pairings, volume, mute and the output delay are forgotten every restart |
 
 systemd creates and owns both directories, and removes the runtime one when the unit stops
 — which is why this unit never meets a stale socket.
@@ -147,7 +147,7 @@ in no supplementary group at all, which deafens the ALSA backend.
 **Nothing needs doing to `/var/lib/sendspin-cli`.** `StateDirectory=` chowns the directory it
 finds as well as the one it creates, recursively, so a root-owned state file from an earlier
 install becomes the new account's on the first start and the remembered volume, mute and
-static delay carry over.
+output delay carry over.
 
 Two things are worth checking before the upgrade, and both come from the hardening block:
 

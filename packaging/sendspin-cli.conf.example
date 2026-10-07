@@ -9,10 +9,6 @@
 # The name a controller shows for this endpoint. Defaults to this host's name.
 #name = kitchen
 
-# Stable client id a server files volume and grouping under. Defaults to a MAC-derived id,
-# which two players on one host would share.
-#id = kitchen-left
-
 # Device info sent in client/hello, for a product embedding this player.
 #manufacturer = sendspin-cpp-cli
 #product-name = sendspin-cli
@@ -36,7 +32,11 @@
 #server = mdns:Living Room
 
 # Latency added after the audio port, 0-5000 ms. A first-run default: a remembered delay wins.
-#static-delay = 0
+#output-delay = 0
+
+# Let a server play without pairing with this player first. Off by default: an unpaired
+# server can connect but not play.
+#allow-unpaired = true
 
 # Shell commands run on stream start and stop, with SENDSPIN_* facts in the environment.
 #hook-start = amixer set Master unmute

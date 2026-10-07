@@ -7,7 +7,9 @@ app in the loop.
 ```console
 $ sendspin-cli status
 name: living-room
+client id: fLNgT-h015The-sALW0IVza7J0FThgDU1leu1MLDww4
 server: Music Assistant (connected)
+trust: paired
 state: playing
 stream: receiving
 track: Nils Frahm - Says
@@ -16,7 +18,7 @@ group volume: 55
 repeat: off
 shuffle: off
 player volume: 80
-static delay: 0 ms
+output delay: 0 ms
 note: state, position, repeat and shuffle are the server's last report; a server that does not resend them after a change will show stale values here
 output: default (48000 Hz / 2 ch / 16-bit)
 
@@ -47,7 +49,7 @@ is also what lets `seek-rel -5000` be an offset rather than a flag cluster.
 | `repeat` | `off\|one\|all` | set the repeat mode |
 | `shuffle` | `on\|off` | turn shuffle on or off |
 | `switch` | | move this player through the groups available to it |
-| `delay` | `<0-5000>` | this endpoint's static delay — **answered locally** |
+| `delay` | `<0-5000>` | this endpoint's output delay — **answered locally** |
 
 Twelve of those go out to the server as `controller@v1` commands. Two never leave the host:
 `status`, formatted from the daemon's own view, and `delay`, which drives this endpoint's
@@ -72,8 +74,8 @@ server meant. If this speaker sounds 250 ms late against the rest of the group:
 
 ```console
 $ sendspin-cli delay 250      # my amp adds 250 ms, so hand audio over 250 ms early
-$ sendspin-cli status | grep 'static delay'
-static delay: 250 ms
+$ sendspin-cli status | grep 'output delay'
+output delay: 250 ms
 $ sendspin-cli delay 0        # off again
 ```
 
@@ -204,7 +206,7 @@ The event's facts arrive in the environment, in the same vocabulary the Python
 `SENDSPIN_EVENT` (`start` or `stop`) always, and `SENDSPIN_SERVER_ID`,
 `SENDSPIN_SERVER_NAME`, `SENDSPIN_SERVER_URL` (`-s` runs only, and the URL this run
 dialled rather than a statement about which server answered — see below),
-`SENDSPIN_CLIENT_ID` (when `--id` chose one) and `SENDSPIN_CLIENT_NAME` where known. An
+`SENDSPIN_CLIENT_ID` (the id `status` prints) and `SENDSPIN_CLIENT_NAME` where known. An
 unknown is left *unset* rather than exported empty, so `[ -n "$SENDSPIN_SERVER_ID" ]`
 means what it says. A stop event carries the same server facts as the start it pairs
 with — gathered when the stream started, because a stream usually ends when its
