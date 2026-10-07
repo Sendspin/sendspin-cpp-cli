@@ -64,28 +64,40 @@ sendspin-cli -n den --input pipewire
 sendspin-cli -n den --input pulse:alsa_input.usb-mic.analog-stereo
 ```
 
+On macOS:
+
+```bash
+sendspin-cli -n den --input coreaudio
+sendspin-cli -n den --input "coreaudio:MacBook Pro Microphone"
+```
+
 Nothing is captured until the server starts the source, and the device is released again
 when the server stops it. Without `--input` the player does not offer the source role at
 all.
 
 `sendspin-cli -l` lists capture devices in their own section, under the outputs: ALSA
 PCMs with the rates, formats and channel counts each takes, then the PulseAudio sources
-and PipeWire source nodes. `--input` reads its argument the way `-o` does:
+and PipeWire source nodes, or on macOS the CoreAudio input devices. `--input` reads its
+argument the way `-o` does:
 
 - `alsa:<device>`, or a bare ALSA name such as `default`, `hw:1,0` or `plughw:1,0`.
 - `pulse:<source>` for a PulseAudio source, or `pulse` alone for the server's default.
 - `pipewire:<node>` for a PipeWire source node, or `pipewire` alone for the graph's
   default. `pulse:default` and `pipewire:default` mean the same as the bare names.
+- On macOS, `coreaudio` for the system default input, which is followed if it moves, or
+  `coreaudio:<index|name>` for one device from `-l`'s list.
 - `tone` and `null`, which need no sound card: `tone` streams a 440 Hz test tone, which
   checks the path to the server without a microphone, and `null` streams silence.
 
-On a desktop, prefer `pulse` or `pipewire` to a `hw:` name: the sound server shares the
-card with other programs, where a `hw:` device is held exclusively.
+On a Linux desktop, prefer `pulse` or `pipewire` to a `hw:` name: the sound server shares
+the card with other programs, where a `hw:` device is held exclusively.
 
 The capture format is chosen once at startup: 48000 Hz, stereo, 16-bit if the device
 takes it, otherwise the nearest it does take — a mono microphone is sent as mono. A sound
 server converts, so a capture through `pulse` or `pipewire` always runs at 48000 Hz,
-stereo, 16-bit. The startup log and `sendspin-cli status` both show what was chosen:
+stereo, 16-bit. On macOS the rate is the one the device is currently set to, because
+CoreAudio does not resample capture; change it in Audio MIDI Setup before starting. The
+startup log and `sendspin-cli status` both show what was chosen:
 
 ```text
 input: hw:1,0 (48000 Hz / 2 ch / 16-bit), streaming
@@ -97,10 +109,30 @@ device unplugged mid-stream, or a sound server that restarts, is logged and reop
 it comes back; playback is not affected. A named PulseAudio source or PipeWire node is
 never swapped for the default while it is away.
 
-Capture through CoreAudio or PortAudio is not available yet, so capturing from a sound
-card needs a build with ALSA, PulseAudio or PipeWire; `tone` and `null` work in any
-build. A build without the PulseAudio or PipeWire backend can still reach that server
+Capture through PortAudio is not available yet, so capturing from a sound card needs
+ALSA, PulseAudio or PipeWire on Linux, or CoreAudio on macOS; `tone` and `null` work in
+any build. A build without the PulseAudio or PipeWire backend can still reach that server
 through ALSA's own PCMs: `--input alsa:pulse`, `--input alsa:pipewire`.
+
+### Microphone permission on macOS
+
+macOS asks for microphone access the first time `--input` opens a CoreAudio device, and
+`sendspin-cli` waits up to a minute for the answer. Started from a terminal, the prompt
+names the terminal app, and the permission belongs to it; started by `launchd`, it names
+the `sendspin-cli` executable. If access is denied the player stops at startup and says
+so, rather than streaming silence. Grant it under **System Settings → Privacy & Security
+→ Microphone** and start again. `tone` and `null` need no permission.
+
+Two things to know:
+
+- **Start it from Terminal.app the first time.** macOS only lets some apps ask for the
+  microphone. From a shell hosted by an app that cannot — some third-party terminals and
+  editors — macOS ends `sendspin-cli` with `Abort trap: 6` instead of prompting, right
+  after the log line `asking macOS for microphone access`. This is macOS's doing and
+  cannot be turned into an error message.
+- **The permission belongs to the executable's path** when `launchd` starts it. A copy
+  installed somewhere else is asked again, and `tccutil reset` does not know the binary,
+  so a mistaken Don't Allow is undone only in System Settings.
 
 ## Logging and background operation
 

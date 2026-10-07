@@ -955,6 +955,9 @@ void print_usage(std::FILE* out, const char* prog) {
 #ifdef SENDSPIN_CLI_HAVE_ALSA
     std::fprintf(out, "                Anything else is an ALSA PCM name: --input default,\n");
     std::fprintf(out, "                --input hw:1,0. Without --input nothing is captured\n");
+#elif defined(SENDSPIN_CLI_HAVE_COREAUDIO)
+    std::fprintf(out, "                --input coreaudio is this host's default input device.\n");
+    std::fprintf(out, "                Without --input nothing is captured\n");
 #else
     std::fprintf(out, "                Without --input nothing is captured\n");
 #endif

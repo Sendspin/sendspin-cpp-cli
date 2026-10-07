@@ -71,7 +71,7 @@ sendspin-cli -n den --input default
 | `-n, --name <name>` | The friendly name a server displays. Defaults to this host's name. |
 | `-o, --output <device>` | Which sound card to play through. `-l` lists this host's devices and what they accept. |
 | `--audio-format <codec:rate:depth:channels>[,...]` | Formats to offer first, in priority order, e.g. `flac:48000:24:2,pcm:48000:24:2`. Everything else the player normally offers still follows, and a server uses the first format it can encode, so it can still fall back to a later one. This sets a preference, not a restriction. |
-| `--input <device>` | A capture device to stream to the server: a microphone or line-in, e.g. `default`, `hw:1,0`, `pulse` or `pipewire:<node>`. `-l` lists them. Off unless given. See [Stream a microphone or line-in](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Advanced-Usage#stream-a-microphone-or-line-in). |
+| `--input <device>` | A capture device to stream to the server: a microphone or line-in, e.g. `default`, `hw:1,0`, `pulse` or `pipewire:<node>`, or `coreaudio` on macOS. `-l` lists them. Off unless given. See [Stream a microphone or line-in](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Advanced-Usage#stream-a-microphone-or-line-in). |
 | `--allow-unpaired` | Let a server play without pairing with this player first. Off by default. |
 | `--pairing-code <8 digits>` | A fixed code a server can pair with, confirmed with `sendspin-cli pair confirm`. Without it the player shows a fresh 6-digit code per attempt. |
 | `-s, --server <host[:port]>` | Connect out to a server rather than waiting to be discovered, or `mdns:[<name>]` to discover one over mDNS. Turns off the mDNS advertisement. |
