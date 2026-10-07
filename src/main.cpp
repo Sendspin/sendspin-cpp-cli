@@ -165,7 +165,7 @@ struct PairingListener : sendspin::SendspinClientListener {
         // Fires when the attempt concludes, like on_clear_pairing_code().
         this->server_id_.clear();
         this->window_open_ = false;
-        log_line(LogLevel::INFO, LOG_TAG, "Pairing window closed");
+        log_line(LogLevel::INFO, LOG_TAG, "No longer waiting for 'pair confirm'");
     }
 
     /// The last trust reported; describes the connection only while one is up.
