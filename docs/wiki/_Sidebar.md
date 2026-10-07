@@ -11,6 +11,7 @@
 **Use it**
 
 - [Configuration](Configuration)
+- [Pairing a Player](Pairing-a-Player)
 - [Controlling the Player](Controlling-the-Player)
 - [Running as a Service](Running-as-a-Service)
 - [Advanced Usage](Advanced-Usage)

@@ -141,9 +141,9 @@ I cli: A server must pair with this player before it can play -- pass --allow-un
 ```
 
 Every connection is encrypted, and an unpaired server may connect but not play. Check
-`sendspin-cli status`: `trust: unpaired` beside a connected server is this. Either pair the
-server with the player, or start the player with `--allow-unpaired` (`allow-unpaired = true`
-in the config) to let any server play.
+`sendspin-cli status`: `trust: unpaired` beside a connected server is this. Either
+[pair the server with the player](Pairing-a-Player), or start the player with
+`--allow-unpaired` (`allow-unpaired = true` in the config) to let any server play.
 
 A server that does not speak Sendspin 1.0.0-rc1 cannot connect at all — Music Assistant needs
 aiosendspin 10 or later.
