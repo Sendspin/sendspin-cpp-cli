@@ -28,6 +28,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <initializer_list>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -75,6 +76,34 @@ public:
     PipeWireGuard(const PipeWireGuard&) = delete;
     PipeWireGuard& operator=(const PipeWireGuard&) = delete;
 };
+
+/// Holds the thread-loop lock for a scope; it does not hold off the realtime data thread.
+class LoopLock {
+public:
+    explicit LoopLock(pw_thread_loop* loop) : loop_(loop) {
+        pw_thread_loop_lock(this->loop_);
+    }
+    ~LoopLock() {
+        pw_thread_loop_unlock(this->loop_);
+    }
+
+    LoopLock(const LoopLock&) = delete;
+    LoopLock& operator=(const LoopLock&) = delete;
+
+private:
+    pw_thread_loop* loop_;
+};
+
+/// One audio node as the graph describes it.
+struct PipeWireNode {
+    std::string name;
+    std::string description;
+};
+
+/// Walks the daemon's registry once on a private loop for nodes of any of `media_classes`.
+/// Needs a live PipeWireGuard.
+bool pipewire_list_nodes(std::initializer_list<const char*> media_classes,
+                         std::vector<PipeWireNode>& out, std::string& error);
 
 /// An AudioSink that plays through a PipeWire graph; `-o pipewire:` a node name or empty.
 /// process() reads the ring and format fields unlocked: change them only while disconnected.

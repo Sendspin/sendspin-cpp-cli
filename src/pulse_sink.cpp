@@ -64,37 +64,6 @@ bool pulse_format_for(uint8_t bits_per_sample, pa_sample_format_t& format) {
     return false;
 }
 
-/// Holds the libpulse mainloop lock for a scope. Every pa_* call on a live context needs it.
-class MainloopLock {
-public:
-    explicit MainloopLock(pa_threaded_mainloop* loop) : loop_(loop) {
-        pa_threaded_mainloop_lock(this->loop_);
-    }
-    ~MainloopLock() {
-        pa_threaded_mainloop_unlock(this->loop_);
-    }
-
-    MainloopLock(const MainloopLock&) = delete;
-    MainloopLock& operator=(const MainloopLock&) = delete;
-
-private:
-    pa_threaded_mainloop* loop_;
-};
-
-/// State shared by an asynchronous server query and its waiter; `done` is read unlocked.
-struct PulseQuery {
-    PulseConnection* conn{nullptr};
-    std::atomic<bool> done{false};
-    bool failed{false};
-
-    /// Called from the query's own callback, on the mainloop thread, exactly once.
-    void finish(bool ok) {
-        this->failed = !ok;
-        this->done.store(true, std::memory_order_release);
-        this->conn->notify();
-    }
-};
-
 /// One sink as the server describes it.
 struct PulseSinkInfo {
     std::string name;
@@ -135,24 +104,6 @@ void server_info_cb(pa_context* /*context*/, const pa_server_info* info, void* u
     query->finish(info != nullptr);
 }
 
-/// Waits for one query, cancelling it on timeout so a late callback cannot touch a dead `query`.
-/// @return true if the query completed and the server answered it.
-bool await_query(PulseConnection& conn, PulseQuery& query, pa_operation* op) {
-    if (op == nullptr) {
-        return false;
-    }
-    const bool answered =
-        conn.wait_for([&query] { return query.done.load(std::memory_order_acquire); });
-    {
-        const MainloopLock lock(conn.mainloop());
-        if (!answered) {
-            pa_operation_cancel(op);
-        }
-        pa_operation_unref(op);
-    }
-    return answered && !query.failed;
-}
-
 /// Asks the server for every sink it has. The mainloop lock must NOT be held.
 bool list_sinks(PulseConnection& conn, std::vector<PulseSinkInfo>& out) {
     SinkListQuery query;
@@ -185,6 +136,22 @@ std::string default_sink_name(PulseConnection& conn) {
 }
 
 }  // namespace
+
+bool await_query(PulseConnection& conn, PulseQuery& query, pa_operation* op) {
+    if (op == nullptr) {
+        return false;
+    }
+    const bool answered =
+        conn.wait_for([&query] { return query.done.load(std::memory_order_acquire); });
+    {
+        const MainloopLock lock(conn.mainloop());
+        if (!answered) {
+            pa_operation_cancel(op);
+        }
+        pa_operation_unref(op);
+    }
+    return answered && !query.failed;
+}
 
 PulseConnection::~PulseConnection() {
     this->disconnect();

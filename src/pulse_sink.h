@@ -96,6 +96,42 @@ private:
     std::condition_variable wait_cv_;
 };
 
+/// Holds the libpulse mainloop lock for a scope. Every pa_* call on a live context needs it.
+class MainloopLock {
+public:
+    explicit MainloopLock(pa_threaded_mainloop* loop) : loop_(loop) {
+        pa_threaded_mainloop_lock(this->loop_);
+    }
+    ~MainloopLock() {
+        pa_threaded_mainloop_unlock(this->loop_);
+    }
+
+    MainloopLock(const MainloopLock&) = delete;
+    MainloopLock& operator=(const MainloopLock&) = delete;
+
+private:
+    pa_threaded_mainloop* loop_;
+};
+
+/// State shared by an asynchronous server query and its waiter; `done` is read unlocked.
+struct PulseQuery {
+    PulseConnection* conn{nullptr};
+    std::atomic<bool> done{false};
+    bool failed{false};
+
+    /// Called from the query's own callback, on the mainloop thread, exactly once.
+    void finish(bool ok) {
+        this->failed = !ok;
+        this->done.store(true, std::memory_order_release);
+        this->conn->notify();
+    }
+};
+
+/// Waits for one query, cancelling it on timeout so a late callback cannot touch a dead `query`.
+/// The mainloop lock must NOT be held.
+/// @return true if the query completed and the server answered it.
+bool await_query(PulseConnection& conn, PulseQuery& query, pa_operation* op);
+
 /// An AudioSink that plays through a PulseAudio server; `-o pulse:` a sink name or empty.
 /// Lock order is mutex_ then the mainloop lock; no libpulse callback takes mutex_.
 class PulseAudioSink final : public AudioSink {
