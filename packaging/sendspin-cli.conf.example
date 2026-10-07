@@ -38,6 +38,10 @@
 # server can connect but not play.
 #allow-unpaired = true
 
+# A static pairing code: exactly 8 digits, chosen at random for this player. Every attempt
+# with it waits for 'sendspin-cli pair confirm'. Unset, the player shows a fresh 6-digit code.
+#pairing-code = 48151623
+
 # Shell commands run on stream start and stop, with SENDSPIN_* facts in the environment.
 #hook-start = amixer set Master unmute
 #hook-stop = amixer set Master mute

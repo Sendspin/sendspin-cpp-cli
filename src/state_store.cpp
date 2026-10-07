@@ -15,12 +15,14 @@
 #include "state_store.h"
 
 #include "key_value_file.h"
+#include "sendspin/config.h"
 #include "sendspin/persistence_keys.h"
 
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
@@ -144,6 +146,20 @@ std::optional<std::vector<uint8_t>> StateStore::blob(const std::string& key) con
 
 bool StateStore::set_blob(const std::string& key, const uint8_t* data, size_t len) {
     return this->set_all({{KEY_BLOB_PREFIX + key, to_hex(data, len)}});
+}
+
+bool StateStore::has_pairing_record() const {
+    const size_t slots = sendspin::SendspinClientConfig::DEFAULT_MAX_PAIRING_RECORDS;
+    for (size_t slot = 0; slot < slots; ++slot) {
+        const std::optional<std::vector<uint8_t>> record =
+            this->blob(sendspin::persistence_keys::record_slot_key(slot));
+        // A freed slot is kept as zeroes.
+        if (record.has_value() &&
+            std::any_of(record->begin(), record->end(), [](uint8_t byte) { return byte != 0; })) {
+            return true;
+        }
+    }
+    return false;
 }
 
 std::optional<uint8_t> StateStore::volume() const {

@@ -628,6 +628,17 @@ check_output_delay() {
     [ "${#client_id}" -eq 43 ] ||
         fail "status printed no 43-character client id: $(cat "$out")"
 
+    local pairing_token
+    pairing_token="$(XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" pair-token --port "$PORT_DELAY" \
+        "${NO_CONFIG[@]}" 2>&1)" || fail "pair-token exited $?: $pairing_token"
+    if [ "${#pairing_token}" -eq 107 ] && [ "${pairing_token#SP:}" != "$pairing_token" ]; then
+        :
+    else
+        fail "pair-token printed no 107-character SP: token"
+    fi
+    XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" pair cancel --port "$PORT_DELAY" "${NO_CONFIG[@]}" \
+        >/dev/null 2>&1 || fail "pair cancel exited $? with no attempt waiting"
+
     kill -TERM "$pid"
     local status=0
     await_child "$pid" "$EXIT_TIMEOUT_S" || status=$?
@@ -652,6 +663,10 @@ check_output_delay() {
     grep -q "^client id: $client_id\$" "$out" ||
         fail "the client id changed across a restart, so the keypair was not kept: $(cat "$out")"
     pass "the client id survives a restart, so the keypair persists"
+    [ "$(XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" pair-token --port "$PORT_DELAY" \
+        "${NO_CONFIG[@]}" 2>&1)" = "$pairing_token" ] ||
+        fail "the pairing token changed across a restart, so the Pairing PSK was not kept"
+    pass "pair-token prints the same token after a restart"
 
     # A remembered delay beats --output-delay.
     local flagged="$WORK_DIR/delay-flag-status.out"

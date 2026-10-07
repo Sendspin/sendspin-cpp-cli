@@ -94,12 +94,78 @@ private:
     StateStore& store_;
 };
 
-/// Caches the connection's trust for `status`. Main loop only.
-struct TrustListener : sendspin::SendspinClientListener {
+/// Why a pairing attempt ended, for the log.
+const char* pair_abort_reason(sendspin::SendspinPairAbortReason reason) {
+    switch (reason) {
+        case sendspin::SendspinPairAbortReason::ATTEMPT_TIMEOUT:
+            return "the server did not finish in time";
+        case sendspin::SendspinPairAbortReason::CONCURRENT_ATTEMPT:
+            return "another pairing attempt was already in progress";
+        case sendspin::SendspinPairAbortReason::METHOD_NOT_SUPPORTED:
+            return "the server chose a pairing method this player does not offer";
+        case sendspin::SendspinPairAbortReason::PAIRING_CODE_MISMATCH:
+            return "the pairing code did not match";
+        case sendspin::SendspinPairAbortReason::USER_CANCELLED:
+            return "it was cancelled";
+        case sendspin::SendspinPairAbortReason::UNKNOWN:
+            break;
+    }
+    return "the exchange broke down";
+}
+
+/// Logs trust and pairing progress, and caches both for `status`. Main loop only.
+struct PairingListener : sendspin::SendspinClientListener {
     void on_trust_changed(sendspin::ConnectionTrust trust) override {
         this->trust_ = trust;
+        // A new handshake: an attempt the last connection dropped never reported its end.
+        this->server_id_.clear();
         log_line(LogLevel::INFO, LOG_TAG, "Connected server is %s",
                  trust == sendspin::ConnectionTrust::USER ? "paired" : "not paired");
+    }
+
+    void on_pairing_started(const std::string& server_id) override {
+        this->server_id_ = server_id;
+        log_line(LogLevel::INFO, LOG_TAG, "Pairing started with server %s", server_id.c_str());
+    }
+
+    void on_pairing_succeeded(const std::string& server_id) override {
+        this->server_id_.clear();
+        log_line(LogLevel::INFO, LOG_TAG, "Paired with server %s", server_id.c_str());
+    }
+
+    void on_pairing_failed(const std::string& server_id,
+                           sendspin::SendspinPairAbortReason reason) override {
+        this->server_id_.clear();
+        log_line(LogLevel::WARN, LOG_TAG, "Pairing with server %s failed: %s", server_id.c_str(),
+                 pair_abort_reason(reason));
+    }
+
+    void on_display_pairing_code(const std::string& code,
+                                 sendspin::SendspinPairingCodeFormat /*format*/) override {
+        this->code_ = code;
+        log_line(LogLevel::INFO, LOG_TAG,
+                 "*** Pairing code: %s *** -- type it into the server to pair", code.c_str());
+    }
+
+    void on_clear_pairing_code() override {
+        // Also how an attempt the server abandoned ends: neither outcome callback fires for it.
+        this->server_id_.clear();
+        this->code_.clear();
+        log_line(LogLevel::INFO, LOG_TAG, "Pairing code withdrawn");
+    }
+
+    void on_open_pairing_window() override {
+        this->window_open_ = true;
+        log_line(LogLevel::INFO, LOG_TAG,
+                 "A server is waiting to pair -- run 'sendspin-cli pair confirm' to let it, or "
+                 "'sendspin-cli pair cancel' to refuse");
+    }
+
+    void on_close_pairing_window() override {
+        // Fires when the attempt concludes, like on_clear_pairing_code().
+        this->server_id_.clear();
+        this->window_open_ = false;
+        log_line(LogLevel::INFO, LOG_TAG, "No longer waiting for 'pair confirm'");
     }
 
     /// The last trust reported; describes the connection only while one is up.
@@ -107,8 +173,25 @@ struct TrustListener : sendspin::SendspinClientListener {
         return this->trust_;
     }
 
+    /// The server a pairing is in progress with, or empty.
+    const std::string& server_id() const {
+        return this->server_id_;
+    }
+
+    /// The dynamic code on show, or empty.
+    const std::string& code() const {
+        return this->code_;
+    }
+
+    bool window_open() const {
+        return this->window_open_;
+    }
+
 private:
     std::optional<sendspin::ConnectionTrust> trust_;
+    std::string server_id_;
+    std::string code_;
+    bool window_open_{false};
 };
 
 /// Logs server metadata and caches the latest for `status`. Main loop only.
@@ -282,7 +365,8 @@ public:
     /// Every reference must outlive this dispatcher, which in main() they all do.
     ControlDispatcher(const Options& opts, sendspin::SendspinClient& client,
                       sendspin::ControllerRole& controller, sendspin::MetadataRole& metadata,
-                      const MetadataLogger& metadata_logger, const TrustListener& trust_listener,
+                      const MetadataLogger& metadata_logger,
+                      const PairingListener& pairing_listener,
                       const PlayerListener& player_listener, sendspin::PlayerRole& player,
                       const AudioSink& sink)
         : opts_(opts),
@@ -290,7 +374,7 @@ public:
           controller_(controller),
           metadata_(metadata),
           metadata_logger_(metadata_logger),
-          trust_listener_(trust_listener),
+          pairing_listener_(pairing_listener),
           player_listener_(player_listener),
           player_(player),
           sink_(sink) {}
@@ -317,6 +401,27 @@ public:
 
         if (request.command == ControlCommand::Status) {
             return encode_control_reply(ControlStatus::Ok, "", format_status(this->status()));
+        }
+
+        if (request.command == ControlCommand::PairToken) {
+            const std::optional<std::string> token = this->client_.pairing_token();
+            if (!token.has_value()) {
+                return encode_control_reply(ControlStatus::Failed,
+                                            "this player has no pairing token", "");
+            }
+            return encode_control_reply(ControlStatus::Ok, "", *token + "\n");
+        }
+
+        if (request.command == ControlCommand::Pair) {
+            const bool confirm = request.confirm.value_or(false);
+            if (confirm) {
+                this->client_.confirm_pairing_window();
+            } else {
+                this->client_.cancel_pairing_window();
+            }
+            log_line(LogLevel::INFO, LOG_TAG, "Pairing window %s locally",
+                     confirm ? "confirmed" : "cancelled");
+            return encode_control_reply(ControlStatus::Ok, "", "");
         }
 
         // Handled locally: update_output_delay() persists and republishes; safe on the main loop.
@@ -352,7 +457,13 @@ private:
         snapshot.name = this->opts_.name;
         snapshot.client_id = this->client_.client_id();
         snapshot.connected = this->client_.is_connected();
-        snapshot.trust = this->trust_listener_.trust();
+        snapshot.trust = this->pairing_listener_.trust();
+        // A dropped connection ends its attempt without a callback.
+        if (snapshot.connected) {
+            snapshot.pairing_server_id = this->pairing_listener_.server_id();
+        }
+        snapshot.pairing_code = this->pairing_listener_.code();
+        snapshot.pairing_window_open = this->pairing_listener_.window_open();
         const std::optional<sendspin::ServerInformationObject> info =
             this->client_.get_server_information();
         if (info.has_value()) {
@@ -401,7 +512,7 @@ private:
     sendspin::ControllerRole& controller_;
     sendspin::MetadataRole& metadata_;
     const MetadataLogger& metadata_logger_;
-    const TrustListener& trust_listener_;
+    const PairingListener& pairing_listener_;
     const PlayerListener& player_listener_;
     /// Non-const only for `delay`.
     sendspin::PlayerRole& player_;
@@ -619,6 +730,15 @@ int main(int argc, char* argv[]) {
     config.manufacturer = opts.manufacturer;
     config.software_version = SENDSPIN_CLI_VERSION;
     config.server_port = opts.port;
+    // `pair confirm` is the gesture, so every run supports the window.
+    config.pairing_window_supported = true;
+    if (opts.pairing_code.empty()) {
+        config.pairing_code_out_channels = {sendspin::SendspinPairingCodeChannel::DISPLAY};
+        config.pairing_code_formats = {sendspin::SendspinPairingCodeFormat::DIGITS};
+    } else {
+        // The library offers one code method, and the dynamic one wins if both are set.
+        config.static_pairing_code = opts.pairing_code;
+    }
 
     sendspin::SendspinClient client(std::move(config));
 
@@ -670,10 +790,10 @@ int main(int argc, char* argv[]) {
 
     PlayerListener player_listener(player, *sink, &state_store);
     MetadataLogger metadata_logger;
-    TrustListener trust_listener;
+    PairingListener pairing_listener;
     HostNetworkProvider network_provider;
 
-    client.set_listener(&trust_listener);
+    client.set_listener(&pairing_listener);
 
     player.set_listener(&player_listener);
     metadata.set_listener(&metadata_logger);
@@ -703,12 +823,27 @@ int main(int argc, char* argv[]) {
             SENDSPIN_CLI_VERSION, opts.port, opts.name.c_str(), sink->name().c_str(),
             mdns_backend_name().c_str());
 
+    if (!state_store.has_pairing_record()) {
+        const std::optional<std::string> token = client.pairing_token();
+        // The logfile is world-readable, so the token only goes to the terminal or journal.
+        if (!opts.logfile.empty()) {
+            log_line(LogLevel::INFO, LOG_TAG,
+                     "No server is paired yet -- run 'sendspin-cli pair-token' for the token to "
+                     "paste into a server");
+        } else if (token.has_value()) {
+            log_line(LogLevel::INFO, LOG_TAG,
+                     "No server is paired yet. Pairing token, to paste into a server (keep it "
+                     "private -- 'sendspin-cli pair-token' prints it again): %s",
+                     token->c_str());
+        }
+    }
+
     // The first client.loop() tick starts the listener after mDNS registration.
     MdnsService mdns;
     start_advertising(mdns, opts);
 
     ControlDispatcher control_dispatcher(opts, client, controller, metadata, metadata_logger,
-                                         trust_listener, player_listener, player, *sink);
+                                         pairing_listener, player_listener, player, *sink);
 
     std::unique_ptr<OutboundMode> outbound;
     if (opts.was_given(Opt::Server)) {

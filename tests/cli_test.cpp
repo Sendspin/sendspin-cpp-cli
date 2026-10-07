@@ -366,6 +366,30 @@ TEST(ParseOptions, TheOldStaticDelayFlagIsStillAccepted) {
     EXPECT_EQ(parse.options().output_delay_ms, 250U);
 }
 
+TEST(ParseOptions, PairingCodeTakesExactlyEightDigits) {
+    Parse unset({});
+    Parse set({"--pairing-code", "01234567"});
+
+    ASSERT_TRUE(unset.ok()) << unset.diagnostics();
+    ASSERT_TRUE(set.ok()) << set.diagnostics();
+    EXPECT_TRUE(unset.options().pairing_code.empty());
+    EXPECT_EQ(set.options().pairing_code, "01234567");
+}
+
+TEST(ParseOptions, PairingCodeRejectsAnythingElseWithoutRepeatingIt) {
+    for (const char* value : {"1234567", "123456789", "1234567a", "1234 567", "-1234567",
+                              "+1234567", "1234567.", " 1234567", "abcdefgh"}) {
+        Parse parse({"--pairing-code", value});
+        EXPECT_FALSE(parse.ok()) << "accepted --pairing-code '" << value << "'";
+        const std::string diagnostics = parse.diagnostics();
+        EXPECT_NE(diagnostics.find("invalid --pairing-code -- expected exactly 8 digits"),
+                  std::string::npos)
+            << diagnostics;
+        // A near-miss is most of a credential.
+        EXPECT_EQ(diagnostics.find(value), std::string::npos) << diagnostics;
+    }
+}
+
 TEST(ParseOptions, AllowUnpairedIsOffUnlessAsked) {
     Parse off({});
     Parse on({"--allow-unpaired"});
