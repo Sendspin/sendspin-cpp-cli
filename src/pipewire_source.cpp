@@ -282,8 +282,7 @@ void PipeWireAudioSource::stream_process_cb(void* userdata) {
             pw_time time{};
             if (pw_stream_get_time_n(self->stream_, &time, sizeof(time)) == 0 &&
                 time.rate.denom != 0) {
-                // `delay` is the newest frame's age; the first is this buffer and the converter
-                // older.
+                // `delay` is the newest frame's age; add this buffer and the converter's hold.
                 const double age_s =
                     (static_cast<double>(time.delay) * static_cast<double>(time.rate.num) /
                      static_cast<double>(time.rate.denom)) +
