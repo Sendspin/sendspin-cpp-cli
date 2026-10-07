@@ -291,7 +291,7 @@ if(SENDSPIN_CLI_ALSA_ENABLED)
 endif()
 
 if(SENDSPIN_CLI_COREAUDIO_ENABLED)
-    target_sources(sendspin-cli-core PRIVATE src/coreaudio_sink.cpp)
+    target_sources(sendspin-cli-core PRIVATE src/coreaudio_device.cpp src/coreaudio_sink.cpp)
     target_link_libraries(sendspin-cli-core PUBLIC
         "-framework CoreAudio" "-framework AudioToolbox" "-framework CoreFoundation")
     target_compile_definitions(sendspin-cli-core PUBLIC SENDSPIN_CLI_HAVE_COREAUDIO)
