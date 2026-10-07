@@ -40,6 +40,32 @@ int32_t unpacked24(const std::vector<uint8_t>& bytes) {
     return sample;
 }
 
+/// Packs samples into the little-endian bytes the player emits.
+template <typename T>
+std::vector<uint8_t> packed_le(const std::vector<T>& samples) {
+    std::vector<uint8_t> bytes;
+    for (const T sample : samples) {
+        for (size_t byte = 0; byte < sizeof(T); ++byte) {
+            bytes.push_back(static_cast<uint8_t>(static_cast<uint32_t>(sample) >> (8U * byte)));
+        }
+    }
+    return bytes;
+}
+
+/// Unpacks little-endian bytes back into samples.
+template <typename T>
+std::vector<T> unpacked_le(const std::vector<uint8_t>& bytes) {
+    std::vector<T> samples;
+    for (size_t i = 0; i + sizeof(T) <= bytes.size(); i += sizeof(T)) {
+        uint32_t value = 0;
+        for (size_t byte = 0; byte < sizeof(T); ++byte) {
+            value |= static_cast<uint32_t>(bytes[i + byte]) << (8U * byte);
+        }
+        samples.push_back(static_cast<T>(value));
+    }
+    return samples;
+}
+
 // q32_gain_for(): the taper
 
 TEST(Q32GainFor, FullVolumeIsUnitySoCallersCanSkipScalingEntirely) {
@@ -115,9 +141,9 @@ TEST(ApplyVolume, SilenceZeroesEveryDepth) {
 }
 
 TEST(ApplyVolume, SixteenBitScalesSymmetrically) {
-    std::vector<int16_t> samples = {32767, 1000, 0, -1000, -32768};
-    apply_volume(reinterpret_cast<uint8_t*>(samples.data()), samples.size() * sizeof(int16_t), 2,
-                 Q32_ONE / 4);
+    std::vector<uint8_t> data = packed_le<int16_t>({32767, 1000, 0, -1000, -32768});
+    apply_volume(data.data(), data.size(), 2, Q32_ONE / 4);
+    const std::vector<int16_t> samples = unpacked_le<int16_t>(data);
 
     EXPECT_EQ(samples[1], 250);
     EXPECT_EQ(samples[2], 0);
@@ -146,9 +172,9 @@ TEST(ApplyVolume, TwentyFourBitSignExtendsBeforeScaling) {
 }
 
 TEST(ApplyVolume, ThirtyTwoBitQuartersWithoutOverflowing) {
-    std::vector<int32_t> samples = {INT32_MAX, INT32_MIN, 4000, -4000};
-    apply_volume(reinterpret_cast<uint8_t*>(samples.data()), samples.size() * sizeof(int32_t), 4,
-                 Q32_ONE / 4);
+    std::vector<uint8_t> data = packed_le<int32_t>({INT32_MAX, INT32_MIN, 4000, -4000});
+    apply_volume(data.data(), data.size(), 4, Q32_ONE / 4);
+    const std::vector<int32_t> samples = unpacked_le<int32_t>(data);
 
     EXPECT_EQ(samples[2], 1000);
     EXPECT_EQ(samples[3], -1000);
@@ -247,10 +273,10 @@ TEST(ApplyVolumeRamp, EveryChannelOfOneFrameGetsTheSameGain) {
     // Per frame, not per sample: channels of one frame share a gain.
     constexpr uint8_t CHANNELS = 4;
     constexpr size_t FRAMES = 64;
-    std::vector<int16_t> samples(FRAMES * CHANNELS, 20000);
+    std::vector<uint8_t> data = packed_le(std::vector<int16_t>(FRAMES * CHANNELS, 20000));
     // A slow ramp, so the gain really is different from one frame to the next.
-    apply_volume_ramp(reinterpret_cast<uint8_t*>(samples.data()), samples.size() * sizeof(int16_t),
-                      2, CHANNELS, 0, Q32_ONE, Q32_ONE / 512);
+    apply_volume_ramp(data.data(), data.size(), 2, CHANNELS, 0, Q32_ONE, Q32_ONE / 512);
+    const std::vector<int16_t> samples = unpacked_le<int16_t>(data);
 
     for (size_t frame = 0; frame < FRAMES; ++frame) {
         for (uint8_t channel = 1; channel < CHANNELS; ++channel) {
@@ -294,12 +320,12 @@ TEST(ApplyVolumeRamp, AStartEqualToTheEndAgreesWithApplyVolume) {
 TEST(ApplyVolumeRamp, ReachingTheTargetMidBufferScalesTheRestAtTheTarget) {
     // Pins the switch to the one-pass tail at the right sample.
     constexpr size_t FRAMES = 200;
-    std::vector<int16_t> ramped(FRAMES, 8000);
-    std::vector<int16_t> expected = ramped;
+    const std::vector<int16_t> expected(FRAMES, 8000);
+    std::vector<uint8_t> data = packed_le(expected);
 
     const uint64_t step = Q32_ONE / 50;  // reaches unity from silence in 50 frames
-    apply_volume_ramp(reinterpret_cast<uint8_t*>(ramped.data()), ramped.size() * sizeof(int16_t), 2,
-                      1, 0, Q32_ONE, step);
+    apply_volume_ramp(data.data(), data.size(), 2, 1, 0, Q32_ONE, step);
+    const std::vector<int16_t> ramped = unpacked_le<int16_t>(data);
 
     // Frames 50 onwards are at unity, which for signed PCM is the identity.
     for (size_t frame = 50; frame < FRAMES; ++frame) {
