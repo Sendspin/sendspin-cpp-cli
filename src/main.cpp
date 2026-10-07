@@ -117,6 +117,8 @@ const char* pair_abort_reason(sendspin::SendspinPairAbortReason reason) {
 struct PairingListener : sendspin::SendspinClientListener {
     void on_trust_changed(sendspin::ConnectionTrust trust) override {
         this->trust_ = trust;
+        // A new handshake: an attempt the last connection dropped never reported its end.
+        this->server_id_.clear();
         log_line(LogLevel::INFO, LOG_TAG, "Connected server is %s",
                  trust == sendspin::ConnectionTrust::USER ? "paired" : "not paired");
     }
