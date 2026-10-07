@@ -54,10 +54,13 @@ void apply_volume(uint8_t* data, size_t len, uint8_t bytes_per_sample, uint64_t 
         }
         case 2: {
             const size_t count = len / 2;
-            auto* samples = reinterpret_cast<int16_t*>(data);
             for (size_t i = 0; i < count; ++i) {
-                const int64_t s = static_cast<int64_t>(samples[i]) * s_scale + ROUND_TERM;
-                samples[i] = static_cast<int16_t>(s >> FRAC_BITS);
+                uint8_t* p = data + (i * 2);
+                const auto sample = static_cast<int16_t>(p[0] | (p[1] << 8));
+                const int64_t s = static_cast<int64_t>(sample) * s_scale + ROUND_TERM;
+                const auto out = static_cast<int16_t>(s >> FRAC_BITS);
+                p[0] = static_cast<uint8_t>(out & 0xFF);
+                p[1] = static_cast<uint8_t>((out >> 8) & 0xFF);
             }
             break;
         }
@@ -79,10 +82,17 @@ void apply_volume(uint8_t* data, size_t len, uint8_t bytes_per_sample, uint64_t 
         }
         case 4: {
             const size_t count = len / 4;
-            auto* samples = reinterpret_cast<int32_t*>(data);
             for (size_t i = 0; i < count; ++i) {
-                const int64_t s = static_cast<int64_t>(samples[i]) * s_scale + ROUND_TERM;
-                samples[i] = static_cast<int32_t>(s >> FRAC_BITS);
+                uint8_t* p = data + (i * 4);
+                const auto sample = static_cast<int32_t>(
+                    static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
+                    (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24));
+                const int64_t s = static_cast<int64_t>(sample) * s_scale + ROUND_TERM;
+                const auto out = static_cast<int32_t>(s >> FRAC_BITS);
+                p[0] = static_cast<uint8_t>(out & 0xFF);
+                p[1] = static_cast<uint8_t>((out >> 8) & 0xFF);
+                p[2] = static_cast<uint8_t>((out >> 16) & 0xFF);
+                p[3] = static_cast<uint8_t>((out >> 24) & 0xFF);
             }
             break;
         }

@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 /// Checks apply_volume() against little-endian bytes; standalone so it cross-compiles for a
 /// big-endian target without GoogleTest. Exits non-zero on any mismatch.
 
@@ -61,9 +60,9 @@ int mismatches(uint8_t width, uint64_t gain) {
 
     int bad = 0;
     for (size_t i = 0; i < samples.size(); ++i) {
-        const int64_t want =
-            ((static_cast<int64_t>(samples[i]) * static_cast<int64_t>(gain)) + (INT64_C(1) << 31)) >>
-            32;
+        const int64_t want = ((static_cast<int64_t>(samples[i]) * static_cast<int64_t>(gain)) +
+                              (INT64_C(1) << 31)) >>
+                             32;
         if (get_le(&data[i * width], width) != want) {
             ++bad;
         }
