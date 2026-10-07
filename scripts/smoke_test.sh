@@ -631,8 +631,11 @@ check_output_delay() {
     local pairing_token
     pairing_token="$(XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" pair-token --port "$PORT_DELAY" \
         "${NO_CONFIG[@]}" 2>&1)" || fail "pair-token exited $?: $pairing_token"
-    [ "${#pairing_token}" -eq 107 ] && [ "${pairing_token#SP:}" != "$pairing_token" ] ||
+    if [ "${#pairing_token}" -eq 107 ] && [ "${pairing_token#SP:}" != "$pairing_token" ]; then
+        :
+    else
         fail "pair-token printed no 107-character SP: token"
+    fi
     XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" pair cancel --port "$PORT_DELAY" "${NO_CONFIG[@]}" \
         >/dev/null 2>&1 || fail "pair cancel exited $? with no attempt waiting"
 
