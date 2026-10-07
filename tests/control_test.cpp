@@ -614,6 +614,21 @@ TEST(ControlRefusal, RelativeSeekIsNotBoundedBySeekMax) {
 
 // The status block
 
+TEST(FormatStatus, ThereIsNoInputLineWithoutAnInput) {
+    EXPECT_EQ(field(format_status(playing_snapshot()), "input"), "");
+}
+
+TEST(FormatStatus, TheInputLineNamesTheDeviceItsFormatAndWhetherItStreams) {
+    StatusSnapshot snapshot = playing_snapshot();
+    snapshot.input = "hw:1,0";
+    snapshot.input_format = {48000, 1, 16};
+    EXPECT_EQ(field(format_status(snapshot), "input"), "hw:1,0 (48000 Hz / 1 ch / 16-bit), idle");
+
+    snapshot.input_streaming = true;
+    EXPECT_EQ(field(format_status(snapshot), "input"),
+              "hw:1,0 (48000 Hz / 1 ch / 16-bit), streaming");
+}
+
 TEST(FormatStatus, EveryFieldIsPresentAndLabelled) {
     const std::string block = format_status(playing_snapshot());
     EXPECT_EQ(field(block, "name"), "living-room");

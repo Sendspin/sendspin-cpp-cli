@@ -81,13 +81,15 @@ enum class Opt : unsigned {
     ProductName,    ///< --product-name
     AudioFormat,    ///< --audio-format
     AllowUnpaired,  ///< --allow-unpaired
+    Input,          ///< --input
 };
 
 /// Everything the flag surface configures.
 struct Options {
     std::string device{DEFAULT_OUTPUT_DEVICE};  ///< -o <device>: audio output backend
-    bool list_devices{false};                   ///< -l: list output devices and exit
-    std::string name;  ///< -n <name>: friendly name; defaults to the hostname
+    bool list_devices{false};                   ///< -l: list audio devices and exit
+    std::string input;  ///< --input <device>: capture device to stream; empty adds no source role
+    std::string name;   ///< -n <name>: friendly name; defaults to the hostname
 
     /// --manufacturer / --product-name <text>: device info sent in `client/hello`.
     std::string manufacturer{"sendspin-cpp-cli"};

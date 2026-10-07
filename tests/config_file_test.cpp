@@ -209,6 +209,19 @@ TEST(ConfigPrecedence, AConfigValueBeatsTheBuiltInDefault) {
     EXPECT_EQ(parse.options().config_path, config);
 }
 
+TEST(ConfigPrecedence, InputIsSettableAndCheckedLikeTheFlag) {
+    ScratchDir scratch;
+    ASSERT_TRUE(scratch.created());
+
+    Parse good({}, scratch.write("good", "input = tone\n"));
+    ASSERT_TRUE(good.ok()) << good.diagnostics();
+    EXPECT_EQ(good.options().input, "tone");
+
+    Parse bad({}, scratch.write("bad", "input = tone:hw:0\n"));
+    EXPECT_FALSE(bad.ok());
+    EXPECT_NE(bad.diagnostics().find("takes no device"), std::string::npos);
+}
+
 TEST(ConfigPrecedence, TheCommandLineBeatsAConfigValue) {
     ScratchDir scratch;
     ASSERT_TRUE(scratch.created());
