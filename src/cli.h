@@ -82,6 +82,7 @@ enum class Opt : unsigned {
     AudioFormat,    ///< --audio-format
     AllowUnpaired,  ///< --allow-unpaired
     Input,          ///< --input
+    PairingCode,    ///< --pairing-code
 };
 
 /// Everything the flag surface configures.
@@ -112,6 +113,9 @@ struct Options {
 
     /// --allow-unpaired: let a server play without pairing first.
     bool allow_unpaired{false};
+
+    /// --pairing-code <8 digits>: the static pairing code; empty offers the dynamic code instead.
+    std::string pairing_code;
 
     /// --no-mdns: do not advertise `_sendspin._tcp`.
     bool no_mdns{false};

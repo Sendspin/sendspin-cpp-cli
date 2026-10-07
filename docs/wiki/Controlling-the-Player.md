@@ -10,6 +10,7 @@ name: living-room
 client id: fLNgT-h015The-sALW0IVza7J0FThgDU1leu1MLDww4
 server: Music Assistant (connected)
 trust: paired
+pairing: none
 state: playing
 stream: receiving
 track: Nils Frahm - Says
@@ -49,11 +50,13 @@ is also what lets `seek-rel -5000` be an offset rather than a flag cluster.
 | `repeat` | `off\|one\|all` | set the repeat mode |
 | `shuffle` | `on\|off` | turn shuffle on or off |
 | `switch` | | move this player through the groups available to it |
+| `pair-token` | | print this player's pairing token — **answered locally** |
+| `pair` | `confirm\|cancel` | allow or refuse a pairing attempt that is waiting — **answered locally** |
 | `delay` | `<0-5000>` | this endpoint's output delay — **answered locally** |
 
-Twelve of those go out to the server as `controller@v1` commands. Two never leave the host:
-`status`, formatted from the daemon's own view, and `delay`, which drives this endpoint's
-own player role.
+Twelve of those go out to the server as `controller@v1` commands. Four never leave the host:
+`status`, formatted from the daemon's own view, `delay`, which drives this endpoint's own
+player role, and `pair-token` and `pair`, which are [Pairing a Player](Pairing-a-Player).
 
 ## Three that are easy to misread
 
@@ -102,6 +105,8 @@ above `output:` says so, and appears whenever a server is connected.
   from the last progress the server sent. After a seek the server does not re-report, the
   estimate drifts by however far you jumped. Paused, it is the server's own snapshot and
   carries no marker.
+- **`pairing` is `none` unless a server is pairing right now.** While one is, a
+  `pairing code` or `pairing window` line follows it; see [Pairing a Player](Pairing-a-Player).
 - **`player volume` is the gain this box's output is applying**, and says
   `(default; no server has set it)` until a server sends a volume command — which is how you
   tell "nobody has set this" from a server that chose full output.
@@ -147,7 +152,7 @@ world-writable, and a socket there would let any local user pause your music.
 
 | Status | Means |
 |---|---|
-| `0` | sent, or answered locally (`status`, `delay`) |
+| `0` | sent, or answered locally (`status`, `delay`, `pair-token`, `pair`) |
 | `1` | the command line did not parse (`vol 500`, `delay 5001`) |
 | `2` | the player refused the argument (a `seek` past the server's `seek_max_ms`) |
 | `3` | **nothing is listening on that socket** — no player, or the wrong `--port` |
@@ -161,8 +166,8 @@ and `5` especially — a dropped connection *empties* the server's advertised co
 collapsing them would answer "pause is not supported" when the truth is that nothing is
 connected.
 
-`status` and `delay` are never refused by any of them: nothing about either is sent, so a
-missing connection is no obstacle. A disconnected player is exactly when reading `status` is
+`status`, `delay`, `pair-token` and `pair` are never refused by any of them: nothing about
+them is sent, so a missing connection is no obstacle. A disconnected player is exactly when reading `status` is
 worth doing.
 
 ```bash

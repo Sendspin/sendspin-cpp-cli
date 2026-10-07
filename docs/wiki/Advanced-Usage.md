@@ -159,6 +159,7 @@ product that embeds this player and should be listed as itself.
 Every connection is encrypted, and a server has to **pair** with the player before it may
 play on it. A server that has not paired can still connect, but stays idle; the `trust` line
 of `sendspin-cli status` reads `paired` or `unpaired` for the server connected now.
+[Pairing a Player](Pairing-a-Player) walks through the three ways to pair.
 
 `--allow-unpaired` (or `allow-unpaired = true`) lets any server on the network play without
 pairing. It is off by default, and the player says so once at startup:

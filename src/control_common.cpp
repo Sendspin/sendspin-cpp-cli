@@ -95,6 +95,9 @@ bool parse_on_off(const std::string& text, bool& value) {
     return false;
 }
 
+/// The values `pair` takes.
+constexpr const char* CONFIRM_CANCEL = "confirm|cancel";
+
 /// Reads `off`, `one` or `all`.
 bool parse_repeat_mode(const std::string& text, SendspinRepeatMode& mode) {
     if (text == "off") {
@@ -200,6 +203,13 @@ const std::vector<ControlSubcommand>& control_subcommands() {
         {"switch", ControlCommand::Switch, 0, nullptr,
          "Move this player through the groups available to it. Not a source selector: per the "
          "spec's switch cycle it re-homes this client between groups"},
+        {"pair-token", ControlCommand::PairToken, 0, nullptr,
+         "Print this player's pairing token, to paste into a server that is setting it up. "
+         "Treat it as a password: whoever holds it can pair a server with this player"},
+        {"pair", ControlCommand::Pair, 1, CONFIRM_CANCEL,
+         "Answer a pairing attempt that is waiting on this player: 'confirm' lets it go ahead "
+         "and keeps the pairing window open for 5 minutes, 'cancel' refuses it and closes the "
+         "window"},
         {"delay", ControlCommand::Delay, 1, "<0-5000>",
          "Tell *this* endpoint how much latency its hardware adds after the audio port -- an "
          "amplifier, an external speaker. The player then hands audio over that much earlier, so "
@@ -340,6 +350,13 @@ bool parse_control_request(const std::string& name, const std::vector<std::strin
             out.repeat = mode;
             return true;
         }
+        case ControlCommand::Pair: {
+            if (value != "confirm" && value != "cancel") {
+                return reject(std::string("'confirm' or 'cancel'"));
+            }
+            out.confirm = value == "confirm";
+            return true;
+        }
         case ControlCommand::Status:
         case ControlCommand::Play:
         case ControlCommand::Pause:
@@ -347,6 +364,7 @@ bool parse_control_request(const std::string& name, const std::vector<std::strin
         case ControlCommand::Next:
         case ControlCommand::Previous:
         case ControlCommand::Switch:
+        case ControlCommand::PairToken:
             break;
     }
     // Only a table bug reaches here.
@@ -368,6 +386,8 @@ std::string encode_control_request(const ControlRequest& request) {
         line += std::string(" ") + repeat_mode_name(*request.repeat);
     } else if (request.delay_ms.has_value()) {
         line += " " + std::to_string(static_cast<unsigned>(*request.delay_ms));
+    } else if (request.confirm.has_value()) {
+        line += *request.confirm ? " confirm" : " cancel";
     }
     return line;
 }
@@ -398,6 +418,8 @@ bool split_control_line(const std::string& line, std::string& name,
 std::optional<SendspinControllerCommand> protocol_command(const ControlRequest& request) {
     switch (request.command) {
         case ControlCommand::Status:
+        case ControlCommand::PairToken:
+        case ControlCommand::Pair:
             return std::nullopt;
         case ControlCommand::Delay:
             // Set on the player role, which republishes client/state itself.
@@ -520,6 +542,19 @@ std::string format_status(const StatusSnapshot& snapshot) {
     } else {
         append_line(out, "trust",
                     *snapshot.trust == sendspin::ConnectionTrust::USER ? "paired" : "unpaired");
+    }
+
+    append_line(out, "pairing",
+                snapshot.pairing_server_id.empty()
+                    ? "none"
+                    : "in progress with " + snapshot.pairing_server_id);
+    if (!snapshot.pairing_code.empty()) {
+        append_line(out, "pairing code", snapshot.pairing_code);
+    }
+    if (snapshot.pairing_window_open) {
+        append_line(out, "pairing window",
+                    "open -- run 'sendspin-cli pair confirm' to let the server pair, or "
+                    "'sendspin-cli pair cancel' to refuse it");
     }
 
     // playback_speed is per-mille: 1000 is normal, 0 is paused.

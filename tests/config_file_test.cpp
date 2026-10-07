@@ -275,6 +275,19 @@ TEST(ConfigPrecedence, AllowUnpairedIsSettableAndOffByDefault) {
     EXPECT_FALSE(defaulted.options().allow_unpaired);
 }
 
+TEST(ConfigPrecedence, PairingCodeIsSettableAndLosesToTheCommandLine) {
+    ScratchDir scratch;
+    ASSERT_TRUE(scratch.created());
+    const std::string config = scratch.write("config", "pairing-code = 01234567\n");
+
+    Parse from_file({}, config);
+    Parse overridden({"--pairing-code", "76543210"}, config);
+    ASSERT_TRUE(from_file.ok()) << from_file.diagnostics();
+    ASSERT_TRUE(overridden.ok()) << overridden.diagnostics();
+    EXPECT_EQ(from_file.options().pairing_code, "01234567");
+    EXPECT_EQ(overridden.options().pairing_code, "76543210");
+}
+
 TEST(ConfigPrecedence, OutputDelayIsSettableAndLosesToTheCommandLine) {
     ScratchDir scratch;
     ASSERT_TRUE(scratch.created());
@@ -411,6 +424,9 @@ TEST(ConfigRefusals, ABadValueGetsTheFlagsOwnMessagePrefixedWithTheLine) {
              {"name =", "-n needs a non-empty value"},
              {"no-mdns = perhaps", "invalid --no-mdns 'perhaps'"},
              {"allow-unpaired = perhaps", "invalid --allow-unpaired 'perhaps'"},
+             {"pairing-code = 1234567", "invalid --pairing-code -- expected exactly 8 digits"},
+             {"pairing-code = 12345678x", "invalid --pairing-code -- expected exactly 8 digits"},
+             {"pairing-code =", "invalid --pairing-code -- expected exactly 8 digits"},
              {"id = kitchen-left", "--id is no longer supported"},
          }) {
         ScratchDir scratch;

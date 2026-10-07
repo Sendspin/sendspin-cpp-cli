@@ -58,6 +58,7 @@ already does that.
 | `audio-format` | `--audio-format` | preferred formats, comma-separated in priority order: `codec:rate:depth:channels[,...]`, e.g. `flac:48000:24:2,pcm:48000:24:2`; offered first in that order, with the rest of the advertised list still behind them, so a server that cannot encode them falls back — a preference, not a restriction; refuses to start if the advertised list does not carry every one — it carries a single channel count — and an `opus` entry at anything but 48000/16 and at most 2 channels is refused outright | none — device-derived order |
 | `output-delay` | `--output-delay` | latency this endpoint's hardware adds after the audio port, 0–5000. `static-delay` / `--static-delay` is still accepted as the old name | `0` |
 | `allow-unpaired` | `--allow-unpaired` | `true`/`false` — let a server that has not paired with this player play on it | `false` |
+| `pairing-code` | `--pairing-code` | exactly 8 digits — a static code a server can pair with, confirmed each time with `sendspin-cli pair confirm`; replaces the 6-digit code the player otherwise shows. See [Pairing a Player](Pairing-a-Player#3-static-code) | none |
 | `no-mdns` | `--no-mdns` | `true`/`false` — do not advertise `_sendspin._tcp` | `false` |
 | `mdns-name` | `--mdns-name` | the instance label to advertise, when it should differ from `name` | `name` |
 | `control-socket` | `--control-socket` | the Unix socket the subcommands talk to | `$XDG_RUNTIME_DIR/sendspin-cli-<port>.sock` |

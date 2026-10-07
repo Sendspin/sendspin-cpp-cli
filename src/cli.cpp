@@ -69,6 +69,7 @@ enum LongOnly {
     OPT_AUDIO_FORMAT,
     OPT_ALLOW_UNPAIRED,
     OPT_INPUT,
+    OPT_PAIRING_CODE,
 };
 
 /// An option a config file may set: its key (the long flag name) and how diagnostics name it.
@@ -107,6 +108,7 @@ const std::vector<SettableOption>& settable_options() {
         {Opt::ProductName, "product-name", "--product-name"},
         {Opt::AudioFormat, "audio-format", "--audio-format"},
         {Opt::AllowUnpaired, "allow-unpaired", "--allow-unpaired"},
+        {Opt::PairingCode, "pairing-code", "--pairing-code"},
     };
     return table;
 }
@@ -405,6 +407,14 @@ bool apply_option(const SettableOption& option, const std::string& value, Option
                 return false;
             }
             break;
+        case Opt::PairingCode:
+            // The value is a credential, so the message does not repeat it.
+            if (value.size() != 8 || value.find_first_not_of("0123456789") != std::string::npos) {
+                error = "invalid --pairing-code -- expected exactly 8 digits";
+                return false;
+            }
+            out.pairing_code = value;
+            break;
         case Opt::NoControl:
             if (!parse_bool(value, out.no_control)) {
                 error = "invalid --no-control '" + value + "' -- expected true or false";
@@ -560,6 +570,7 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
         {"product-name", required_argument, nullptr, OPT_PRODUCT_NAME},
         {"audio-format", required_argument, nullptr, OPT_AUDIO_FORMAT},
         {"allow-unpaired", no_argument, nullptr, OPT_ALLOW_UNPAIRED},
+        {"pairing-code", required_argument, nullptr, OPT_PAIRING_CODE},
         {nullptr, 0, nullptr, 0},
     };
 
@@ -698,6 +709,9 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
                 break;
             case OPT_ALLOW_UNPAIRED:
                 apply(Opt::AllowUnpaired, "true");
+                break;
+            case OPT_PAIRING_CODE:
+                apply(Opt::PairingCode, optarg);
                 break;
             case OPT_MANUFACTURER:
                 apply(Opt::Manufacturer, optarg);
@@ -838,7 +852,7 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
             Opt::NoMdns,       Opt::MdnsName,    Opt::NoControl,   Opt::StateDir,
             Opt::OutputDelay,  Opt::HookStart,   Opt::HookStop,    Opt::ClientId,
             Opt::Manufacturer, Opt::ProductName, Opt::AudioFormat, Opt::AllowUnpaired,
-            Opt::Input,
+            Opt::Input,        Opt::PairingCode,
         };
         for (Opt opt : DAEMON_ONLY) {
             if (out.was_given(opt)) {
@@ -1030,6 +1044,14 @@ void print_usage(std::FILE* out, const char* prog) {
     std::fprintf(out, "                Let a server that has not paired with this player play\n");
     std::fprintf(out, "                on it. Off by default: every connection is encrypted,\n");
     std::fprintf(out, "                and an unpaired server can connect but not play\n");
+    std::fprintf(out, "  --pairing-code <8 digits>\n");
+    std::fprintf(out, "                A fixed code a server can pair with, for a player with\n");
+    std::fprintf(out, "                no screen to read a fresh one from. Exactly 8 digits;\n");
+    std::fprintf(out, "                pick them at random, per player. Every attempt waits\n");
+    std::fprintf(out, "                for 'sendspin-cli pair confirm'. Replaces the 6-digit\n");
+    std::fprintf(out, "                code the player otherwise logs when a server asks to\n");
+    std::fprintf(out, "                pair. Prefer 'pairing-code =' in the config file: a\n");
+    std::fprintf(out, "                flag is visible to every local user in 'ps'\n");
     std::fprintf(out, "  --no-mdns     Do not advertise over mDNS (no effect with -s, which\n");
     std::fprintf(out, "                already suppresses it)\n");
     std::fprintf(out, "  --mdns-name <name>\n");
