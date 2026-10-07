@@ -137,12 +137,12 @@ std::string default_sink_name(PulseConnection& conn) {
 
 }  // namespace
 
-bool await_query(PulseConnection& conn, PulseQuery& query, pa_operation* op) {
+bool await_query(PulseConnection& conn, PulseQuery& query, pa_operation* op, int timeout_ms) {
     if (op == nullptr) {
         return false;
     }
     const bool answered =
-        conn.wait_for([&query] { return query.done.load(std::memory_order_acquire); });
+        conn.wait_for([&query] { return query.done.load(std::memory_order_acquire); }, timeout_ms);
     {
         const MainloopLock lock(conn.mainloop());
         if (!answered) {

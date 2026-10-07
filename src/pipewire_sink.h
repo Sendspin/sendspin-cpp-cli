@@ -102,8 +102,10 @@ struct PipeWireNode {
 
 /// Walks the daemon's registry once on a private loop for nodes of any of `media_classes`.
 /// Needs a live PipeWireGuard.
+/// @param timeout_ms PIPEWIRE_RECOVERY_TIMEOUT_MS on paths a stop must not wait behind.
 bool pipewire_list_nodes(std::initializer_list<const char*> media_classes,
-                         std::vector<PipeWireNode>& out, std::string& error);
+                         std::vector<PipeWireNode>& out, std::string& error,
+                         int timeout_ms = PIPEWIRE_TIMEOUT_S * 1000);
 
 /// An AudioSink that plays through a PipeWire graph; `-o pipewire:` a node name or empty.
 /// process() reads the ring and format fields unlocked: change them only while disconnected.

@@ -95,7 +95,8 @@ void server_info_cb(pa_context* /*context*/, const pa_server_info* info, void* u
 }
 
 /// Asks the server for every source it has, monitors included. The mainloop lock must NOT be held.
-bool list_sources(PulseConnection& conn, std::vector<PulseSourceInfo>& out) {
+bool list_sources(PulseConnection& conn, std::vector<PulseSourceInfo>& out,
+                  int timeout_ms = PULSE_TIMEOUT_MS) {
     SourceListQuery query;
     query.conn = &conn;
     pa_operation* op = nullptr;
@@ -103,15 +104,14 @@ bool list_sources(PulseConnection& conn, std::vector<PulseSourceInfo>& out) {
         const MainloopLock lock(conn.mainloop());
         op = pa_context_get_source_info_list(conn.context(), source_info_cb, &query);
     }
-    if (!await_query(conn, query, op)) {
+    if (!await_query(conn, query, op, timeout_ms)) {
         return false;
     }
     out = std::move(query.sources);
     return true;
 }
 
-/// Asks the server which source it calls default. Empty when it will not say. Lock must NOT be
-/// held.
+/// The source the server calls default, or empty. The mainloop lock must NOT be held.
 std::string default_source_name(PulseConnection& conn) {
     DefaultSourceQuery query;
     query.conn = &conn;
@@ -164,9 +164,9 @@ void PulseAudioSource::list_devices(std::FILE* out) {
     }
 }
 
-bool PulseAudioSource::find_source_(std::string& error) {
+bool PulseAudioSource::find_source_(std::string& error, int timeout_ms) {
     std::vector<PulseSourceInfo> sources;
-    if (!list_sources(this->conn_, sources)) {
+    if (!list_sources(this->conn_, sources, timeout_ms)) {
         error = "cannot list the sources on " + this->conn_.server_name();
         return false;
     }
@@ -181,7 +181,8 @@ bool PulseAudioSource::find_source_(std::string& error) {
 }
 
 bool PulseAudioSource::negotiate(StreamFormat& format, std::string& error) {
-    if (!this->conn_.connect(error) || (!this->device_.empty() && !this->find_source_(error))) {
+    if (!this->conn_.connect(error) ||
+        (!this->device_.empty() && !this->find_source_(error, PULSE_TIMEOUT_MS))) {
         error += " -- run with -l to list this host's capture devices";
         return false;
     }
@@ -210,7 +211,7 @@ bool PulseAudioSource::open(const StreamFormat& format) {
     }
     // pipewire-pulse records from the default when the named source is missing.
     std::string error;
-    if (!this->device_.empty() && !this->find_source_(error)) {
+    if (!this->device_.empty() && !this->find_source_(error, PULSE_RECOVERY_TIMEOUT_MS)) {
         cli_log(LogLevel::ERROR, "pulse: %s", error.c_str());
         return false;
     }
@@ -345,12 +346,10 @@ int PulseAudioSource::read(uint8_t* data, size_t length, uint32_t timeout_ms,
     // Cleared before the server is asked, so a fragment landing in between still ends the wait.
     this->readable_.store(false);
     int bytes = this->drain_(data, length, capture_time_us);
-    if (bytes == 0 && this->conn_.wait_for(
-                          [this] {
-                              return this->readable_.load() || this->lost_.load() ||
-                                     !this->conn_.ready();
-                          },
-                          static_cast<int>(timeout_ms))) {
+    if (bytes == 0 &&
+        this->conn_.wait_for(
+            [this] { return this->readable_.load() || this->lost_.load() || !this->conn_.ready(); },
+            static_cast<int>(timeout_ms))) {
         bytes = this->drain_(data, length, capture_time_us);
     }
     return bytes;

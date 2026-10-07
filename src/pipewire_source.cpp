@@ -61,9 +61,11 @@ spa_audio_format spa_format_for(uint8_t bit_depth) {
     }
 }
 
-/// Lists the graph's capture nodes, virtual ones included.
-bool list_source_nodes(std::vector<PipeWireNode>& out, std::string& error) {
-    return pipewire_list_nodes({"Audio/Source", "Audio/Source/Virtual"}, out, error);
+/// Lists the nodes a capture stream can link to.
+bool list_source_nodes(std::vector<PipeWireNode>& out, std::string& error,
+                       int timeout_ms = PIPEWIRE_TIMEOUT_S * 1000) {
+    return pipewire_list_nodes({"Audio/Source", "Audio/Source/Virtual", "Audio/Duplex"}, out, error,
+                               timeout_ms);
 }
 
 }  // namespace
@@ -99,15 +101,15 @@ void PipeWireAudioSource::list_devices(std::FILE* out) {
     }
 }
 
-bool PipeWireAudioSource::find_node_(std::string& error) const {
+bool PipeWireAudioSource::find_node_(std::string& error, int timeout_ms) const {
     std::vector<PipeWireNode> nodes;
-    if (!list_source_nodes(nodes, error)) {
+    if (!list_source_nodes(nodes, error, timeout_ms)) {
         return false;
     }
-    const bool found =
-        this->device_.empty() ||
-        std::any_of(nodes.begin(), nodes.end(),
-                    [this](const PipeWireNode& node) { return node.name == this->device_; });
+    const bool found = this->device_.empty() ||
+                       std::any_of(nodes.begin(), nodes.end(), [this](const PipeWireNode& node) {
+                           return node.name == this->device_;
+                       });
     if (!found) {
         error = "--input " + this->name() + ": this graph has no audio source node by that name";
     }
@@ -115,7 +117,7 @@ bool PipeWireAudioSource::find_node_(std::string& error) const {
 }
 
 bool PipeWireAudioSource::negotiate(StreamFormat& format, std::string& error) {
-    if (!this->find_node_(error)) {
+    if (!this->find_node_(error, PIPEWIRE_TIMEOUT_S * 1000)) {
         error += " -- run with -l to list this host's capture devices";
         return false;
     }
@@ -134,7 +136,7 @@ bool PipeWireAudioSource::open(const StreamFormat& format) {
     }
     // A named node that has gone would otherwise be swapped for the default by the session manager.
     std::string error;
-    if (!this->device_.empty() && !this->find_node_(error)) {
+    if (!this->device_.empty() && !this->find_node_(error, PIPEWIRE_RECOVERY_TIMEOUT_MS)) {
         cli_log(LogLevel::ERROR, "pipewire: %s", error.c_str());
         return false;
     }
@@ -151,13 +153,12 @@ bool PipeWireAudioSource::open(const StreamFormat& format) {
     this->bytes_per_frame_ =
         static_cast<size_t>(format.channels) * (static_cast<size_t>(format.bit_depth) / 8U);
     // The spare byte the ring keeps to tell full from empty.
-    this->ring_.reset((static_cast<size_t>(format.sample_rate) * RING_MS / 1000U *
-                       this->bytes_per_frame_) +
-                      1);
+    this->ring_.reset(
+        (static_cast<size_t>(format.sample_rate) * RING_MS / 1000U * this->bytes_per_frame_) + 1);
 
-    pw_properties* props = pw_properties_new(
-        PW_KEY_MEDIA_TYPE, "Audio", PW_KEY_MEDIA_CATEGORY, "Capture", PW_KEY_APP_NAME,
-        PIPEWIRE_APP_NAME, PW_KEY_NODE_NAME, PIPEWIRE_NODE_NAME, nullptr);
+    pw_properties* props = pw_properties_new(PW_KEY_MEDIA_TYPE, "Audio", PW_KEY_MEDIA_CATEGORY,
+                                             "Capture", PW_KEY_APP_NAME, PIPEWIRE_APP_NAME,
+                                             PW_KEY_NODE_NAME, PIPEWIRE_NODE_NAME, nullptr);
     if (props == nullptr) {
         cli_log(LogLevel::ERROR, "pipewire: cannot describe the input stream to the graph");
         this->close();
@@ -203,19 +204,21 @@ bool PipeWireAudioSource::open(const StreamFormat& format) {
         this->stream_ = pw_stream_new_simple(pw_thread_loop_get_loop(this->loop_),
                                              PIPEWIRE_APP_NAME, props, &events, this);
         if (this->stream_ != nullptr) {
-            const auto flags = static_cast<pw_stream_flags>(
-                PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS | PW_STREAM_FLAG_RT_PROCESS);
+            const auto flags = static_cast<pw_stream_flags>(PW_STREAM_FLAG_AUTOCONNECT |
+                                                            PW_STREAM_FLAG_MAP_BUFFERS |
+                                                            PW_STREAM_FLAG_RT_PROCESS);
             err = pw_stream_connect(this->stream_, PW_DIRECTION_INPUT, PW_ID_ANY, flags, params, 1);
         }
         if (err >= 0) {
             // PAUSED counts: the graph has taken the stream and starts it when a source is linked.
             timespec deadline{};
-            pw_thread_loop_get_time(this->loop_, &deadline,
-                                    static_cast<int64_t>(PIPEWIRE_RECOVERY_TIMEOUT_MS) * 1000 * 1000);
+            pw_thread_loop_get_time(
+                this->loop_, &deadline,
+                static_cast<int64_t>(PIPEWIRE_RECOVERY_TIMEOUT_MS) * 1000 * 1000);
             while (true) {
                 const auto state = static_cast<pw_stream_state>(this->stream_state_.load());
                 if (state == PW_STREAM_STATE_STREAMING || state == PW_STREAM_STATE_PAUSED ||
-                    state == PW_STREAM_STATE_ERROR) {
+                    this->lost_.load()) {
                     break;
                 }
                 if (pw_thread_loop_timed_wait_full(this->loop_, &deadline) != 0) {
@@ -279,13 +282,13 @@ void PipeWireAudioSource::stream_process_cb(void* userdata) {
             pw_time time{};
             if (pw_stream_get_time_n(self->stream_, &time, sizeof(time)) == 0 &&
                 time.rate.denom != 0) {
-                // `delay` is the newest frame's age; the first is older by this buffer and by
-                // what the converter still holds.
-                const double age_s = (static_cast<double>(time.delay) *
-                                      static_cast<double>(time.rate.num) /
-                                      static_cast<double>(time.rate.denom)) +
-                                     (static_cast<double>(time.buffered + frames) /
-                                      static_cast<double>(self->rate_));
+                // `delay` is the newest frame's age; the first is this buffer and the converter
+                // older.
+                const double age_s =
+                    (static_cast<double>(time.delay) * static_cast<double>(time.rate.num) /
+                     static_cast<double>(time.rate.denom)) +
+                    (static_cast<double>(time.buffered + frames) /
+                     static_cast<double>(self->rate_));
                 // `now` is CLOCK_MONOTONIC, which is what steady_clock reads here.
                 const int64_t first_us = (time.now / 1000) - static_cast<int64_t>(age_s * 1e6);
                 self->origin_us_.store(first_us - static_cast<int64_t>(self->frames_written_) *
@@ -324,10 +327,9 @@ int PipeWireAudioSource::read(uint8_t* data, size_t length, uint32_t timeout_ms,
     this->ring_.read(data, bytes);
 
     const int64_t origin_us = this->origin_us_.load();
-    capture_time_us =
-        (origin_us == 0)
-            ? 0
-            : origin_us + static_cast<int64_t>(this->frames_read_) * US_PER_S / this->rate_;
+    capture_time_us = (origin_us == 0) ? 0
+                                       : origin_us + static_cast<int64_t>(this->frames_read_) *
+                                                         US_PER_S / this->rate_;
     this->frames_read_ += bytes / this->bytes_per_frame_;
     return static_cast<int>(bytes);
 }

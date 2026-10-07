@@ -50,7 +50,7 @@ private:
     static void stream_read_cb(pa_stream* stream, size_t nbytes, void* userdata);
 
     /// Checks that the connected server has the named source.
-    bool find_source_(std::string& error);
+    bool find_source_(std::string& error, int timeout_ms);
 
     /// Copies out what the server has queued, without waiting.
     /// @return Bytes copied, 0 if nothing is queued, negative once the stream is lost.

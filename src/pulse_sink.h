@@ -130,7 +130,8 @@ struct PulseQuery {
 /// Waits for one query, cancelling it on timeout so a late callback cannot touch a dead `query`.
 /// The mainloop lock must NOT be held.
 /// @return true if the query completed and the server answered it.
-bool await_query(PulseConnection& conn, PulseQuery& query, pa_operation* op);
+bool await_query(PulseConnection& conn, PulseQuery& query, pa_operation* op,
+                 int timeout_ms = PULSE_TIMEOUT_MS);
 
 /// An AudioSink that plays through a PulseAudio server; `-o pulse:` a sink name or empty.
 /// Lock order is mutex_ then the mainloop lock; no libpulse callback takes mutex_.

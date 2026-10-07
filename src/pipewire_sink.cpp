@@ -144,7 +144,7 @@ constexpr pw_core_events CORE_EVENTS = [] {
 }  // namespace
 
 bool pipewire_list_nodes(std::initializer_list<const char*> media_classes,
-                         std::vector<PipeWireNode>& out, std::string& error) {
+                         std::vector<PipeWireNode>& out, std::string& error, int timeout_ms) {
     pw_thread_loop* loop = pw_thread_loop_new("sendspin-pw-scan", nullptr);
     if (loop == nullptr) {
         error = "cannot create a PipeWire loop";
@@ -182,8 +182,11 @@ bool pipewire_list_nodes(std::initializer_list<const char*> media_classes,
             pw_registry_add_listener(registry, &registry_hook, &REGISTRY_EVENTS, &walk);
             // A round trip, so the wait ends when the daemon has finished reporting.
             walk.sync_seq = pw_core_sync(core, PW_ID_CORE, 0);
+            timespec deadline{};
+            pw_thread_loop_get_time(loop, &deadline,
+                                    static_cast<int64_t>(timeout_ms) * 1000 * 1000);
             while (!walk.done) {
-                if (pw_thread_loop_timed_wait(loop, PIPEWIRE_TIMEOUT_S) != 0) {
+                if (pw_thread_loop_timed_wait_full(loop, &deadline) != 0) {
                     break;
                 }
             }
@@ -205,7 +208,7 @@ bool pipewire_list_nodes(std::initializer_list<const char*> media_classes,
         error = "the PipeWire daemon refused the registry walk: " + refusal;
     } else if (!answered) {
         error = "the PipeWire daemon did not finish listing its nodes within " +
-                std::to_string(PIPEWIRE_TIMEOUT_S) + " s";
+                std::to_string(timeout_ms) + " ms";
     }
 
     {

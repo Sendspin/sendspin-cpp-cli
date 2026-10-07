@@ -55,7 +55,7 @@ private:
     static void stream_process_cb(void* userdata);
 
     /// Checks that a daemon answers and has the named node.
-    bool find_node_(std::string& error) const;
+    bool find_node_(std::string& error, int timeout_ms) const;
 
     /// Declared first so it is destroyed last, after the stream and its loop.
     PipeWireGuard pw_;
