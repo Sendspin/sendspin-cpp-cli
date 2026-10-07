@@ -45,8 +45,8 @@ I cli: Connected server is paired
 ```
 
 The token is the same every time, across restarts, for as long as the state file is kept.
-While no server is paired the player also logs it once at startup, so on a fresh service it
-is in the journal:
+While no server is paired the player also logs it once at startup — to the terminal or the
+journal, never to a `--logfile` — so on a fresh service it is in the journal:
 
 ```console
 $ journalctl -u sendspin-cli | grep 'Pairing token'

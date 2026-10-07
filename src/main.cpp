@@ -825,7 +825,12 @@ int main(int argc, char* argv[]) {
 
     if (!state_store.has_pairing_record()) {
         const std::optional<std::string> token = client.pairing_token();
-        if (token.has_value()) {
+        // The logfile is world-readable, so the token only goes to the terminal or journal.
+        if (!opts.logfile.empty()) {
+            log_line(LogLevel::INFO, LOG_TAG,
+                     "No server is paired yet -- run 'sendspin-cli pair-token' for the token to "
+                     "paste into a server");
+        } else if (token.has_value()) {
             log_line(LogLevel::INFO, LOG_TAG,
                      "No server is paired yet. Pairing token, to paste into a server (keep it "
                      "private -- 'sendspin-cli pair-token' prints it again): %s",
