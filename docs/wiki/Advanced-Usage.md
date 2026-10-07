@@ -60,33 +60,47 @@ streams that audio to the server, for a turntable on a line-in or a microphone i
 ```bash
 sendspin-cli -n den --input default
 sendspin-cli -n den --input hw:1,0
+sendspin-cli -n den --input pipewire
+sendspin-cli -n den --input pulse:alsa_input.usb-mic.analog-stereo
 ```
 
 Nothing is captured until the server starts the source, and the device is released again
 when the server stops it. Without `--input` the player does not offer the source role at
 all.
 
-`sendspin-cli -l` lists capture devices in their own section, under the outputs, with the
-rates, formats and channel counts each takes. `--input` reads its argument the way `-o`
-does: `alsa:<device>`, or a bare ALSA name such as `default`, `hw:1,0` or `plughw:1,0`.
-Two names need no sound card: `tone` streams a 440 Hz test tone, which checks the path to
-the server without a microphone, and `null` streams silence.
+`sendspin-cli -l` lists capture devices in their own section, under the outputs: ALSA
+PCMs with the rates, formats and channel counts each takes, then the PulseAudio sources
+and PipeWire source nodes. `--input` reads its argument the way `-o` does:
+
+- `alsa:<device>`, or a bare ALSA name such as `default`, `hw:1,0` or `plughw:1,0`.
+- `pulse:<source>` for a PulseAudio source, or `pulse` alone for the server's default.
+- `pipewire:<node>` for a PipeWire source node, or `pipewire` alone for the graph's
+  default. `pulse:default` and `pipewire:default` mean the same as the bare names.
+- `tone` and `null`, which need no sound card: `tone` streams a 440 Hz test tone, which
+  checks the path to the server without a microphone, and `null` streams silence.
+
+On a desktop, prefer `pulse` or `pipewire` to a `hw:` name: the sound server shares the
+card with other programs, where a `hw:` device is held exclusively.
 
 The capture format is chosen once at startup: 48000 Hz, stereo, 16-bit if the device
-takes it, otherwise the nearest it does take — a mono microphone is sent as mono. The
-startup log and `sendspin-cli status` both show what was chosen:
+takes it, otherwise the nearest it does take — a mono microphone is sent as mono. A sound
+server converts, so a capture through `pulse` or `pipewire` always runs at 48000 Hz,
+stereo, 16-bit. The startup log and `sendspin-cli status` both show what was chosen:
 
 ```text
 input: hw:1,0 (48000 Hz / 2 ch / 16-bit), streaming
 ```
 
-A device that cannot be opened — a wrong name, or a card another program holds — stops
-the player at startup with an error naming it. A device unplugged mid-stream is logged
-and reopened when it comes back; playback is not affected.
+A device that cannot be opened — a wrong name, a card another program holds, or a sound
+server that is not running — stops the player at startup with an error naming it. A
+device unplugged mid-stream, or a sound server that restarts, is logged and reopened when
+it comes back; playback is not affected. A named PulseAudio source or PipeWire node is
+never swapped for the default while it is away.
 
-Capture through PulseAudio, PipeWire, CoreAudio or PortAudio is not available yet, so
-capturing from a sound card needs a build with ALSA; `tone` and `null` work in any build.
-ALSA's own `pulse` and `pipewire` PCMs still work: `--input alsa:pulse`.
+Capture through CoreAudio or PortAudio is not available yet, so capturing from a sound
+card needs a build with ALSA, PulseAudio or PipeWire; `tone` and `null` work in any
+build. A build without the PulseAudio or PipeWire backend can still reach that server
+through ALSA's own PCMs: `--input alsa:pulse`, `--input alsa:pipewire`.
 
 ## Logging and background operation
 
