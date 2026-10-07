@@ -147,6 +147,8 @@ TEST(ControlSubcommands, EveryProtocolCommandIsReachable) {
             arguments = {{"off"}, {"one"}, {"all"}};
         } else if (std::string(subcommand.argument) == "on|off") {
             arguments = {{"on"}, {"off"}};
+        } else if (std::string(subcommand.argument) == "confirm|cancel") {
+            arguments = {{"confirm"}, {"cancel"}};
         } else {
             arguments.push_back({"0"});
         }
@@ -320,6 +322,29 @@ TEST(ParseControlRequest, DelayDispatchesNothingAndIsNeverSentToTheServer) {
         << "the fallback changed -- the dispatcher's Delay branch is what keeps this unreachable";
 }
 
+TEST(ParseControlRequest, PairTakesConfirmOrCancel) {
+    EXPECT_EQ(parsed("pair", {"confirm"}).confirm, true);
+    EXPECT_EQ(parsed("pair", {"cancel"}).confirm, false);
+    EXPECT_EQ(encode_control_request(parsed("pair", {"confirm"})), "pair confirm");
+    EXPECT_EQ(encode_control_request(parsed("pair", {"cancel"})), "pair cancel");
+
+    ControlRequest request;
+    std::string error;
+    for (const char* value : {"", "yes", "on", "Confirm", "confirm ", "open"}) {
+        EXPECT_FALSE(parse_control_request("pair", {value}, request, error))
+            << "accepted pair '" << value << "'";
+        EXPECT_NE(error.find("'confirm' or 'cancel'"), std::string::npos) << error;
+    }
+}
+
+TEST(ParseControlRequest, ThePairingCommandsDispatchNothing) {
+    // Trap: to_client_command() falls back to PLAY, so the dispatcher must branch on these first.
+    EXPECT_FALSE(protocol_command(parsed("pair-token", {})).has_value());
+    EXPECT_FALSE(protocol_command(parsed("pair", {"confirm"})).has_value());
+    EXPECT_FALSE(protocol_command(parsed("pair", {"cancel"})).has_value());
+    EXPECT_EQ(encode_control_request(parsed("pair-token", {})), "pair-token");
+}
+
 TEST(ParseControlRequest, MuteAndShuffleTakeOnOff) {
     EXPECT_EQ(parsed("mute", {"on"}).flag, true);
     EXPECT_EQ(parsed("mute", {"off"}).flag, false);
@@ -441,6 +466,9 @@ TEST(ControlRequestWire, EveryRequestSurvivesARoundTrip) {
         {"seek-rel", {"2147483647"}},
         {"delay", {"0"}},
         {"delay", {"5000"}},
+        {"pair-token", {}},
+        {"pair", {"confirm"}},
+        {"pair", {"cancel"}},
     };
 
     for (const auto& [name, args] : cases) {
@@ -462,6 +490,7 @@ TEST(ControlRequestWire, EveryRequestSurvivesARoundTrip) {
         EXPECT_EQ(received.offset_ms, sent.offset_ms) << line;
         EXPECT_EQ(received.repeat, sent.repeat) << line;
         EXPECT_EQ(received.delay_ms, sent.delay_ms) << line;
+        EXPECT_EQ(received.confirm, sent.confirm) << line;
         EXPECT_EQ(protocol_command(received), protocol_command(sent)) << line;
     }
 }
@@ -577,6 +606,18 @@ TEST(ControlRefusal, DelayIsNeverRefusedEither) {
     ControllerSnapshot connected_no_state;
     connected_no_state.connected = true;
     EXPECT_FALSE(control_refusal(parsed("delay", {"250"}), connected_no_state, status, reason));
+}
+
+TEST(ControlRefusal, ThePairingCommandsAreNeverRefused) {
+    // Pairing is how a player with no usable server gets one.
+    ControllerSnapshot disconnected;
+    ControlStatus status = ControlStatus::Failed;
+    std::string reason;
+    for (const ControlRequest& request :
+         {parsed("pair-token", {}), parsed("pair", {"confirm"}), parsed("pair", {"cancel"})}) {
+        EXPECT_FALSE(control_refusal(request, disconnected, status, reason));
+        EXPECT_FALSE(control_refusal(request, everything_supported(), status, reason));
+    }
 }
 
 TEST(ControlRefusal, SeekPastSeekMaxIsRefusedNamingTheBound) {
@@ -726,6 +767,34 @@ TEST(FormatStatus, TrustFollowsTheConnection) {
     snapshot.trust = sendspin::ConnectionTrust::USER;
     snapshot.connected = false;
     EXPECT_EQ(field(format_status(snapshot), "trust"), "not connected");
+}
+
+TEST(FormatStatus, AnIdlePlayerReportsNoPairing) {
+    const std::string block = format_status(playing_snapshot());
+    EXPECT_EQ(field(block, "pairing"), "none");
+    EXPECT_EQ(field(block, "pairing code"), "");
+    EXPECT_EQ(field(block, "pairing window"), "");
+}
+
+TEST(FormatStatus, APairingInProgressNamesItsServer) {
+    StatusSnapshot snapshot = playing_snapshot();
+    snapshot.pairing_server_id = "OraobU4l";
+    EXPECT_EQ(field(format_status(snapshot), "pairing"), "in progress with OraobU4l");
+}
+
+TEST(FormatStatus, TheDynamicCodeIsShownWhileItStands) {
+    StatusSnapshot snapshot = playing_snapshot();
+    snapshot.pairing_code = "042735";
+    EXPECT_EQ(field(format_status(snapshot), "pairing code"), "042735");
+}
+
+TEST(FormatStatus, AnOpenPairingWindowNamesTheCommandsThatAnswerIt) {
+    StatusSnapshot snapshot = playing_snapshot();
+    snapshot.pairing_window_open = true;
+    const std::string line = field(format_status(snapshot), "pairing window");
+    EXPECT_EQ(line.compare(0, 4, "open"), 0) << line;
+    EXPECT_NE(line.find("pair confirm"), std::string::npos) << line;
+    EXPECT_NE(line.find("pair cancel"), std::string::npos) << line;
 }
 
 TEST(FormatStatus, TheQueueModesAreReportedSoTheirCommandsAreVisible) {

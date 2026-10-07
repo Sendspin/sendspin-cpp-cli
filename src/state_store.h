@@ -61,6 +61,9 @@ public:
     std::optional<std::vector<uint8_t>> blob(const std::string& key) const;
     bool set_blob(const std::string& key, const uint8_t* data, size_t len);
 
+    /// True if the library has a pairing record stored for any server.
+    bool has_pairing_record() const;
+
     /// The last applied gain, 0-100; volume and mute can each be absent independently.
     std::optional<uint8_t> volume() const;
     std::optional<bool> muted() const;

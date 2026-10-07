@@ -51,7 +51,7 @@ inline constexpr int64_t CONTROL_IDLE_TIMEOUT_MS = 5000;
 /// Spec bound for output delay; sendspin-cpp silently clamps past it, so refuse at parse time.
 inline constexpr uint16_t MAX_OUTPUT_DELAY_MS = 5000;
 
-/// Every request a subcommand can make: controller@v1 commands plus the locally answered two.
+/// Every request a subcommand can make: controller@v1 commands plus the locally answered ones.
 enum class ControlCommand : uint8_t {
     Status,  ///< answered locally from the daemon's own state
     Play,
@@ -66,6 +66,8 @@ enum class ControlCommand : uint8_t {
     Repeat,
     Shuffle,
     Switch,
+    PairToken,  ///< answered locally: this player's pairing token
+    Pair,       ///< answered locally: confirm or cancel the pairing window
 
     /// Answered locally: this endpoint's own output delay.
     /// Keep last: EveryCommandInTheEnumHasARow walks the enum up to here.
@@ -112,6 +114,7 @@ struct ControlRequest {
     std::optional<int32_t> offset_ms{};                    ///< `seek-rel`
     std::optional<sendspin::SendspinRepeatMode> repeat{};  ///< `repeat`
     std::optional<uint16_t> delay_ms{};                    ///< `delay`, 0 to MAX_OUTPUT_DELAY_MS
+    std::optional<bool> confirm{};                         ///< `pair`: confirm, or cancel
 };
 
 /// A subcommand and its arguments, split off the front of argv.
@@ -170,6 +173,10 @@ struct StatusSnapshot {
 
     /// The connection's trust; absent before its handshake reports one.
     std::optional<sendspin::ConnectionTrust> trust{};
+
+    std::string pairing_server_id;    ///< the server a pairing is in progress with, else empty
+    std::string pairing_code;         ///< the dynamic code on show, else empty
+    bool pairing_window_open{false};  ///< an attempt is waiting for `pair confirm`
 
     /// 0 is paused, 1000 is normal speed; absent when no progress has arrived.
     std::optional<uint32_t> playback_speed{};

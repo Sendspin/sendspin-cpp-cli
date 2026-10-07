@@ -352,6 +352,29 @@ TEST(StateStore, ABlobWriteLeavesTheFileAt0600) {
     EXPECT_EQ(info.st_mode & 0777, 0600U);
 }
 
+TEST(StateStore, APairingRecordIsAnOccupiedSlotNotAFreedOne) {
+    const ScratchDir scratch;
+    ASSERT_TRUE(scratch.created());
+    StateStore store(scratch.file());
+    EXPECT_FALSE(store.has_pairing_record());
+
+    // The library zeroes a slot it frees rather than deleting it.
+    const std::vector<uint8_t> freed(sendspin::persistence_keys::RECORD_SLOT_SIZE, 0);
+    ASSERT_TRUE(
+        store.set_blob(sendspin::persistence_keys::record_slot_key(0), freed.data(), freed.size()));
+    // The Pairing PSK and keypair are not pairings.
+    const std::vector<uint8_t> key(32, 0x5a);
+    ASSERT_TRUE(store.set_blob(sendspin::persistence_keys::PAIRING_PSK, key.data(), key.size()));
+    ASSERT_TRUE(store.set_blob(sendspin::persistence_keys::KEYPAIR, key.data(), key.size()));
+    EXPECT_FALSE(store.has_pairing_record());
+
+    const std::vector<uint8_t> record(sendspin::persistence_keys::RECORD_SLOT_SIZE, 0x5a);
+    ASSERT_TRUE(store.set_blob(sendspin::persistence_keys::record_slot_key(3), record.data(),
+                               record.size()));
+    EXPECT_TRUE(store.has_pairing_record());
+    EXPECT_TRUE(loaded(scratch.file()).has_pairing_record());
+}
+
 // Upgrading a pre-rc1 state file
 
 /// The output-delay blob as milliseconds, or nothing when absent or the wrong size.
