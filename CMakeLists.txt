@@ -26,7 +26,7 @@ endif()
 # sendspin-cpp
 
 set(SENDSPIN_GIT_TAG "1d9ef34a97e5422ce634b162910e60001d213ced" CACHE STRING
-    "sendspin-cpp git tag to build against")
+    "sendspin-cpp git tag or commit to build against")
 
 # player, metadata and controller (group transport verbs); no FORCE, so -D overrides still win.
 set(SENDSPIN_ENABLE_PLAYER ON CACHE BOOL "Enable sendspin player role")
@@ -46,8 +46,8 @@ include(FetchContent)
 FetchContent_Declare(
     sendspin
     GIT_REPOSITORY https://github.com/Sendspin/sendspin-cpp.git
+    # No GIT_SHALLOW: older CMake cannot shallow-fetch a commit SHA that is not a branch tip.
     GIT_TAG        ${SENDSPIN_GIT_TAG}
-    GIT_SHALLOW    TRUE
 )
 FetchContent_MakeAvailable(sendspin)
 

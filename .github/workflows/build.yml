@@ -628,6 +628,7 @@ jobs:
           printf '%s\n' 'output = null' | sudo tee /etc/sendspin-cli.conf >/dev/null
 
           # Plant a root-owned state dir: StateDirectory= must take it over.
+          # The pre-rc1 delay key on purpose: reading 175 back also proves the migration.
           sock=/run/sendspin-cli/control.sock
           sudo rm -rf /var/lib/sendspin-cli
           sudo install -d -m 0700 /var/lib/sendspin-cli
@@ -654,7 +655,7 @@ jobs:
 
           # 175 came from the planted root-owned file, so the directory was handed over intact.
           case "$status" in
-            *'static delay: 175 ms'*) ;;
+            *'output delay: 175 ms'*) ;;
             *) fail 'the state left by a root-run player did not survive the ownership change' ;;
           esac
 
@@ -671,75 +672,11 @@ jobs:
           invocation=$(systemctl show -p InvocationID --value sendspin-cli)
           [ -n "$invocation" ] || fail 'the unit reports no invocation id to scope the journal to'
 
-          # A WebSocket handshake triggers client/hello; its client_id needs getifaddrs(), i.e. AF_NETLINK.
-          python3 - <<'EOF' || fail 'the hardened unit did not greet a connection with a non-empty client_id'
-          import base64, json, os, socket, sys, time
-
-          # The control socket appearing says nothing about the WebSocket port, so the connect
-          # is retried rather than assumed.
-          deadline = time.monotonic() + 20
-          while True:
-              try:
-                  sock = socket.create_connection(("127.0.0.1", 8928), timeout=5)
-                  break
-              except OSError as err:
-                  if time.monotonic() > deadline:
-                      sys.exit(f"nothing accepted a connection on port 8928: {err}")
-                  time.sleep(0.2)
-          sock.settimeout(10)
-
-          buffered = b""
-
-          def read(count):
-              global buffered
-              while len(buffered) < count:
-                  chunk = sock.recv(65536)
-                  if not chunk:
-                      sys.exit("the player closed the connection before sending client/hello")
-                  buffered += chunk
-              out, buffered = buffered[:count], buffered[count:]
-              return out
-
-          key = base64.b64encode(os.urandom(16)).decode()
-          sock.sendall(
-              "GET /sendspin HTTP/1.1\r\nHost: 127.0.0.1:8928\r\nUpgrade: websocket\r\n"
-              f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
-              .encode()
-          )
-          response = b""
-          while not response.endswith(b"\r\n\r\n"):
-              response += read(1)
-          status = response.split(b"\r\n", 1)[0].decode(errors="replace")
-          if status.split()[1:2] != ["101"]:
-              sys.exit(f"the WebSocket upgrade was refused: {status}")
-
-          # The first complete text message. Frames from a server are unmasked; control and
-          # binary frames are skipped rather than mistaken for it.
-          message = b""
-          while True:
-              first, second = read(2)
-              length = second & 0x7F
-              if length == 126:
-                  length = int.from_bytes(read(2), "big")
-              elif length == 127:
-                  length = int.from_bytes(read(8), "big")
-              payload = read(length)
-              opcode = first & 0x0F
-              if opcode == 0x8:
-                  sys.exit("the player sent a close frame before client/hello")
-              if opcode in (0x0, 0x1):
-                  message += payload
-                  if first & 0x80:
-                      break
-
-          hello = json.loads(message)
-          if hello.get("type") != "client/hello":
-              sys.exit(f"the first message was {hello.get('type')!r}, not client/hello")
-          client_id = hello.get("payload", {}).get("client_id")
-          if not client_id:
-              sys.exit("client/hello carried an empty client_id")
-          print(f"client/hello carried client_id {client_id}")
-          EOF
+          # The id is the public key of a keypair generated under the hardening block and kept in the state file.
+          client_id=$(printf '%s\n' "$status" | sed -n 's/^client id: //p')
+          [ "${#client_id}" -eq 43 ] || fail "status reported client id '$client_id', not a 43-character key"
+          sudo grep -q '^blob-keypair = ' /var/lib/sendspin-cli/state ||
+            fail 'the hardened unit did not store its keypair in the state file'
 
           # --sync so the grep sees every line logged so far.
           sudo journalctl --sync
@@ -747,7 +684,10 @@ jobs:
           grep -q 'listening on port 8928' journal.log ||
             fail "this invocation's journal is missing the player's startup line, so its silence proves nothing"
           if grep -q 'getifaddrs failed' journal.log; then
-            fail 'getifaddrs() failed under the hardening block, so the client id was not MAC-derived'
+            fail 'getifaddrs() failed under the hardening block'
+          fi
+          if grep -q 'failed to persist' journal.log; then
+            fail 'the hardened unit could not persist its identity'
           fi
 
           # Only with a real avahi-daemon: RestrictAddressFamilies= must still allow AF_UNIX to it.
@@ -766,8 +706,12 @@ jobs:
           status=$(sudo sendspin-cli status --control-socket "$sock") ||
             fail 'the control socket did not answer status after a restart'
           case "$status" in
-            *'static delay: 250 ms'*) ;;
+            *'output delay: 250 ms'*) ;;
             *) fail 'the 250 ms set over the socket did not survive a restart' ;;
+          esac
+          case "$status" in
+            *"client id: $client_id"*) ;;
+            *) fail 'the client id changed across a restart' ;;
           esac
 
           # Restart=on-failure: a new MainPID after RestartSec proves the restart.
