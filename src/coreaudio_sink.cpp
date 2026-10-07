@@ -14,6 +14,7 @@
 
 #include "coreaudio_sink.h"
 
+#include "coreaudio_device.h"
 #include "log.h"
 #include "pcm_volume.h"
 
@@ -21,12 +22,9 @@
 
 #include <algorithm>
 #include <array>
-#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
-#include <cstdlib>
-#include <cstring>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -55,288 +53,11 @@ int64_t now_us() {
         .count();
 }
 
-/// Mach absolute-time ticks per microsecond; 0 when the timebase cannot be read.
-double host_ticks_per_us() {
-    mach_timebase_info_data_t timebase{};
-    if (mach_timebase_info(&timebase) != KERN_SUCCESS || timebase.numer == 0) {
-        return 0.0;
-    }
-    // A tick is numer/denom nanoseconds, so a microsecond is 1000 * denom/numer ticks.
-    return 1000.0 * static_cast<double>(timebase.denom) / static_cast<double>(timebase.numer);
-}
-
-AudioObjectPropertyAddress address_of(
-    AudioObjectPropertySelector selector,
-    AudioObjectPropertyScope scope = kAudioObjectPropertyScopeGlobal) {
-    return {selector, scope, kAudioObjectPropertyElementMain};
-}
-
-/// Renders an OSStatus the way CoreAudio headers write one: a four-character code where it is.
-std::string os_status_text(OSStatus status) {
-    char code[5] = {};
-    const auto value = static_cast<uint32_t>(status);
-    for (int i = 0; i < 4; ++i) {
-        code[i] = static_cast<char>((value >> (24 - (8 * i))) & 0xFFU);
-        if (std::isprint(static_cast<unsigned char>(code[i])) == 0) {
-            return std::to_string(static_cast<long>(status));
-        }
-    }
-    return std::string("'") + code + "' (" + std::to_string(static_cast<long>(status)) + ")";
-}
-
-std::string cf_string_to_utf8(CFStringRef value) {
-    if (value == nullptr) {
-        return {};
-    }
-    const CFIndex capacity =
-        CFStringGetMaximumSizeForEncoding(CFStringGetLength(value), kCFStringEncodingUTF8) + 1;
-    std::string out(static_cast<size_t>(capacity), '\0');
-    if (CFStringGetCString(value, out.data(), capacity, kCFStringEncodingUTF8) == 0) {
-        return {};
-    }
-    out.resize(std::strlen(out.c_str()));
-    return out;
-}
-
-/// The name macOS shows for a device, or "(unknown device)" when it cannot be read.
-std::string device_name(AudioDeviceID device) {
-    const AudioObjectPropertyAddress addr = address_of(kAudioObjectPropertyName);
-    CFStringRef value = nullptr;
-    UInt32 size = sizeof(value);
-    if (AudioObjectGetPropertyData(device, &addr, 0, nullptr, &size, &value) != noErr ||
-        value == nullptr) {
-        return "(unknown device)";
-    }
-    std::string name = cf_string_to_utf8(value);
-    CFRelease(value);
-    return name.empty() ? "(unknown device)" : name;
-}
-
-/// A UInt32 property, or 0 when it cannot be read.
-uint32_t u32_property(AudioObjectID object, AudioObjectPropertySelector selector,
-                      AudioObjectPropertyScope scope) {
-    const AudioObjectPropertyAddress addr = address_of(selector, scope);
-    UInt32 value = 0;
-    UInt32 size = sizeof(value);
-    if (AudioObjectGetPropertyData(object, &addr, 0, nullptr, &size, &value) != noErr) {
-        return 0;
-    }
-    return value;
-}
-
-/// Total output channels across the device's output streams; 0 means it cannot be played through.
-uint32_t output_channels(AudioDeviceID device) {
-    const AudioObjectPropertyAddress addr =
-        address_of(kAudioDevicePropertyStreamConfiguration, kAudioDevicePropertyScopeOutput);
-    UInt32 size = 0;
-    if (AudioObjectGetPropertyDataSize(device, &addr, 0, nullptr, &size) != noErr || size == 0) {
-        return 0;
-    }
-    // Through a 64-bit vector: an AudioBufferList holds pointers and must be aligned for them.
-    std::vector<uint64_t> storage((size + sizeof(uint64_t) - 1) / sizeof(uint64_t));
-    auto* list = reinterpret_cast<AudioBufferList*>(storage.data());
-    if (AudioObjectGetPropertyData(device, &addr, 0, nullptr, &size, list) != noErr) {
-        return 0;
-    }
-    uint32_t total = 0;
-    for (UInt32 i = 0; i < list->mNumberBuffers; ++i) {
-        total += list->mBuffers[i].mNumberChannels;
-    }
-    return total;
-}
-
-/// The rate the device itself is running at; 0 when it cannot be read.
-double nominal_sample_rate(AudioDeviceID device) {
-    const AudioObjectPropertyAddress addr = address_of(kAudioDevicePropertyNominalSampleRate);
-    Float64 value = 0.0;
-    UInt32 size = sizeof(value);
-    if (AudioObjectGetPropertyData(device, &addr, 0, nullptr, &size, &value) != noErr) {
-        return 0.0;
-    }
-    return value;
-}
-
-/// Presentation latency of the device's first output stream, in frames.
-uint32_t first_output_stream_latency(AudioDeviceID device) {
-    const AudioObjectPropertyAddress addr =
-        address_of(kAudioDevicePropertyStreams, kAudioDevicePropertyScopeOutput);
-    UInt32 size = 0;
-    if (AudioObjectGetPropertyDataSize(device, &addr, 0, nullptr, &size) != noErr ||
-        size < sizeof(AudioStreamID)) {
-        return 0;
-    }
-    std::vector<AudioStreamID> streams(size / sizeof(AudioStreamID));
-    if (AudioObjectGetPropertyData(device, &addr, 0, nullptr, &size, streams.data()) != noErr) {
-        return 0;
-    }
-    return u32_property(streams.front(), kAudioStreamPropertyLatency,
-                        kAudioObjectPropertyScopeGlobal);
-}
-
-AudioDeviceID default_output_device() {
-    const AudioObjectPropertyAddress addr = address_of(kAudioHardwarePropertyDefaultOutputDevice);
-    AudioDeviceID device = kAudioObjectUnknown;
-    UInt32 size = sizeof(device);
-    if (AudioObjectGetPropertyData(kAudioObjectSystemObject, &addr, 0, nullptr, &size, &device) !=
-        noErr) {
-        return kAudioObjectUnknown;
-    }
-    return device;
-}
-
-/// This host's output-capable devices, in HAL order; the position is the index -o and -l use.
-std::vector<AudioDeviceID> enumerate_output_devices() {
-    const AudioObjectPropertyAddress addr = address_of(kAudioHardwarePropertyDevices);
-    UInt32 size = 0;
-    if (AudioObjectGetPropertyDataSize(kAudioObjectSystemObject, &addr, 0, nullptr, &size) !=
-            noErr ||
-        size < sizeof(AudioDeviceID)) {
-        return {};
-    }
-    std::vector<AudioDeviceID> all(size / sizeof(AudioDeviceID));
-    if (AudioObjectGetPropertyData(kAudioObjectSystemObject, &addr, 0, nullptr, &size,
-                                   all.data()) != noErr) {
-        return {};
-    }
-
-    std::vector<AudioDeviceID> outputs;
-    for (const AudioDeviceID device : all) {
-        if (output_channels(device) > 0) {
-            outputs.push_back(device);
-        }
-    }
-    return outputs;
-}
-
-/// True if `value` is a non-empty run of decimal digits.
-bool is_device_index(const std::string& value) {
-    if (value.empty()) {
-        return false;
-    }
-    return value.find_first_not_of("0123456789") == std::string::npos;
-}
-
-bool iequals(const std::string& value, const std::string& other) {
-    if (value.size() != other.size()) {
-        return false;
-    }
-    for (size_t i = 0; i < value.size(); ++i) {
-        // Through unsigned char: tolower() is undefined for negative chars.
-        const int a = std::tolower(static_cast<unsigned char>(value[i]));
-        const int b = std::tolower(static_cast<unsigned char>(other[i]));
-        if (a != b) {
-            return false;
-        }
-    }
-    return true;
-}
-
-/// Resolves a CoreAudio device spec: empty is the default, digits an index, else a unique name.
-bool resolve_ca_device(const std::string& device, AudioDeviceID& out, std::string& error) {
-    if (device.empty()) {
-        const AudioDeviceID fallback = default_output_device();
-        if (fallback == kAudioObjectUnknown) {
-            error = "this host has no default CoreAudio output device at all -- run with -l to "
-                    "see what it does have";
-            return false;
-        }
-        out = fallback;
-        return true;
-    }
-
-    const std::vector<AudioDeviceID> outputs = enumerate_output_devices();
-    if (outputs.empty()) {
-        error = "this host has no CoreAudio output devices at all";
-        return false;
-    }
-
-    if (is_device_index(device)) {
-        // strtoull saturates rather than wrapping into a plausible index.
-        const unsigned long long value = std::strtoull(device.c_str(), nullptr, 10);
-        if (value >= outputs.size()) {
-            error = "-o coreaudio:" + device + ": no device at that index -- indices run 0-" +
-                    std::to_string(outputs.size() - 1) + " here, and -l lists them";
-            return false;
-        }
-        out = outputs[static_cast<size_t>(value)];
-        return true;
-    }
-
-    std::vector<size_t> matches;
-    for (size_t i = 0; i < outputs.size(); ++i) {
-        if (iequals(device, device_name(outputs[i]))) {
-            matches.push_back(i);
-        }
-    }
-    if (matches.empty()) {
-        error = "-o coreaudio:" + device +
-                ": no output device by that name -- run with -l to list them";
-        return false;
-    }
-    if (matches.size() > 1) {
-        std::string indices;
-        for (const size_t index : matches) {
-            if (!indices.empty()) {
-                indices += ", ";
-            }
-            indices += std::to_string(index);
-        }
-        error = "-o coreaudio:" + device + ": " + std::to_string(matches.size()) +
-                " output devices share that name (indices " + indices +
-                ") -- name the one you mean by index instead";
-        return false;
-    }
-
-    out = outputs[matches.front()];
-    return true;
-}
-
-/// Maps a stream format onto the interleaved signed little-endian PCM an AUHAL input scope takes.
-bool asbd_for(uint32_t sample_rate, uint8_t channels, uint8_t bits_per_sample,
-              AudioStreamBasicDescription& out) {
-    if (sample_rate == 0 || channels == 0) {
-        return false;
-    }
-    if (std::find(PROBE_BIT_DEPTHS.begin(), PROBE_BIT_DEPTHS.end(), bits_per_sample) ==
-        PROBE_BIT_DEPTHS.end()) {
-        return false;
-    }
-    out = {};
-    out.mSampleRate = static_cast<Float64>(sample_rate);
-    out.mFormatID = kAudioFormatLinearPCM;
-    // Little-endian is the absence of kAudioFormatFlagIsBigEndian; packed rules out 24-in-32.
-    out.mFormatFlags = kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked;
-    out.mBitsPerChannel = bits_per_sample;
-    out.mChannelsPerFrame = channels;
-    out.mFramesPerPacket = 1;
-    out.mBytesPerFrame = static_cast<UInt32>(channels) * (bits_per_sample / 8U);
-    out.mBytesPerPacket = out.mBytesPerFrame;
-    return true;
-}
-
-/// A fresh, uninitialized AUHAL output unit, or nullptr.
-AudioUnit new_hal_unit() {
-    AudioComponentDescription description = {};
-    description.componentType = kAudioUnitType_Output;
-    description.componentSubType = kAudioUnitSubType_HALOutput;
-    description.componentManufacturer = kAudioUnitManufacturer_Apple;
-
-    AudioComponent component = AudioComponentFindNext(nullptr, &description);
-    if (component == nullptr) {
-        return nullptr;
-    }
-    AudioUnit unit = nullptr;
-    if (AudioComponentInstanceNew(component, &unit) != noErr) {
-        return nullptr;
-    }
-    return unit;
-}
-
 /// Asks the unit whether it will take this exact format on its input scope; the AU converts on
 /// top of what the device itself does, so this is what a stream would really get.
 bool unit_accepts(AudioUnit unit, uint32_t sample_rate, uint8_t channels, uint8_t bits) {
     AudioStreamBasicDescription asbd = {};
-    if (!asbd_for(sample_rate, channels, bits, asbd)) {
+    if (!ca_asbd_for(sample_rate, channels, bits, asbd)) {
         return false;
     }
     return AudioUnitSetProperty(unit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, 0,
@@ -359,13 +80,13 @@ struct ProbeResult {
 /// Asks one device what it will take, without starting it; axes are independent.
 ProbeResult probe_capabilities(AudioDeviceID device) {
     ProbeResult result;
-    const uint32_t max_channels = output_channels(device);
+    const uint32_t max_channels = ca_channels(device, CaDirection::Output);
     if (max_channels == 0) {
         result.status = ProbeStatus::NoDevice;
         return result;
     }
 
-    AudioUnit unit = new_hal_unit();
+    AudioUnit unit = ca_new_hal_unit();
     if (unit == nullptr) {
         result.status = ProbeStatus::NoUnit;
         return result;
@@ -404,7 +125,7 @@ ProbeResult probe_capabilities(AudioDeviceID device) {
 
     // The channel axis reuses a depth the grid accepted, at the device's own rate.
     if (!result.caps.bit_depths.empty()) {
-        const double device_rate = nominal_sample_rate(device);
+        const double device_rate = ca_nominal_sample_rate(device);
         const auto probe_rate =
             (device_rate > 0.0) ? static_cast<uint32_t>(device_rate) : result.caps.rates.front();
         for (const uint8_t count : PROBE_CHANNELS) {
@@ -457,20 +178,20 @@ std::string CoreAudioSink::name() const {
 
 bool CoreAudioSink::probe(const std::string& device, std::string& error) {
     AudioDeviceID resolved = kAudioObjectUnknown;
-    return resolve_ca_device(device, resolved, error);
+    return resolve_ca_device(device, CaDirection::Output, resolved, error);
 }
 
 SinkCapabilities CoreAudioSink::capabilities() const {
     // Describes the default device at startup; a later default move shows up as a reopen.
     AudioDeviceID device = kAudioObjectUnknown;
     std::string error;
-    if (!resolve_ca_device(this->device_, device, error)) {
+    if (!resolve_ca_device(this->device_, CaDirection::Output, device, error)) {
         cli_log(LogLevel::DEBUG, "coreaudio: %s -- advertising everything sendspin-cli can emit",
                 error.c_str());
         return SinkCapabilities::permissive();
     }
 
-    const std::string label = device_name(device);
+    const std::string label = ca_device_name(device);
     const ProbeResult result = probe_capabilities(device);
     if (result.status != ProbeStatus::Ok) {
         cli_log(LogLevel::DEBUG,
@@ -483,18 +204,18 @@ SinkCapabilities CoreAudioSink::capabilities() const {
 }
 
 void CoreAudioSink::list_devices(std::FILE* out) {
-    const std::vector<AudioDeviceID> outputs = enumerate_output_devices();
+    const std::vector<AudioDeviceID> outputs = ca_enumerate_devices(CaDirection::Output);
     if (outputs.empty()) {
         std::fprintf(out, "  (this host has no CoreAudio output devices)\n");
         return;
     }
 
-    const AudioDeviceID fallback = default_output_device();
+    const AudioDeviceID fallback = ca_default_device(CaDirection::Output);
     std::fprintf(out, "  idx  name                                   out ch  default rate\n");
     for (size_t i = 0; i < outputs.size(); ++i) {
         const AudioDeviceID device = outputs[i];
-        std::fprintf(out, "  %3zu  %-38s %2u ch  %6.0f Hz%s\n", i, device_name(device).c_str(),
-                     output_channels(device), nominal_sample_rate(device),
+        std::fprintf(out, "  %3zu  %-38s %2u ch  %6.0f Hz%s\n", i, ca_device_name(device).c_str(),
+                     ca_channels(device, CaDirection::Output), ca_nominal_sample_rate(device),
                      (device == fallback) ? "  (system default)" : "");
         print_device_capabilities(out, device);
     }
@@ -521,7 +242,7 @@ bool CoreAudioSink::configure(uint32_t sample_rate, uint8_t channels, uint8_t bi
     // Resolved per stream, so a bare -o coreaudio follows the host's default.
     AudioDeviceID device = kAudioObjectUnknown;
     std::string error;
-    if (!resolve_ca_device(this->device_, device, error)) {
+    if (!resolve_ca_device(this->device_, CaDirection::Output, device, error)) {
         cli_log(LogLevel::ERROR, "coreaudio: %s", error.c_str());
         this->failed_.store(true);
         return false;
@@ -693,7 +414,7 @@ void CoreAudioSink::poll(int64_t now_ms) {
 
     AudioDeviceID device = kAudioObjectUnknown;
     std::string error;
-    if (!resolve_ca_device(this->device_, device, error)) {
+    if (!resolve_ca_device(this->device_, CaDirection::Output, device, error)) {
         cli_log(LogLevel::WARN,
                 "coreaudio: '%s' is still gone -- discarding until it comes back "
                 "or the next stream (%s)",
@@ -717,7 +438,7 @@ void CoreAudioSink::poll(int64_t now_ms) {
         return;
     }
     cli_log(LogLevel::INFO, "coreaudio: '%s' is back, on '%s'", this->name().c_str(),
-            device_name(device).c_str());
+            ca_device_name(device).c_str());
 }
 
 void CoreAudioSink::set_volume(uint8_t volume) {
@@ -741,12 +462,13 @@ void CoreAudioSink::follow_default_() {
 
     AudioDeviceID device = kAudioObjectUnknown;
     std::string error;
-    if (!resolve_ca_device(this->device_, device, error) || device == this->device_id_) {
+    if (!resolve_ca_device(this->device_, CaDirection::Output, device, error) ||
+        device == this->device_id_) {
         return;  // no default to move to, or it did not actually move
     }
 
     const StreamFormat format = this->last_format_;
-    const std::string from = device_name(this->device_id_);
+    const std::string from = ca_device_name(this->device_id_);
     this->discard_ring_tail_();
     this->close_unit_();
     if (!this->open_unit_(device, format.sample_rate, format.channels, format.bit_depth)) {
@@ -766,20 +488,20 @@ void CoreAudioSink::follow_default_() {
     }
     cli_log(LogLevel::INFO,
             "coreaudio: the system default output moved from '%s' to '%s' -- following it",
-            from.c_str(), device_name(device).c_str());
+            from.c_str(), ca_device_name(device).c_str());
 }
 
 bool CoreAudioSink::open_unit_(AudioDeviceID device, uint32_t sample_rate, uint8_t channels,
                                uint8_t bits_per_sample) {
     AudioStreamBasicDescription asbd = {};
-    if (!asbd_for(sample_rate, channels, bits_per_sample, asbd)) {
+    if (!ca_asbd_for(sample_rate, channels, bits_per_sample, asbd)) {
         cli_log(LogLevel::ERROR, "coreaudio: refusing stream at %u Hz / %u ch / %u-bit",
                 sample_rate, channels, bits_per_sample);
         return false;
     }
 
-    const uint32_t max_channels = output_channels(device);
-    const std::string label = device_name(device);
+    const uint32_t max_channels = ca_channels(device, CaDirection::Output);
+    const std::string label = ca_device_name(device);
     if (max_channels == 0) {
         cli_log(LogLevel::ERROR, "coreaudio: '%s' disappeared before it could be opened",
                 label.c_str());
@@ -791,7 +513,7 @@ bool CoreAudioSink::open_unit_(AudioDeviceID device, uint32_t sample_rate, uint8
         return false;
     }
 
-    AudioUnit unit = new_hal_unit();
+    AudioUnit unit = ca_new_hal_unit();
     if (unit == nullptr) {
         cli_log(LogLevel::ERROR, "coreaudio: this host has no AUHAL output unit to play through");
         return false;
@@ -803,7 +525,7 @@ bool CoreAudioSink::open_unit_(AudioDeviceID device, uint32_t sample_rate, uint8
                                         kAudioUnitScope_Global, 0, &device, sizeof(device));
     if (err != noErr) {
         cli_log(LogLevel::ERROR, "coreaudio: '%s' would not take the output unit: %s",
-                label.c_str(), os_status_text(err).c_str());
+                label.c_str(), ca_status_text(err).c_str());
         this->close_unit_();
         return false;
     }
@@ -812,7 +534,7 @@ bool CoreAudioSink::open_unit_(AudioDeviceID device, uint32_t sample_rate, uint8
                                &asbd, sizeof(asbd));
     if (err != noErr) {
         cli_log(LogLevel::ERROR, "coreaudio: '%s' would not take %u Hz / %u ch / %u-bit: %s",
-                label.c_str(), sample_rate, channels, bits_per_sample, os_status_text(err).c_str());
+                label.c_str(), sample_rate, channels, bits_per_sample, ca_status_text(err).c_str());
         this->close_unit_();
         return false;
     }
@@ -824,7 +546,7 @@ bool CoreAudioSink::open_unit_(AudioDeviceID device, uint32_t sample_rate, uint8
                                &callback, sizeof(callback));
     if (err != noErr) {
         cli_log(LogLevel::ERROR, "coreaudio: '%s' would not take a render callback: %s",
-                label.c_str(), os_status_text(err).c_str());
+                label.c_str(), ca_status_text(err).c_str());
         this->close_unit_();
         return false;
     }
@@ -834,7 +556,7 @@ bool CoreAudioSink::open_unit_(AudioDeviceID device, uint32_t sample_rate, uint8
         cli_log(LogLevel::ERROR,
                 "coreaudio: '%s' would not initialise at %u Hz / %u ch / %u-bit: "
                 "%s",
-                label.c_str(), sample_rate, channels, bits_per_sample, os_status_text(err).c_str());
+                label.c_str(), sample_rate, channels, bits_per_sample, ca_status_text(err).c_str());
         this->close_unit_();
         return false;
     }
@@ -849,7 +571,7 @@ bool CoreAudioSink::open_unit_(AudioDeviceID device, uint32_t sample_rate, uint8
         static_cast<size_t>(channels) * (static_cast<size_t>(bits_per_sample) / 8U);
     this->stream_rate_ = static_cast<double>(sample_rate);
     this->ramp_step_ = volume_ramp_step(sample_rate);
-    this->host_ticks_per_us_ = host_ticks_per_us();
+    this->host_ticks_per_us_ = ca_host_ticks_per_us();
     // Open at the target gain, never ramping up to a restored volume.
     this->current_multiplier_ = this->target_multiplier_.load(std::memory_order_relaxed);
 
@@ -864,12 +586,12 @@ bool CoreAudioSink::open_unit_(AudioDeviceID device, uint32_t sample_rate, uint8
 
     // Presentation latency goes on top of the render timestamp; the safety offset must not, since
     // the HAL has already scheduled the buffer that far ahead.
-    const double device_rate = nominal_sample_rate(device);
+    const double device_rate = ca_nominal_sample_rate(device);
     double latency_s = 0.0;
     if (device_rate > 0.0) {
         const uint32_t frames =
-            u32_property(device, kAudioDevicePropertyLatency, kAudioDevicePropertyScopeOutput) +
-            first_output_stream_latency(device);
+            ca_u32_property(device, kAudioDevicePropertyLatency, kAudioDevicePropertyScopeOutput) +
+            ca_first_stream_latency(device, CaDirection::Output);
         latency_s = static_cast<double>(frames) / device_rate;
     }
     Float64 unit_latency_s = 0.0;
@@ -891,7 +613,7 @@ bool CoreAudioSink::open_unit_(AudioDeviceID device, uint32_t sample_rate, uint8
     err = AudioOutputUnitStart(unit);
     if (err != noErr) {
         cli_log(LogLevel::ERROR, "coreaudio: '%s' would not start: %s", label.c_str(),
-                os_status_text(err).c_str());
+                ca_status_text(err).c_str());
         this->close_unit_();
         return false;
     }
@@ -943,7 +665,7 @@ bool CoreAudioSink::restart_unit_() {
         const OSStatus err = AudioOutputUnitStop(this->unit_);
         if (err != noErr) {
             cli_log(LogLevel::DEBUG, "coreaudio: cannot stop the unit: %s",
-                    os_status_text(err).c_str());
+                    ca_status_text(err).c_str());
             return false;
         }
         this->running_ = false;
@@ -960,7 +682,7 @@ bool CoreAudioSink::restart_unit_() {
     const OSStatus err = AudioOutputUnitStart(this->unit_);
     if (err != noErr) {
         cli_log(LogLevel::DEBUG, "coreaudio: cannot restart the unit: %s",
-                os_status_text(err).c_str());
+                ca_status_text(err).c_str());
         return false;
     }
     this->running_ = true;
@@ -981,7 +703,7 @@ bool CoreAudioSink::reopen_in_place_() {
     // Resolve before closing, so a failure leaves write() its frame size.
     AudioDeviceID device = kAudioObjectUnknown;
     std::string error;
-    if (!resolve_ca_device(this->device_, device, error)) {
+    if (!resolve_ca_device(this->device_, CaDirection::Output, device, error)) {
         cli_log(LogLevel::WARN, "coreaudio: cannot reopen '%s': %s", this->name().c_str(),
                 error.c_str());
         this->recovery_.reopen_done(false);
@@ -1006,7 +728,7 @@ bool CoreAudioSink::reopen_in_place_() {
     cli_log(LogLevel::INFO,
             "coreaudio: '%s' recovered on '%s' without waiting for the next "
             "stream",
-            this->name().c_str(), device_name(device).c_str());
+            this->name().c_str(), ca_device_name(device).c_str());
     return true;
 }
 
@@ -1059,7 +781,7 @@ void CoreAudioSink::update_target_multiplier_() {
 void CoreAudioSink::add_listeners_(AudioDeviceID device) {
     this->remove_listeners_();
 
-    const AudioObjectPropertyAddress alive = address_of(kAudioDevicePropertyDeviceIsAlive);
+    const AudioObjectPropertyAddress alive = ca_address_of(kAudioDevicePropertyDeviceIsAlive);
     if (AudioObjectAddPropertyListener(device, &alive, &CoreAudioSink::property_listener, this) ==
         noErr) {
         this->listening_alive_ = true;
@@ -1070,12 +792,12 @@ void CoreAudioSink::add_listeners_(AudioDeviceID device) {
         cli_log(LogLevel::WARN,
                 "coreaudio: '%s' will not report its own death -- playback will not recover by "
                 "itself if it goes away",
-                device_name(device).c_str());
+                ca_device_name(device).c_str());
     }
 
     if (this->device_.empty()) {
         const AudioObjectPropertyAddress fallback =
-            address_of(kAudioHardwarePropertyDefaultOutputDevice);
+            ca_address_of(kAudioHardwarePropertyDefaultOutputDevice);
         if (AudioObjectAddPropertyListener(kAudioObjectSystemObject, &fallback,
                                            &CoreAudioSink::property_listener, this) == noErr) {
             this->listening_default_ = true;
@@ -1084,7 +806,7 @@ void CoreAudioSink::add_listeners_(AudioDeviceID device) {
 
     // A device that died tells us so itself; a device that comes back cannot, so the host's
     // device list is what turns a replug into a reopen instead of a wait on the backoff.
-    const AudioObjectPropertyAddress devices = address_of(kAudioHardwarePropertyDevices);
+    const AudioObjectPropertyAddress devices = ca_address_of(kAudioHardwarePropertyDevices);
     if (AudioObjectAddPropertyListener(kAudioObjectSystemObject, &devices,
                                        &CoreAudioSink::property_listener, this) == noErr) {
         this->listening_devices_ = true;
@@ -1093,7 +815,7 @@ void CoreAudioSink::add_listeners_(AudioDeviceID device) {
 
 void CoreAudioSink::remove_listeners_() {
     if (this->listening_alive_) {
-        const AudioObjectPropertyAddress alive = address_of(kAudioDevicePropertyDeviceIsAlive);
+        const AudioObjectPropertyAddress alive = ca_address_of(kAudioDevicePropertyDeviceIsAlive);
         AudioObjectRemovePropertyListener(this->listening_device_, &alive,
                                           &CoreAudioSink::property_listener, this);
         this->listening_alive_ = false;
@@ -1101,13 +823,13 @@ void CoreAudioSink::remove_listeners_() {
     }
     if (this->listening_default_) {
         const AudioObjectPropertyAddress fallback =
-            address_of(kAudioHardwarePropertyDefaultOutputDevice);
+            ca_address_of(kAudioHardwarePropertyDefaultOutputDevice);
         AudioObjectRemovePropertyListener(kAudioObjectSystemObject, &fallback,
                                           &CoreAudioSink::property_listener, this);
         this->listening_default_ = false;
     }
     if (this->listening_devices_) {
-        const AudioObjectPropertyAddress devices = address_of(kAudioHardwarePropertyDevices);
+        const AudioObjectPropertyAddress devices = ca_address_of(kAudioHardwarePropertyDevices);
         AudioObjectRemovePropertyListener(kAudioObjectSystemObject, &devices,
                                           &CoreAudioSink::property_listener, this);
         this->listening_devices_ = false;

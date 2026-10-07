@@ -584,6 +584,17 @@ jobs:
           rm -f load-commands.txt
           exit "$status"
 
+      # The loose binary and the .pkg both get the description from this section.
+      - name: Assert the macOS binary carries its microphone usage description
+        if: matrix.publish && runner.os == 'macOS'
+        env:
+          NAME: ${{ steps.package.outputs.name }}
+        run: |
+          otool -P "stage/$NAME/usr/local/bin/sendspin-cli" | grep -q NSMicrophoneUsageDescription || {
+            echo "::error::the binary has no NSMicrophoneUsageDescription in its __info_plist section"
+            exit 1
+          }
+
       # Install at the real prefix and verify the unit (not on cross legs: MemoryDenyWriteExecute= forbids qemu-user).
       # After Package, or a root-owned install manifest in build/ breaks the unprivileged staging install.
       - name: Install at the real prefix and verify the systemd unit

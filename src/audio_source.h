@@ -113,15 +113,16 @@ private:
 
 /// Which backend an --input spec named.
 enum class SourceBackend {
-    Null,  ///< silence; needs no device
-    Tone,  ///< a test tone; needs no device
-    Alsa,  ///< an ALSA capture PCM, named by InputSpec::device
+    Null,       ///< silence; needs no device
+    Tone,       ///< a test tone; needs no device
+    Alsa,       ///< an ALSA capture PCM, named by InputSpec::device
+    CoreAudio,  ///< a CoreAudio device by index or name, or this host's default input if empty
 };
 
 /// An --input spec resolved into a backend and the device to hand it.
 struct InputSpec {
     SourceBackend backend{SourceBackend::Null};
-    std::string device;  ///< empty for the device-less sources
+    std::string device;  ///< empty for the device-less sources and CoreAudio's default
 };
 
 /// Resolves an --input spec without opening anything, by -o's rules: a bare backend name,

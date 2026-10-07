@@ -21,6 +21,9 @@
 #ifdef SENDSPIN_CLI_HAVE_ALSA
 #include "alsa_source.h"
 #endif
+#ifdef SENDSPIN_CLI_HAVE_COREAUDIO
+#include "coreaudio_source.h"
+#endif
 
 #include <algorithm>
 #include <chrono>
@@ -45,7 +48,7 @@ constexpr uint32_t READ_TIMEOUT_MS = 100;
 constexpr int64_t RATE_WINDOW_MS = 1000;
 
 /// Output backends --input knows by name but cannot capture through.
-constexpr const char* UNSUPPORTED_BACKENDS[] = {"coreaudio", "portaudio", "pulse", "pipewire"};
+constexpr const char* UNSUPPORTED_BACKENDS[] = {"portaudio", "pulse", "pipewire"};
 
 }  // namespace
 
@@ -156,11 +159,14 @@ void SourceCapture::run_() {
 }
 
 std::string input_backend_list() {
+    std::string list = "null, tone";
 #ifdef SENDSPIN_CLI_HAVE_ALSA
-    return "null, tone, alsa";
-#else
-    return "null, tone";
+    list += ", alsa";
 #endif
+#ifdef SENDSPIN_CLI_HAVE_COREAUDIO
+    list += ", coreaudio";
+#endif
+    return list;
 }
 
 bool resolve_input_spec(const std::string& spec, InputSpec& out, std::string& error) {
@@ -201,6 +207,24 @@ bool resolve_input_spec(const std::string& spec, InputSpec& out, std::string& er
 #endif
     }
 
+    if (prefix == "coreaudio") {
+#ifdef SENDSPIN_CLI_HAVE_COREAUDIO
+        if (has_device && rest.empty()) {
+            error = "--input '" + spec +
+                    "' names no device -- write --input coreaudio:<index|name>, or --input "
+                    "coreaudio on its own for this host's default input";
+            return false;
+        }
+        out = {SourceBackend::CoreAudio, rest};
+        return true;
+#else
+        error = "the CoreAudio backend is not in this build -- it is macOS-only -- so --input "
+                "takes only: " +
+                input_backend_list();
+        return false;
+#endif
+    }
+
     for (const char* name : UNSUPPORTED_BACKENDS) {
         if (prefix != name) {
             continue;
@@ -221,6 +245,9 @@ bool resolve_input_spec(const std::string& spec, InputSpec& out, std::string& er
 #else
     error = "unknown input device '" + spec + "' -- this build has: " + input_backend_list() +
             " (run with -l)";
+#ifdef SENDSPIN_CLI_HAVE_COREAUDIO
+    error += ". A CoreAudio device needs its prefix: --input coreaudio:" + spec;
+#endif
     return false;
 #endif
 }
@@ -252,6 +279,11 @@ std::unique_ptr<AudioSource> make_audio_source(const std::string& spec, StreamFo
             source = std::make_unique<AlsaAudioSource>(resolved.device);
 #endif
             break;
+        case SourceBackend::CoreAudio:
+#ifdef SENDSPIN_CLI_HAVE_COREAUDIO
+            source = std::make_unique<CoreAudioSource>(resolved.device);
+#endif
+            break;
     }
     if (!source) {
         error = "internal error: input device '" + spec +
@@ -269,6 +301,9 @@ void print_capture_devices(std::FILE* out) {
     std::fprintf(out, "\nInput devices (--input):\n");
     std::fprintf(out, "  null      silence; needs no sound card at all\n");
     std::fprintf(out, "  tone      a 440 Hz test tone, for checking the path to a server\n");
+#ifdef SENDSPIN_CLI_HAVE_COREAUDIO
+    std::fprintf(out, "  coreaudio this host's default input device, whatever it currently is\n");
+#endif
     std::fprintf(out,
                  "\n--input reads its argument the way -o does: one of the names above, or\n"
                  "<backend>:<device> split on the first colon, where <backend> is one of:\n"
@@ -284,7 +319,17 @@ void print_capture_devices(std::FILE* out) {
                       "channels, S16_LE where the PCM takes it, else the nearest it does take. A\n"
                       "plug-style PCM -- default, plughw: -- converts, so it takes the preferred\n"
                       "format whatever the hardware behind it captures.\n");
-#else
+#endif
+#ifdef SENDSPIN_CLI_HAVE_COREAUDIO
+    std::fprintf(out, "\nCoreAudio input devices on this host (--input coreaudio:<index|name>):\n");
+    CoreAudioSource::list_devices(out);
+    std::fprintf(out,
+                 "\nA capture stream runs at one format for the whole run: the device's\n"
+                 "current rate, since CoreAudio does not resample capture, up to 2 channels,\n"
+                 "16-bit. Audio MIDI Setup changes the rate. macOS asks for microphone access\n"
+                 "the first time --input opens a device.\n");
+#endif
+#if !defined(SENDSPIN_CLI_HAVE_ALSA) && !defined(SENDSPIN_CLI_HAVE_COREAUDIO)
     std::fprintf(out, "\nThis build has no ALSA backend, so there is no sound card to capture\n"
                       "from here.\n");
 #endif

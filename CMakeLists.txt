@@ -7,6 +7,11 @@ project(sendspin-cpp-cli
     LANGUAGES CXX
 )
 
+# The CoreAudio capture source asks for microphone access through AVFoundation, which is Objective-C.
+if(APPLE)
+    enable_language(OBJCXX)
+endif()
+
 # sendspin-cpp requires C++20.
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -58,7 +63,7 @@ FetchContent_MakeAvailable(sendspin)
 option(SENDSPIN_CLI_WITH_ALSA "Build the ALSA output backend if libasound is available" ON)
 
 # macOS only; the frameworks it needs are part of the system, so there is nothing to install.
-option(SENDSPIN_CLI_WITH_COREAUDIO "Build the CoreAudio output backend on macOS" ON)
+option(SENDSPIN_CLI_WITH_COREAUDIO "Build the CoreAudio output and capture backend on macOS" ON)
 
 option(SENDSPIN_CLI_WITH_PORTAUDIO
     "Build the PortAudio output backend if libportaudio is available" ON)
@@ -291,9 +296,18 @@ if(SENDSPIN_CLI_ALSA_ENABLED)
 endif()
 
 if(SENDSPIN_CLI_COREAUDIO_ENABLED)
-    target_sources(sendspin-cli-core PRIVATE src/coreaudio_sink.cpp)
+    target_sources(sendspin-cli-core PRIVATE
+        src/coreaudio_device.cpp
+        src/coreaudio_permission.mm
+        src/coreaudio_sink.cpp
+        src/coreaudio_source.cpp
+    )
+    # -Wno-error: blocks and Apple's headers are outside what -Wpedantic was chosen for.
+    set_source_files_properties(src/coreaudio_permission.mm PROPERTIES
+        COMPILE_OPTIONS "-fobjc-arc;-Wno-error")
     target_link_libraries(sendspin-cli-core PUBLIC
-        "-framework CoreAudio" "-framework AudioToolbox" "-framework CoreFoundation")
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework CoreFoundation"
+        "-framework AVFoundation" "-framework Foundation")
     target_compile_definitions(sendspin-cli-core PUBLIC SENDSPIN_CLI_HAVE_COREAUDIO)
 endif()
 
@@ -326,6 +340,15 @@ target_compile_definitions(sendspin-cli-core PUBLIC
 add_executable(sendspin-cli src/main.cpp)
 target_link_libraries(sendspin-cli PRIVATE sendspin-cli-core)
 target_compile_options(sendspin-cli PRIVATE ${SENDSPIN_CLI_WARNING_FLAGS})
+
+if(SENDSPIN_CLI_COREAUDIO_ENABLED)
+    # A bare binary has no bundle, so its microphone usage description rides in the binary.
+    set(SENDSPIN_CLI_INFO_PLIST ${CMAKE_CURRENT_BINARY_DIR}/sendspin-cli.Info.plist)
+    configure_file(packaging/sendspin-cli.Info.plist.in ${SENDSPIN_CLI_INFO_PLIST} @ONLY)
+    target_link_options(sendspin-cli PRIVATE
+        "LINKER:-sectcreate,__TEXT,__info_plist,${SENDSPIN_CLI_INFO_PLIST}")
+    set_property(TARGET sendspin-cli APPEND PROPERTY LINK_DEPENDS ${SENDSPIN_CLI_INFO_PLIST})
+endif()
 
 list(JOIN SENDSPIN_CLI_BACKENDS ", " SENDSPIN_CLI_BACKEND_LIST)
 message(STATUS "sendspin-cli ${PROJECT_VERSION} against sendspin-cpp ${SENDSPIN_GIT_TAG}")
