@@ -15,6 +15,7 @@
 #include "state_store.h"
 
 #include "key_value_file.h"
+#include "sendspin/persistence_keys.h"
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -23,6 +24,7 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 #include <utility>
 #include <vector>
@@ -35,15 +37,46 @@ constexpr const char* STATE_SUBDIR = "sendspin-cli";
 constexpr const char* STATE_FILE = "state";
 
 constexpr const char* KEY_LAST_SERVER = "last-server";
-constexpr const char* KEY_LAST_SERVER_HASH = "last-server-hash";
-constexpr const char* KEY_STATIC_DELAY_MS = "static-delay-ms";
 constexpr const char* KEY_VOLUME = "volume";
 constexpr const char* KEY_MUTED = "muted";
+/// Prefix of the keys holding library blobs, so they cannot collide with ours.
+constexpr const char* KEY_BLOB_PREFIX = "blob-";
+
+/// Written by releases built on sendspin-cpp v0.8.0 and earlier.
+constexpr const char* LEGACY_KEY_LAST_SERVER_HASH = "last-server-hash";
+constexpr const char* LEGACY_KEY_STATIC_DELAY_MS = "static-delay-ms";
+
+constexpr const char* HEX_DIGITS = "0123456789abcdef";
 
 /// An environment variable's value, or empty when it is unset or set to nothing.
 std::string env_or_empty(const char* name) {
     const char* value = std::getenv(name);
     return value == nullptr ? std::string() : std::string(value);
+}
+
+std::string to_hex(const uint8_t* data, size_t len) {
+    std::string text;
+    text.reserve(len * 2);
+    for (size_t i = 0; i < len; ++i) {
+        text += HEX_DIGITS[data[i] >> 4];
+        text += HEX_DIGITS[data[i] & 0x0F];
+    }
+    return text;
+}
+
+/// The bytes `text` encodes, or nothing unless it is whole pairs of lowercase hex digits.
+std::optional<std::vector<uint8_t>> from_hex(const std::string& text) {
+    if (text.size() % 2 != 0 || text.find_first_not_of(HEX_DIGITS) != std::string::npos) {
+        return std::nullopt;
+    }
+    std::vector<uint8_t> bytes;
+    bytes.reserve(text.size() / 2);
+    for (size_t i = 0; i < text.size(); i += 2) {
+        const auto high = static_cast<uint8_t>(std::strchr(HEX_DIGITS, text[i]) - HEX_DIGITS);
+        const auto low = static_cast<uint8_t>(std::strchr(HEX_DIGITS, text[i + 1]) - HEX_DIGITS);
+        bytes.push_back(static_cast<uint8_t>((high << 4) | low));
+    }
+    return bytes;
 }
 
 /// Everything up to the last '/', or empty when there is none.
@@ -86,6 +119,7 @@ StateLoadResult StateStore::load(size_t& malformed_line) {
     for (KeyValueEntry& entry : entries) {
         this->values_[entry.key] = std::move(entry.value);
     }
+    this->migrate_legacy_keys();
     return StateLoadResult::Loaded;
 }
 
@@ -100,28 +134,16 @@ bool StateStore::set_last_server(const std::string& server_id) {
     return this->set_all({{KEY_LAST_SERVER, server_id}});
 }
 
-std::optional<uint32_t> StateStore::last_server_hash() const {
-    const std::optional<uint64_t> value = this->get_number(KEY_LAST_SERVER_HASH, UINT32_MAX);
+std::optional<std::vector<uint8_t>> StateStore::blob(const std::string& key) const {
+    const std::optional<std::string> value = this->get(KEY_BLOB_PREFIX + key);
     if (!value.has_value()) {
         return std::nullopt;
     }
-    return static_cast<uint32_t>(*value);
+    return from_hex(*value);
 }
 
-bool StateStore::set_last_server_hash(uint32_t hash) {
-    return this->set_all({{KEY_LAST_SERVER_HASH, std::to_string(hash)}});
-}
-
-std::optional<uint16_t> StateStore::static_delay_ms() const {
-    const std::optional<uint64_t> value = this->get_number(KEY_STATIC_DELAY_MS, UINT16_MAX);
-    if (!value.has_value()) {
-        return std::nullopt;
-    }
-    return static_cast<uint16_t>(*value);
-}
-
-bool StateStore::set_static_delay_ms(uint16_t delay_ms) {
-    return this->set_all({{KEY_STATIC_DELAY_MS, std::to_string(delay_ms)}});
+bool StateStore::set_blob(const std::string& key, const uint8_t* data, size_t len) {
+    return this->set_all({{KEY_BLOB_PREFIX + key, to_hex(data, len)}});
 }
 
 std::optional<uint8_t> StateStore::volume() const {
@@ -201,6 +223,22 @@ std::optional<uint64_t> StateStore::get_number(const std::string& key, uint64_t 
         return std::nullopt;
     }
     return static_cast<uint64_t>(parsed);
+}
+
+void StateStore::migrate_legacy_keys() {
+    const std::string delay_key =
+        std::string(KEY_BLOB_PREFIX) + sendspin::persistence_keys::OUTPUT_DELAY;
+    const std::optional<uint64_t> delay = this->get_number(LEGACY_KEY_STATIC_DELAY_MS, UINT16_MAX);
+    // Seeds only: a delay stored since the upgrade is newer than the legacy one.
+    if (delay.has_value() && this->values_.count(delay_key) == 0) {
+        // Native byte order, as the library reads it back.
+        const auto delay_ms = static_cast<uint16_t>(*delay);
+        uint8_t bytes[sendspin::persistence_keys::OUTPUT_DELAY_SIZE];
+        std::memcpy(bytes, &delay_ms, sizeof(bytes));
+        this->values_[delay_key] = to_hex(bytes, sizeof(bytes));
+    }
+    this->values_.erase(LEGACY_KEY_STATIC_DELAY_MS);
+    this->values_.erase(LEGACY_KEY_LAST_SERVER_HASH);
 }
 
 bool StateStore::write() const {

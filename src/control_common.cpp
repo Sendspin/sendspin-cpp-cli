@@ -297,9 +297,9 @@ bool parse_control_request(const std::string& name, const std::vector<std::strin
         case ControlCommand::Delay: {
             uint64_t delay = 0;
             // Refused, not clamped: the library would silently clamp to 5000.
-            if (!parse_unsigned(value, MAX_STATIC_DELAY_MS, delay)) {
-                return reject("a static delay in milliseconds, from 0 to " +
-                              std::to_string(MAX_STATIC_DELAY_MS));
+            if (!parse_unsigned(value, MAX_OUTPUT_DELAY_MS, delay)) {
+                return reject("an output delay in milliseconds, from 0 to " +
+                              std::to_string(MAX_OUTPUT_DELAY_MS));
             }
             out.delay_ms = static_cast<uint16_t>(delay);
             return true;
@@ -499,6 +499,7 @@ std::string format_status(const StatusSnapshot& snapshot) {
     std::string out;
 
     append_line(out, "name", snapshot.name);
+    append_line(out, "client id", snapshot.client_id);
 
     if (!snapshot.connected) {
         append_line(out, "server", "not connected");
@@ -510,6 +511,15 @@ std::string format_status(const StatusSnapshot& snapshot) {
                 ")");
     } else {
         append_line(out, "server", snapshot.server_name + " (connected)");
+    }
+
+    if (!snapshot.connected) {
+        append_line(out, "trust", "not connected");
+    } else if (!snapshot.trust.has_value()) {
+        append_line(out, "trust", "unknown");
+    } else {
+        append_line(out, "trust",
+                    *snapshot.trust == sendspin::ConnectionTrust::USER ? "paired" : "unpaired");
     }
 
     // playback_speed is per-mille: 1000 is normal, 0 is paused.
@@ -562,8 +572,8 @@ std::string format_status(const StatusSnapshot& snapshot) {
     append_line(out, "player volume",
                 format_volume(true, snapshot.player_volume, snapshot.player_muted) +
                     volume_source_note(snapshot.player_volume_source));
-    append_line(out, "static delay",
-                std::to_string(static_cast<unsigned>(snapshot.static_delay_ms)) + " ms");
+    append_line(out, "output delay",
+                std::to_string(static_cast<unsigned>(snapshot.output_delay_ms)) + " ms");
 
     if (snapshot.connected) {
         append_line(out, "note",

@@ -312,9 +312,9 @@ check_control_socket() {
         fail "status printed no group volume line: $(cat "$status_out")"
     grep -q '^player volume: ' "$status_out" ||
         fail "status printed no player volume line: $(cat "$status_out")"
-    grep -q '^static delay: [0-9]* ms$' "$status_out" ||
-        fail "status printed no static delay line: $(cat "$status_out")"
-    pass "status round-trips over the control socket, naming both volumes and the static delay"
+    grep -q '^output delay: [0-9]* ms$' "$status_out" ||
+        fail "status printed no output delay line: $(cat "$status_out")"
+    pass "status round-trips over the control socket, naming both volumes and the output delay"
 
     # Must say "not connected", not "unsupported".
     local pause_err="$WORK_DIR/control-pause.err"
@@ -551,7 +551,7 @@ EOF
 }
 
 # `delay` reaches the role, shows in `status`, and survives a restart under an explicit --state-dir.
-check_static_delay() {
+check_output_delay() {
     local log="$WORK_DIR/delay.log"
     local relog="$WORK_DIR/delay-restart.log"
     local state_dir="$WORK_DIR/delay-state"
@@ -562,28 +562,28 @@ check_static_delay() {
 
     local -a player=(--no-mdns -o null --port "$PORT_DELAY" --state-dir "$state_dir")
 
-    # --static-delay on a first run: the only check that the flag reaches the role before add_player().
+    # --output-delay on a first run: the only check that the flag reaches the role before add_player().
     local seeded_dir="$WORK_DIR/delay-seeded"
     local seeded_out="$WORK_DIR/delay-seeded.out"
     mkdir -p "$seeded_dir"
     XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" --no-mdns -o null --port "$PORT_DELAY" \
-        --state-dir "$seeded_dir" --static-delay 65 "${NO_CONFIG[@]}" \
+        --state-dir "$seeded_dir" --output-delay 65 "${NO_CONFIG[@]}" \
         >"$WORK_DIR/delay-seeded.log" 2>&1 &
     local seeded_pid=$!
     STARTED_PIDS+=("$seeded_pid")
     wait_for_line "$WORK_DIR/delay-seeded.log" "listening on port $PORT_DELAY" "$BOOT_TIMEOUT_S" ||
-        fail "the --static-delay player never came up. Log: $(cat "$WORK_DIR/delay-seeded.log")"
+        fail "the --output-delay player never came up. Log: $(cat "$WORK_DIR/delay-seeded.log")"
     wait_for_socket "$socket" "$BOOT_TIMEOUT_S" ||
-        fail "the --static-delay player bound no control socket"
+        fail "the --output-delay player bound no control socket"
     XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" status --port "$PORT_DELAY" "${NO_CONFIG[@]}" \
         >"$seeded_out" 2>&1 || fail "status exited $?. Output: $(cat "$seeded_out")"
-    grep -q '^static delay: 65 ms$' "$seeded_out" ||
-        fail "--static-delay 65 did not reach the player role on a first run: $(cat "$seeded_out")"
-    pass "--static-delay seeds the delay on a first run, with nothing remembered"
+    grep -q '^output delay: 65 ms$' "$seeded_out" ||
+        fail "--output-delay 65 did not reach the player role on a first run: $(cat "$seeded_out")"
+    pass "--output-delay seeds the delay on a first run, with nothing remembered"
     kill -TERM "$seeded_pid" 2>/dev/null || true
     await_child "$seeded_pid" "$EXIT_TIMEOUT_S" >/dev/null 2>&1 || true
     wait_for_absent "$socket" "$EXIT_TIMEOUT_S" ||
-        fail "the --static-delay player exited but left $socket behind"
+        fail "the --output-delay player exited but left $socket behind"
 
     XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" "${player[@]}" "${NO_CONFIG[@]}" >"$log" 2>&1 &
     local pid=$!
@@ -596,7 +596,7 @@ check_static_delay() {
 
     XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" status --port "$PORT_DELAY" "${NO_CONFIG[@]}" \
         >"$out" 2>&1 || fail "status exited $?. Output: $(cat "$out")"
-    grep -q '^static delay: 0 ms$' "$out" ||
+    grep -q '^output delay: 0 ms$' "$out" ||
         fail "a player with nothing remembered did not report a zero delay: $(cat "$out")"
 
     # Settable with no server connected.
@@ -605,7 +605,7 @@ check_static_delay() {
 
     XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" status --port "$PORT_DELAY" "${NO_CONFIG[@]}" \
         >"$out" 2>&1 || fail "status exited $? after delay. Output: $(cat "$out")"
-    grep -q '^static delay: 250 ms$' "$out" ||
+    grep -q '^output delay: 250 ms$' "$out" ||
         fail "delay 250 did not reach the player role: $(cat "$out")"
     pass "delay reaches the player role with no server connected, and status shows it"
 
@@ -619,9 +619,14 @@ check_static_delay() {
         fail "the refusal did not name the bound: $(cat "$refusal")"
     XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" status --port "$PORT_DELAY" "${NO_CONFIG[@]}" \
         >"$out" 2>&1 || fail "status exited $? after a refused delay. Output: $(cat "$out")"
-    grep -q '^static delay: 250 ms$' "$out" ||
+    grep -q '^output delay: 250 ms$' "$out" ||
         fail "a refused delay changed the player anyway: $(cat "$out")"
     pass "delay 5001 is refused naming the bound, and leaves the player's delay alone"
+
+    local client_id
+    client_id="$(sed -n 's/^client id: //p' "$out")"
+    [ "${#client_id}" -eq 43 ] ||
+        fail "status printed no 43-character client id: $(cat "$out")"
 
     kill -TERM "$pid"
     local status=0
@@ -641,29 +646,32 @@ check_static_delay() {
 
     XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" status --port "$PORT_DELAY" "${NO_CONFIG[@]}" \
         >"$out" 2>&1 || fail "status exited $? after a restart. Output: $(cat "$out")"
-    grep -q '^static delay: 250 ms$' "$out" ||
+    grep -q '^output delay: 250 ms$' "$out" ||
         fail "the delay did not survive a restart: $(cat "$out")"
     pass "a locally set delay survives a restart through the state store"
+    grep -q "^client id: $client_id\$" "$out" ||
+        fail "the client id changed across a restart, so the keypair was not kept: $(cat "$out")"
+    pass "the client id survives a restart, so the keypair persists"
 
-    # A remembered delay beats --static-delay.
+    # A remembered delay beats --output-delay.
     local flagged="$WORK_DIR/delay-flag-status.out"
     kill -TERM "$pid"
     await_child "$pid" "$EXIT_TIMEOUT_S" >/dev/null 2>&1 || true
 
-    XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" "${player[@]}" --static-delay 40 "${NO_CONFIG[@]}" \
+    XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" "${player[@]}" --output-delay 40 "${NO_CONFIG[@]}" \
         >"$WORK_DIR/delay-flag.log" 2>&1 &
     pid=$!
     STARTED_PIDS+=("$pid")
     wait_for_line "$WORK_DIR/delay-flag.log" "listening on port $PORT_DELAY" "$BOOT_TIMEOUT_S" ||
-        fail "the --static-delay player never came up. Log: $(cat "$WORK_DIR/delay-flag.log")"
+        fail "the --output-delay player never came up. Log: $(cat "$WORK_DIR/delay-flag.log")"
     wait_for_socket "$socket" "$BOOT_TIMEOUT_S" ||
-        fail "the --static-delay player bound no control socket"
+        fail "the --output-delay player bound no control socket"
 
     XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" status --port "$PORT_DELAY" "${NO_CONFIG[@]}" \
         >"$flagged" 2>&1 || fail "status exited $?. Output: $(cat "$flagged")"
-    grep -q '^static delay: 250 ms$' "$flagged" ||
-        fail "--static-delay overrode a remembered delay, which it must not: $(cat "$flagged")"
-    pass "--static-delay loses to a remembered delay, as a first-run default should"
+    grep -q '^output delay: 250 ms$' "$flagged" ||
+        fail "--output-delay overrode a remembered delay, which it must not: $(cat "$flagged")"
+    pass "--output-delay loses to a remembered delay, as a first-run default should"
 
     kill -TERM "$pid" 2>/dev/null || true
     await_child "$pid" "$EXIT_TIMEOUT_S" >/dev/null 2>&1 || true
@@ -715,7 +723,7 @@ main() {
     check_stale_control_socket
     check_no_control
     check_missing_runtime_dir
-    check_static_delay
+    check_output_delay
     check_config_file
     check_credential_redaction
     printf 'smoke: every check passed\n'

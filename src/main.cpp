@@ -76,30 +76,39 @@ struct HostNetworkProvider : sendspin::SendspinNetworkProvider {
     }
 };
 
-/// The library's persistence hook (server hash, static delay), backed by the state store.
+/// The library's byte store (identity key, pairings, output delay), backed by the state store.
 class CliPersistenceProvider final : public sendspin::SendspinPersistenceProvider {
 public:
     /// `store` must outlive this provider, which must in turn outlive the client.
     explicit CliPersistenceProvider(StateStore& store) : store_(store) {}
 
-    bool save_last_server_hash(uint32_t hash) override {
-        return this->store_.set_last_server_hash(hash);
+    std::optional<std::vector<uint8_t>> load_blob(const std::string& key) override {
+        return this->store_.blob(key);
     }
 
-    std::optional<uint32_t> load_last_server_hash() override {
-        return this->store_.last_server_hash();
-    }
-
-    bool save_static_delay(uint16_t delay_ms) override {
-        return this->store_.set_static_delay_ms(delay_ms);
-    }
-
-    std::optional<uint16_t> load_static_delay() override {
-        return this->store_.static_delay_ms();
+    bool save_blob(const std::string& key, const uint8_t* data, size_t len) override {
+        return this->store_.set_blob(key, data, len);
     }
 
 private:
     StateStore& store_;
+};
+
+/// Caches the connection's trust for `status`. Main loop only.
+struct TrustListener : sendspin::SendspinClientListener {
+    void on_trust_changed(sendspin::ConnectionTrust trust) override {
+        this->trust_ = trust;
+        log_line(LogLevel::INFO, LOG_TAG, "Connected server is %s",
+                 trust == sendspin::ConnectionTrust::USER ? "paired" : "not paired");
+    }
+
+    /// The last trust reported; describes the connection only while one is up.
+    const std::optional<sendspin::ConnectionTrust>& trust() const {
+        return this->trust_;
+    }
+
+private:
+    std::optional<sendspin::ConnectionTrust> trust_;
 };
 
 /// Logs server metadata and caches the latest for `status`. Main loop only.
@@ -114,6 +123,10 @@ struct MetadataLogger : sendspin::MetadataRoleListener {
     }
 
     void on_metadata_clear() override {
+        // Also fires on role removal, so only a real clear is logged.
+        if (!this->state_.has_value()) {
+            return;
+        }
         // Cleared so `status` does not report a track that has gone.
         this->state_.reset();
         log_line(LogLevel::INFO, LOG_TAG_METADATA, "Metadata cleared");
@@ -269,13 +282,15 @@ public:
     /// Every reference must outlive this dispatcher, which in main() they all do.
     ControlDispatcher(const Options& opts, sendspin::SendspinClient& client,
                       sendspin::ControllerRole& controller, sendspin::MetadataRole& metadata,
-                      const MetadataLogger& metadata_logger, const PlayerListener& player_listener,
-                      sendspin::PlayerRole& player, const AudioSink& sink)
+                      const MetadataLogger& metadata_logger, const TrustListener& trust_listener,
+                      const PlayerListener& player_listener, sendspin::PlayerRole& player,
+                      const AudioSink& sink)
         : opts_(opts),
           client_(client),
           controller_(controller),
           metadata_(metadata),
           metadata_logger_(metadata_logger),
+          trust_listener_(trust_listener),
           player_listener_(player_listener),
           player_(player),
           sink_(sink) {}
@@ -304,12 +319,12 @@ public:
             return encode_control_reply(ControlStatus::Ok, "", format_status(this->status()));
         }
 
-        // Handled locally: update_static_delay() persists and republishes; safe on the main loop.
+        // Handled locally: update_output_delay() persists and republishes; safe on the main loop.
         if (request.command == ControlCommand::Delay) {
             const uint16_t delay_ms = request.delay_ms.value_or(0);
-            this->player_.update_static_delay(delay_ms);
+            this->player_.update_output_delay(delay_ms);
             // The listener only logs server-set delays, so log this one here.
-            log_line(LogLevel::INFO, LOG_TAG_PLAYER, "Static delay set to %u ms locally",
+            log_line(LogLevel::INFO, LOG_TAG_PLAYER, "Output delay set to %u ms locally",
                      static_cast<unsigned>(delay_ms));
             return encode_control_reply(ControlStatus::Ok, "", "");
         }
@@ -335,7 +350,9 @@ private:
     StatusSnapshot status() const {
         StatusSnapshot snapshot;
         snapshot.name = this->opts_.name;
+        snapshot.client_id = this->client_.client_id();
         snapshot.connected = this->client_.is_connected();
+        snapshot.trust = this->trust_listener_.trust();
         const std::optional<sendspin::ServerInformationObject> info =
             this->client_.get_server_information();
         if (info.has_value()) {
@@ -374,7 +391,7 @@ private:
         snapshot.player_muted = this->player_listener_.applied_muted();
         snapshot.player_volume_source = this->player_listener_.volume_source();
         // From the role: `delay` changes it without invoking the listener.
-        snapshot.static_delay_ms = this->player_.get_static_delay_ms();
+        snapshot.output_delay_ms = this->player_.get_output_delay_ms();
         snapshot.output = this->sink_.name();
         return snapshot;
     }
@@ -384,6 +401,7 @@ private:
     sendspin::ControllerRole& controller_;
     sendspin::MetadataRole& metadata_;
     const MetadataLogger& metadata_logger_;
+    const TrustListener& trust_listener_;
     const PlayerListener& player_listener_;
     /// Non-const only for `delay`.
     sendspin::PlayerRole& player_;
@@ -573,9 +591,10 @@ int main(int argc, char* argv[]) {
     // Loaded before the client, since its values must be in place before anything is published.
     StateStore state_store(state_store_path(opts.state_dir));
     if (state_store.path().empty()) {
-        log_line(LogLevel::DEBUG, LOG_TAG,
-                 "Nothing set --state-dir, $XDG_STATE_HOME or $HOME, so this run remembers "
-                 "nothing across restarts");
+        log_line(
+            LogLevel::WARN, LOG_TAG,
+            "Nothing set --state-dir, $XDG_STATE_HOME or $HOME, so this run remembers "
+            "nothing across restarts -- servers will see a new client id, unpaired, every run");
     } else {
         size_t malformed_line = 0;
         switch (state_store.load(malformed_line)) {
@@ -595,8 +614,6 @@ int main(int argc, char* argv[]) {
     CliPersistenceProvider persistence(state_store);
 
     sendspin::SendspinClientConfig config;
-    // Empty lets the library derive an id from the MAC.
-    config.client_id = opts.client_id;
     config.name = opts.name;
     config.product_name = opts.product_name;
     config.manufacturer = opts.manufacturer;
@@ -607,6 +624,16 @@ int main(int argc, char* argv[]) {
 
     // Before add_player() and start(), or the library never asks it.
     client.set_persistence_provider(&persistence);
+
+    // Never persisted by the library, so set on every run, before the first client/hello.
+    client.set_unpaired_access_enabled(opts.allow_unpaired);
+    if (opts.allow_unpaired) {
+        log_line(LogLevel::INFO, LOG_TAG, "Unpaired access is on: any server may play here");
+    } else {
+        log_line(LogLevel::INFO, LOG_TAG,
+                 "A server must pair with this player before it can play -- pass "
+                 "--allow-unpaired to let any server play");
+    }
 
     std::vector<sendspin::AudioSupportedFormatObject> formats = advertised_formats(*sink);
     // Pins reorder the advertised list; a pin it does not carry stops the run.
@@ -633,17 +660,20 @@ int main(int argc, char* argv[]) {
     // extra_startup_silence_ms stays at the library default until measured on hardware.
 
     // A first-run default: a persisted delay wins. Set before add_player() loads it.
-    player_config.initial_static_delay_ms = opts.static_delay_ms;
+    player_config.initial_output_delay_ms = opts.output_delay_ms;
     sendspin::PlayerRole& player = client.add_player(std::move(player_config));
     // Also what makes the stored delay apply: non-adjustable delays are ignored.
-    player.set_static_delay_adjustable(true);
+    player.set_output_delay_adjustable(true);
     sendspin::MetadataRole& metadata = client.add_metadata();
     // Always added: advertised roles are a property of the build, not of --no-control.
     sendspin::ControllerRole& controller = client.add_controller();
 
     PlayerListener player_listener(player, *sink, &state_store);
     MetadataLogger metadata_logger;
+    TrustListener trust_listener;
     HostNetworkProvider network_provider;
+
+    client.set_listener(&trust_listener);
 
     player.set_listener(&player_listener);
     metadata.set_listener(&metadata_logger);
@@ -665,7 +695,7 @@ int main(int argc, char* argv[]) {
     player.update_muted(muted);
 
     if (!client.start()) {
-        log_fatal(LOG_TAG, "could not start the Sendspin server on port %u", opts.port);
+        log_fatal(LOG_TAG, "could not start the Sendspin client on port %u", opts.port);
         return 1;
     }
 
@@ -678,7 +708,7 @@ int main(int argc, char* argv[]) {
     start_advertising(mdns, opts);
 
     ControlDispatcher control_dispatcher(opts, client, controller, metadata, metadata_logger,
-                                         player_listener, player, *sink);
+                                         trust_listener, player_listener, player, *sink);
 
     std::unique_ptr<OutboundMode> outbound;
     if (opts.was_given(Opt::Server)) {
@@ -705,8 +735,7 @@ int main(int argc, char* argv[]) {
             // Captured even without --hook-start, for the stop hook.
             if (started) {
                 stream_context = HookContext{};
-                // Only an explicit --id is exported; the MAC-derived id is not exposed.
-                stream_context.client_id = opts.client_id;
+                stream_context.client_id = client.client_id();
                 stream_context.client_name = opts.name;
                 const std::optional<sendspin::ServerInformationObject> info =
                     client.get_server_information();

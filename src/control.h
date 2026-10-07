@@ -19,6 +19,7 @@
 #include "audio_sink.h"
 
 #include <sendspin/controller_role.h>
+#include <sendspin/types.h>
 
 #ifndef SENDSPIN_ENABLE_CONTROLLER
 #error \
@@ -47,8 +48,8 @@ inline constexpr size_t MAX_CONTROL_CONNECTIONS = 8;
 /// Time from accept() to a complete request line; never refreshed by reads.
 inline constexpr int64_t CONTROL_IDLE_TIMEOUT_MS = 5000;
 
-/// Spec bound for static delay; sendspin-cpp silently clamps past it, so refuse at parse time.
-inline constexpr uint16_t MAX_STATIC_DELAY_MS = 5000;
+/// Spec bound for output delay; sendspin-cpp silently clamps past it, so refuse at parse time.
+inline constexpr uint16_t MAX_OUTPUT_DELAY_MS = 5000;
 
 /// Every request a subcommand can make: controller@v1 commands plus the locally answered two.
 enum class ControlCommand : uint8_t {
@@ -66,7 +67,7 @@ enum class ControlCommand : uint8_t {
     Shuffle,
     Switch,
 
-    /// Answered locally: this endpoint's own static delay.
+    /// Answered locally: this endpoint's own output delay.
     /// Keep last: EveryCommandInTheEnumHasARow walks the enum up to here.
     Delay,
 };
@@ -110,7 +111,7 @@ struct ControlRequest {
     std::optional<uint32_t> position_ms{};                 ///< `seek`
     std::optional<int32_t> offset_ms{};                    ///< `seek-rel`
     std::optional<sendspin::SendspinRepeatMode> repeat{};  ///< `repeat`
-    std::optional<uint16_t> delay_ms{};                    ///< `delay`, 0 to MAX_STATIC_DELAY_MS
+    std::optional<uint16_t> delay_ms{};                    ///< `delay`, 0 to MAX_OUTPUT_DELAY_MS
 };
 
 /// A subcommand and its arguments, split off the front of argv.
@@ -160,11 +161,15 @@ bool control_refusal(const ControlRequest& request, const ControllerSnapshot& sn
 
 /// Everything `status` prints.
 struct StatusSnapshot {
-    std::string name;  ///< -n, or the hostname default
+    std::string name;       ///< -n, or the hostname default
+    std::string client_id;  ///< the public key servers know this player by
 
     bool connected{false};
     std::string server_name;  ///< `ServerInformationObject::name`, empty when not known
     std::string server_id;    ///< `ServerInformationObject::server_id`
+
+    /// The connection's trust; absent before its handshake reports one.
+    std::optional<sendspin::ConnectionTrust> trust{};
 
     /// 0 is paused, 1000 is normal speed; absent when no progress has arrived.
     std::optional<uint32_t> playback_speed{};
@@ -195,8 +200,8 @@ struct StatusSnapshot {
 
     VolumeSource player_volume_source{VolumeSource::SinkDefault};
 
-    /// The role's effective static delay.
-    uint16_t static_delay_ms{0};
+    /// The role's effective output delay.
+    uint16_t output_delay_ms{0};
 
     std::string output;  ///< the sink's name()
 };

@@ -134,42 +134,25 @@ regardless, a drop-in with `ReadWritePaths=/var/log` is the way back.
 
 **A device that will not open.** See above.
 
-## The server finds it and will not take it
-
-Under the system unit, and not when you run the player from your own shell:
+## The server connects and nothing plays
 
 ```
-W sendspin.network_info: getifaddrs failed; cannot auto-detect MAC address
+I cli: A server must pair with this player before it can play -- pass --allow-unpaired to let any server play
 ```
 
-with the server failing on the new player in its own log — Music Assistant reports
-`No key provided` from `_handle_client_added`.
+Every connection is encrypted, and an unpaired server may connect but not play. Check
+`sendspin-cli status`: `trust: unpaired` beside a connected server is this. Either pair the
+server with the player, or start the player with `--allow-unpaired` (`allow-unpaired = true`
+in the config) to let any server play.
 
-With no `id` in the config, the player's identity is the MAC address of its network interface,
-and glibc reads the interface list over a netlink socket. The unit in 0.1.6 and earlier does not
-allow one, so the player says hello with an empty id and the server has nothing to file it
-under. Add the family with a drop-in:
+A server that does not speak Sendspin 1.0.0-rc1 cannot connect at all — Music Assistant needs
+aiosendspin 10 or later.
 
-```bash
-sudo systemctl edit sendspin-cli
-```
-
-```ini
-[Service]
-RestrictAddressFamilies=AF_NETLINK
-```
-
-```bash
-sudo systemctl restart sendspin-cli
-```
-
-A repeated `RestrictAddressFamilies=` adds to the unit's list rather than replacing it, so that
-one family is the whole of the drop-in, and it stays harmless once an upgrade's unit carries
-the family itself.
-
-Setting `id = living-room` in `/etc/sendspin-cli.conf` also gets the player taken, but as a
-different player from the one a run from your shell registers: the server files it under that
-id rather than under the MAC.
+**A player the server knew shows up as a new one.** The client id is now the player's public
+key rather than a configured `id` or the interface MAC, so the first run after upgrading from
+0.3.0 registers a new player, and `id =` in a config file is refused. The key lives in the
+[state file](Configuration#the-state-file); a player with no state directory, or whose state
+file was removed, gets a new identity on every start.
 
 ## Nothing discovers it
 
@@ -303,7 +286,7 @@ systemctl status sendspin-cli
 pgrep -a sendspin-cli
 ```
 
-To run a second player on purpose, give it its own `--id`, its own `--port`, its own
+To run a second player on purpose, give it its own `--port`, its own
 `--control-socket` and its own `--state-dir` — they share the state file otherwise, the
 server files both under one identity, and the second to save its volume overwrites the
 first's.

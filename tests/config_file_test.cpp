@@ -192,7 +192,7 @@ TEST(ConfigPrecedence, AConfigValueBeatsTheBuiltInDefault) {
     const std::string config = scratch.write(
         "config", "# a player in the kitchen\nname = kitchen\nport = 9100\nbuffer-ms = 250\n"
                   "output = null\nmdns-name = Kitchen Speaker\nno-mdns = true\n"
-                  "id = kitchen-left\nmanufacturer = Acme Audio\nproduct-name = Acme Streamer\n");
+                  "manufacturer = Acme Audio\nproduct-name = Acme Streamer\n");
 
     Parse parse({}, config);
 
@@ -204,7 +204,6 @@ TEST(ConfigPrecedence, AConfigValueBeatsTheBuiltInDefault) {
     // A value with a space in it survives: only the key is trimmed and the first '=' splits.
     EXPECT_EQ(parse.options().mdns_name, "Kitchen Speaker");
     EXPECT_TRUE(parse.options().no_mdns);
-    EXPECT_EQ(parse.options().client_id, "kitchen-left");
     EXPECT_EQ(parse.options().manufacturer, "Acme Audio");
     EXPECT_EQ(parse.options().product_name, "Acme Streamer");
     EXPECT_EQ(parse.options().config_path, config);
@@ -225,18 +224,56 @@ TEST(ConfigPrecedence, TheCommandLineBeatsAConfigValue) {
     EXPECT_EQ(parse.options().buffer_ms, 250);
 }
 
-TEST(ConfigPrecedence, StaticDelayIsSettableAndLosesToTheCommandLine) {
+TEST(ConfigPrecedence, TheOldStaticDelayKeyIsStillAccepted) {
     ScratchDir scratch;
     ASSERT_TRUE(scratch.created());
     const std::string config = scratch.write("config", "static-delay = 375\n");
 
+    Parse parse({}, config);
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_EQ(parse.options().output_delay_ms, 375U);
+}
+
+TEST(ConfigPrecedence, TheLastDelayKeyWinsWhicheverSpellingItUses) {
+    ScratchDir scratch;
+    ASSERT_TRUE(scratch.created());
+    const std::string new_last = scratch.write("a", "static-delay = 375\noutput-delay = 120\n");
+    const std::string old_last = scratch.write("b", "output-delay = 120\nstatic-delay = 375\n");
+
+    Parse first({}, new_last);
+    Parse second({}, old_last);
+    ASSERT_TRUE(first.ok()) << first.diagnostics();
+    ASSERT_TRUE(second.ok()) << second.diagnostics();
+    EXPECT_EQ(first.options().output_delay_ms, 120U);
+    EXPECT_EQ(second.options().output_delay_ms, 375U);
+}
+
+TEST(ConfigPrecedence, AllowUnpairedIsSettableAndOffByDefault) {
+    ScratchDir scratch;
+    ASSERT_TRUE(scratch.created());
+    const std::string on = scratch.write("on", "allow-unpaired = true\n");
+    const std::string empty = scratch.write("empty", "name = kitchen\n");
+
+    Parse enabled({}, on);
+    Parse defaulted({}, empty);
+    ASSERT_TRUE(enabled.ok()) << enabled.diagnostics();
+    ASSERT_TRUE(defaulted.ok()) << defaulted.diagnostics();
+    EXPECT_TRUE(enabled.options().allow_unpaired);
+    EXPECT_FALSE(defaulted.options().allow_unpaired);
+}
+
+TEST(ConfigPrecedence, OutputDelayIsSettableAndLosesToTheCommandLine) {
+    ScratchDir scratch;
+    ASSERT_TRUE(scratch.created());
+    const std::string config = scratch.write("config", "output-delay = 375\n");
+
     Parse from_file({}, config);
     ASSERT_TRUE(from_file.ok()) << from_file.diagnostics();
-    EXPECT_EQ(from_file.options().static_delay_ms, 375U);
+    EXPECT_EQ(from_file.options().output_delay_ms, 375U);
 
-    Parse overridden({"--static-delay", "120"}, config);
+    Parse overridden({"--output-delay", "120"}, config);
     ASSERT_TRUE(overridden.ok()) << overridden.diagnostics();
-    EXPECT_EQ(overridden.options().static_delay_ms, 120U);
+    EXPECT_EQ(overridden.options().output_delay_ms, 120U);
 }
 
 TEST(ConfigPrecedence, AudioFormatTakesTheSameOrderedListAsTheFlag) {
@@ -354,12 +391,14 @@ TEST(ConfigRefusals, ABadValueGetsTheFlagsOwnMessagePrefixedWithTheLine) {
     };
     for (const Case& test : std::vector<Case>{
              {"buffer-ms = 0", "invalid --buffer-ms '0' -- expected 10-2000"},
-             {"static-delay = 5001", "invalid --static-delay '5001' -- expected 0-5000"},
+             {"output-delay = 5001", "invalid --output-delay '5001' -- expected 0-5000"},
              {"port = 99999", "invalid --port '99999' -- expected 1-65535"},
              {"server = music.local:abc", "'abc' is not a port number"},
              {"log-level = shouty", "unknown log level 'shouty'"},
              {"name =", "-n needs a non-empty value"},
              {"no-mdns = perhaps", "invalid --no-mdns 'perhaps'"},
+             {"allow-unpaired = perhaps", "invalid --allow-unpaired 'perhaps'"},
+             {"id = kitchen-left", "--id is no longer supported"},
          }) {
         ScratchDir scratch;
         ASSERT_TRUE(scratch.created());

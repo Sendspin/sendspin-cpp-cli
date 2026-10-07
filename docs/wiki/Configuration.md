@@ -17,7 +17,7 @@ second document to keep in step with it.
 name = kitchen
 output = hw:1,0
 buffer-ms = 250
-static-delay = 40
+output-delay = 40
 control-socket = /run/sendspin-cli/control.sock
 ```
 
@@ -49,14 +49,14 @@ already does that.
 |---|---|---|---|
 | `output` | `-o`, `--output` | a device: `hw:1,0`, `default`, `coreaudio:2`, `portaudio:2`, `null`, `stdout` | `default` where ALSA is built in, else `coreaudio`, else `portaudio`, else `null` |
 | `name` | `-n`, `--name` | the friendly name a controller shows | this host's name |
-| `id` | `--id` | the stable client id a server files this player's settings under — two players on one host must not share it | derived from the interface MAC |
 | `manufacturer` | `--manufacturer` | the manufacturer `client/hello` reports | `sendspin-cpp-cli` |
 | `product-name` | `--product-name` | the product name `client/hello` reports | `sendspin-cli` |
 | `server` | `-s`, `--server` | `<host>[:<port>]`, a `ws://` URL, or `mdns:[<name>]` | none — wait to be discovered |
 | `port` | `--port` | the port this player's own WebSocket server listens on | `8928` |
 | `buffer-ms` | `--buffer-ms` | audio the output backend keeps queued, 10–2000 | `100` |
 | `audio-format` | `--audio-format` | preferred formats, comma-separated in priority order: `codec:rate:depth:channels[,...]`, e.g. `flac:48000:24:2,pcm:48000:24:2`; offered first in that order, with the rest of the advertised list still behind them, so a server that cannot encode them falls back — a preference, not a restriction; refuses to start if the advertised list does not carry every one — it carries a single channel count — and an `opus` entry at anything but 48000/16 and at most 2 channels is refused outright | none — device-derived order |
-| `static-delay` | `--static-delay` | latency this endpoint's hardware adds after the audio port, 0–5000 | `0` |
+| `output-delay` | `--output-delay` | latency this endpoint's hardware adds after the audio port, 0–5000. `static-delay` / `--static-delay` is still accepted as the old name | `0` |
+| `allow-unpaired` | `--allow-unpaired` | `true`/`false` — let a server that has not paired with this player play on it | `false` |
 | `no-mdns` | `--no-mdns` | `true`/`false` — do not advertise `_sendspin._tcp` | `false` |
 | `mdns-name` | `--mdns-name` | the instance label to advertise, when it should differ from `name` | `name` |
 | `control-socket` | `--control-socket` | the Unix socket the subcommands talk to | `$XDG_RUNTIME_DIR/sendspin-cli-<port>.sock` |
@@ -144,28 +144,35 @@ this one.
 
 ```ini
 # Written by sendspin-cli. Edits are overwritten.
+blob-keypair = 407f…
+blob-output_delay = 7701
+blob-pairing_psk = 9afb…
 last-server = 7f3a…
-last-server-hash = 3387423128
 muted = true
-static-delay-ms = 375
 volume = 42
 ```
 
 | Key | What it is |
 |---|---|
-| `static-delay-ms` | this endpoint's static delay. The spec **requires** a client to persist it |
+| `blob-keypair` | this player's private key. Its public half is the client id servers know the player by, so **losing it makes this a new, unpaired player** |
+| `blob-pairing_psk`, `blob-rec_*`, `blob-last_played` | the pairing secret, one record per paired server, and the server that played last |
+| `blob-output_delay` | this endpoint's output delay. The spec **requires** a client to persist it |
 | `volume`, `muted` | the gain and mute the output was last told to apply. RECOMMENDED by the spec |
 | `last-server` | the server id, which mDNS discovery uses to break a tie between candidates |
-| `last-server-hash` | an opaque `uint32_t` the library asks us to keep so *it* can prefer the last-played server among inbound connections |
 
-The two server keys mean different things and are deliberately not reconciled with each
-other.
+The `blob-` keys are the sendspin-cpp library's own data, hex-encoded and opaque to the
+player. **The file holds secrets** — treat it like an SSH private key, and do not copy it
+between machines unless you mean to move the player's identity with it.
+
+A state file written by 0.3.0 or earlier is upgraded in place: its `static-delay-ms` becomes
+`blob-output_delay` once, and `last-server-hash` is dropped.
 
 It lives at `$XDG_STATE_HOME/sendspin-cli/state`, then
 `$HOME/.local/state/sendspin-cli/state`, and **`--state-dir <dir>` overrides both** — a
 systemd *system* unit has neither variable and is handed `/var/lib/sendspin-cli` by
 `StateDirectory=`. With none of the three the player still runs and simply remembers
-nothing.
+nothing — which now includes its identity, so every run is a new, unpaired player to a
+server, and the player warns about it at startup.
 
 Under the unit the directory and the file belong to the unprivileged `sendspin-cli` account,
 and a `/var/lib/sendspin-cli` left root-owned by an earlier root-run version needs nothing
@@ -177,19 +184,19 @@ Writes go through a temporary, an `fsync` and a `rename` at mode `0600`, so a pl
 loses power mid-write leaves either the old file or the new one and never half of either.
 
 **Two players on one host share this file** unless you give each its own `--state-dir`. They
-already need different `--id`s and `--port`s; give them different state directories too, or
-the second one to save its volume overwrites the first's.
+already need different `--port`s; give them different state directories too, or they share
+one identity and the second one to save its volume overwrites the first's.
 
-### `static-delay` versus a remembered `static-delay-ms`
+### `output-delay` versus a remembered delay
 
-`static-delay` in the config is a **first-run default, not an override**. The library prefers
+`output-delay` in the config is a **first-run default, not an override**. The library prefers
 whatever the state store remembers and reads the config value only when there is nothing
 remembered — exactly as a restored volume beats the sink's default. So once a server or
 `sendspin-cli delay` has set one, the remembered value wins every run after and the config
 key is inert. Nothing in the log names which of the two won, so `sendspin-cli status` is
 where you read the value actually in force.
 
-Three things can set it: a server's `set_static_delay`, the `delay` subcommand, and this key
+Three things can set it: a server's `set_output_delay`, the `delay` subcommand, and this key
 on a first run with nothing yet remembered. To make the config value take again, remove the
 state file.
 

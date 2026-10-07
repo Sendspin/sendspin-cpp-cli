@@ -87,7 +87,7 @@ StatusSnapshot playing_snapshot() {
     snapshot.player_volume = 80;
     snapshot.player_muted = false;
     snapshot.player_volume_source = VolumeSource::Server;
-    snapshot.static_delay_ms = 0;
+    snapshot.output_delay_ms = 0;
     snapshot.output = "portaudio";
     return snapshot;
 }
@@ -295,7 +295,7 @@ TEST(ParseControlRequest, VolumeRejectsOutOfRangeNamingTheRange) {
 TEST(ParseControlRequest, DelayTakesZeroToTheSpecsMaximum) {
     EXPECT_EQ(parsed("delay", {"0"}).delay_ms, 0);
     EXPECT_EQ(parsed("delay", {"250"}).delay_ms, 250);
-    EXPECT_EQ(parsed("delay", {std::to_string(MAX_STATIC_DELAY_MS)}).delay_ms, MAX_STATIC_DELAY_MS);
+    EXPECT_EQ(parsed("delay", {std::to_string(MAX_OUTPUT_DELAY_MS)}).delay_ms, MAX_OUTPUT_DELAY_MS);
 }
 
 TEST(ParseControlRequest, DelayRejectsOutOfRangeRatherThanLettingItBeClamped) {
@@ -305,7 +305,7 @@ TEST(ParseControlRequest, DelayRejectsOutOfRangeRatherThanLettingItBeClamped) {
     for (const char* value : {"5001", "9000", "65536", "-1", "", " 250", "+250", "250.0", "abc"}) {
         EXPECT_FALSE(parse_control_request("delay", {value}, request, error))
             << "accepted delay '" << value << "'";
-        EXPECT_NE(error.find("0 to " + std::to_string(MAX_STATIC_DELAY_MS)), std::string::npos)
+        EXPECT_NE(error.find("0 to " + std::to_string(MAX_OUTPUT_DELAY_MS)), std::string::npos)
             << error;
         EXPECT_NE(error.find(std::string(value)), std::string::npos) << error;
     }
@@ -573,7 +573,7 @@ TEST(ControlRefusal, DelayIsNeverRefusedEither) {
     EXPECT_FALSE(control_refusal(parsed("delay", {"250"}), disconnected, status, reason));
     EXPECT_FALSE(control_refusal(parsed("delay", {"250"}), everything_supported(), status, reason));
 
-    // `set_static_delay` is a player command, never in the controller's supported_commands.
+    // `set_output_delay` is a player command, never in the controller's supported_commands.
     ControllerSnapshot connected_no_state;
     connected_no_state.connected = true;
     EXPECT_FALSE(control_refusal(parsed("delay", {"250"}), connected_no_state, status, reason));
@@ -624,7 +624,7 @@ TEST(FormatStatus, EveryFieldIsPresentAndLabelled) {
     EXPECT_EQ(field(block, "position"), "2:05 / 9:03 (estimated)");
     EXPECT_EQ(field(block, "group volume"), "55");
     EXPECT_EQ(field(block, "player volume"), "80");
-    EXPECT_EQ(field(block, "static delay"), "0 ms");
+    EXPECT_EQ(field(block, "output delay"), "0 ms");
     EXPECT_EQ(field(block, "output"), "portaudio (48000 Hz / 2 ch / 16-bit)");
     // Every line is `key: value`, so `cut -d: -f2` and `grep` both reach a field.
     EXPECT_EQ(block.back(), '\n');
@@ -682,26 +682,50 @@ TEST(FormatStatus, ARestoredVolumeIsNeitherADefaultNorAServersChoice) {
     EXPECT_NE(line.find("no server has set it"), std::string::npos) << line;
 }
 
-TEST(FormatStatus, TheStaticDelayIsReportedSoItsCommandIsVisible) {
+TEST(FormatStatus, TheOutputDelayIsReportedSoItsCommandIsVisible) {
     StatusSnapshot snapshot = playing_snapshot();
-    snapshot.static_delay_ms = 375;
-    EXPECT_EQ(field(format_status(snapshot), "static delay"), "375 ms");
+    snapshot.output_delay_ms = 375;
+    EXPECT_EQ(field(format_status(snapshot), "output delay"), "375 ms");
 
     // Zero is a real value, not unknown.
-    snapshot.static_delay_ms = 0;
-    EXPECT_EQ(field(format_status(snapshot), "static delay"), "0 ms");
+    snapshot.output_delay_ms = 0;
+    EXPECT_EQ(field(format_status(snapshot), "output delay"), "0 ms");
 
-    snapshot.static_delay_ms = MAX_STATIC_DELAY_MS;
-    EXPECT_EQ(field(format_status(snapshot), "static delay"), "5000 ms");
+    snapshot.output_delay_ms = MAX_OUTPUT_DELAY_MS;
+    EXPECT_EQ(field(format_status(snapshot), "output delay"), "5000 ms");
 }
 
-TEST(FormatStatus, TheStaticDelayIsReportedWhileDisconnected) {
+TEST(FormatStatus, TheOutputDelayIsReportedWhileDisconnected) {
     // Local state, known even with nothing connected.
     StatusSnapshot snapshot;
     snapshot.name = "kitchen";
     snapshot.output = "null";
-    snapshot.static_delay_ms = 120;
-    EXPECT_EQ(field(format_status(snapshot), "static delay"), "120 ms");
+    snapshot.output_delay_ms = 120;
+    EXPECT_EQ(field(format_status(snapshot), "output delay"), "120 ms");
+}
+
+TEST(FormatStatus, TheClientIdIsReportedEvenWhileDisconnected) {
+    StatusSnapshot snapshot;
+    snapshot.client_id = "OraobU4lq0Xk";
+    EXPECT_EQ(field(format_status(snapshot), "client id"), "OraobU4lq0Xk");
+}
+
+TEST(FormatStatus, TrustFollowsTheConnection) {
+    StatusSnapshot snapshot = playing_snapshot();
+    snapshot.trust = sendspin::ConnectionTrust::USER;
+    EXPECT_EQ(field(format_status(snapshot), "trust"), "paired");
+
+    snapshot.trust = sendspin::ConnectionTrust::NONE;
+    EXPECT_EQ(field(format_status(snapshot), "trust"), "unpaired");
+
+    // Before the handshake reports one.
+    snapshot.trust.reset();
+    EXPECT_EQ(field(format_status(snapshot), "trust"), "unknown");
+
+    // A stale trust says nothing once the connection is gone.
+    snapshot.trust = sendspin::ConnectionTrust::USER;
+    snapshot.connected = false;
+    EXPECT_EQ(field(format_status(snapshot), "trust"), "not connected");
 }
 
 TEST(FormatStatus, TheQueueModesAreReportedSoTheirCommandsAreVisible) {
