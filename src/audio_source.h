@@ -37,7 +37,7 @@ namespace sendspin_cli {
 inline constexpr std::array<uint8_t, 3> CAPTURE_BIT_DEPTHS{16, 24, 32};
 
 /// Source of captured PCM, one implementation per audio backend.
-/// open(), read() and close() run on the capture thread only.
+/// open() and read() run on the capture thread only.
 class AudioSource {
 public:
     virtual ~AudioSource() = default;
@@ -57,7 +57,8 @@ public:
 
     /// Blocks up to `timeout_ms` for captured PCM.
     /// @param capture_time_us Steady-clock time of the first sample returned, or 0 if unknown.
-    /// @return Bytes read, a whole number of frames; 0 on timeout; negative once the device is lost.
+    /// @return Bytes read, a whole number of frames; 0 on timeout; negative once the device is
+    /// lost.
     virtual int read(uint8_t* data, size_t length, uint32_t timeout_ms,
                      int64_t& capture_time_us) = 0;
 

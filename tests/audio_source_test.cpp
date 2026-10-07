@@ -15,6 +15,7 @@
 /// The capture seam: how --input reads its argument, and SourceCapture's thread.
 
 #include "audio_source.h"
+
 #include "null_source.h"
 
 #include <gtest/gtest.h>
@@ -104,6 +105,25 @@ public:
     void close() override {}
 
     std::atomic<int> opens{0};
+};
+
+/// A device with no clock: every read returns a full buffer at once.
+class EagerSource final : public AudioSource {
+public:
+    std::string name() const override {
+        return "eager";
+    }
+    bool negotiate(StreamFormat& /*format*/, std::string& /*error*/) override {
+        return true;
+    }
+    bool open(const StreamFormat& /*format*/) override {
+        return true;
+    }
+    int read(uint8_t* /*data*/, size_t length, uint32_t /*timeout_ms*/,
+             int64_t& /*capture_time_us*/) override {
+        return static_cast<int>(length);
+    }
+    void close() override {}
 };
 
 constexpr StreamFormat STEREO_16{48000, 2, 16};
@@ -207,10 +227,14 @@ TEST(NullAudioSource, ReadsArePacedTimestampedAndWholeFrames) {
     std::vector<uint8_t> buffer(882 * 6);
     int64_t first_time = 0;
     int64_t second_time = 0;
+    const auto opened = std::chrono::steady_clock::now();
     const int first = source.read(buffer.data(), buffer.size(), 100, first_time);
-    const bool audible = std::any_of(buffer.begin(), buffer.end(), [](uint8_t b) { return b != 0; });
+    const bool audible =
+        std::any_of(buffer.begin(), buffer.end(), [](uint8_t b) { return b != 0; });
     const int second = source.read(buffer.data(), buffer.size(), 100, second_time);
 
+    // Two 20 ms reads cannot finish before 40 ms of audio exists.
+    EXPECT_GE(std::chrono::steady_clock::now() - opened, std::chrono::milliseconds(39));
     EXPECT_EQ(first, 882 * 6);
     EXPECT_EQ(second, 882 * 6);
     EXPECT_TRUE(audible);
@@ -328,6 +352,25 @@ TEST(SourceCapture, DestructionJoinsARunningThread) {
     const size_t at_destruction = recorder.writes();
     std::this_thread::sleep_for(std::chrono::milliseconds(60));
     EXPECT_EQ(recorder.writes(), at_destruction);
+}
+
+TEST(SourceCapture, AnUnclockedDeviceIsHeldNearRealTime) {
+    EagerSource source;
+    RecordingWriter recorder;
+    SourceCapture capture(source, STEREO_16, recorder.writer());
+
+    capture.on_streaming_started();
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    const auto before = std::chrono::steady_clock::now();
+    capture.on_streaming_stopped();
+
+    // One window's allowance plus the read that crossed it, not 200 ms of free-running reads.
+    size_t frames = 0;
+    for (const size_t length : recorder.lengths_) {
+        frames += length / 4;
+    }
+    EXPECT_LE(frames, 48000U * 3U / 2U + 960U);
+    EXPECT_LT(std::chrono::steady_clock::now() - before, std::chrono::milliseconds(500));
 }
 
 TEST(SourceCapture, AStopIsNotHeldUpByADeviceThatWillNotOpen) {

@@ -114,6 +114,13 @@ bool AlsaAudioSource::negotiate(StreamFormat& format, std::string& error) {
             break;
         }
     }
+    if (depth != 0 && channels == 0) {
+        // A multichannel-only interface: take the device's nearest count.
+        unsigned int nearest = 2;
+        if (snd_pcm_hw_params_set_channels_near(pcm, hw, &nearest) == 0 && nearest <= UINT8_MAX) {
+            channels = static_cast<uint8_t>(nearest);
+        }
+    }
 
     unsigned int rate = 0;
     if (channels != 0) {
@@ -134,8 +141,8 @@ bool AlsaAudioSource::negotiate(StreamFormat& format, std::string& error) {
     snd_pcm_close(pcm);
 
     if (rate == 0) {
-        error = device + " captures nothing sendspin-cli can send (16, 24 or 32-bit PCM, mono or "
-                         "stereo) -- its plughw: form converts; run with -l to list them";
+        error = device + " captures nothing sendspin-cli can send (16, 24 or 32-bit PCM) -- its "
+                         "plughw: form converts; run with -l to list them";
         return false;
     }
     format = {rate, channels, depth};
@@ -212,7 +219,8 @@ bool AlsaAudioSource::recover_(int err) {
     }
     // Handles an overrun (-EPIPE) and a suspend (-ESTRPIPE); anything else comes straight back.
     int recovered = snd_pcm_recover(this->pcm_, err, 1);
-    if (recovered >= 0) {
+    // A resumed PCM is already running; only a re-prepared one needs starting.
+    if (recovered >= 0 && snd_pcm_state(this->pcm_) == SND_PCM_STATE_PREPARED) {
         recovered = snd_pcm_start(this->pcm_);
     }
     if (recovered < 0) {

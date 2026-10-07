@@ -41,6 +41,9 @@ constexpr uint32_t READ_MS = 20;
 /// Longest one read() may block, bounding how long a stop waits for the thread.
 constexpr uint32_t READ_TIMEOUT_MS = 100;
 
+/// Length of the window the capture rate is checked over.
+constexpr int64_t RATE_WINDOW_MS = 1000;
+
 /// Output backends --input knows by name but cannot capture through.
 constexpr const char* UNSUPPORTED_BACKENDS[] = {"coreaudio", "portaudio", "pulse", "pipewire"};
 
@@ -89,6 +92,11 @@ void SourceCapture::run_() {
     const size_t frames = static_cast<size_t>(this->format_.sample_rate) * READ_MS / 1000U;
     std::vector<uint8_t> buffer(std::max<size_t>(frames, 1) * bytes_per_frame);
 
+    // More than a real card delivers even while draining a full ring after an overrun.
+    const uint64_t window_limit = static_cast<uint64_t>(this->format_.sample_rate) * 3U / 2U;
+    uint64_t window_frames = 0;
+    auto window_start = std::chrono::steady_clock::now();
+
     bool open = false;
     int64_t retry_ms = SINK_RESCAN_DELAY_MS;
     while (this->wait_(0)) {
@@ -121,9 +129,24 @@ void SourceCapture::run_() {
             }
             continue;
         }
-        if (bytes > 0) {
-            // A refused write is the role's drop policy at work, not ours to retry.
-            this->writer_(buffer.data(), static_cast<size_t>(bytes), capture_time_us);
+        if (bytes == 0) {
+            continue;
+        }
+        // A refused write is the role's drop policy at work, not ours to retry.
+        this->writer_(buffer.data(), static_cast<size_t>(bytes), capture_time_us);
+
+        // An unclocked PCM such as ALSA's `null` never blocks; hold it near real time.
+        window_frames += static_cast<size_t>(bytes) / bytes_per_frame;
+        const int64_t elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                       std::chrono::steady_clock::now() - window_start)
+                                       .count();
+        const bool over = window_frames > window_limit;
+        if (over && !this->wait_(RATE_WINDOW_MS - elapsed_ms)) {
+            break;
+        }
+        if (over || elapsed_ms >= RATE_WINDOW_MS) {
+            window_frames = 0;
+            window_start = std::chrono::steady_clock::now();
         }
     }
 
@@ -172,8 +195,8 @@ bool resolve_input_spec(const std::string& spec, InputSpec& out, std::string& er
         out = {SourceBackend::Alsa, rest};
         return true;
 #else
-        error = "the ALSA backend is not in this build, so --input takes only: " +
-                input_backend_list();
+        error =
+            "the ALSA backend is not in this build, so --input takes only: " + input_backend_list();
         return false;
 #endif
     }
@@ -254,7 +277,8 @@ void print_capture_devices(std::FILE* out) {
 #ifdef SENDSPIN_CLI_HAVE_ALSA
     std::fprintf(out, "Anything else is an ALSA PCM name, so --input hw:1,0 and --input default\n"
                       "work with no prefix at all.\n");
-    std::fprintf(out, "\nALSA capture PCMs on this host (any of these names can follow --input):\n");
+    std::fprintf(out,
+                 "\nALSA capture PCMs on this host (any of these names can follow --input):\n");
     AlsaAudioSource::list_devices(out);
     std::fprintf(out, "\nA capture stream runs at one format for the whole run: 48000 Hz, 2\n"
                       "channels, S16_LE where the PCM takes it, else the nearest it does take. A\n"

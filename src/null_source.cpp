@@ -96,8 +96,8 @@ int NullAudioSource::read(uint8_t* data, size_t length, uint32_t timeout_ms,
         const double full_scale = std::ldexp(1.0, this->format_.bit_depth - 1) - 1.0;
         uint8_t* cursor = data;
         for (uint64_t i = 0; i < frames; ++i) {
-            const double phase =
-                TWO_PI * TONE_HZ * static_cast<double>(this->frames_ + i) / static_cast<double>(rate);
+            const double phase = TWO_PI * TONE_HZ * static_cast<double>(this->frames_ + i) /
+                                 static_cast<double>(rate);
             const auto sample =
                 static_cast<int32_t>(std::lround(std::sin(phase) * TONE_AMPLITUDE * full_scale));
             for (uint8_t channel = 0; channel < this->format_.channels; ++channel) {
