@@ -85,8 +85,8 @@ the player at startup with an error naming it. A device unplugged mid-stream is 
 and reopened when it comes back; playback is not affected.
 
 Capture through PulseAudio, PipeWire, CoreAudio or PortAudio is not available yet, so
-`--input` needs a build with ALSA. ALSA's own `pulse` and `pipewire` PCMs still work:
-`--input alsa:pulse`.
+capturing from a sound card needs a build with ALSA; `tone` and `null` work in any build.
+ALSA's own `pulse` and `pipewire` PCMs still work: `--input alsa:pulse`.
 
 ## Logging and background operation
 
