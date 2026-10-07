@@ -17,6 +17,7 @@
 #include "audio_source.h"
 
 #include "null_source.h"
+#include "scoped_env.h"
 
 #include <gtest/gtest.h>
 
@@ -146,7 +147,7 @@ TEST(ResolveInputSpec, DeviceLessNamesRefuseADevice) {
 }
 
 TEST(ResolveInputSpec, OutputOnlyBackendsAreRefusedByName) {
-    for (const char* spec : {"pulse", "pulse:mic", "pipewire:node", "portaudio:1"}) {
+    for (const char* spec : {"portaudio", "portaudio:1"}) {
         const std::string error = rejected(spec);
         EXPECT_NE(error.find("not supported yet"), std::string::npos) << spec;
         EXPECT_NE(error.find(input_backend_list()), std::string::npos) << spec;
@@ -178,6 +179,84 @@ TEST(ResolveInputSpec, CoreaudioSaysItIsNotInThisBuild) {
     }
 }
 #endif
+
+#ifdef SENDSPIN_CLI_HAVE_PULSE
+TEST(ResolveInputSpec, PulseTakesASourceOrTheServerDefault) {
+    for (const char* spec : {"pulse", "pulse:", "pulse:default"}) {
+        EXPECT_EQ(resolved(spec).backend, SourceBackend::Pulse) << spec;
+        EXPECT_TRUE(resolved(spec).device.empty()) << spec;
+    }
+    EXPECT_EQ(resolved("pulse:alsa_input.usb-mic.analog-stereo").device,
+              "alsa_input.usb-mic.analog-stereo");
+    // Split on the first colon only: the rest is the source's name, colons and all.
+    EXPECT_EQ(resolved("pulse:a:b").device, "a:b");
+    EXPECT_NE(input_backend_list().find("pulse"), std::string::npos);
+}
+
+TEST(MakeAudioSource, AnUnreachablePulseServerIsRefusedNamingTheListing) {
+    const ScopedEnv server("PULSE_SERVER", "unix:/nonexistent/sendspin-cli-test");
+    StreamFormat format = STEREO_16;
+    std::string error;
+    EXPECT_EQ(make_audio_source("pulse", format, error), nullptr);
+    EXPECT_NE(error.find("PulseAudio"), std::string::npos) << error;
+    EXPECT_NE(error.find("-l"), std::string::npos) << error;
+}
+#else
+TEST(ResolveInputSpec, WithoutPulseItsNameIsNotInThisBuild) {
+    for (const char* spec : {"pulse", "pulse:mic"}) {
+        const std::string error = rejected(spec);
+        EXPECT_NE(error.find("PulseAudio backend is not in this build"), std::string::npos) << spec;
+        EXPECT_NE(error.find(input_backend_list()), std::string::npos) << spec;
+    }
+}
+#endif
+
+#ifdef SENDSPIN_CLI_HAVE_PIPEWIRE
+TEST(ResolveInputSpec, PipeWireTakesANodeOrTheGraphDefault) {
+    for (const char* spec : {"pipewire", "pipewire:", "pipewire:default"}) {
+        EXPECT_EQ(resolved(spec).backend, SourceBackend::PipeWire) << spec;
+        EXPECT_TRUE(resolved(spec).device.empty()) << spec;
+    }
+    EXPECT_EQ(resolved("pipewire:alsa_input.pci-0000_00_1f.3.analog-stereo").device,
+              "alsa_input.pci-0000_00_1f.3.analog-stereo");
+    EXPECT_NE(input_backend_list().find("pipewire"), std::string::npos);
+}
+
+TEST(MakeAudioSource, AnUnreachablePipeWireDaemonIsRefusedNamingTheListing) {
+    const ScopedEnv remote("PIPEWIRE_REMOTE", "/nonexistent/sendspin-cli-test");
+    StreamFormat format = STEREO_16;
+    std::string error;
+    EXPECT_EQ(make_audio_source("pipewire", format, error), nullptr);
+    EXPECT_NE(error.find("PipeWire"), std::string::npos) << error;
+    EXPECT_NE(error.find("-l"), std::string::npos) << error;
+}
+#else
+TEST(ResolveInputSpec, WithoutPipeWireItsNameIsNotInThisBuild) {
+    for (const char* spec : {"pipewire", "pipewire:node"}) {
+        const std::string error = rejected(spec);
+        EXPECT_NE(error.find("PipeWire backend is not in this build"), std::string::npos) << spec;
+        EXPECT_NE(error.find(input_backend_list()), std::string::npos) << spec;
+    }
+}
+#endif
+
+TEST(SettleServerCaptureFormat, KeepsWhatAStreamCanCarry) {
+    for (const uint8_t depth : CAPTURE_BIT_DEPTHS) {
+        StreamFormat format{44100, 1, depth};
+        settle_server_capture_format(format);
+        EXPECT_EQ(format.sample_rate, 44100U);
+        EXPECT_EQ(format.channels, 1);
+        EXPECT_EQ(format.bit_depth, depth);
+    }
+}
+
+TEST(SettleServerCaptureFormat, ReplacesWhatItCannot) {
+    StreamFormat format{0, 0, 8};
+    settle_server_capture_format(format);
+    EXPECT_EQ(format.sample_rate, 48000U);
+    EXPECT_EQ(format.channels, 2);
+    EXPECT_EQ(format.bit_depth, 16);
+}
 
 #ifdef SENDSPIN_CLI_HAVE_ALSA
 TEST(ResolveInputSpec, BareNamesAreAlsaPcmsColonsAndAll) {

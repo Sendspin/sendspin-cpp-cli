@@ -21,6 +21,12 @@
 #ifdef SENDSPIN_CLI_HAVE_ALSA
 #include "alsa_source.h"
 #endif
+#ifdef SENDSPIN_CLI_HAVE_PIPEWIRE
+#include "pipewire_source.h"
+#endif
+#ifdef SENDSPIN_CLI_HAVE_PULSE
+#include "pulse_source.h"
+#endif
 #ifdef SENDSPIN_CLI_HAVE_COREAUDIO
 #include "coreaudio_source.h"
 #endif
@@ -48,7 +54,18 @@ constexpr uint32_t READ_TIMEOUT_MS = 100;
 constexpr int64_t RATE_WINDOW_MS = 1000;
 
 /// Output backends --input knows by name but cannot capture through.
-constexpr const char* UNSUPPORTED_BACKENDS[] = {"portaudio", "pulse", "pipewire"};
+constexpr const char* UNSUPPORTED_BACKENDS[] = {"portaudio"};
+
+#ifdef SENDSPIN_CLI_HAVE_PULSE
+constexpr bool HAVE_PULSE = true;
+#else
+constexpr bool HAVE_PULSE = false;
+#endif
+#ifdef SENDSPIN_CLI_HAVE_PIPEWIRE
+constexpr bool HAVE_PIPEWIRE = true;
+#else
+constexpr bool HAVE_PIPEWIRE = false;
+#endif
 
 }  // namespace
 
@@ -163,10 +180,29 @@ std::string input_backend_list() {
 #ifdef SENDSPIN_CLI_HAVE_ALSA
     list += ", alsa";
 #endif
+    if (HAVE_PULSE) {
+        list += ", pulse";
+    }
+    if (HAVE_PIPEWIRE) {
+        list += ", pipewire";
+    }
 #ifdef SENDSPIN_CLI_HAVE_COREAUDIO
     list += ", coreaudio";
 #endif
     return list;
+}
+
+void settle_server_capture_format(StreamFormat& format) {
+    if (std::find(CAPTURE_BIT_DEPTHS.begin(), CAPTURE_BIT_DEPTHS.end(), format.bit_depth) ==
+        CAPTURE_BIT_DEPTHS.end()) {
+        format.bit_depth = CAPTURE_BIT_DEPTHS.front();
+    }
+    if (format.channels == 0) {
+        format.channels = 2;
+    }
+    if (format.sample_rate == 0) {
+        format.sample_rate = 48000;
+    }
 }
 
 bool resolve_input_spec(const std::string& spec, InputSpec& out, std::string& error) {
@@ -207,6 +243,21 @@ bool resolve_input_spec(const std::string& spec, InputSpec& out, std::string& er
 #endif
     }
 
+    if (prefix == "pulse" || prefix == "pipewire") {
+        const bool pulse = prefix == "pulse";
+        if (!(pulse ? HAVE_PULSE : HAVE_PIPEWIRE)) {
+            error = std::string("the ") + (pulse ? "PulseAudio" : "PipeWire") +
+                    " backend is not in this build, so --input takes only: " + input_backend_list();
+#ifdef SENDSPIN_CLI_HAVE_ALSA
+            error += ". ALSA's plugin PCM of that name still works: --input alsa:" + prefix;
+#endif
+            return false;
+        }
+        out = {pulse ? SourceBackend::Pulse : SourceBackend::PipeWire,
+               rest == "default" ? std::string() : rest};
+        return true;
+    }
+
     if (prefix == "coreaudio") {
 #ifdef SENDSPIN_CLI_HAVE_COREAUDIO
         if (has_device && rest.empty()) {
@@ -226,17 +277,11 @@ bool resolve_input_spec(const std::string& spec, InputSpec& out, std::string& er
     }
 
     for (const char* name : UNSUPPORTED_BACKENDS) {
-        if (prefix != name) {
-            continue;
+        if (prefix == name) {
+            error = "capturing through the " + prefix +
+                    " backend is not supported yet -- --input takes: " + input_backend_list();
+            return false;
         }
-        error = "capturing through the " + prefix +
-                " backend is not supported yet -- --input takes: " + input_backend_list();
-#ifdef SENDSPIN_CLI_HAVE_ALSA
-        if (prefix == "pulse" || prefix == "pipewire") {
-            error += ". ALSA's plugin PCM of that name still works: --input alsa:" + prefix;
-        }
-#endif
-        return false;
     }
 
 #ifdef SENDSPIN_CLI_HAVE_ALSA
@@ -277,6 +322,16 @@ std::unique_ptr<AudioSource> make_audio_source(const std::string& spec, StreamFo
         case SourceBackend::Alsa:
 #ifdef SENDSPIN_CLI_HAVE_ALSA
             source = std::make_unique<AlsaAudioSource>(resolved.device);
+#endif
+            break;
+        case SourceBackend::Pulse:
+#ifdef SENDSPIN_CLI_HAVE_PULSE
+            source = std::make_unique<PulseAudioSource>(resolved.device);
+#endif
+            break;
+        case SourceBackend::PipeWire:
+#ifdef SENDSPIN_CLI_HAVE_PIPEWIRE
+            source = std::make_unique<PipeWireAudioSource>(resolved.device);
 #endif
             break;
         case SourceBackend::CoreAudio:
@@ -320,6 +375,30 @@ void print_capture_devices(std::FILE* out) {
                       "plug-style PCM -- default, plughw: -- converts, so it takes the preferred\n"
                       "format whatever the hardware behind it captures.\n");
 #endif
+
+#ifdef SENDSPIN_CLI_HAVE_PULSE
+    std::fprintf(out, "\nPulseAudio sources on this host (--input pulse:<source>):\n");
+    PulseAudioSource::list_devices(out);
+    std::fprintf(out,
+                 "\nThe name on each source's own line is what follows --input pulse:. --input\n"
+                 "pulse with no source at all follows whichever one the server calls default.\n"
+                 "A .monitor source captures what its sink is playing.\n");
+#endif
+
+#ifdef SENDSPIN_CLI_HAVE_PIPEWIRE
+    std::fprintf(out, "\nPipeWire audio source nodes on this host (--input pipewire:<node>):\n");
+    PipeWireAudioSource::list_devices(out);
+    std::fprintf(out,
+                 "\nThe name on each node's own line is what follows --input pipewire:. --input\n"
+                 "pipewire with no node at all captures wherever the graph routes a capture\n"
+                 "stream.\n");
+#endif
+
+#if defined(SENDSPIN_CLI_HAVE_PULSE) || defined(SENDSPIN_CLI_HAVE_PIPEWIRE)
+    std::fprintf(out, "\nA sound server converts, so a capture through one runs at 48000 Hz, 2\n"
+                      "channels, 16-bit whatever the hardware behind it captures.\n");
+#endif
+
 #ifdef SENDSPIN_CLI_HAVE_COREAUDIO
     std::fprintf(out, "\nCoreAudio input devices on this host (--input coreaudio:<index|name>):\n");
     CoreAudioSource::list_devices(out);
@@ -329,9 +408,10 @@ void print_capture_devices(std::FILE* out) {
                  "16-bit. Audio MIDI Setup changes the rate. macOS asks for microphone access\n"
                  "the first time --input opens a device.\n");
 #endif
-#if !defined(SENDSPIN_CLI_HAVE_ALSA) && !defined(SENDSPIN_CLI_HAVE_COREAUDIO)
-    std::fprintf(out, "\nThis build has no ALSA backend, so there is no sound card to capture\n"
-                      "from here.\n");
+#if !defined(SENDSPIN_CLI_HAVE_ALSA) && !defined(SENDSPIN_CLI_HAVE_PULSE) && \
+    !defined(SENDSPIN_CLI_HAVE_PIPEWIRE) && !defined(SENDSPIN_CLI_HAVE_COREAUDIO)
+    std::fprintf(out, "\nThis build has no ALSA, PulseAudio, PipeWire or CoreAudio backend, so\n"
+                      "there is no sound card to capture from here.\n");
 #endif
 }
 

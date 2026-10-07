@@ -116,13 +116,15 @@ enum class SourceBackend {
     Null,       ///< silence; needs no device
     Tone,       ///< a test tone; needs no device
     Alsa,       ///< an ALSA capture PCM, named by InputSpec::device
+    Pulse,      ///< a PulseAudio source, or the server's default with no device
+    PipeWire,   ///< a PipeWire source node, or the graph's default with no device
     CoreAudio,  ///< a CoreAudio device by index or name, or this host's default input if empty
 };
 
 /// An --input spec resolved into a backend and the device to hand it.
 struct InputSpec {
     SourceBackend backend{SourceBackend::Null};
-    std::string device;  ///< empty for the device-less sources and CoreAudio's default
+    std::string device;  ///< empty for the device-less sources and a backend's default
 };
 
 /// Resolves an --input spec without opening anything, by -o's rules: a bare backend name,
@@ -130,11 +132,14 @@ struct InputSpec {
 /// @return true if `spec` named something this build can capture from.
 bool resolve_input_spec(const std::string& spec, InputSpec& out, std::string& error);
 
-/// The backend prefixes --input has in this build, e.g. "null, tone, alsa".
+/// The backend prefixes --input has in this build, e.g. "null, tone, alsa, pulse".
 std::string input_backend_list();
 
 /// True if a bare `--input <pcm>` reaches the ALSA PCM of that name.
 bool input_pcm_is_reachable(const std::string& pcm);
+
+/// Settles `format` for a sound server, which converts: only a format no stream can carry changes.
+void settle_server_capture_format(StreamFormat& format);
 
 /// Builds the source named by --input and negotiates its capture format.
 /// @param format In: the format to prefer. Out: the one the device will capture.

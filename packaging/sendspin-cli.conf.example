@@ -18,6 +18,7 @@
 #output = default
 
 # Capture device to stream to the server (a microphone or line-in); unset captures nothing.
+# pulse or pipewire captures the sound server's default source; -l lists the named ones.
 #input = hw:1,0
 
 # Audio the output backend keeps buffered, 10-2000 ms. Raise it on a device that stutters.

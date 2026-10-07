@@ -321,7 +321,7 @@ TEST(ParseOptions, InputTakesADeviceLessSource) {
 
 TEST(ParseOptions, ABadInputSpecIsRefusedAtTheFlag) {
     Parse device_on_tone({"--input", "tone:hw:0"});
-    Parse unsupported({"--input", "pulse:mic"});
+    Parse unsupported({"--input", "portaudio:1"});
     Parse empty({"--input", ""});
 
     EXPECT_FALSE(device_on_tone.ok());

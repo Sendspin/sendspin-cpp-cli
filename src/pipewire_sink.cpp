@@ -67,32 +67,10 @@ bool spa_format_for(uint8_t bits_per_sample, spa_audio_format& format) {
     return false;
 }
 
-/// Holds the thread-loop lock for a scope; it does not hold off the realtime data thread.
-class LoopLock {
-public:
-    explicit LoopLock(pw_thread_loop* loop) : loop_(loop) {
-        pw_thread_loop_lock(this->loop_);
-    }
-    ~LoopLock() {
-        pw_thread_loop_unlock(this->loop_);
-    }
-
-    LoopLock(const LoopLock&) = delete;
-    LoopLock& operator=(const LoopLock&) = delete;
-
-private:
-    pw_thread_loop* loop_;
-};
-
-/// One audio sink node as the graph describes it.
-struct PipeWireNode {
-    std::string name;
-    std::string description;
-};
-
 /// The registry walk's state, shared between its callbacks and the thread waiting on them.
 struct RegistryWalk {
     pw_thread_loop* loop{nullptr};
+    std::vector<const char*> media_classes;
     std::vector<PipeWireNode> nodes;
     int sync_seq{0};
     bool done{false};
@@ -108,13 +86,17 @@ void registry_global_cb(void* data, uint32_t /*id*/, uint32_t /*permissions*/, c
         return;
     }
     const char* media_class = spa_dict_lookup(props, PW_KEY_MEDIA_CLASS);
-    // Only Audio/Sink nodes can take a stream.
-    if (media_class == nullptr || std::strcmp(media_class, "Audio/Sink") != 0) {
+    const bool wanted = media_class != nullptr &&
+                        std::any_of(walk->media_classes.begin(), walk->media_classes.end(),
+                                    [media_class](const char* candidate) {
+                                        return std::strcmp(media_class, candidate) == 0;
+                                    });
+    if (!wanted) {
         return;
     }
     const char* node_name = spa_dict_lookup(props, PW_KEY_NODE_NAME);
     if (node_name == nullptr) {
-        return;  // nothing -o could name
+        return;  // nothing a device spec could name
     }
     const char* description = spa_dict_lookup(props, PW_KEY_NODE_DESCRIPTION);
     if (description == nullptr) {
@@ -159,8 +141,10 @@ constexpr pw_core_events CORE_EVENTS = [] {
     return events;
 }();
 
-/// Walks the daemon's registry once on a private loop and reports every audio sink node.
-bool walk_registry(std::vector<PipeWireNode>& out, std::string& error) {
+}  // namespace
+
+bool pipewire_list_nodes(std::initializer_list<const char*> media_classes,
+                         std::vector<PipeWireNode>& out, std::string& error, int timeout_ms) {
     pw_thread_loop* loop = pw_thread_loop_new("sendspin-pw-scan", nullptr);
     if (loop == nullptr) {
         error = "cannot create a PipeWire loop";
@@ -174,6 +158,7 @@ bool walk_registry(std::vector<PipeWireNode>& out, std::string& error) {
 
     RegistryWalk walk;
     walk.loop = loop;
+    walk.media_classes = media_classes;
     pw_context* context = nullptr;
     pw_core* core = nullptr;
     pw_registry* registry = nullptr;
@@ -197,8 +182,11 @@ bool walk_registry(std::vector<PipeWireNode>& out, std::string& error) {
             pw_registry_add_listener(registry, &registry_hook, &REGISTRY_EVENTS, &walk);
             // A round trip, so the wait ends when the daemon has finished reporting.
             walk.sync_seq = pw_core_sync(core, PW_ID_CORE, 0);
+            timespec deadline{};
+            pw_thread_loop_get_time(loop, &deadline,
+                                    static_cast<int64_t>(timeout_ms) * 1000 * 1000);
             while (!walk.done) {
-                if (pw_thread_loop_timed_wait(loop, PIPEWIRE_TIMEOUT_S) != 0) {
+                if (pw_thread_loop_timed_wait_full(loop, &deadline) != 0) {
                     break;
                 }
             }
@@ -220,7 +208,7 @@ bool walk_registry(std::vector<PipeWireNode>& out, std::string& error) {
         error = "the PipeWire daemon refused the registry walk: " + refusal;
     } else if (!answered) {
         error = "the PipeWire daemon did not finish listing its nodes within " +
-                std::to_string(PIPEWIRE_TIMEOUT_S) + " s";
+                std::to_string(timeout_ms) + " ms";
     }
 
     {
@@ -245,8 +233,6 @@ bool walk_registry(std::vector<PipeWireNode>& out, std::string& error) {
     out = std::move(walk.nodes);
     return true;
 }
-
-}  // namespace
 
 size_t pipewire_ring_frames(uint32_t rate, uint32_t buffer_ms) {
     const auto by_time = static_cast<size_t>((static_cast<uint64_t>(rate) * buffer_ms) / 1000);
@@ -305,7 +291,7 @@ bool PipeWireSink::probe(const std::string& device, std::string& error) {
     const PipeWireGuard guard;
 
     std::vector<PipeWireNode> nodes;
-    if (!walk_registry(nodes, error)) {
+    if (!pipewire_list_nodes({"Audio/Sink"}, nodes, error)) {
         error += " -- run with -l to see what this host has, or -o alsa:pipewire to reach the same "
                  "graph through ALSA's plugin PCM";
         return false;
@@ -329,7 +315,7 @@ void PipeWireSink::list_devices(std::FILE* out) {
 
     std::vector<PipeWireNode> nodes;
     std::string error;
-    if (!walk_registry(nodes, error)) {
+    if (!pipewire_list_nodes({"Audio/Sink"}, nodes, error)) {
         std::fprintf(out, "  (%s)\n", error.c_str());
         return;
     }
