@@ -217,10 +217,9 @@ bool AlsaAudioSource::recover_(int err) {
     if (err == -EINTR || err == -EAGAIN) {
         return true;
     }
-    // Handles an overrun (-EPIPE) and a suspend (-ESTRPIPE); anything else comes straight back.
-    int recovered = snd_pcm_recover(this->pcm_, err, 1);
-    // A resumed PCM is already running; only a re-prepared one needs starting.
-    if (recovered >= 0 && snd_pcm_state(this->pcm_) == SND_PCM_STATE_PREPARED) {
+    // Not snd_pcm_recover(): its resume loop is unbounded and would hold up a stop.
+    int recovered = snd_pcm_prepare(this->pcm_);
+    if (recovered >= 0) {
         recovered = snd_pcm_start(this->pcm_);
     }
     if (recovered < 0) {
