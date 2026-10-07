@@ -119,13 +119,20 @@ void CoreAudioSource::list_devices(std::FILE* out) {
 }
 
 bool CoreAudioSource::negotiate(StreamFormat& format, std::string& error) {
-    // First: without it the unit opens, starts and delivers silence.
-    if (!request_microphone_access(error)) {
+    AudioDeviceID device = kAudioObjectUnknown;
+    if (!resolve_ca_device(this->device_, CaDirection::Input, device, error)) {
         return false;
     }
 
-    AudioDeviceID device = kAudioObjectUnknown;
-    if (!resolve_ca_device(this->device_, CaDirection::Input, device, error)) {
+    if (microphone_prompt_pending()) {
+        // macOS aborts the process, uncatchably, when the app hosting the shell may not prompt.
+        cli_log(LogLevel::INFO,
+                "coreaudio: asking macOS for microphone access -- answer its prompt. If "
+                "sendspin-cli aborts here instead, the app hosting this shell cannot ask for the "
+                "microphone: start it from Terminal.app");
+    }
+    // Without it the unit opens, starts and delivers silence.
+    if (!request_microphone_access(error)) {
         return false;
     }
     const std::string label = "CoreAudio input device '" + ca_device_name(device) + "'";

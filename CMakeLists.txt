@@ -342,7 +342,7 @@ target_link_libraries(sendspin-cli PRIVATE sendspin-cli-core)
 target_compile_options(sendspin-cli PRIVATE ${SENDSPIN_CLI_WARNING_FLAGS})
 
 if(SENDSPIN_CLI_COREAUDIO_ENABLED)
-    # A bare binary has no bundle, so the microphone usage description macOS demands rides in it.
+    # A bare binary has no bundle, so its microphone usage description rides in the binary.
     set(SENDSPIN_CLI_INFO_PLIST ${CMAKE_CURRENT_BINARY_DIR}/sendspin-cli.Info.plist)
     configure_file(packaging/sendspin-cli.Info.plist.in ${SENDSPIN_CLI_INFO_PLIST} @ONLY)
     target_link_options(sendspin-cli PRIVATE

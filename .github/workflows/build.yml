@@ -584,7 +584,7 @@ jobs:
           rm -f load-commands.txt
           exit "$status"
 
-      # Without it macOS kills the process at its first microphone request under launchd.
+      # The loose binary and the .pkg both get the description from this section.
       - name: Assert the macOS binary carries its microphone usage description
         if: matrix.publish && runner.os == 'macOS'
         env:

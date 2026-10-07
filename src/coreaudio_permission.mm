@@ -34,6 +34,11 @@ const char* const HOW_TO_GRANT =
 
 }  // namespace
 
+bool microphone_prompt_pending() {
+    return [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio] ==
+           AVAuthorizationStatusNotDetermined;
+}
+
 bool request_microphone_access(std::string& error) {
     AVAuthorizationStatus status =
         [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio];

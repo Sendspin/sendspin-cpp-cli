@@ -104,9 +104,20 @@ build. ALSA's own `pulse` and `pipewire` PCMs still work: `--input alsa:pulse`.
 macOS asks for microphone access the first time `--input` opens a CoreAudio device, and
 `sendspin-cli` waits up to a minute for the answer. Started from a terminal, the prompt
 names the terminal app, and the permission belongs to it; started by `launchd`, it names
-`sendspin-cli`. If access is denied the player stops at startup and says so, rather than
-streaming silence. Grant it under **System Settings → Privacy & Security → Microphone**
-and start again. `tone` and `null` need no permission.
+the `sendspin-cli` executable. If access is denied the player stops at startup and says
+so, rather than streaming silence. Grant it under **System Settings → Privacy & Security
+→ Microphone** and start again. `tone` and `null` need no permission.
+
+Two things to know:
+
+- **Start it from Terminal.app the first time.** macOS only lets some apps ask for the
+  microphone. From a shell hosted by an app that cannot — some third-party terminals and
+  editors — macOS ends `sendspin-cli` with `Abort trap: 6` instead of prompting, right
+  after the log line `asking macOS for microphone access`. This is macOS's doing and
+  cannot be turned into an error message.
+- **The permission belongs to the executable's path** when `launchd` starts it. A copy
+  installed somewhere else is asked again, and `tccutil reset` does not know the binary,
+  so a mistaken Don't Allow is undone only in System Settings.
 
 ## Logging and background operation
 

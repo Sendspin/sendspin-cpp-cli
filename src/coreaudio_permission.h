@@ -20,6 +20,9 @@
 
 namespace sendspin_cli {
 
+/// True if macOS has not been asked yet, so request_microphone_access() will raise its prompt.
+bool microphone_prompt_pending();
+
 /// Checks microphone access, raising macOS's prompt on first use and waiting for the answer.
 /// @return false with `error` saying how to grant it.
 bool request_microphone_access(std::string& error);
