@@ -32,7 +32,7 @@
 
 namespace sendspin_cli {
 
-/// An AudioSource that captures from a PipeWire graph; `--input pipewire:` a node name or empty.
+/// An AudioSource that captures from a PipeWire graph; `--input pipewire:` takes a node name.
 /// process() writes the ring and reads the format fields unlocked: change them only while closed.
 class PipeWireAudioSource final : public AudioSource {
 public:
@@ -54,6 +54,9 @@ private:
                                 enum pw_stream_state state, const char* error);
     static void stream_process_cb(void* userdata);
 
+    /// Connects the stream, waiting up to `timeout_ms` for the graph to take it.
+    bool open_(const StreamFormat& format, int timeout_ms, std::string& error);
+
     /// Checks that a daemon answers and has the named node.
     bool find_node_(std::string& error, int timeout_ms) const;
 
@@ -70,6 +73,8 @@ private:
 
     uint64_t frames_written_{0};  ///< process() only
     uint64_t frames_read_{0};     ///< read() only
+    /// Frames process() could not fit in the ring, for read() to skip past.
+    std::atomic<uint64_t> frames_dropped_{0};
     /// Steady-clock time of this stream's frame 0 as process() last measured it; 0 until it has.
     std::atomic<int64_t> origin_us_{0};
 

@@ -181,38 +181,47 @@ bool PulseAudioSource::find_source_(std::string& error, int timeout_ms) {
 }
 
 bool PulseAudioSource::negotiate(StreamFormat& format, std::string& error) {
-    if (!this->conn_.connect(error) ||
-        (!this->device_.empty() && !this->find_source_(error, PULSE_TIMEOUT_MS))) {
+    settle_server_capture_format(format);
+    if (!this->open_(format, PULSE_TIMEOUT_MS, error)) {
         error += " -- run with -l to list this host's capture devices";
         return false;
     }
-    settle_server_capture_format(format);
+    this->close();
     return true;
 }
 
 bool PulseAudioSource::open(const StreamFormat& format) {
+    std::string error;
+    if (!this->open_(format, PULSE_RECOVERY_TIMEOUT_MS, error)) {
+        cli_log(LogLevel::ERROR, "pulse: %s", error.c_str());
+        return false;
+    }
+    cli_log(LogLevel::INFO, "pulse: input '%s' open on %s at %u Hz, %u ch, %u-bit",
+            this->name().c_str(), this->conn_.server_name().c_str(), format.sample_rate,
+            format.channels, format.bit_depth);
+    return true;
+}
+
+bool PulseAudioSource::open_(const StreamFormat& format, int timeout_ms, std::string& error) {
     this->close();
 
+    const std::string device = "PulseAudio input '" + this->name() + "'";
+    const std::string wanted = std::to_string(format.sample_rate) + " Hz / " +
+                               std::to_string(static_cast<unsigned>(format.channels)) + " ch / " +
+                               std::to_string(static_cast<unsigned>(format.bit_depth)) + "-bit";
     pa_sample_spec spec{};
     spec.format = pulse_format_for(format.bit_depth);
     spec.rate = format.sample_rate;
     spec.channels = format.channels;
     if (pa_sample_spec_valid(&spec) == 0) {
-        cli_log(LogLevel::ERROR, "pulse: input cannot capture %u Hz / %u ch / %u-bit",
-                format.sample_rate, format.channels, format.bit_depth);
+        error = device + " cannot capture " + wanted;
         return false;
     }
-    if (!this->conn_.ready()) {
-        std::string error;
-        if (!this->conn_.connect(error, PULSE_RECOVERY_TIMEOUT_MS)) {
-            cli_log(LogLevel::ERROR, "pulse: %s", error.c_str());
-            return false;
-        }
+    if (!this->conn_.ready() && !this->conn_.connect(error, timeout_ms)) {
+        return false;
     }
     // pipewire-pulse records from the default when the named source is missing.
-    std::string error;
-    if (!this->device_.empty() && !this->find_source_(error, PULSE_RECOVERY_TIMEOUT_MS)) {
-        cli_log(LogLevel::ERROR, "pulse: %s", error.c_str());
+    if (!this->device_.empty() && !this->find_source_(error, timeout_ms)) {
         return false;
     }
 
@@ -232,7 +241,7 @@ bool PulseAudioSource::open(const StreamFormat& format) {
         // Unplugging the source ends the stream, so it is reopened rather than moved elsewhere.
         flags |= PA_STREAM_DONT_MOVE;
     }
-    const char* device = this->device_.empty() ? nullptr : this->device_.c_str();
+    const char* source = this->device_.empty() ? nullptr : this->device_.c_str();
 
     int err = -1;
     {
@@ -241,12 +250,12 @@ bool PulseAudioSource::open(const StreamFormat& format) {
         if (this->stream_ != nullptr) {
             pa_stream_set_state_callback(this->stream_, &PulseAudioSource::stream_state_cb, this);
             pa_stream_set_read_callback(this->stream_, &PulseAudioSource::stream_read_cb, this);
-            err = pa_stream_connect_record(this->stream_, device, &attr,
+            err = pa_stream_connect_record(this->stream_, source, &attr,
                                            static_cast<pa_stream_flags_t>(flags));
         }
         if (err < 0) {
-            cli_log(LogLevel::ERROR, "pulse: cannot capture from '%s': %s", this->name().c_str(),
-                    pa_strerror(pa_context_errno(this->conn_.context())));
+            error = "cannot open " + device + ": " +
+                    pa_strerror(pa_context_errno(this->conn_.context()));
         }
     }
     if (err < 0) {
@@ -259,18 +268,15 @@ bool PulseAudioSource::open(const StreamFormat& format) {
             const auto state = static_cast<pa_stream_state_t>(this->stream_state_.load());
             return state == PA_STREAM_READY || PA_STREAM_IS_GOOD(state) == 0;
         },
-        PULSE_RECOVERY_TIMEOUT_MS);
+        timeout_ms);
     if (!settled || this->stream_state_.load() != PA_STREAM_READY) {
-        cli_log(LogLevel::ERROR, "pulse: input '%s' would not start at %u Hz, %u ch, %u-bit -- %s",
-                this->name().c_str(), format.sample_rate, format.channels, format.bit_depth,
-                settled ? "the server refused it" : "the server did not answer");
+        error =
+            device + " would not start at " + wanted + ": " +
+            (settled ? "the server refused it"
+                     : "the server did not answer within " + std::to_string(timeout_ms) + " ms");
         this->close();
         return false;
     }
-
-    cli_log(LogLevel::INFO, "pulse: input '%s' open on %s at %u Hz, %u ch, %u-bit",
-            this->name().c_str(), this->conn_.server_name().c_str(), format.sample_rate,
-            format.channels, format.bit_depth);
     return true;
 }
 

@@ -42,7 +42,7 @@ constexpr const char* PIPEWIRE_NODE_NAME = "sendspin-cli-input";
 /// Quantum asked of the graph; one source-role chunk.
 constexpr uint32_t QUANTUM_MS = 20;
 
-/// Ring size; whole quanta are dropped once a stalled reader has let it fill.
+/// Ring size; a reader stalled for longer loses what is queued and resumes at live audio.
 constexpr uint32_t RING_MS = 1000;
 
 constexpr int64_t US_PER_S = 1000000;
@@ -117,34 +117,46 @@ bool PipeWireAudioSource::find_node_(std::string& error, int timeout_ms) const {
 }
 
 bool PipeWireAudioSource::negotiate(StreamFormat& format, std::string& error) {
-    if (!this->find_node_(error, PIPEWIRE_TIMEOUT_S * 1000)) {
+    settle_server_capture_format(format);
+    if (!this->open_(format, PIPEWIRE_TIMEOUT_S * 1000, error)) {
         error += " -- run with -l to list this host's capture devices";
         return false;
     }
-    settle_server_capture_format(format);
+    this->close();
     return true;
 }
 
 bool PipeWireAudioSource::open(const StreamFormat& format) {
+    std::string error;
+    if (!this->open_(format, PIPEWIRE_RECOVERY_TIMEOUT_MS, error)) {
+        cli_log(LogLevel::ERROR, "pipewire: %s", error.c_str());
+        return false;
+    }
+    cli_log(LogLevel::INFO, "pipewire: input '%s' open at %u Hz, %u ch, %u-bit",
+            this->name().c_str(), format.sample_rate, format.channels, format.bit_depth);
+    return true;
+}
+
+bool PipeWireAudioSource::open_(const StreamFormat& format, int timeout_ms, std::string& error) {
     this->close();
 
+    const std::string device = "PipeWire input '" + this->name() + "'";
+    const std::string wanted = std::to_string(format.sample_rate) + " Hz / " +
+                               std::to_string(static_cast<unsigned>(format.channels)) + " ch / " +
+                               std::to_string(static_cast<unsigned>(format.bit_depth)) + "-bit";
     const spa_audio_format spa_format = spa_format_for(format.bit_depth);
     if (spa_format == SPA_AUDIO_FORMAT_UNKNOWN || format.channels == 0 || format.sample_rate == 0) {
-        cli_log(LogLevel::ERROR, "pipewire: input cannot capture %u Hz / %u ch / %u-bit",
-                format.sample_rate, format.channels, format.bit_depth);
+        error = device + " cannot capture " + wanted;
         return false;
     }
     // A named node that has gone would otherwise be swapped for the default by the session manager.
-    std::string error;
-    if (!this->device_.empty() && !this->find_node_(error, PIPEWIRE_RECOVERY_TIMEOUT_MS)) {
-        cli_log(LogLevel::ERROR, "pipewire: %s", error.c_str());
+    if (!this->device_.empty() && !this->find_node_(error, timeout_ms)) {
         return false;
     }
 
     this->loop_ = pw_thread_loop_new("sendspin-pw-in", nullptr);
     if (this->loop_ == nullptr || pw_thread_loop_start(this->loop_) < 0) {
-        cli_log(LogLevel::ERROR, "pipewire: cannot start a loop for input '%s'",
-                this->name().c_str());
+        error = "cannot start a loop for " + device;
         this->close();
         return false;
     }
@@ -160,7 +172,7 @@ bool PipeWireAudioSource::open(const StreamFormat& format) {
                                              "Capture", PW_KEY_APP_NAME, PIPEWIRE_APP_NAME,
                                              PW_KEY_NODE_NAME, PIPEWIRE_NODE_NAME, nullptr);
     if (props == nullptr) {
-        cli_log(LogLevel::ERROR, "pipewire: cannot describe the input stream to the graph");
+        error = "cannot describe " + device + " to the graph";
         this->close();
         return false;
     }
@@ -212,9 +224,8 @@ bool PipeWireAudioSource::open(const StreamFormat& format) {
         if (err >= 0) {
             // PAUSED counts: the graph has taken the stream and starts it when a source is linked.
             timespec deadline{};
-            pw_thread_loop_get_time(
-                this->loop_, &deadline,
-                static_cast<int64_t>(PIPEWIRE_RECOVERY_TIMEOUT_MS) * 1000 * 1000);
+            pw_thread_loop_get_time(this->loop_, &deadline,
+                                    static_cast<int64_t>(timeout_ms) * 1000 * 1000);
             while (true) {
                 const auto state = static_cast<pw_stream_state>(this->stream_state_.load());
                 if (state == PW_STREAM_STATE_STREAMING || state == PW_STREAM_STATE_PAUSED ||
@@ -230,22 +241,19 @@ bool PipeWireAudioSource::open(const StreamFormat& format) {
 
     const auto state = static_cast<pw_stream_state>(this->stream_state_.load());
     if (err < 0) {
-        cli_log(LogLevel::ERROR, "pipewire: cannot capture from '%s': %s", this->name().c_str(),
-                spa_strerror(err));
-    } else if (state == PW_STREAM_STATE_ERROR) {
-        err = -EIO;  // stream_state_cb() has said why
+        error = "cannot open " + device + ": " + spa_strerror(err);
+    } else if (this->lost_.load()) {
+        err = -EIO;
+        error = "the graph refused " + device + " at " + wanted;
     } else if (state != PW_STREAM_STATE_STREAMING && state != PW_STREAM_STATE_PAUSED) {
         err = -ETIMEDOUT;
-        cli_log(LogLevel::ERROR, "pipewire: input '%s' would not start at %u Hz, %u ch, %u-bit",
-                this->name().c_str(), format.sample_rate, format.channels, format.bit_depth);
+        error = device + " would not start at " + wanted + " within " + std::to_string(timeout_ms) +
+                " ms";
     }
     if (err < 0) {
         this->close();
         return false;
     }
-
-    cli_log(LogLevel::INFO, "pipewire: input '%s' open at %u Hz, %u ch, %u-bit",
-            this->name().c_str(), format.sample_rate, format.channels, format.bit_depth);
     return true;
 }
 
@@ -277,8 +285,7 @@ void PipeWireAudioSource::stream_process_cb(void* userdata) {
     if (data.data != nullptr && stride != 0) {
         const uint32_t offset = std::min(data.chunk->offset, data.maxsize);
         const size_t frames = std::min(data.chunk->size, data.maxsize - offset) / stride;
-        // All or nothing, so the frames in the ring stay contiguous within a quantum.
-        if (frames != 0 && self->ring_.free_space() >= frames * stride) {
+        if (frames != 0) {
             pw_time time{};
             if (pw_stream_get_time_n(self->stream_, &time, sizeof(time)) == 0 &&
                 time.rate.denom != 0) {
@@ -293,7 +300,12 @@ void PipeWireAudioSource::stream_process_cb(void* userdata) {
                 self->origin_us_.store(first_us - static_cast<int64_t>(self->frames_written_) *
                                                       US_PER_S / self->rate_);
             }
-            self->ring_.write(static_cast<const uint8_t*>(data.data) + offset, frames * stride);
+            // All or nothing: a quantum that does not fit is counted, and read() skips to it.
+            if (self->ring_.free_space() >= frames * stride) {
+                self->ring_.write(static_cast<const uint8_t*>(data.data) + offset, frames * stride);
+            } else {
+                self->frames_dropped_.fetch_add(frames);
+            }
             self->frames_written_ += frames;
         }
     }
@@ -316,6 +328,26 @@ int PipeWireAudioSource::read(uint8_t* data, size_t length, uint32_t timeout_ms,
     }
     if (this->lost_.load()) {
         return -1;
+    }
+
+    const uint64_t dropped = this->frames_dropped_.exchange(0);
+    if (dropped != 0) {
+        // Everything queued predates the drop, so it goes too and the frame count stays exact.
+        size_t stale = this->ring_.available();
+        stale -= stale % this->bytes_per_frame_;
+        const uint64_t skipped = dropped + (stale / this->bytes_per_frame_);
+        while (stale > 0) {
+            const size_t got = this->ring_.read(data, std::min(stale, length));
+            if (got == 0) {
+                break;
+            }
+            stale -= got;
+        }
+        this->frames_read_ += skipped;
+        cli_log(LogLevel::WARN, "pipewire: input '%s' overran -- skipped %llu ms of audio",
+                this->name().c_str(),
+                static_cast<unsigned long long>(skipped * 1000U / this->rate_));
+        return 0;
     }
 
     size_t bytes = std::min(this->ring_.available(), length);
@@ -352,6 +384,7 @@ void PipeWireAudioSource::close() {
     this->bytes_per_frame_ = 0;
     this->frames_written_ = 0;
     this->frames_read_ = 0;
+    this->frames_dropped_.store(0);
     this->origin_us_.store(0);
     this->lost_.store(false);
     this->stream_state_.store(PW_STREAM_STATE_UNCONNECTED);

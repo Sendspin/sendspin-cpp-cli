@@ -29,7 +29,7 @@
 
 namespace sendspin_cli {
 
-/// An AudioSource that captures from a PulseAudio server; `--input pulse:` a source name or empty.
+/// An AudioSource that captures from a PulseAudio server; `--input pulse:` takes a source name.
 class PulseAudioSource final : public AudioSource {
 public:
     /// @param device Source name, or empty for the server's default.
@@ -48,6 +48,9 @@ public:
 private:
     static void stream_state_cb(pa_stream* stream, void* userdata);
     static void stream_read_cb(pa_stream* stream, size_t nbytes, void* userdata);
+
+    /// Connects if need be and opens the record stream, each wait bounded by `timeout_ms`.
+    bool open_(const StreamFormat& format, int timeout_ms, std::string& error);
 
     /// Checks that the connected server has the named source.
     bool find_source_(std::string& error, int timeout_ms);
