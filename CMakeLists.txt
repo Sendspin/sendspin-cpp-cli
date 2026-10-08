@@ -385,11 +385,18 @@ if(SENDSPIN_CLI_IS_TOP_LEVEL)
     set(SENDSPIN_CLI_INSTALLED_BINARY "${CMAKE_INSTALL_FULL_BINDIR}/sendspin-cli")
     configure_file(packaging/sendspin-cli.service.in
         ${CMAKE_CURRENT_BINARY_DIR}/sendspin-cli.service @ONLY)
+    configure_file(packaging/sendspin-cli.user.service.in
+        ${CMAKE_CURRENT_BINARY_DIR}/sendspin-cli.user.service @ONLY)
 
     # lib/systemd/system, not the multiarch libdir, where systemd would not look.
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         install(FILES ${CMAKE_CURRENT_BINARY_DIR}/sendspin-cli.service
             DESTINATION lib/systemd/system
+            COMPONENT ${SENDSPIN_CLI_COMPONENT}
+        )
+        install(FILES ${CMAKE_CURRENT_BINARY_DIR}/sendspin-cli.user.service
+            DESTINATION lib/systemd/user
+            RENAME sendspin-cli.service
             COMPONENT ${SENDSPIN_CLI_COMPONENT}
         )
 
