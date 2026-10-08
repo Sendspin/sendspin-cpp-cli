@@ -243,10 +243,12 @@ main() {
 
     if [ "$purge" = 'yes' ]; then
         for path in "${kept[@]}"; do
-            case "$path" in
-                "$TARGET_HOME"/*) plan_user rm -rf "$path" ;;
-                *) plan_root rm -rf "$path" ;;
-            esac
+            # Only /etc and /var paths are in the list when there is no user.
+            if [ -n "$TARGET_USER" ] && [ "${path#"$TARGET_HOME"/}" != "$path" ]; then
+                plan_user rm -rf "$path"
+            else
+                plan_root rm -rf "$path"
+            fi
         done
         [ "$have_account" != 'yes' ] || plan_root userdel "$SERVICE_USER"
     fi

@@ -882,6 +882,8 @@ main() {
             say "  $SYSTEM_CONFIG  (from the installed example; everything in it is commented out)"
         fi
         step 'Not touching a service'
+        [ -z "$want_name$want_output" ] ||
+            say '  --name and --output configure the service, so they were not used.'
         say '  systemd is not running here, so there is nothing to enable. The binary is'
         say '  installed and runs in the foreground:'
         say ''
