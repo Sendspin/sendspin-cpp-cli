@@ -487,6 +487,10 @@ jobs:
           /etc/sendspin-cli.conf; there is an annotated example beside the installed README,
           under usr/local/share/doc/sendspin-cli. Its ExecStart names /usr/local/bin/sendspin-cli
           absolutely, so a binary put anywhere else needs the unit changed to match.
+
+          To run it as yourself instead, following your session's PipeWire or PulseAudio, there is a
+          user unit at usr/local/lib/systemd/user/sendspin-cli.service: systemctl --user enable --now
+          sendspin-cli, configured in ~/.config/sendspin-cli/config. Not both: they share a port.
           LINUX
           fi
 
@@ -530,6 +534,7 @@ jobs:
             if [ "$RUNNER_OS" = 'Linux' ]; then
               echo usr/local/lib/sysusers.d/sendspin-cli.conf
               echo usr/local/lib/systemd/system/sendspin-cli.service
+              echo usr/local/lib/systemd/user/sendspin-cli.service
             fi
           } | sort >"$expected"
 
@@ -609,6 +614,9 @@ jobs:
           echo "What was installed as $unit:"
           cat "$unit"
           systemd-analyze verify "$unit"
+          # --user needs a runtime directory to initialise, which a runner step may not export.
+          XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" \
+            systemd-analyze --user verify /usr/local/lib/systemd/user/sendspin-cli.service
 
       # Run the hardened unit as its account on a real systemd runner, via the same systemd-sysusers step as README.
       - name: Run the unit as its own user, with the hardening block

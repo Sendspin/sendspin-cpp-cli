@@ -248,6 +248,10 @@ jobs:
           /etc/sendspin-cli.conf; there is an annotated example beside the installed README,
           under usr/local/share/doc/sendspin-cli. Its ExecStart names /usr/local/bin/sendspin-cli
           absolutely, so a binary put anywhere else needs the unit changed to match.
+
+          To run it as yourself instead, following your session's PipeWire or PulseAudio, there is a
+          user unit at usr/local/lib/systemd/user/sendspin-cli.service: systemctl --user enable --now
+          sendspin-cli, configured in ~/.config/sendspin-cli/config. Not both: they share a port.
           LINUX
 
           # Explains the build-host line, and reads the glibc floor off the binary.
@@ -285,6 +289,7 @@ jobs:
             echo usr/local/bin/sendspin-cli
             echo usr/local/lib/sysusers.d/sendspin-cli.conf
             echo usr/local/lib/systemd/system/sendspin-cli.service
+            echo usr/local/lib/systemd/user/sendspin-cli.service
             echo usr/local/share/doc/sendspin-cli/LICENSE
             echo usr/local/share/doc/sendspin-cli/README.md
             echo usr/local/share/doc/sendspin-cli/contributors.md
