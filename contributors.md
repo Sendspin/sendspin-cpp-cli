@@ -50,8 +50,8 @@ separate because it runs under emulation; it is required for releases.
 - `src/` contains the player, command-line interface, output backends, discovery, and
   local control implementation.
 - `tests/` contains the GoogleTest unit suite.
-- `packaging/` contains the service, sysusers, and configuration-file payload.
-- `scripts/` contains installer, packaging, and smoke-test scripts.
+- `packaging/` contains the system and user service units, sysusers, and configuration-file payload.
+- `scripts/` contains installer, uninstaller, packaging, and smoke-test scripts.
 - `docs/wiki/` contains the source for the published wiki.
 
 ## Releases
