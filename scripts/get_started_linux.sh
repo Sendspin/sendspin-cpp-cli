@@ -374,12 +374,12 @@ main() {
                 shift 2
                 ;;
             --name)
-                [ "$#" -ge 2 ] && [ -n "$2" ] || fail '--name needs a name, e.g. --name kitchen'
+                { [ "$#" -ge 2 ] && [ -n "$2" ]; } || fail '--name needs a name, e.g. --name kitchen'
                 want_name=$2
                 shift 2
                 ;;
             --output)
-                [ "$#" -ge 2 ] && [ -n "$2" ] || fail '--output needs a device, e.g. --output hw:1,0'
+                { [ "$#" -ge 2 ] && [ -n "$2" ]; } || fail '--output needs a device, e.g. --output hw:1,0'
                 want_output=$2
                 shift 2
                 ;;
