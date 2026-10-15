@@ -758,8 +758,6 @@ int main(int argc, char* argv[]) {
     config.manufacturer = opts.manufacturer;
     config.software_version = SENDSPIN_CLI_VERSION;
     config.server_port = opts.port;
-    // `pair confirm` is the gesture, so every run supports the window.
-    config.pairing_window_supported = true;
     if (opts.pairing_code.empty()) {
         config.pairing_code_out_channels = {sendspin::SendspinPairingCodeChannel::DISPLAY};
         config.pairing_code_formats = {sendspin::SendspinPairingCodeFormat::DIGITS};
