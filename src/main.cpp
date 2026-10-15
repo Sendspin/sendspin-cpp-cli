@@ -736,6 +736,14 @@ int main(int argc, char* argv[]) {
                      "server its own audio back -- loop back a sink that -o does not play to",
                      opts.input.c_str(), opts.device.c_str());
         }
+#ifdef SENDSPIN_CLI_HAVE_COREAUDIO
+        if (coreaudio_input_hears_output(opts.input, opts.device)) {
+            log_line(LogLevel::WARN, LOG_TAG_AUDIO,
+                     "--input %s captures the virtual device -o %s plays to, sending the server "
+                     "its own audio back -- play to real speakers with -o coreaudio:<device>",
+                     opts.input.c_str(), opts.device.c_str());
+        }
+#endif
     }
 
     // Loaded before the client, since its values must be in place before anything is published.

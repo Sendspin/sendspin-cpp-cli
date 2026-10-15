@@ -296,6 +296,14 @@ TEST(ResolveInputSpec, LoopbackNeedsASoundServerBackend) {
 
 // When a loopback might hear this player's own output
 
+#ifdef SENDSPIN_CLI_HAVE_COREAUDIO
+TEST(CoreaudioInputHearsOutput, OnlyCoreaudioOnBothSidesIsChecked) {
+    EXPECT_FALSE(coreaudio_input_hears_output("tone", "coreaudio"));
+    EXPECT_FALSE(coreaudio_input_hears_output("coreaudio", "null"));
+    EXPECT_FALSE(coreaudio_input_hears_output("loopback", "coreaudio"));
+}
+#endif
+
 TEST(MayCaptureOwnPlayback, NotWhenNothingIsPlayedToASink) {
     EXPECT_FALSE(may_capture_own_playback({SinkBackend::Null, ""}, ""));
     EXPECT_FALSE(may_capture_own_playback({SinkBackend::Stdout, ""}, "speakers"));

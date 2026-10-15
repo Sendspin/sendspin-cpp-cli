@@ -155,6 +155,12 @@ bool input_pcm_is_reachable(const std::string& pcm);
 /// True unless `output` provably plays somewhere other than `looped_sink` (empty: the default).
 bool may_capture_own_playback(const DeviceSpec& output, const std::string& looped_sink);
 
+#ifdef SENDSPIN_CLI_HAVE_COREAUDIO
+/// True if --input `input` captures a virtual CoreAudio device, such as a loopback driver, that
+/// -o `output` also plays to.
+bool coreaudio_input_hears_output(const std::string& input, const std::string& output);
+#endif
+
 /// Settles `format` for a sound server, which converts: only a format no stream can carry changes.
 void settle_server_capture_format(StreamFormat& format);
 

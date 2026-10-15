@@ -28,6 +28,7 @@
 #include "pulse_source.h"
 #endif
 #ifdef SENDSPIN_CLI_HAVE_COREAUDIO
+#include "coreaudio_device.h"
 #include "coreaudio_source.h"
 #endif
 
@@ -375,6 +376,30 @@ bool may_capture_own_playback(const DeviceSpec& output, const std::string& loope
     }
     return true;
 }
+
+#ifdef SENDSPIN_CLI_HAVE_COREAUDIO
+bool coreaudio_input_hears_output(const std::string& input, const std::string& output) {
+    InputSpec captured_spec;
+    DeviceSpec played_spec;
+    std::string error;
+    if (!resolve_input_spec(input, captured_spec, error) ||
+        captured_spec.backend != SourceBackend::CoreAudio ||
+        !resolve_device_spec(output, played_spec, error) ||
+        played_spec.backend != SinkBackend::CoreAudio) {
+        return false;
+    }
+    AudioDeviceID captured = kAudioObjectUnknown;
+    AudioDeviceID played = kAudioObjectUnknown;
+    if (!resolve_ca_device(captured_spec.device, CaDirection::Input, captured, error) ||
+        !resolve_ca_device(played_spec.device, CaDirection::Output, played, error)) {
+        return false;
+    }
+    // A hardware device's input is a microphone or line-in, not what the device plays.
+    return captured == played &&
+           ca_u32_property(captured, kAudioDevicePropertyTransportType,
+                           kAudioObjectPropertyScopeGlobal) == kAudioDeviceTransportTypeVirtual;
+}
+#endif
 
 std::unique_ptr<AudioSource> make_audio_source(const std::string& spec, StreamFormat& format,
                                                std::string& error) {
