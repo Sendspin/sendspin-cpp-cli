@@ -965,12 +965,6 @@ void print_usage(std::FILE* out, const char* prog) {
     std::fprintf(out, "                and exit\n");
     std::fprintf(out, "  -n, --name <name>\n");
     std::fprintf(out, "                Friendly name (default: this host's name)\n");
-    std::fprintf(out, "  --id <id>     Stable client id, which is what a server files this\n");
-    std::fprintf(out, "                player's volume, group and pairing under -- -n is only\n");
-    std::fprintf(out, "                what it displays. Defaults to an id derived from the\n");
-    std::fprintf(out, "                network interface MAC, which two players on one host\n");
-    std::fprintf(out, "                would share: give each its own --id (and its own\n");
-    std::fprintf(out, "                --port and --state-dir)\n");
     std::fprintf(out, "  -s, --server <server>\n");
     std::fprintf(out, "                Connect out to <host>[:<port>] or a ws:// URL\n");
     std::fprintf(out, "                (the server's port defaults to %u), retrying until it\n",
@@ -1086,7 +1080,8 @@ void print_usage(std::FILE* out, const char* prog) {
     std::fprintf(out, "                $HOME/.local/state/sendspin-cli. A systemd *system*\n");
     std::fprintf(out, "                unit has neither, so pair StateDirectory= with this\n");
     std::fprintf(out, "                flag; with none of the three the player still runs and\n");
-    std::fprintf(out, "                simply remembers nothing\n");
+    std::fprintf(out, "                simply remembers nothing. Two players on one host need\n");
+    std::fprintf(out, "                their own, or they share one identity\n");
     std::fprintf(out, "  --manufacturer <text>\n");
     std::fprintf(out, "  --product-name <text>\n");
     std::fprintf(out, "                The device info client/hello carries, shown in server\n");
