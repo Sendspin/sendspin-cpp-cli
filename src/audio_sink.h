@@ -107,7 +107,8 @@ public:
         return SinkCapabilities::permissive();
     }
 
-    /// Reports frames that reached the DAC, for sync feedback; optional for instant sinks.
+    /// Reports frames that reached the DAC, for sync feedback; a sink that never reports stalls
+    /// the player before its first chunk, so an instant sink reports against a virtual clock.
     /// Assign before start() and never after: backends read it from their audio thread.
     std::function<void(uint32_t frames, int64_t timestamp)> on_frames_played;
 

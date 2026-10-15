@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdio>
 
 namespace sendspin_cli {
@@ -33,6 +34,14 @@ namespace {
 /// Zeroes emitted while muted, so muting allocates nothing.
 constexpr size_t SILENCE_CHUNK = 4096;
 constexpr std::array<uint8_t, SILENCE_CHUNK> SILENCE{};
+
+constexpr int64_t US_PER_S = 1000000;
+
+int64_t now_us() {
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
 
 /// Rounds `bytes` down to whole frames; a frame size of 0 means no stream, so no alignment.
 size_t align_to_frame(size_t bytes, size_t bytes_per_frame) {
@@ -54,6 +63,7 @@ bool NullAudioSink::configure(uint32_t sample_rate, uint8_t channels, uint8_t bi
     const size_t bytes_per_frame =
         static_cast<size_t>(channels) * (static_cast<size_t>(bits_per_sample) / 8U);
     this->bytes_per_frame_.store(bytes_per_frame);
+    this->sample_rate_.store(sample_rate);
 
     cli_log(LogLevel::INFO, "%s: stream %u Hz, %u ch, %u-bit (%zu bytes/frame)",
             this->name().c_str(), sample_rate, channels, bits_per_sample, bytes_per_frame);
@@ -70,6 +80,7 @@ size_t NullAudioSink::write(const uint8_t* data, size_t length, uint32_t /*timeo
     const bool to_stdout = this->output_ == NullSinkOutput::Stdout && !this->stdout_failed_.load();
     if (!to_stdout) {
         this->total_bytes_.fetch_add(length);
+        this->report_played(length);
         return length;
     }
 
@@ -100,6 +111,7 @@ size_t NullAudioSink::write(const uint8_t* data, size_t length, uint32_t /*timeo
     }
 
     this->total_bytes_.fetch_add(consumed);
+    this->report_played(consumed);
     return consumed;
 }
 
@@ -132,6 +144,22 @@ void NullAudioSink::set_muted(bool muted) {
 
 size_t NullAudioSink::total_bytes() const {
     return this->total_bytes_.load();
+}
+
+void NullAudioSink::report_played(size_t bytes) {
+    const size_t bytes_per_frame = this->bytes_per_frame_.load();
+    const uint32_t rate = this->sample_rate_.load();
+    if (bytes_per_frame == 0 || rate == 0 || !this->on_frames_played) {
+        return;
+    }
+    const auto frames = static_cast<uint32_t>(bytes / bytes_per_frame);
+    if (frames == 0) {
+        return;
+    }
+    // Never behind real time, so a stream that paused resumes from now rather than the past.
+    this->playhead_us_ = std::max(this->playhead_us_, now_us()) +
+                         (static_cast<int64_t>(frames) * US_PER_S) / static_cast<int64_t>(rate);
+    this->on_frames_played(frames, this->playhead_us_);
 }
 
 }  // namespace sendspin_cli

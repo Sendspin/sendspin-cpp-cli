@@ -440,6 +440,7 @@ if(SENDSPIN_CLI_BUILD_TESTS)
         tests/device_spec_test.cpp
         tests/discovery_test.cpp
         tests/hooks_test.cpp
+        tests/null_sink_test.cpp
         tests/pcm_ring_test.cpp
         tests/pcm_volume_test.cpp
         tests/pipewire_sink_test.cpp
