@@ -158,7 +158,7 @@ bool may_capture_own_playback(const DeviceSpec& output, const std::string& loope
 
 #ifdef SENDSPIN_CLI_HAVE_COREAUDIO
 /// True if --input `input` captures a virtual CoreAudio device, such as a loopback driver, that
-/// -o `output` also plays to.
+/// -o `output` also plays to, directly or as part of a Multi-Output Device.
 bool coreaudio_input_hears_output(const std::string& input, const std::string& output);
 #endif
 

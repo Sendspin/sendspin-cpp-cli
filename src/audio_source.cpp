@@ -407,9 +407,27 @@ bool coreaudio_input_hears_output(const std::string& input, const std::string& o
         return false;
     }
     // A hardware device's input is a microphone or line-in, not what the device plays.
-    return captured == played &&
-           ca_u32_property(captured, kAudioDevicePropertyTransportType,
-                           kAudioObjectPropertyScopeGlobal) == kAudioDeviceTransportTypeVirtual;
+    if (ca_u32_property(captured, kAudioDevicePropertyTransportType,
+                        kAudioObjectPropertyScopeGlobal) != kAudioDeviceTransportTypeVirtual) {
+        return false;
+    }
+    if (captured == played) {
+        return true;
+    }
+    // A Multi-Output Device plays into each of its sub-devices.
+    const AudioObjectPropertyAddress address =
+        ca_address_of(kAudioAggregateDevicePropertyActiveSubDeviceList);
+    UInt32 size = 0;
+    if (AudioObjectGetPropertyDataSize(played, &address, 0, nullptr, &size) != noErr) {
+        return false;
+    }
+    std::vector<AudioObjectID> subdevices(size / sizeof(AudioObjectID));
+    if (subdevices.empty() || AudioObjectGetPropertyData(played, &address, 0, nullptr, &size,
+                                                         subdevices.data()) != noErr) {
+        return false;
+    }
+    subdevices.resize(size / sizeof(AudioObjectID));
+    return std::find(subdevices.begin(), subdevices.end(), captured) != subdevices.end();
 }
 #endif
 

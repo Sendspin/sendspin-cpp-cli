@@ -151,8 +151,8 @@ sendspin-cli -n den --input "loopback:MacBook Pro Speakers"
 ```
 
 A virtual loopback device installed by another app is an ordinary input:
-`--input "coreaudio:<device>"`. If `-o` plays into that same device, the player logs a
-warning at startup, since the server would get its own audio back.
+`--input "coreaudio:<device>"`. If `-o` plays into that same device, or into a Multi-Output
+Device that includes it, the player logs a warning at startup, since the server would get its own audio back.
 
 macOS asks once for **System Audio Recording**. It names the app sendspin-cli is started
 from: the terminal, or `sendspin-cli` itself under `launchd`. If the answer is no, macOS
