@@ -64,13 +64,6 @@ bool pulse_format_for(uint8_t bits_per_sample, pa_sample_format_t& format) {
     return false;
 }
 
-/// One sink as the server describes it.
-struct PulseSinkInfo {
-    std::string name;
-    std::string description;
-    pa_sample_spec spec{};
-};
-
 struct SinkListQuery : PulseQuery {
     std::vector<PulseSinkInfo> sinks;
 };
@@ -92,6 +85,7 @@ void sink_info_cb(pa_context* /*context*/, const pa_sink_info* info, int eol, vo
     PulseSinkInfo entry;
     entry.name = (info->name != nullptr) ? info->name : "";
     entry.description = (info->description != nullptr) ? info->description : "";
+    entry.monitor_source = (info->monitor_source_name != nullptr) ? info->monitor_source_name : "";
     entry.spec = info->sample_spec;
     query->sinks.push_back(std::move(entry));
 }
@@ -104,8 +98,9 @@ void server_info_cb(pa_context* /*context*/, const pa_server_info* info, void* u
     query->finish(info != nullptr);
 }
 
-/// Asks the server for every sink it has. The mainloop lock must NOT be held.
-bool list_sinks(PulseConnection& conn, std::vector<PulseSinkInfo>& out) {
+}  // namespace
+
+bool list_sinks(PulseConnection& conn, std::vector<PulseSinkInfo>& out, int timeout_ms) {
     SinkListQuery query;
     query.conn = &conn;
     pa_operation* op = nullptr;
@@ -113,14 +108,13 @@ bool list_sinks(PulseConnection& conn, std::vector<PulseSinkInfo>& out) {
         const MainloopLock lock(conn.mainloop());
         op = pa_context_get_sink_info_list(conn.context(), sink_info_cb, &query);
     }
-    if (!await_query(conn, query, op)) {
+    if (!await_query(conn, query, op, timeout_ms)) {
         return false;
     }
     out = std::move(query.sinks);
     return true;
 }
 
-/// Asks the server which sink it calls default. Empty when it will not say. Lock must NOT be held.
 std::string default_sink_name(PulseConnection& conn) {
     ServerQuery query;
     query.conn = &conn;
@@ -134,8 +128,6 @@ std::string default_sink_name(PulseConnection& conn) {
     }
     return query.default_sink;
 }
-
-}  // namespace
 
 bool await_query(PulseConnection& conn, PulseQuery& query, pa_operation* op, int timeout_ms) {
     if (op == nullptr) {

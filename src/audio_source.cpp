@@ -66,6 +66,30 @@ constexpr bool HAVE_PIPEWIRE = true;
 #else
 constexpr bool HAVE_PIPEWIRE = false;
 #endif
+constexpr bool HAVE_LOOPBACK = HAVE_PULSE || HAVE_PIPEWIRE;
+
+#if defined(SENDSPIN_CLI_HAVE_PULSE) || defined(SENDSPIN_CLI_HAVE_PIPEWIRE)
+/// The loopback source on the first sound server that answers: PipeWire, then PulseAudio.
+std::unique_ptr<AudioSource> make_loopback_source(const std::string& device, std::string& error) {
+    std::string tried;
+#ifdef SENDSPIN_CLI_HAVE_PIPEWIRE
+    std::string pipewire_error;
+    if (PipeWireAudioSource::daemon_answers(pipewire_error)) {
+        return std::make_unique<PipeWireAudioSource>(device, true);
+    }
+    tried += "PipeWire: " + pipewire_error;
+#endif
+#ifdef SENDSPIN_CLI_HAVE_PULSE
+    std::string pulse_error;
+    if (PulseAudioSource::server_answers(pulse_error)) {
+        return std::make_unique<PulseAudioSource>(device, true);
+    }
+    tried += (tried.empty() ? "" : "; ") + ("PulseAudio: " + pulse_error);
+#endif
+    error = "--input loopback: no sound server answered (" + tried + ")";
+    return nullptr;
+}
+#endif
 
 }  // namespace
 
@@ -189,6 +213,9 @@ std::string input_backend_list() {
 #ifdef SENDSPIN_CLI_HAVE_COREAUDIO
     list += ", coreaudio";
 #endif
+    if (HAVE_LOOPBACK) {
+        list += ", loopback";
+    }
     return list;
 }
 
@@ -276,6 +303,23 @@ bool resolve_input_spec(const std::string& spec, InputSpec& out, std::string& er
 #endif
     }
 
+    if (prefix == "loopback") {
+        if (!HAVE_LOOPBACK) {
+            error = "--input loopback needs the PipeWire or PulseAudio backend, and this build has "
+                    "neither, so --input takes only: " +
+                    input_backend_list();
+            return false;
+        }
+        if (has_device && rest.empty()) {
+            error = "--input '" + spec +
+                    "' names no sink -- write --input loopback:<sink>, or --input loopback on "
+                    "its own for the default sink";
+            return false;
+        }
+        out = {SourceBackend::Loopback, rest == "default" ? std::string() : rest};
+        return true;
+    }
+
     for (const char* name : UNSUPPORTED_BACKENDS) {
         if (prefix == name) {
             error = "capturing through the " + prefix +
@@ -302,6 +346,23 @@ bool input_pcm_is_reachable(const std::string& pcm) {
     std::string error;
     return resolve_input_spec(pcm, spec, error) && spec.backend == SourceBackend::Alsa &&
            spec.device == pcm;
+}
+
+bool may_capture_own_playback(const DeviceSpec& output, const std::string& looped_sink) {
+    switch (output.backend) {
+        case SinkBackend::Null:
+        case SinkBackend::Stdout:
+            return false;
+        case SinkBackend::Pulse:
+        case SinkBackend::PipeWire:
+            return looped_sink.empty() || output.device.empty() || output.device == "default" ||
+                   output.device == looped_sink;
+        case SinkBackend::Alsa:
+        case SinkBackend::CoreAudio:
+        case SinkBackend::PortAudio:
+            return true;
+    }
+    return true;
 }
 
 std::unique_ptr<AudioSource> make_audio_source(const std::string& spec, StreamFormat& format,
@@ -337,6 +398,14 @@ std::unique_ptr<AudioSource> make_audio_source(const std::string& spec, StreamFo
         case SourceBackend::CoreAudio:
 #ifdef SENDSPIN_CLI_HAVE_COREAUDIO
             source = std::make_unique<CoreAudioSource>(resolved.device);
+#endif
+            break;
+        case SourceBackend::Loopback:
+#if defined(SENDSPIN_CLI_HAVE_PULSE) || defined(SENDSPIN_CLI_HAVE_PIPEWIRE)
+            source = make_loopback_source(resolved.device, error);
+            if (!source) {
+                return nullptr;
+            }
 #endif
             break;
     }
@@ -381,8 +450,7 @@ void print_capture_devices(std::FILE* out) {
     PulseAudioSource::list_devices(out);
     std::fprintf(out,
                  "\nThe name on each source's own line is what follows --input pulse:. --input\n"
-                 "pulse with no source at all follows whichever one the server calls default.\n"
-                 "A .monitor source captures what its sink is playing.\n");
+                 "pulse with no source at all follows whichever one the server calls default.\n");
 #endif
 
 #ifdef SENDSPIN_CLI_HAVE_PIPEWIRE
@@ -395,6 +463,20 @@ void print_capture_devices(std::FILE* out) {
 #endif
 
 #if defined(SENDSPIN_CLI_HAVE_PULSE) || defined(SENDSPIN_CLI_HAVE_PIPEWIRE)
+    std::fprintf(out,
+                 "\nLoopback (--input loopback[:<sink>]):\n"
+                 "--input loopback captures what this host plays through its default sink, and\n"
+                 "--input loopback:<sink> what one sink plays, through PipeWire if it is running,\n"
+                 "else PulseAudio. This player's own playback is captured too if it goes there.\n");
+#ifdef SENDSPIN_CLI_HAVE_PIPEWIRE
+    std::fprintf(out, "\nPipeWire sinks:\n");
+    PipeWireAudioSource::list_sinks(out);
+#endif
+#ifdef SENDSPIN_CLI_HAVE_PULSE
+    std::fprintf(out, "\nPulseAudio sinks:\n");
+    PulseAudioSource::list_sinks(out);
+#endif
+
     std::fprintf(out, "\nA sound server converts, so a capture through one runs at 48000 Hz, 2\n"
                       "channels, 16-bit whatever the hardware behind it captures.\n");
 #endif

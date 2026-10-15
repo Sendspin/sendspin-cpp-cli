@@ -58,10 +58,14 @@ pa_sample_format_t pulse_format_for(uint8_t bit_depth) {
     }
 }
 
+/// The source name PulseAudio resolves to the default sink's monitor.
+constexpr const char* DEFAULT_MONITOR = "@DEFAULT_MONITOR@";
+
 /// One source as the server describes it.
 struct PulseSourceInfo {
     std::string name;
     std::string description;
+    std::string monitor_of_sink;  ///< empty unless this is a sink's monitor
     pa_sample_spec spec{};
 };
 
@@ -82,6 +86,9 @@ void source_info_cb(pa_context* /*context*/, const pa_source_info* info, int eol
     PulseSourceInfo entry;
     entry.name = (info->name != nullptr) ? info->name : "";
     entry.description = (info->description != nullptr) ? info->description : "";
+    if (info->monitor_of_sink != PA_INVALID_INDEX && info->monitor_of_sink_name != nullptr) {
+        entry.monitor_of_sink = info->monitor_of_sink_name;
+    }
     entry.spec = info->sample_spec;
     query->sources.push_back(std::move(entry));
 }
@@ -125,14 +132,27 @@ std::string default_source_name(PulseConnection& conn) {
 
 }  // namespace
 
-PulseAudioSource::PulseAudioSource(std::string device) : device_(std::move(device)) {}
+PulseAudioSource::PulseAudioSource(std::string device, bool loopback)
+    : device_(std::move(device)), loopback_(loopback) {}
 
 PulseAudioSource::~PulseAudioSource() {
     this->close();
 }
 
 std::string PulseAudioSource::name() const {
-    return this->device_.empty() ? "pulse" : "pulse:" + this->device_;
+    if (this->device_.empty()) {
+        return this->loopback_ ? "loopback" : "pulse";
+    }
+    return "pulse:" + this->device_;
+}
+
+std::optional<std::string> PulseAudioSource::looped_sink() const {
+    return this->looped_sink_;
+}
+
+bool PulseAudioSource::server_answers(std::string& error) {
+    PulseConnection conn;
+    return conn.connect(error);
 }
 
 void PulseAudioSource::list_devices(std::FILE* out) {
@@ -164,20 +184,77 @@ void PulseAudioSource::list_devices(std::FILE* out) {
     }
 }
 
-bool PulseAudioSource::find_source_(std::string& error, int timeout_ms) {
+void PulseAudioSource::list_sinks(std::FILE* out) {
+    PulseConnection conn;
+    std::string error;
+    if (!conn.connect(error)) {
+        std::fprintf(out, "  (%s)\n", error.c_str());
+        return;
+    }
+
+    std::vector<PulseSinkInfo> sinks;
+    if (!sendspin_cli::list_sinks(conn, sinks)) {
+        std::fprintf(out, "  (cannot list the sinks on %s)\n", conn.server_name().c_str());
+        return;
+    }
+    if (sinks.empty()) {
+        std::fprintf(out, "  (%s has no sinks)\n", conn.server_name().c_str());
+        return;
+    }
+
+    const std::string fallback = default_sink_name(conn);
+    for (const PulseSinkInfo& sink : sinks) {
+        std::fprintf(out, "  %s%s\n", sink.name.c_str(),
+                     (sink.name == fallback) ? "  (server default)" : "");
+        std::fprintf(out, "      %s\n", sink.description.c_str());
+    }
+}
+
+bool PulseAudioSource::resolve_source_(std::string& error, int timeout_ms) {
+    this->record_from_.clear();
+    this->looped_sink_.reset();
+    this->looped_sink_name_.clear();
+    if (this->device_.empty()) {
+        if (this->loopback_) {
+            this->record_from_ = DEFAULT_MONITOR;
+            this->looped_sink_ = "";
+            this->looped_sink_name_ = default_sink_name(this->conn_);
+        }
+        return true;
+    }
+
     std::vector<PulseSourceInfo> sources;
     if (!list_sources(this->conn_, sources, timeout_ms)) {
         error = "cannot list the sources on " + this->conn_.server_name();
         return false;
     }
-    const bool found =
-        std::any_of(sources.begin(), sources.end(),
-                    [this](const PulseSourceInfo& source) { return source.name == this->device_; });
-    if (!found) {
-        error = "--input " + this->name() + ": " + this->conn_.server_name() +
-                " has no source by that name";
+    const auto source =
+        std::find_if(sources.begin(), sources.end(),
+                     [this](const PulseSourceInfo& info) { return info.name == this->device_; });
+    if (source != sources.end()) {
+        this->record_from_ = source->name;
+        if (!source->monitor_of_sink.empty()) {
+            this->looped_sink_ = source->monitor_of_sink;
+        }
+        return true;
     }
-    return found;
+
+    std::vector<PulseSinkInfo> sinks;
+    if (!sendspin_cli::list_sinks(this->conn_, sinks, timeout_ms)) {
+        error = "cannot list the sinks on " + this->conn_.server_name();
+        return false;
+    }
+    const auto sink = std::find_if(sinks.begin(), sinks.end(), [this](const PulseSinkInfo& info) {
+        return info.name == this->device_;
+    });
+    if (sink == sinks.end() || sink->monitor_source.empty()) {
+        error = "--input " + this->name() + ": " + this->conn_.server_name() +
+                " has no source or sink by that name";
+        return false;
+    }
+    this->record_from_ = sink->monitor_source;
+    this->looped_sink_ = sink->name;
+    return true;
 }
 
 bool PulseAudioSource::negotiate(StreamFormat& format, std::string& error) {
@@ -196,9 +273,18 @@ bool PulseAudioSource::open(const StreamFormat& format) {
         cli_log(LogLevel::ERROR, "pulse: %s", error.c_str());
         return false;
     }
-    cli_log(LogLevel::INFO, "pulse: input '%s' open on %s at %u Hz, %u ch, %u-bit",
+    std::string captures;
+    if (this->looped_sink_ && !this->looped_sink_->empty()) {
+        captures = " -- capturing the monitor of sink '" + *this->looped_sink_ + "'";
+    } else if (this->looped_sink_) {
+        captures = " -- capturing the monitor of the default sink";
+        if (!this->looped_sink_name_.empty()) {
+            captures += " '" + this->looped_sink_name_ + "'";
+        }
+    }
+    cli_log(LogLevel::INFO, "pulse: input '%s' open on %s at %u Hz, %u ch, %u-bit%s",
             this->name().c_str(), this->conn_.server_name().c_str(), format.sample_rate,
-            format.channels, format.bit_depth);
+            format.channels, format.bit_depth, captures.c_str());
     return true;
 }
 
@@ -221,7 +307,7 @@ bool PulseAudioSource::open_(const StreamFormat& format, int timeout_ms, std::st
         return false;
     }
     // pipewire-pulse records from the default when the named source is missing.
-    if (!this->device_.empty() && !this->find_source_(error, timeout_ms)) {
+    if (!this->resolve_source_(error, timeout_ms)) {
         return false;
     }
 
@@ -241,7 +327,7 @@ bool PulseAudioSource::open_(const StreamFormat& format, int timeout_ms, std::st
         // Unplugging the source ends the stream, so it is reopened rather than moved elsewhere.
         flags |= PA_STREAM_DONT_MOVE;
     }
-    const char* source = this->device_.empty() ? nullptr : this->device_.c_str();
+    const char* source = this->record_from_.empty() ? nullptr : this->record_from_.c_str();
 
     int err = -1;
     {

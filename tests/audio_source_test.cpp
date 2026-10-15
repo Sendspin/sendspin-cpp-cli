@@ -240,6 +240,86 @@ TEST(ResolveInputSpec, WithoutPipeWireItsNameIsNotInThisBuild) {
 }
 #endif
 
+#if defined(SENDSPIN_CLI_HAVE_PULSE) || defined(SENDSPIN_CLI_HAVE_PIPEWIRE)
+TEST(ResolveInputSpec, LoopbackTakesASinkOrTheDefault) {
+    for (const char* spec : {"loopback", "loopback:default"}) {
+        EXPECT_EQ(resolved(spec).backend, SourceBackend::Loopback) << spec;
+        EXPECT_TRUE(resolved(spec).device.empty()) << spec;
+    }
+    EXPECT_EQ(resolved("loopback:alsa_output.pci-0000_00_1f.3.analog-stereo").device,
+              "alsa_output.pci-0000_00_1f.3.analog-stereo");
+    EXPECT_EQ(resolved("loopback:a:b").device, "a:b");
+    EXPECT_NE(input_backend_list().find("loopback"), std::string::npos);
+}
+
+TEST(ResolveInputSpec, LoopbackPrefixWithNothingAfterTheColonIsRejected) {
+    EXPECT_NE(rejected("loopback:").find("--input loopback on its own"), std::string::npos);
+}
+
+TEST(ResolveInputSpec, TheBackendFormsAreUnchangedByLoopback) {
+#ifdef SENDSPIN_CLI_HAVE_PULSE
+    EXPECT_EQ(resolved("pulse:default").backend, SourceBackend::Pulse);
+    EXPECT_TRUE(resolved("pulse:default").device.empty());
+    EXPECT_EQ(resolved("pulse:alsa_output.usb.analog-stereo.monitor").device,
+              "alsa_output.usb.analog-stereo.monitor");
+#endif
+#ifdef SENDSPIN_CLI_HAVE_PIPEWIRE
+    EXPECT_EQ(resolved("pipewire:alsa_output.usb.analog-stereo").backend, SourceBackend::PipeWire);
+#endif
+}
+
+TEST(MakeAudioSource, LoopbackWithNoSoundServerNamesEveryOneTried) {
+    const ScopedEnv remote("PIPEWIRE_REMOTE", "/nonexistent/sendspin-cli-test");
+    const ScopedEnv server("PULSE_SERVER", "unix:/nonexistent/sendspin-cli-test");
+    StreamFormat format = STEREO_16;
+    std::string error;
+    EXPECT_EQ(make_audio_source("loopback", format, error), nullptr);
+#ifdef SENDSPIN_CLI_HAVE_PIPEWIRE
+    EXPECT_NE(error.find("PipeWire"), std::string::npos) << error;
+#endif
+#ifdef SENDSPIN_CLI_HAVE_PULSE
+    EXPECT_NE(error.find("PulseAudio"), std::string::npos) << error;
+#endif
+}
+#else
+TEST(ResolveInputSpec, LoopbackNeedsASoundServerBackend) {
+    for (const char* spec : {"loopback", "loopback:sink"}) {
+        const std::string error = rejected(spec);
+        EXPECT_NE(error.find("PipeWire or PulseAudio"), std::string::npos) << spec;
+        EXPECT_NE(error.find(input_backend_list()), std::string::npos) << spec;
+    }
+    EXPECT_EQ(input_backend_list().find("loopback"), std::string::npos);
+}
+#endif
+
+// When a loopback might hear this player's own output
+
+TEST(MayCaptureOwnPlayback, NotWhenNothingIsPlayedToASink) {
+    EXPECT_FALSE(may_capture_own_playback({SinkBackend::Null, ""}, ""));
+    EXPECT_FALSE(may_capture_own_playback({SinkBackend::Stdout, ""}, "speakers"));
+}
+
+TEST(MayCaptureOwnPlayback, AlwaysForTheDefaultSink) {
+    for (const SinkBackend backend :
+         {SinkBackend::Pulse, SinkBackend::PipeWire, SinkBackend::Alsa, SinkBackend::PortAudio}) {
+        EXPECT_TRUE(may_capture_own_playback({backend, "speakers"}, ""));
+    }
+}
+
+TEST(MayCaptureOwnPlayback, NotForANamedSinkTheOutputProvablyAvoids) {
+    EXPECT_FALSE(may_capture_own_playback({SinkBackend::Pulse, "headphones"}, "speakers"));
+    EXPECT_FALSE(may_capture_own_playback({SinkBackend::PipeWire, "headphones"}, "speakers"));
+}
+
+TEST(MayCaptureOwnPlayback, WhenTheOutputCannotBeShownToGoElsewhere) {
+    EXPECT_TRUE(may_capture_own_playback({SinkBackend::Pulse, "speakers"}, "speakers"));
+    EXPECT_TRUE(may_capture_own_playback({SinkBackend::PipeWire, ""}, "speakers"));
+    EXPECT_TRUE(may_capture_own_playback({SinkBackend::Pulse, "default"}, "speakers"));
+    EXPECT_TRUE(may_capture_own_playback({SinkBackend::Alsa, "hw:1,0"}, "speakers"));
+    EXPECT_TRUE(may_capture_own_playback({SinkBackend::CoreAudio, ""}, "speakers"));
+    EXPECT_TRUE(may_capture_own_playback({SinkBackend::PortAudio, "2"}, "speakers"));
+}
+
 TEST(SettleServerCaptureFormat, KeepsWhatAStreamCanCarry) {
     for (const uint8_t depth : CAPTURE_BIT_DEPTHS) {
         StreamFormat format{44100, 1, depth};

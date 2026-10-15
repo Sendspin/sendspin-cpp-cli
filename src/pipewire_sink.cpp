@@ -102,7 +102,7 @@ void registry_global_cb(void* data, uint32_t /*id*/, uint32_t /*permissions*/, c
     if (description == nullptr) {
         description = spa_dict_lookup(props, PW_KEY_NODE_NICK);
     }
-    walk->nodes.push_back({node_name, (description != nullptr) ? description : ""});
+    walk->nodes.push_back({node_name, (description != nullptr) ? description : "", media_class});
 }
 
 void core_done_cb(void* data, uint32_t id, int seq) {

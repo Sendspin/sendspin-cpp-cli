@@ -28,6 +28,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 
@@ -47,6 +48,12 @@ public:
 
     /// The device as --input reaches it, e.g. "hw:1,0".
     virtual std::string name() const = 0;
+
+    /// The sink whose output this source captures, empty for the default sink; nullopt for an
+    /// input. Settled by negotiate().
+    virtual std::optional<std::string> looped_sink() const {
+        return std::nullopt;
+    }
 
     /// Narrows `format` to the nearest one the device captures, opening it briefly.
     /// @return false with `error` set if the device cannot be opened or offers nothing usable.
@@ -119,6 +126,7 @@ enum class SourceBackend {
     Pulse,      ///< a PulseAudio source, or the server's default with no device
     PipeWire,   ///< a PipeWire source node, or the graph's default with no device
     CoreAudio,  ///< a CoreAudio device by index or name, or this host's default input if empty
+    Loopback,   ///< a sink's output on the first sound server that answers; the default if empty
 };
 
 /// An --input spec resolved into a backend and the device to hand it.
@@ -137,6 +145,9 @@ std::string input_backend_list();
 
 /// True if a bare `--input <pcm>` reaches the ALSA PCM of that name.
 bool input_pcm_is_reachable(const std::string& pcm);
+
+/// True unless `output` provably plays somewhere other than `looped_sink` (empty: the default).
+bool may_capture_own_playback(const DeviceSpec& output, const std::string& looped_sink);
 
 /// Settles `format` for a sound server, which converts: only a format no stream can carry changes.
 void settle_server_capture_format(StreamFormat& format);

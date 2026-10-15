@@ -127,6 +127,21 @@ struct PulseQuery {
     }
 };
 
+/// One sink as the server describes it.
+struct PulseSinkInfo {
+    std::string name;
+    std::string description;
+    std::string monitor_source;
+    pa_sample_spec spec{};
+};
+
+/// Asks the server for every sink it has. The mainloop lock must NOT be held.
+bool list_sinks(PulseConnection& conn, std::vector<PulseSinkInfo>& out,
+                int timeout_ms = PULSE_TIMEOUT_MS);
+
+/// Asks the server which sink it calls default. Empty when it will not say. Lock must NOT be held.
+std::string default_sink_name(PulseConnection& conn);
+
 /// Waits for one query, cancelling it on timeout so a late callback cannot touch a dead `query`.
 /// The mainloop lock must NOT be held.
 /// @return true if the query completed and the server answered it.

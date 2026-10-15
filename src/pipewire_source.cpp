@@ -23,6 +23,8 @@
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <initializer_list>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -61,36 +63,21 @@ spa_audio_format spa_format_for(uint8_t bit_depth) {
     }
 }
 
-/// Lists the nodes a capture stream can link to.
-bool list_source_nodes(std::vector<PipeWireNode>& out, std::string& error,
-                       int timeout_ms = PIPEWIRE_TIMEOUT_S * 1000) {
-    return pipewire_list_nodes({"Audio/Source", "Audio/Source/Virtual", "Audio/Duplex"}, out, error,
-                               timeout_ms);
-}
+constexpr const char* SINK_CLASS = "Audio/Sink";
 
-}  // namespace
-
-PipeWireAudioSource::PipeWireAudioSource(std::string device) : device_(std::move(device)) {}
-
-PipeWireAudioSource::~PipeWireAudioSource() {
-    this->close();
-}
-
-std::string PipeWireAudioSource::name() const {
-    return this->device_.empty() ? "pipewire" : "pipewire:" + this->device_;
-}
-
-void PipeWireAudioSource::list_devices(std::FILE* out) {
+/// Prints the nodes of the given classes, one name per line with its description under it.
+void print_nodes(std::FILE* out, std::initializer_list<const char*> media_classes,
+                 const char* kind) {
     const PipeWireGuard guard;
 
     std::vector<PipeWireNode> nodes;
     std::string error;
-    if (!list_source_nodes(nodes, error)) {
+    if (!pipewire_list_nodes(media_classes, nodes, error)) {
         std::fprintf(out, "  (%s)\n", error.c_str());
         return;
     }
     if (nodes.empty()) {
-        std::fprintf(out, "  (this graph has no audio source nodes)\n");
+        std::fprintf(out, "  (this graph has no audio %s nodes)\n", kind);
         return;
     }
     for (const PipeWireNode& node : nodes) {
@@ -101,19 +88,62 @@ void PipeWireAudioSource::list_devices(std::FILE* out) {
     }
 }
 
-bool PipeWireAudioSource::find_node_(std::string& error, int timeout_ms) const {
+}  // namespace
+
+PipeWireAudioSource::PipeWireAudioSource(std::string device, bool loopback)
+    : device_(std::move(device)), loopback_(loopback), capture_sink_(loopback && device_.empty()) {}
+
+PipeWireAudioSource::~PipeWireAudioSource() {
+    this->close();
+}
+
+std::string PipeWireAudioSource::name() const {
+    if (this->device_.empty()) {
+        return this->loopback_ ? "loopback" : "pipewire";
+    }
+    return "pipewire:" + this->device_;
+}
+
+std::optional<std::string> PipeWireAudioSource::looped_sink() const {
+    if (!this->capture_sink_) {
+        return std::nullopt;
+    }
+    return this->device_;
+}
+
+void PipeWireAudioSource::list_devices(std::FILE* out) {
+    print_nodes(out, {"Audio/Source", "Audio/Source/Virtual", "Audio/Duplex"}, "source");
+}
+
+void PipeWireAudioSource::list_sinks(std::FILE* out) {
+    print_nodes(out, {SINK_CLASS}, "sink");
+}
+
+bool PipeWireAudioSource::daemon_answers(std::string& error) {
+    const PipeWireGuard guard;
     std::vector<PipeWireNode> nodes;
-    if (!list_source_nodes(nodes, error, timeout_ms)) {
+    return pipewire_list_nodes({}, nodes, error);
+}
+
+bool PipeWireAudioSource::find_node_(std::string& error, int timeout_ms) {
+    std::vector<PipeWireNode> nodes;
+    if (!pipewire_list_nodes({"Audio/Source", "Audio/Source/Virtual", "Audio/Duplex", SINK_CLASS},
+                             nodes, error, timeout_ms)) {
         return false;
     }
-    const bool found = this->device_.empty() ||
-                       std::any_of(nodes.begin(), nodes.end(), [this](const PipeWireNode& node) {
-                           return node.name == this->device_;
-                       });
-    if (!found) {
-        error = "--input " + this->name() + ": this graph has no audio source node by that name";
+    // A source of the name wins over a sink of the same name.
+    const PipeWireNode* match = nullptr;
+    for (const PipeWireNode& node : nodes) {
+        if (node.name == this->device_ && (match == nullptr || match->media_class == SINK_CLASS)) {
+            match = &node;
+        }
     }
-    return found;
+    if (match == nullptr) {
+        error = "--input " + this->name() + ": this graph has no audio node by that name";
+        return false;
+    }
+    this->capture_sink_ = match->media_class == SINK_CLASS;
+    return true;
 }
 
 bool PipeWireAudioSource::negotiate(StreamFormat& format, std::string& error) {
@@ -132,8 +162,15 @@ bool PipeWireAudioSource::open(const StreamFormat& format) {
         cli_log(LogLevel::ERROR, "pipewire: %s", error.c_str());
         return false;
     }
-    cli_log(LogLevel::INFO, "pipewire: input '%s' open at %u Hz, %u ch, %u-bit",
-            this->name().c_str(), format.sample_rate, format.channels, format.bit_depth);
+    std::string captures;
+    if (this->capture_sink_) {
+        captures = this->device_.empty()
+                       ? " -- capturing the default sink's output, following it"
+                       : " -- capturing the output of sink '" + this->device_ + "'";
+    }
+    cli_log(LogLevel::INFO, "pipewire: input '%s' open at %u Hz, %u ch, %u-bit%s",
+            this->name().c_str(), format.sample_rate, format.channels, format.bit_depth,
+            captures.c_str());
     return true;
 }
 
@@ -180,6 +217,9 @@ bool PipeWireAudioSource::open_(const StreamFormat& format, int timeout_ms, std:
         pw_properties_set(props, PW_KEY_TARGET_OBJECT, this->device_.c_str());
         // Unplugging the node ends the stream, so it is reopened rather than moved elsewhere.
         pw_properties_set(props, PW_KEY_NODE_DONT_RECONNECT, "true");
+    }
+    if (this->capture_sink_) {
+        pw_properties_set(props, PW_KEY_STREAM_CAPTURE_SINK, "true");
     }
     const std::string latency = std::to_string(format.sample_rate * QUANTUM_MS / 1000U) + "/" +
                                 std::to_string(format.sample_rate);
