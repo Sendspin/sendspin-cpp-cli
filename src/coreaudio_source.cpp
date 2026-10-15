@@ -468,15 +468,6 @@ void CoreAudioSource::add_listeners_(AudioDeviceID device) {
     }
     this->listening_device_ = device;
 
-    // A tapped output's rate change reaches the tap's format, not the aggregate's own rate.
-    if (this->tap_.tap() != kAudioObjectUnknown) {
-        const AudioObjectPropertyAddress format = ca_address_of(TAP_FORMAT_SELECTOR);
-        if (AudioObjectAddPropertyListener(this->tap_.tap(), &format,
-                                           &CoreAudioSource::property_listener, this) == noErr) {
-            this->listening_tap_ = this->tap_.tap();
-        }
-    }
-
     // The aggregate outlives a tapped device that goes away, so that death is watched directly.
     if (this->tapped_output_ != kAudioObjectUnknown &&
         AudioObjectAddPropertyListener(this->tapped_output_, &alive,
@@ -509,12 +500,6 @@ void CoreAudioSource::remove_listeners_() {
         this->listening_rate_ = false;
     }
     this->listening_device_ = kAudioObjectUnknown;
-    if (this->listening_tap_ != kAudioObjectUnknown) {
-        const AudioObjectPropertyAddress format = ca_address_of(TAP_FORMAT_SELECTOR);
-        AudioObjectRemovePropertyListener(this->listening_tap_, &format,
-                                          &CoreAudioSource::property_listener, this);
-        this->listening_tap_ = kAudioObjectUnknown;
-    }
     if (this->listening_output_) {
         const AudioObjectPropertyAddress alive = ca_address_of(kAudioDevicePropertyDeviceIsAlive);
         AudioObjectRemovePropertyListener(this->tapped_output_, &alive,
@@ -538,7 +523,6 @@ OSStatus CoreAudioSource::property_listener(AudioObjectID /*object*/, UInt32 cou
         switch (addresses[i].mSelector) {
             case kAudioDevicePropertyDeviceIsAlive:
             case kAudioDevicePropertyNominalSampleRate:
-            case TAP_FORMAT_SELECTOR:
                 self->device_lost_.store(true);
                 self->data_ready_.notify_all();
                 break;
