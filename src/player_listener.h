@@ -71,6 +71,9 @@ public:
     /// Seeds the sink from the state store without marking it server-set. Call before connecting.
     void restore_volume(uint8_t volume, bool muted);
 
+    /// Pins the sink at full gain, unmuted, and ignores volume and mute from then on.
+    void fix_volume();
+
     /// The format the sink was configured for; absent between streams and for a refused one.
     const std::optional<StreamFormat>& stream_format() const {
         return this->stream_format_;

@@ -98,6 +98,10 @@ void PlayerListener::on_stream_end() {
 }
 
 void PlayerListener::on_volume_changed(uint8_t volume) {
+    // A command that slips through while fixed must not reach the sink or the state file.
+    if (this->volume_source_ == VolumeSource::Fixed) {
+        return;
+    }
     this->sink_.set_volume(volume);
     this->applied_volume_ = volume;
     this->volume_source_ = VolumeSource::Server;
@@ -105,6 +109,9 @@ void PlayerListener::on_volume_changed(uint8_t volume) {
 }
 
 void PlayerListener::on_mute_changed(bool muted) {
+    if (this->volume_source_ == VolumeSource::Fixed) {
+        return;
+    }
     this->sink_.set_muted(muted);
     this->applied_muted_ = muted;
     this->volume_source_ = VolumeSource::Server;
@@ -121,6 +128,14 @@ void PlayerListener::restore_volume(uint8_t volume, bool muted) {
     this->applied_volume_ = volume;
     this->applied_muted_ = muted;
     this->volume_source_ = VolumeSource::Restored;
+}
+
+void PlayerListener::fix_volume() {
+    this->sink_.set_volume(DEFAULT_SINK_VOLUME);
+    this->sink_.set_muted(false);
+    this->applied_volume_ = DEFAULT_SINK_VOLUME;
+    this->applied_muted_ = false;
+    this->volume_source_ = VolumeSource::Fixed;
 }
 
 void PlayerListener::persist_volume() const {

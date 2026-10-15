@@ -42,6 +42,10 @@
 # server can connect but not play.
 #allow-unpaired = true
 
+# Play at full volume, unmuted, and let the server set neither: for an output whose level is
+# set elsewhere, such as a line-out into an amplifier. A remembered volume returns once dropped.
+#fixed-volume = true
+
 # A static pairing code: exactly 8 digits, chosen at random for this player. Every attempt
 # with it waits for 'sendspin-cli pair confirm'. Unset, the player shows a fresh 6-digit code.
 #pairing-code = 48151623

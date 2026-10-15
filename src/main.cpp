@@ -829,6 +829,9 @@ int main(int argc, char* argv[]) {
     sendspin::PlayerRole& player = client.add_player(std::move(player_config));
     // Also what makes the stored delay apply: non-adjustable delays are ignored.
     player.set_output_delay_adjustable(true);
+    // Withheld together: a mute the server could still set would silence a fixed level.
+    player.set_volume_adjustable(!opts.fixed_volume);
+    player.set_mute_adjustable(!opts.fixed_volume);
     sendspin::MetadataRole& metadata = client.add_metadata();
     // Always added: advertised roles are a property of the build, not of --no-control.
     sendspin::ControllerRole& controller = client.add_controller();
@@ -859,13 +862,32 @@ int main(int argc, char* argv[]) {
     metadata.set_listener(&metadata_logger);
     client.set_network_provider(&network_provider);
 
-    // Restore the remembered gain before connecting, so the role reports what the sink applies.
+    // Seed the sink before connecting, so the role reports what the sink applies.
     const std::optional<uint8_t> remembered_volume = state_store.volume();
     const std::optional<bool> remembered_muted = state_store.muted();
-    const uint8_t volume = remembered_volume.value_or(DEFAULT_SINK_VOLUME);
-    const bool muted = remembered_muted.value_or(false);
-    // Only when something was remembered, since restore_volume() marks the pair as restored.
-    if (remembered_volume.has_value() || remembered_muted.has_value()) {
+    const bool remembered = remembered_volume.has_value() || remembered_muted.has_value();
+    uint8_t volume = remembered_volume.value_or(DEFAULT_SINK_VOLUME);
+    bool muted = remembered_muted.value_or(false);
+    if (opts.fixed_volume) {
+        if (remembered) {
+            const std::string what =
+                remembered_volume.has_value()
+                    ? "volume " + std::to_string(volume) + (muted ? " (muted)" : "")
+                    : std::string("mute state");
+            // Left in the state file untouched, for a later run without the flag.
+            log_line(LogLevel::INFO, LOG_TAG_PLAYER,
+                     "Volume is fixed at full output: the %s remembered in %s is ignored while "
+                     "--fixed-volume is set, and returns once the flag is dropped",
+                     what.c_str(), state_store.path().c_str());
+        } else {
+            log_line(LogLevel::INFO, LOG_TAG_PLAYER,
+                     "Volume is fixed at full output; the server cannot set it");
+        }
+        player_listener.fix_volume();
+        volume = DEFAULT_SINK_VOLUME;
+        muted = false;
+    } else if (remembered) {
+        // Only when something was remembered, since restore_volume() marks the pair as restored.
         player_listener.restore_volume(volume, muted);
         log_line(LogLevel::INFO, LOG_TAG_PLAYER, "Restored volume %u%s from %s",
                  static_cast<unsigned>(volume), muted ? " (muted)" : "",

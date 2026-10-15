@@ -109,7 +109,10 @@ above `output:` says so, and appears whenever a server is connected.
   `pairing code` or `pairing window` line follows it; see [Pairing a Player](Pairing-a-Player).
 - **`player volume` is the gain this box's output is applying**, and says
   `(default; no server has set it)` until a server sends a volume command — which is how you
-  tell "nobody has set this" from a server that chose full output.
+  tell "nobody has set this" from a server that chose full output. Under `--fixed-volume` it
+  reads `100 (fixed; the server cannot set it)`: the output plays at full gain, unmuted, the
+  server is offered neither volume nor mute, and a volume remembered from an earlier run is
+  kept but ignored until the flag is dropped. `vol` and `mute` still address the group.
 - **`state` and `stream` are different facts.** `state` is the *group's* transport state.
   `stream` is whether audio is arriving at *this* endpoint — a player dropped from the group
   loses it while the group plays on. A `stream: receiving` line with **no format after the

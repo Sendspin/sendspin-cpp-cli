@@ -275,6 +275,24 @@ TEST(ConfigPrecedence, AllowUnpairedIsSettableAndOffByDefault) {
     EXPECT_FALSE(defaulted.options().allow_unpaired);
 }
 
+TEST(ConfigPrecedence, FixedVolumeIsSettableAndOffByDefault) {
+    ScratchDir scratch;
+    ASSERT_TRUE(scratch.created());
+    const std::string on = scratch.write("on", "fixed-volume = true\n");
+    const std::string off = scratch.write("off", "fixed-volume = false\n");
+    const std::string empty = scratch.write("empty", "name = kitchen\n");
+
+    Parse enabled({}, on);
+    Parse disabled({}, off);
+    Parse defaulted({}, empty);
+    ASSERT_TRUE(enabled.ok()) << enabled.diagnostics();
+    ASSERT_TRUE(disabled.ok()) << disabled.diagnostics();
+    ASSERT_TRUE(defaulted.ok()) << defaulted.diagnostics();
+    EXPECT_TRUE(enabled.options().fixed_volume);
+    EXPECT_FALSE(disabled.options().fixed_volume);
+    EXPECT_FALSE(defaulted.options().fixed_volume);
+}
+
 TEST(ConfigPrecedence, PairingCodeIsSettableAndLosesToTheCommandLine) {
     ScratchDir scratch;
     ASSERT_TRUE(scratch.created());
@@ -424,6 +442,7 @@ TEST(ConfigRefusals, ABadValueGetsTheFlagsOwnMessagePrefixedWithTheLine) {
              {"name =", "-n needs a non-empty value"},
              {"no-mdns = perhaps", "invalid --no-mdns 'perhaps'"},
              {"allow-unpaired = perhaps", "invalid --allow-unpaired 'perhaps'"},
+             {"fixed-volume = maybe", "invalid --fixed-volume 'maybe'"},
              {"pairing-code = 1234567", "invalid --pairing-code -- expected exactly 8 digits"},
              {"pairing-code = 12345678x", "invalid --pairing-code -- expected exactly 8 digits"},
              {"pairing-code =", "invalid --pairing-code -- expected exactly 8 digits"},

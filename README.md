@@ -73,6 +73,7 @@ sendspin-cli -n den --input default
 | `--audio-format <codec:rate:depth:channels>[,...]` | Formats to offer first, in priority order, e.g. `flac:48000:24:2,pcm:48000:24:2`. Everything else the player normally offers still follows, and a server uses the first format it can encode, so it can still fall back to a later one. This sets a preference, not a restriction. |
 | `--input <device>` | Audio to stream to the server: a microphone or line-in, e.g. `default`, `hw:1,0`, `pulse`, `pipewire:<node>` or `portaudio`, or `coreaudio` on macOS; or `loopback` for what this host plays (on macOS without the player's own playback, on Linux with it). `-l` lists them. Off unless given. See [Stream a microphone or line-in](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Advanced-Usage#stream-a-microphone-or-line-in) and [Stream what this host plays](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Advanced-Usage#stream-what-this-host-plays). |
 | `--allow-unpaired` | Let a server play without pairing with this player first. Off by default. |
+| `--fixed-volume` | Play at full volume, unmuted, and let the server set neither — for a line-out into an amplifier whose level is set there. |
 | `--pairing-code <8 digits>` | A fixed code a server can pair with, confirmed with `sendspin-cli pair confirm`. Without it the player shows a fresh 6-digit code per attempt. |
 | `-s, --server <host[:port]>` | Connect out to a server rather than waiting to be discovered, or `mdns:[<name>]` to discover one over mDNS. Turns off the mDNS advertisement. |
 

@@ -55,6 +55,7 @@ enum class VolumeSource {
     SinkDefault,  ///< nothing has set it: DEFAULT_SINK_VOLUME, unmuted
     Restored,     ///< read back from the state store at startup
     Server,       ///< a server sent a volume or mute command this run
+    Fixed,        ///< --fixed-volume: full gain, unmuted, and no server may change it
 };
 
 /// The parameters configure() takes, as one value.
