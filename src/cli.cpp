@@ -70,6 +70,7 @@ enum LongOnly {
     OPT_ALLOW_UNPAIRED,
     OPT_INPUT,
     OPT_PAIRING_CODE,
+    OPT_FIXED_VOLUME,
 };
 
 /// An option a config file may set: its key (the long flag name) and how diagnostics name it.
@@ -109,6 +110,7 @@ const std::vector<SettableOption>& settable_options() {
         {Opt::AudioFormat, "audio-format", "--audio-format"},
         {Opt::AllowUnpaired, "allow-unpaired", "--allow-unpaired"},
         {Opt::PairingCode, "pairing-code", "--pairing-code"},
+        {Opt::FixedVolume, "fixed-volume", "--fixed-volume"},
     };
     return table;
 }
@@ -407,6 +409,12 @@ bool apply_option(const SettableOption& option, const std::string& value, Option
                 return false;
             }
             break;
+        case Opt::FixedVolume:
+            if (!parse_bool(value, out.fixed_volume)) {
+                error = "invalid --fixed-volume '" + value + "' -- expected true or false";
+                return false;
+            }
+            break;
         case Opt::PairingCode:
             // The value is a credential, so the message does not repeat it.
             if (value.size() != 8 || value.find_first_not_of("0123456789") != std::string::npos) {
@@ -571,6 +579,7 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
         {"audio-format", required_argument, nullptr, OPT_AUDIO_FORMAT},
         {"allow-unpaired", no_argument, nullptr, OPT_ALLOW_UNPAIRED},
         {"pairing-code", required_argument, nullptr, OPT_PAIRING_CODE},
+        {"fixed-volume", no_argument, nullptr, OPT_FIXED_VOLUME},
         {nullptr, 0, nullptr, 0},
     };
 
@@ -713,6 +722,9 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
             case OPT_PAIRING_CODE:
                 apply(Opt::PairingCode, optarg);
                 break;
+            case OPT_FIXED_VOLUME:
+                apply(Opt::FixedVolume, "true");
+                break;
             case OPT_MANUFACTURER:
                 apply(Opt::Manufacturer, optarg);
                 break;
@@ -852,7 +864,7 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
             Opt::NoMdns,       Opt::MdnsName,    Opt::NoControl,   Opt::StateDir,
             Opt::OutputDelay,  Opt::HookStart,   Opt::HookStop,    Opt::ClientId,
             Opt::Manufacturer, Opt::ProductName, Opt::AudioFormat, Opt::AllowUnpaired,
-            Opt::Input,        Opt::PairingCode,
+            Opt::Input,        Opt::PairingCode, Opt::FixedVolume,
         };
         for (Opt opt : DAEMON_ONLY) {
             if (out.was_given(opt)) {
@@ -1041,6 +1053,12 @@ void print_usage(std::FILE* out, const char* prog) {
     std::fprintf(out, "                remembered one wins over this flag every run after.\n");
     std::fprintf(out, "                Use 'delay <ms>' to change a running player.\n");
     std::fprintf(out, "                --static-delay is still accepted as the old name\n");
+    std::fprintf(out, "  --fixed-volume\n");
+    std::fprintf(out, "                Play at full volume, unmuted, and let the server set\n");
+    std::fprintf(out, "                neither: for an output whose level is set elsewhere,\n");
+    std::fprintf(out, "                such as a line-out into an amplifier. A remembered\n");
+    std::fprintf(out, "                volume is kept but ignored, and returns once the flag\n");
+    std::fprintf(out, "                is dropped. 'vol' and 'mute' still address the group\n");
     std::fprintf(out, "  --allow-unpaired\n");
     std::fprintf(out, "                Let a server that has not paired with this player play\n");
     std::fprintf(out, "                on it. Off by default: every connection is encrypted,\n");

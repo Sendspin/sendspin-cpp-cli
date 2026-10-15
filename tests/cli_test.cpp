@@ -436,6 +436,16 @@ TEST(ParseOptions, AllowUnpairedIsOffUnlessAsked) {
     EXPECT_TRUE(on.options().allow_unpaired);
 }
 
+TEST(ParseOptions, FixedVolumeIsOffUnlessAsked) {
+    Parse off({});
+    Parse on({"--fixed-volume"});
+
+    ASSERT_TRUE(off.ok()) << off.diagnostics();
+    ASSERT_TRUE(on.ok()) << on.diagnostics();
+    EXPECT_FALSE(off.options().fixed_volume);
+    EXPECT_TRUE(on.options().fixed_volume);
+}
+
 TEST(ParseOptions, OutputDelayDefaultsToNoDelay) {
     Parse parse({});
 

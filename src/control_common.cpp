@@ -175,6 +175,8 @@ const char* volume_source_note(VolumeSource source) {
             return " (remembered from an earlier run; no server has set it)";
         case VolumeSource::Server:
             return "";
+        case VolumeSource::Fixed:
+            return " (fixed; the server cannot set it)";
         case VolumeSource::SinkDefault:
             break;
     }

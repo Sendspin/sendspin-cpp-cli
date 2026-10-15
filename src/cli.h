@@ -83,6 +83,7 @@ enum class Opt : unsigned {
     AllowUnpaired,  ///< --allow-unpaired
     Input,          ///< --input
     PairingCode,    ///< --pairing-code
+    FixedVolume,    ///< --fixed-volume
 };
 
 /// Everything the flag surface configures.
@@ -116,6 +117,9 @@ struct Options {
 
     /// --pairing-code <8 digits>: the static pairing code; empty offers the dynamic code instead.
     std::string pairing_code;
+
+    /// --fixed-volume: play at full gain, unmuted, and withhold volume and mute from the server.
+    bool fixed_volume{false};
 
     /// --no-mdns: do not advertise `_sendspin._tcp`.
     bool no_mdns{false};

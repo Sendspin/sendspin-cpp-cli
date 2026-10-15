@@ -12,16 +12,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-/// PlayerListener's stream events, against a client that is never started.
+/// PlayerListener's stream events and volume handling, against a client that is never started.
 
 #include "player_listener.h"
 
 #include "null_sink.h"
+#include "state_store.h"
 
 #include <sendspin/client.h>
 
 #include <gtest/gtest.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
+#include <cstdio>
+#include <fstream>
+#include <iterator>
+#include <string>
 #include <vector>
 
 namespace sendspin_cli {
@@ -29,11 +36,11 @@ namespace {
 
 /// A listener on an unstarted client's player role, recording every stream event.
 struct Harness {
-    Harness()
+    explicit Harness(StateStore* store = nullptr)
         : client(sendspin::SendspinClientConfig{}),
           player(client.add_player(player_config())),
           sink(NullSinkOutput::Discard),
-          listener(player, sink) {
+          listener(player, sink, store) {
         this->listener.on_stream_event = [this](bool started) { this->events.push_back(started); };
     }
 
@@ -49,6 +56,79 @@ struct Harness {
     PlayerListener listener;
     std::vector<bool> events;
 };
+
+/// A state file under the build tree holding a remembered volume, removed afterwards.
+class RememberedVolume {
+public:
+    RememberedVolume() {
+        this->dir_ = "player-listener-test-" + std::to_string(getpid());
+        this->created_ = ::mkdir(this->dir_.c_str(), 0700) == 0;
+        StateStore store(this->path());
+        this->created_ = this->created_ && store.set_volume_and_muted(42, true);
+    }
+    ~RememberedVolume() {
+        std::remove(this->path().c_str());
+        ::rmdir(this->dir_.c_str());
+    }
+    RememberedVolume(const RememberedVolume&) = delete;
+    RememberedVolume& operator=(const RememberedVolume&) = delete;
+
+    bool created() const {
+        return this->created_;
+    }
+    std::string path() const {
+        return this->dir_ + "/state";
+    }
+    std::string contents() const {
+        std::ifstream in(this->path(), std::ios::binary);
+        return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    }
+
+private:
+    std::string dir_;
+    bool created_{false};
+};
+
+TEST(PlayerListener, AServerVolumeIsAppliedAndPersisted) {
+    RememberedVolume remembered;
+    ASSERT_TRUE(remembered.created());
+    StateStore store(remembered.path());
+    size_t malformed = 0;
+    ASSERT_EQ(store.load(malformed), StateLoadResult::Loaded);
+    Harness harness(&store);
+    harness.listener.restore_volume(42, true);
+
+    harness.listener.on_volume_changed(60);
+    harness.listener.on_mute_changed(false);
+
+    EXPECT_EQ(harness.listener.applied_volume(), 60U);
+    EXPECT_FALSE(harness.listener.applied_muted());
+    EXPECT_EQ(harness.listener.volume_source(), VolumeSource::Server);
+    EXPECT_EQ(store.volume(), 60U);
+    EXPECT_EQ(store.muted(), false);
+    EXPECT_NE(remembered.contents().find("volume = 60"), std::string::npos);
+}
+
+TEST(PlayerListener, AFixedVolumeIgnoresServerCommandsAndLeavesTheStateFileAlone) {
+    RememberedVolume remembered;
+    ASSERT_TRUE(remembered.created());
+    StateStore store(remembered.path());
+    size_t malformed = 0;
+    ASSERT_EQ(store.load(malformed), StateLoadResult::Loaded);
+    const std::string before = remembered.contents();
+    Harness harness(&store);
+
+    harness.listener.fix_volume();
+    harness.listener.on_volume_changed(60);
+    harness.listener.on_mute_changed(true);
+
+    EXPECT_EQ(harness.listener.applied_volume(), DEFAULT_SINK_VOLUME);
+    EXPECT_FALSE(harness.listener.applied_muted());
+    EXPECT_EQ(harness.listener.volume_source(), VolumeSource::Fixed);
+    EXPECT_EQ(store.volume(), 42U);
+    EXPECT_EQ(store.muted(), true);
+    EXPECT_EQ(remembered.contents(), before);
+}
 
 TEST(PlayerListener, AnEndWithNoStartFiresNoStopEvent) {
     Harness harness;

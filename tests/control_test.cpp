@@ -738,6 +738,15 @@ TEST(FormatStatus, ARestoredVolumeIsNeitherADefaultNorAServersChoice) {
     EXPECT_NE(line.find("no server has set it"), std::string::npos) << line;
 }
 
+TEST(FormatStatus, AFixedVolumeSaysTheServerCannotSetIt) {
+    StatusSnapshot snapshot = playing_snapshot();
+    snapshot.player_volume = DEFAULT_SINK_VOLUME;
+    snapshot.player_volume_source = VolumeSource::Fixed;
+
+    const std::string line = field(format_status(snapshot), "player volume");
+    EXPECT_EQ(line, "100 (fixed; the server cannot set it)");
+}
+
 TEST(FormatStatus, TheOutputDelayIsReportedSoItsCommandIsVisible) {
     StatusSnapshot snapshot = playing_snapshot();
     snapshot.output_delay_ms = 375;
