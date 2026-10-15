@@ -19,6 +19,7 @@
 #include "audio_sink.h"
 #include "pcm_ring.h"
 #include "pcm_volume.h"
+#include "portaudio_device.h"
 #include "sink_recovery.h"
 
 #include <portaudio.h>
@@ -32,31 +33,6 @@
 #include <string>
 
 namespace sendspin_cli {
-
-/// Holds one reference-counted Pa_Initialize()/Pa_Terminate() pair.
-/// Construct and destroy on the main loop thread only.
-class PortAudioGuard {
-public:
-    PortAudioGuard();
-    ~PortAudioGuard();
-
-    PortAudioGuard(const PortAudioGuard&) = delete;
-    PortAudioGuard& operator=(const PortAudioGuard&) = delete;
-
-    /// True if PortAudio came up. When false, no other Pa_* call will work.
-    bool ok() const;
-
-    /// Terminates and reinitializes PortAudio so a replugged device is enumerated.
-    /// Invalidates every PaDeviceIndex and needs any stream closed first. Main loop only.
-    /// @return true if PortAudio came back up.
-    bool reinitialize();
-
-    /// Why initialization failed. Only meaningful when ok() is false.
-    const char* error() const;
-
-private:
-    PaError err_;
-};
 
 /// An AudioSink that plays through PortAudio: `-o portaudio:` an index, a device name, or empty.
 /// The callback reads format fields unlocked: change them only while no stream is running.

@@ -312,7 +312,10 @@ if(SENDSPIN_CLI_COREAUDIO_ENABLED)
 endif()
 
 if(SENDSPIN_CLI_PORTAUDIO_ENABLED)
-    target_sources(sendspin-cli-core PRIVATE src/portaudio_sink.cpp)
+    target_sources(sendspin-cli-core PRIVATE
+        src/portaudio_device.cpp
+        src/portaudio_sink.cpp
+    )
     target_link_libraries(sendspin-cli-core PUBLIC PkgConfig::PORTAUDIO)
     target_compile_definitions(sendspin-cli-core PUBLIC SENDSPIN_CLI_HAVE_PORTAUDIO)
 endif()

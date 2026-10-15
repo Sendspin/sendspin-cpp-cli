@@ -19,15 +19,11 @@
 
 #include <algorithm>
 #include <array>
-#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
-#include <cstdlib>
-#include <cstring>
 #include <mutex>
 #include <string>
-#include <vector>
 
 namespace sendspin_cli {
 
@@ -49,128 +45,9 @@ int64_t now_us() {
         .count();
 }
 
-/// PortAudio format per PROBE_BIT_DEPTHS entry; 24-bit is packed paInt24.
-constexpr std::array<PaSampleFormat, PROBE_BIT_DEPTHS.size()> PROBE_FORMATS{paInt8, paInt16,
-                                                                            paInt24, paInt32};
+/// How -l names each PA_FORMATS entry.
 constexpr std::array<const char*, PROBE_BIT_DEPTHS.size()> PROBE_FORMAT_NAMES{"paInt8", "paInt16",
                                                                               "paInt24", "paInt32"};
-
-/// Maps the stream's bit depth onto the interleaved little-endian PCM format PortAudio wants.
-bool pa_format_for(uint8_t bits_per_sample, PaSampleFormat& format) {
-    for (size_t i = 0; i < PROBE_BIT_DEPTHS.size(); ++i) {
-        if (PROBE_BIT_DEPTHS[i] == bits_per_sample) {
-            format = PROBE_FORMATS[i];
-            return true;
-        }
-    }
-    return false;
-}
-
-/// True if `value` is a non-empty run of decimal digits.
-bool is_device_index(const std::string& value) {
-    if (value.empty()) {
-        return false;
-    }
-    return value.find_first_not_of("0123456789") == std::string::npos;
-}
-
-bool iequals(const std::string& value, const char* other) {
-    if (other == nullptr) {
-        return false;
-    }
-    const size_t len = std::strlen(other);
-    if (value.size() != len) {
-        return false;
-    }
-    for (size_t i = 0; i < len; ++i) {
-        // Through unsigned char: tolower() is undefined for negative chars.
-        const int a = std::tolower(static_cast<unsigned char>(value[i]));
-        const int b = std::tolower(static_cast<unsigned char>(other[i]));
-        if (a != b) {
-            return false;
-        }
-    }
-    return true;
-}
-
-/// True if this device can be played out of at all.
-bool is_output_device(const PaDeviceInfo* info) {
-    return info != nullptr && info->maxOutputChannels > 0;
-}
-
-/// Resolves a PortAudio device spec: empty is the default, digits an index, else a unique name.
-/// PortAudio must be initialized.
-bool resolve_pa_device(const std::string& device, PaDeviceIndex& out, std::string& error) {
-    const PaDeviceIndex count = Pa_GetDeviceCount();
-    if (count < 0) {
-        error = std::string("cannot enumerate PortAudio devices: ") + Pa_GetErrorText(count);
-        return false;
-    }
-    if (count == 0) {
-        error = "PortAudio found no audio devices on this host at all";
-        return false;
-    }
-
-    if (device.empty()) {
-        const PaDeviceIndex fallback = Pa_GetDefaultOutputDevice();
-        if (fallback == paNoDevice) {
-            error = "this host has no PortAudio output device at all -- run with -l to see what "
-                    "it does have";
-            return false;
-        }
-        out = fallback;
-        return true;
-    }
-
-    if (is_device_index(device)) {
-        // strtoull saturates rather than wrapping into a plausible index.
-        const unsigned long long value = std::strtoull(device.c_str(), nullptr, 10);
-        if (value >= static_cast<unsigned long long>(count)) {
-            // Report the index range, not the count: indices include input-only devices.
-            error = "-o portaudio:" + device + ": no device at that index -- indices run 0-" +
-                    std::to_string(count - 1) + " here, and -l lists the ones -o can reach";
-            return false;
-        }
-        const auto index = static_cast<PaDeviceIndex>(value);
-        if (!is_output_device(Pa_GetDeviceInfo(index))) {
-            error = "-o portaudio:" + device +
-                    ": that device has no output channels -- run with -l, which lists only the "
-                    "ones -o can reach";
-            return false;
-        }
-        out = index;
-        return true;
-    }
-
-    std::vector<PaDeviceIndex> matches;
-    for (PaDeviceIndex i = 0; i < count; ++i) {
-        const PaDeviceInfo* info = Pa_GetDeviceInfo(i);
-        if (is_output_device(info) && iequals(device, info->name)) {
-            matches.push_back(i);
-        }
-    }
-    if (matches.empty()) {
-        error = "-o portaudio:" + device +
-                ": no output device by that name -- run with -l to list them";
-        return false;
-    }
-    if (matches.size() > 1) {
-        std::string indices;
-        for (const PaDeviceIndex index : matches) {
-            if (!indices.empty()) {
-                indices += ", ";
-            }
-            indices += std::to_string(index);
-        }
-        error = "-o portaudio:" + device + ": " + std::to_string(matches.size()) +
-                " output devices share that name (indices " + indices +
-                ") -- name the one you mean by index instead";
-        return false;
-    }
-
-    out = matches.front();
-    return true;
-}
 
 /// Asks whether `device` takes this exact format; on ALSA hosts each call opens the PCM.
 PaError pa_accepts(PaDeviceIndex device, const PaDeviceInfo* info, uint32_t rate,
@@ -213,7 +90,7 @@ ProbeResult probe_capabilities(PaDeviceIndex device) {
     for (size_t r = 0; r < PROBE_RATES.size(); ++r) {
         for (size_t d = 0; d < PROBE_BIT_DEPTHS.size(); ++d) {
             const PaError err =
-                pa_accepts(device, info, PROBE_RATES[r], PROBE_FORMATS[d], probe_channels);
+                pa_accepts(device, info, PROBE_RATES[r], PA_FORMATS[d], probe_channels);
             if (err == paDeviceUnavailable) {
                 // Held elsewhere: stop and report "in use", not "supports nothing".
                 result.status = ProbeStatus::Busy;
@@ -243,10 +120,10 @@ ProbeResult probe_capabilities(PaDeviceIndex device) {
     if (result.caps.bit_depths.empty()) {
         return result;
     }
-    PaSampleFormat probe_format = PROBE_FORMATS[0];
+    PaSampleFormat probe_format = PA_FORMATS[0];
     for (size_t d = 0; d < PROBE_BIT_DEPTHS.size(); ++d) {
         if (PROBE_BIT_DEPTHS[d] == result.caps.bit_depths.front()) {
-            probe_format = PROBE_FORMATS[d];
+            probe_format = PA_FORMATS[d];
         }
     }
     const auto probe_rate = static_cast<uint32_t>(info->defaultSampleRate);
@@ -279,31 +156,6 @@ void print_device_capabilities(std::FILE* out, PaDeviceIndex device) {
 
 }  // namespace
 
-PortAudioGuard::PortAudioGuard() : err_(Pa_Initialize()) {}
-
-PortAudioGuard::~PortAudioGuard() {
-    if (this->err_ == paNoError) {
-        Pa_Terminate();
-    }
-}
-
-bool PortAudioGuard::ok() const {
-    return this->err_ == paNoError;
-}
-
-const char* PortAudioGuard::error() const {
-    return Pa_GetErrorText(this->err_);
-}
-
-bool PortAudioGuard::reinitialize() {
-    if (this->err_ == paNoError) {
-        Pa_Terminate();
-    }
-    // Overwritten so ok() and the destructor track the live state.
-    this->err_ = Pa_Initialize();
-    return this->err_ == paNoError;
-}
-
 PortAudioSink::PortAudioSink(std::string device, uint32_t buffer_ms)
     : device_(std::move(device)), buffer_ms_(buffer_ms) {
     if (!this->pa_.ok()) {
@@ -333,14 +185,14 @@ bool PortAudioSink::probe(const std::string& device, std::string& error) {
     }
 
     PaDeviceIndex index = paNoDevice;
-    return resolve_pa_device(device, index, error);
+    return resolve_pa_device(device, PaDirection::Output, index, error);
 }
 
 SinkCapabilities PortAudioSink::capabilities() const {
     // Describes the default device at startup; a later default switch shows up as a refusal.
     PaDeviceIndex device = paNoDevice;
     std::string error;
-    if (!resolve_pa_device(this->device_, device, error)) {
+    if (!resolve_pa_device(this->device_, PaDirection::Output, device, error)) {
         cli_log(LogLevel::DEBUG, "portaudio: %s -- advertising everything sendspin-cli can emit",
                 error.c_str());
         return SinkCapabilities::permissive();
@@ -379,7 +231,7 @@ void PortAudioSink::list_devices(std::FILE* out) {
     int listed = 0;
     for (PaDeviceIndex i = 0; i < count; ++i) {
         const PaDeviceInfo* info = Pa_GetDeviceInfo(i);
-        if (!is_output_device(info)) {
+        if (!pa_has_channels(info, PaDirection::Output)) {
             continue;  // input-only: -o cannot reach it, so listing it would mislead
         }
         // Header inside the loop, so a host with no output devices gets only the note below.
@@ -421,7 +273,7 @@ bool PortAudioSink::configure(uint32_t sample_rate, uint8_t channels, uint8_t bi
     // Resolved per stream, so a bare -o portaudio follows the host's default.
     PaDeviceIndex device = paNoDevice;
     std::string error;
-    if (!resolve_pa_device(this->device_, device, error)) {
+    if (!resolve_pa_device(this->device_, PaDirection::Output, device, error)) {
         cli_log(LogLevel::ERROR, "portaudio: %s", error.c_str());
         this->failed_.store(true);
         return false;
@@ -595,7 +447,7 @@ void PortAudioSink::poll(int64_t now_ms) {
 
     PaDeviceIndex device = paNoDevice;
     std::string error;
-    if (!resolve_pa_device(this->device_, device, error)) {
+    if (!resolve_pa_device(this->device_, PaDirection::Output, device, error)) {
         cli_log(LogLevel::WARN,
                 "portaudio: '%s' is still gone after a device rescan -- discarding until the "
                 "next stream (%s)",
@@ -777,7 +629,7 @@ bool PortAudioSink::reopen_in_place_() {
     // Resolve before closing, so a failure leaves write() its frame size.
     PaDeviceIndex device = paNoDevice;
     std::string error;
-    if (!resolve_pa_device(this->device_, device, error)) {
+    if (!resolve_pa_device(this->device_, PaDirection::Output, device, error)) {
         cli_log(LogLevel::WARN, "portaudio: cannot reopen '%s': %s", this->name().c_str(),
                 error.c_str());
         this->recovery_.reopen_done(false);
