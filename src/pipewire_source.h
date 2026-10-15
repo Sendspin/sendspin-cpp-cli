@@ -28,19 +28,23 @@
 #include <cstdint>
 #include <cstdio>
 #include <mutex>
+#include <optional>
 #include <string>
 
 namespace sendspin_cli {
 
 /// An AudioSource that captures from a PipeWire graph; `--input pipewire:` takes a node name.
+/// A sink node captures what that sink plays.
 /// process() writes the ring and reads the format fields unlocked: change them only while closed.
 class PipeWireAudioSource final : public AudioSource {
 public:
-    /// @param device Source node name, or empty for the graph's default.
-    explicit PipeWireAudioSource(std::string device);
+    /// @param device Source or sink node name, or empty for the graph's default.
+    /// @param loopback With no device, capture the default sink rather than the default source.
+    explicit PipeWireAudioSource(std::string device, bool loopback = false);
     ~PipeWireAudioSource() override;
 
     std::string name() const override;
+    std::optional<std::string> looped_sink() const override;
     bool negotiate(StreamFormat& format, std::string& error) override;
     bool open(const StreamFormat& format) override;
     int read(uint8_t* data, size_t length, uint32_t timeout_ms, int64_t& capture_time_us) override;
@@ -48,6 +52,12 @@ public:
 
     /// Prints this graph's audio source nodes.
     static void list_devices(std::FILE* out);
+
+    /// Prints this graph's audio sink nodes.
+    static void list_sinks(std::FILE* out);
+
+    /// True if a PipeWire daemon answers.
+    static bool daemon_answers(std::string& error);
 
 private:
     static void stream_state_cb(void* userdata, enum pw_stream_state old,
@@ -57,13 +67,15 @@ private:
     /// Connects the stream, waiting up to `timeout_ms` for the graph to take it.
     bool open_(const StreamFormat& format, int timeout_ms, std::string& error);
 
-    /// Checks that a daemon answers and has the named node.
-    bool find_node_(std::string& error, int timeout_ms) const;
+    /// Checks that a daemon answers and has the named node, and notes whether it is a sink.
+    bool find_node_(std::string& error, int timeout_ms);
 
     /// Declared first so it is destroyed last, after the stream and its loop.
     PipeWireGuard pw_;
 
     std::string device_;  ///< empty for the graph's default
+    bool loopback_;
+    bool capture_sink_{false};  ///< set by find_node_(); kept across close()
 
     pw_thread_loop* loop_{nullptr};
     pw_stream* stream_{nullptr};

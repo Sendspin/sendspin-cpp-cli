@@ -98,6 +98,7 @@ private:
 struct PipeWireNode {
     std::string name;
     std::string description;
+    std::string media_class;
 };
 
 /// Walks the daemon's registry once on a private loop for nodes of any of `media_classes`.

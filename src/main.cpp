@@ -725,6 +725,17 @@ int main(int argc, char* argv[]) {
                  source->name().c_str(), capture_format.sample_rate,
                  static_cast<unsigned>(capture_format.channels),
                  static_cast<unsigned>(capture_format.bit_depth));
+
+        DeviceSpec output;
+        std::string output_error;
+        const std::optional<std::string> looped = source->looped_sink();
+        if (looped && (!resolve_device_spec(opts.device, output, output_error) ||
+                       may_capture_own_playback(output, *looped))) {
+            log_line(LogLevel::WARN, LOG_TAG_AUDIO,
+                     "--input %s may capture what this player plays through -o %s, sending the "
+                     "server its own audio back -- loop back a sink that -o does not play to",
+                     opts.input.c_str(), opts.device.c_str());
+        }
     }
 
     // Loaded before the client, since its values must be in place before anything is published.

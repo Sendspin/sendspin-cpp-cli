@@ -952,6 +952,10 @@ void print_usage(std::FILE* out, const char* prog) {
     std::fprintf(out, "                Capture device to stream to the server: a microphone or\n");
     std::fprintf(out, "                line-in. Read the way -o is, with <backend> one of: %s\n",
                  input_backend_list().c_str());
+#if defined(SENDSPIN_CLI_HAVE_PULSE) || defined(SENDSPIN_CLI_HAVE_PIPEWIRE)
+    std::fprintf(out, "                --input loopback streams what this host plays, and\n");
+    std::fprintf(out, "                --input loopback:<sink> what one sink plays\n");
+#endif
 #ifdef SENDSPIN_CLI_HAVE_ALSA
     std::fprintf(out, "                Anything else is an ALSA PCM name: --input default,\n");
     std::fprintf(out, "                --input hw:1,0. Without --input nothing is captured\n");

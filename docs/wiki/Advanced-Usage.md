@@ -89,6 +89,8 @@ argument the way `-o` does:
   `coreaudio:<index|name>` for one device from `-l`'s list.
 - `portaudio` for PortAudio's default input as of startup, or `portaudio:<index|name>`
   for one device from `-l`'s list, in a build with the PortAudio backend.
+- `loopback` or `loopback:<sink>` for what this host plays; see
+  [Stream what this host plays](#stream-what-this-host-plays).
 - `tone` and `null`, which need no sound card: `tone` streams a 440 Hz test tone, which
   checks the path to the server without a microphone, and `null` streams silence.
 
@@ -116,6 +118,27 @@ never swapped for the default while it is away.
 can still reach that server through ALSA's own PCMs: `--input alsa:pulse`,
 `--input alsa:pipewire`. A PortAudio device plugged in or made default after startup is
 not seen until `sendspin-cli` restarts.
+
+### Stream what this host plays
+
+`--input loopback` streams whatever this host plays through its default sink, such as a
+browser or a desktop music app, to the server. It follows the default sink if it
+changes. `--input loopback:<sink>` captures one sink instead:
+
+```bash
+sendspin-cli -n den --input loopback
+sendspin-cli -n den --input loopback:alsa_output.pci-0000_00_1f.3.analog-stereo
+```
+
+`sendspin-cli -l` lists the sinks under **Loopback**. `loopback` uses PipeWire if it is
+running and PulseAudio otherwise. The backend forms do the same: `pipewire:<sink>` and
+`pulse:<sink>` capture a sink as well as a source, and a source of the same name wins.
+`pulse:<sink>.monitor` still works.
+
+On Linux the capture includes this player's own playback when it plays to the same sink,
+so the server gets its own audio back. The player logs a warning at startup unless `-o`
+names a different PulseAudio or PipeWire sink, or is `null` or `stdout`. Loop back a sink the player
+does not play to.
 
 ### Microphone permission on macOS
 

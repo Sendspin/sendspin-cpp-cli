@@ -25,18 +25,23 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <optional>
 #include <string>
 
 namespace sendspin_cli {
 
-/// An AudioSource that captures from a PulseAudio server; `--input pulse:` takes a source name.
+/// An AudioSource that captures from a PulseAudio server; `--input pulse:` takes a source name,
+/// or failing that a sink's, whose monitor it captures.
 class PulseAudioSource final : public AudioSource {
 public:
-    /// @param device Source name, or empty for the server's default.
-    explicit PulseAudioSource(std::string device);
+    /// @param device Source or sink name, or empty for the server's default.
+    /// @param loopback With no device, capture the default sink's monitor rather than the default
+    /// source.
+    explicit PulseAudioSource(std::string device, bool loopback = false);
     ~PulseAudioSource() override;
 
     std::string name() const override;
+    std::optional<std::string> looped_sink() const override;
     bool negotiate(StreamFormat& format, std::string& error) override;
     bool open(const StreamFormat& format) override;
     int read(uint8_t* data, size_t length, uint32_t timeout_ms, int64_t& capture_time_us) override;
@@ -45,6 +50,12 @@ public:
     /// Prints this server's sources, with the default marked.
     static void list_devices(std::FILE* out);
 
+    /// Prints this server's sinks, with the default marked.
+    static void list_sinks(std::FILE* out);
+
+    /// True if a PulseAudio server answers.
+    static bool server_answers(std::string& error);
+
 private:
     static void stream_state_cb(pa_stream* stream, void* userdata);
     static void stream_read_cb(pa_stream* stream, size_t nbytes, void* userdata);
@@ -52,8 +63,9 @@ private:
     /// Connects if need be and opens the record stream, each wait bounded by `timeout_ms`.
     bool open_(const StreamFormat& format, int timeout_ms, std::string& error);
 
-    /// Checks that the connected server has the named source.
-    bool find_source_(std::string& error, int timeout_ms);
+    /// Settles what to record from on the connected server: a source of the name, else the
+    /// monitor of a sink of the name.
+    bool resolve_source_(std::string& error, int timeout_ms);
 
     /// Copies out what the server has queued, without waiting.
     /// @return Bytes copied, 0 if nothing is queued, negative once the stream is lost.
@@ -63,6 +75,12 @@ private:
     PulseConnection conn_;
 
     std::string device_;  ///< empty for the server's default
+    bool loopback_;
+
+    /// Set by resolve_source_(); kept across close().
+    std::string record_from_;  ///< empty for the server's default source
+    std::optional<std::string> looped_sink_;
+    std::string looped_sink_name_;  ///< the default sink's own name when looped_sink_ is empty
 
     pa_stream* stream_{nullptr};
     uint32_t rate_{0};
