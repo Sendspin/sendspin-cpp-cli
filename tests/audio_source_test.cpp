@@ -146,13 +146,46 @@ TEST(ResolveInputSpec, DeviceLessNamesRefuseADevice) {
     EXPECT_NE(rejected("tone:x").find("takes no device"), std::string::npos);
 }
 
-TEST(ResolveInputSpec, OutputOnlyBackendsAreRefusedByName) {
-    for (const char* spec : {"portaudio", "portaudio:1"}) {
+#ifdef SENDSPIN_CLI_HAVE_PORTAUDIO
+TEST(ResolveInputSpec, BarePortaudioMeansItsDefaultInput) {
+    EXPECT_EQ(resolved("portaudio").backend, SourceBackend::PortAudio);
+    EXPECT_TRUE(resolved("portaudio").device.empty());
+    EXPECT_NE(input_backend_list().find("portaudio"), std::string::npos);
+}
+
+TEST(ResolveInputSpec, PortaudioTakesAnIndexOrAName) {
+    EXPECT_EQ(resolved("portaudio:2").backend, SourceBackend::PortAudio);
+    EXPECT_EQ(resolved("portaudio:2").device, "2");
+    EXPECT_EQ(resolved("portaudio:MacBook Pro Microphone").device, "MacBook Pro Microphone");
+    EXPECT_EQ(resolved("portaudio:hw:1,0").device, "hw:1,0");
+}
+
+TEST(ResolveInputSpec, PortaudioPrefixWithNothingAfterTheColonIsRejected) {
+    EXPECT_NE(rejected("portaudio:").find("--input portaudio on its own"), std::string::npos);
+}
+
+TEST(MakeAudioSource, AnUnknownPortaudioDeviceIsRefusedAtStartup) {
+    // A host with no devices at all, such as a CI runner, refuses before reading the spec.
+    const auto names_spec_or_no_devices = [](const std::string& error, const std::string& spec) {
+        return error.find("--input " + spec) != std::string::npos ||
+               error.find("no audio devices") != std::string::npos;
+    };
+    for (const char* spec : {"portaudio:99999", "portaudio:no such device anywhere"}) {
+        StreamFormat format = STEREO_16;
+        std::string error;
+        EXPECT_EQ(make_audio_source(spec, format, error), nullptr) << spec;
+        EXPECT_TRUE(names_spec_or_no_devices(error, spec)) << error;
+    }
+}
+#else
+TEST(ResolveInputSpec, PortaudioSaysItIsNotInThisBuild) {
+    for (const char* spec : {"portaudio", "portaudio:1", "portaudio:Built-in Microphone"}) {
         const std::string error = rejected(spec);
-        EXPECT_NE(error.find("not supported yet"), std::string::npos) << spec;
+        EXPECT_NE(error.find("PortAudio backend is not in this build"), std::string::npos) << spec;
         EXPECT_NE(error.find(input_backend_list()), std::string::npos) << spec;
     }
 }
+#endif
 
 #ifdef SENDSPIN_CLI_HAVE_COREAUDIO
 TEST(ResolveInputSpec, BareCoreaudioMeansThisHostsDefaultInput) {

@@ -77,7 +77,8 @@ all.
 
 `sendspin-cli -l` lists capture devices in their own section, under the outputs: ALSA
 PCMs with the rates, formats and channel counts each takes, then the PulseAudio sources
-and PipeWire source nodes, or on macOS the CoreAudio input devices. `--input` reads its
+and PipeWire source nodes, or on macOS the CoreAudio input devices, then PortAudio's input
+devices where that backend is built. `--input` reads its
 argument the way `-o` does:
 
 - `alsa:<device>`, or a bare ALSA name such as `default`, `hw:1,0` or `plughw:1,0`.
@@ -86,6 +87,8 @@ argument the way `-o` does:
   default. `pulse:default` and `pipewire:default` mean the same as the bare names.
 - On macOS, `coreaudio` for the system default input, which is followed if it moves, or
   `coreaudio:<index|name>` for one device from `-l`'s list.
+- `portaudio` for PortAudio's default input as of startup, or `portaudio:<index|name>`
+  for one device from `-l`'s list, in a build with the PortAudio backend.
 - `loopback` or `loopback:<sink>` for what this host plays; see
   [Stream what this host plays](#stream-what-this-host-plays).
 - `tone` and `null`, which need no sound card: `tone` streams a 440 Hz test tone, which
@@ -111,10 +114,10 @@ device unplugged mid-stream, or a sound server that restarts, is logged and reop
 it comes back; playback is not affected. A named PulseAudio source or PipeWire node is
 never swapped for the default while it is away.
 
-Capture through PortAudio is not available yet, so capturing from a sound card needs
-ALSA, PulseAudio or PipeWire on Linux, or CoreAudio on macOS; `tone` and `null` work in
-any build. A build without the PulseAudio or PipeWire backend can still reach that server
-through ALSA's own PCMs: `--input alsa:pulse`, `--input alsa:pipewire`.
+`tone` and `null` work in any build. A build without the PulseAudio or PipeWire backend
+can still reach that server through ALSA's own PCMs: `--input alsa:pulse`,
+`--input alsa:pipewire`. A PortAudio device plugged in or made default after startup is
+not seen until `sendspin-cli` restarts.
 
 ### Stream what this host plays
 
@@ -139,11 +142,11 @@ does not play to.
 
 ### Microphone permission on macOS
 
-macOS asks for microphone access the first time `--input` opens a CoreAudio device, and
-`sendspin-cli` waits up to a minute for the answer. Started from a terminal, the prompt
-names the terminal app, and the permission belongs to it; started by `launchd`, it names
-the `sendspin-cli` executable. If access is denied the player stops at startup and says
-so, rather than streaming silence. Grant it under **System Settings → Privacy & Security
+macOS asks for microphone access the first time `--input` opens a CoreAudio or PortAudio
+device, and `sendspin-cli` waits up to a minute for the answer. Started from a terminal,
+the prompt names the terminal app, and the permission belongs to it; started by `launchd`,
+it names the `sendspin-cli` executable. If access is denied the player stops at startup
+and says so, rather than streaming silence. Grant it under **System Settings → Privacy & Security
 → Microphone** and start again. `tone` and `null` need no permission.
 
 Two things to know:
