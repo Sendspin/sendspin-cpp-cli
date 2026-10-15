@@ -119,7 +119,7 @@ enum class SourceBackend {
     Pulse,      ///< a PulseAudio source, or the server's default with no device
     PipeWire,   ///< a PipeWire source node, or the graph's default with no device
     CoreAudio,  ///< a CoreAudio device by index or name, or this host's default input if empty
-    PortAudio,  ///< a PortAudio device by index or name, or its default input if empty
+    PortAudio,  ///< a PortAudio device by index or name, or its startup default input if empty
 };
 
 /// An --input spec resolved into a backend and the device to hand it.

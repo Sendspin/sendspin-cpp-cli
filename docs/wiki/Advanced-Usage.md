@@ -87,8 +87,8 @@ argument the way `-o` does:
   default. `pulse:default` and `pipewire:default` mean the same as the bare names.
 - On macOS, `coreaudio` for the system default input, which is followed if it moves, or
   `coreaudio:<index|name>` for one device from `-l`'s list.
-- `portaudio` for PortAudio's default input, or `portaudio:<index|name>` for one device
-  from `-l`'s list, in a build with the PortAudio backend.
+- `portaudio` for PortAudio's default input as of startup, or `portaudio:<index|name>`
+  for one device from `-l`'s list, in a build with the PortAudio backend.
 - `tone` and `null`, which need no sound card: `tone` streams a 440 Hz test tone, which
   checks the path to the server without a microphone, and `null` streams silence.
 
@@ -114,8 +114,8 @@ never swapped for the default while it is away.
 
 `tone` and `null` work in any build. A build without the PulseAudio or PipeWire backend
 can still reach that server through ALSA's own PCMs: `--input alsa:pulse`,
-`--input alsa:pipewire`. A PortAudio device unplugged and plugged back in is not seen
-again until `sendspin-cli` restarts.
+`--input alsa:pipewire`. A PortAudio device plugged in or made default after startup is
+not seen until `sendspin-cli` restarts.
 
 ### Microphone permission on macOS
 

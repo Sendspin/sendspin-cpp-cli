@@ -22,6 +22,7 @@
 
 #include <array>
 #include <cstdint>
+#include <mutex>
 #include <string>
 
 namespace sendspin_cli {
@@ -50,6 +51,10 @@ public:
 private:
     PaError err_;
 };
+
+/// Serialises PortAudio's init, open, start, abort, close and format queries across threads; the
+/// sink takes it inside its own mutex_. Never take it in a stream callback.
+std::mutex& pa_api_mutex();
 
 /// Which side of a device a lookup is about.
 enum class PaDirection { Output, Input };

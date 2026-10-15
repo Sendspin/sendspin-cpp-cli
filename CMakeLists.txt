@@ -66,7 +66,7 @@ option(SENDSPIN_CLI_WITH_ALSA "Build the ALSA output backend if libasound is ava
 option(SENDSPIN_CLI_WITH_COREAUDIO "Build the CoreAudio output and capture backend on macOS" ON)
 
 option(SENDSPIN_CLI_WITH_PORTAUDIO
-    "Build the PortAudio output backend if libportaudio is available" ON)
+    "Build the PortAudio output and capture backend if libportaudio is available" ON)
 
 # Native sound-server backends; -o alsa:pulse and -o alsa:pipewire work without them.
 option(SENDSPIN_CLI_WITH_PULSE

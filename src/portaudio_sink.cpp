@@ -59,6 +59,7 @@ PaError pa_accepts(PaDeviceIndex device, const PaDeviceInfo* info, uint32_t rate
     // The latency open_stream_() asks for.
     params.suggestedLatency = info->defaultHighOutputLatency;
     params.hostApiSpecificStreamInfo = nullptr;
+    const std::lock_guard<std::mutex> pa_lock(pa_api_mutex());
     return Pa_IsFormatSupported(nullptr, &params, static_cast<double>(rate));
 }
 
@@ -530,10 +531,12 @@ bool PortAudioSink::open_stream_(PaDeviceIndex device, uint32_t sample_rate, uin
     output_params.suggestedLatency = info->defaultHighOutputLatency;
     output_params.hostApiSpecificStreamInfo = nullptr;
 
+    std::unique_lock<std::mutex> pa_lock(pa_api_mutex());
     PaError err =
         Pa_OpenStream(&this->stream_, nullptr, &output_params, sample_rate,
                       paFramesPerBufferUnspecified, paNoFlag, &PortAudioSink::pa_callback, this);
     if (err != paNoError) {
+        pa_lock.unlock();
         cli_log(LogLevel::ERROR, "portaudio: '%s' would not open at %u Hz / %u ch / %u-bit: %s",
                 info->name, sample_rate, channels, bits_per_sample, Pa_GetErrorText(err));
         this->stream_ = nullptr;
@@ -554,6 +557,7 @@ bool PortAudioSink::open_stream_(PaDeviceIndex device, uint32_t sample_rate, uin
     this->ring_.reset(capacity);
 
     err = Pa_StartStream(this->stream_);
+    pa_lock.unlock();
     if (err != paNoError) {
         cli_log(LogLevel::ERROR, "portaudio: '%s' would not start: %s", info->name,
                 Pa_GetErrorText(err));
@@ -573,6 +577,7 @@ bool PortAudioSink::open_stream_(PaDeviceIndex device, uint32_t sample_rate, uin
 void PortAudioSink::close_stream_() {
     if (this->stream_ != nullptr) {
         // Abort, not stop: stopping waits for the buffer to play out. Both wait out the callback.
+        const std::lock_guard<std::mutex> pa_lock(pa_api_mutex());
         Pa_AbortStream(this->stream_);
         Pa_CloseStream(this->stream_);
         this->stream_ = nullptr;
@@ -593,6 +598,7 @@ void PortAudioSink::close_stream_() {
 }
 
 bool PortAudioSink::restart_stream_() {
+    const std::lock_guard<std::mutex> pa_lock(pa_api_mutex());
     PaError err = Pa_AbortStream(this->stream_);
     if (err != paNoError && err != paStreamIsStopped) {
         cli_log(LogLevel::DEBUG, "portaudio: cannot abort the stream: %s", Pa_GetErrorText(err));

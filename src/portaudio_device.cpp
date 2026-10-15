@@ -61,9 +61,18 @@ bool iequals(const std::string& value, const char* other) {
 
 }  // namespace
 
-PortAudioGuard::PortAudioGuard() : err_(Pa_Initialize()) {}
+std::mutex& pa_api_mutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
+PortAudioGuard::PortAudioGuard() {
+    const std::lock_guard<std::mutex> pa_lock(pa_api_mutex());
+    this->err_ = Pa_Initialize();
+}
 
 PortAudioGuard::~PortAudioGuard() {
+    const std::lock_guard<std::mutex> pa_lock(pa_api_mutex());
     if (this->err_ == paNoError) {
         Pa_Terminate();
     }
@@ -78,6 +87,7 @@ const char* PortAudioGuard::error() const {
 }
 
 bool PortAudioGuard::reinitialize() {
+    const std::lock_guard<std::mutex> pa_lock(pa_api_mutex());
     if (this->err_ == paNoError) {
         Pa_Terminate();
     }

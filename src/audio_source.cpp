@@ -377,7 +377,7 @@ void print_capture_devices(std::FILE* out) {
     std::fprintf(out, "  coreaudio this host's default input device, whatever it currently is\n");
 #endif
 #ifdef SENDSPIN_CLI_HAVE_PORTAUDIO
-    std::fprintf(out, "  portaudio PortAudio's default input device, whatever it currently is\n");
+    std::fprintf(out, "  portaudio PortAudio's default input device as of startup\n");
 #endif
     std::fprintf(out,
                  "\n--input reads its argument the way -o does: one of the names above, or\n"
@@ -434,8 +434,8 @@ void print_capture_devices(std::FILE* out) {
     std::fprintf(out,
                  "\nA capture stream runs at one format for the whole run: 48000 Hz where the\n"
                  "device takes it, else its default rate, up to 2 channels, 16-bit where it\n"
-                 "takes it. A device unplugged and plugged back in is not seen again until\n"
-                 "sendspin-cli restarts; while --input portaudio runs, that goes for\n"
+                 "takes it. A device plugged in or made default after startup is not seen\n"
+                 "until sendspin-cli restarts; while --input portaudio runs, that goes for\n"
                  "-o portaudio's device too.\n");
 #endif
 #if !defined(SENDSPIN_CLI_HAVE_ALSA) && !defined(SENDSPIN_CLI_HAVE_PULSE) &&         \

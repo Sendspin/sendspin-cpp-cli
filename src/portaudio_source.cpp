@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <iterator>
 #include <utility>
 #include <vector>
 
@@ -152,7 +153,8 @@ bool PortAudioSource::negotiate(StreamFormat& format, std::string& error) {
         rates.push_back(native_rate);
     }
     std::vector<uint8_t> depths{format.bit_depth};
-    depths.insert(depths.end(), CAPTURE_BIT_DEPTHS.begin(), CAPTURE_BIT_DEPTHS.end());
+    std::copy_if(CAPTURE_BIT_DEPTHS.begin(), CAPTURE_BIT_DEPTHS.end(), std::back_inserter(depths),
+                 [&format](uint8_t depth) { return depth != format.bit_depth; });
 
     for (const uint32_t rate : rates) {
         for (const uint8_t depth : depths) {
@@ -163,7 +165,11 @@ bool PortAudioSource::negotiate(StreamFormat& format, std::string& error) {
                 continue;
             }
             const PaStreamParameters params = input_params(device, info, channels, sample_format);
-            const PaError err = Pa_IsFormatSupported(&params, nullptr, static_cast<double>(rate));
+            PaError err = paNoError;
+            {
+                const std::lock_guard<std::mutex> pa_lock(pa_api_mutex());
+                err = Pa_IsFormatSupported(&params, nullptr, static_cast<double>(rate));
+            }
             if (err == paDeviceUnavailable) {
                 error = label + " is in use by something else";
                 return false;
@@ -188,7 +194,7 @@ bool PortAudioSource::open(const StreamFormat& format) {
         return false;
     }
 
-    // Resolved per open, so a bare --input portaudio follows the default.
+    // Resolved per open, against the device list PortAudio built at startup.
     PaDeviceIndex device = paNoDevice;
     std::string error;
     if (!resolve_pa_device(this->device_, PaDirection::Input, device, error)) {
@@ -220,10 +226,12 @@ bool PortAudioSource::open(const StreamFormat& format) {
     this->frames_dropped_.store(0);
 
     const PaStreamParameters params = input_params(device, info, format.channels, sample_format);
+    std::unique_lock<std::mutex> pa_lock(pa_api_mutex());
     PaError err =
         Pa_OpenStream(&this->stream_, &params, nullptr, format.sample_rate,
                       paFramesPerBufferUnspecified, paNoFlag, &PortAudioSource::pa_callback, this);
     if (err != paNoError) {
+        pa_lock.unlock();
         cli_log(LogLevel::ERROR,
                 "portaudio: input '%s' would not open at %u Hz / %u ch / %u-bit: %s", info->name,
                 format.sample_rate, format.channels, format.bit_depth, Pa_GetErrorText(err));
@@ -245,6 +253,7 @@ bool PortAudioSource::open(const StreamFormat& format) {
 
     this->opened_us_ = now_us();
     err = Pa_StartStream(this->stream_);
+    pa_lock.unlock();
     if (err != paNoError) {
         cli_log(LogLevel::ERROR, "portaudio: input '%s' would not start: %s", info->name,
                 Pa_GetErrorText(err));
@@ -308,6 +317,7 @@ int PortAudioSource::read(uint8_t* data, size_t length, uint32_t timeout_ms,
 
 void PortAudioSource::close() {
     if (this->stream_ != nullptr) {
+        const std::lock_guard<std::mutex> pa_lock(pa_api_mutex());
         // Both wait the callback out, so nothing below races it.
         Pa_AbortStream(this->stream_);
         Pa_CloseStream(this->stream_);
