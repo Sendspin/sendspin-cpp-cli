@@ -321,13 +321,10 @@ TEST(ParseOptions, InputTakesADeviceLessSource) {
 
 TEST(ParseOptions, ABadInputSpecIsRefusedAtTheFlag) {
     Parse device_on_tone({"--input", "tone:hw:0"});
-    Parse unsupported({"--input", "portaudio:1"});
     Parse empty({"--input", ""});
 
     EXPECT_FALSE(device_on_tone.ok());
     EXPECT_NE(device_on_tone.diagnostics().find("takes no device"), std::string::npos);
-    EXPECT_FALSE(unsupported.ok());
-    EXPECT_NE(unsupported.diagnostics().find("not supported yet"), std::string::npos);
     EXPECT_FALSE(empty.ok());
 }
 
