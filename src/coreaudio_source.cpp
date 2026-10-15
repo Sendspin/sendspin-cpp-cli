@@ -41,10 +41,10 @@ constexpr uint32_t MIN_RENDER_FRAMES = 4096;
 
 constexpr int64_t US_PER_S = 1000000;
 
-/// AUHAL's elements: 1 faces the device's input side, 0 its output side.
 /// How long a tap may deliver only digital silence before the permission hint is logged.
 constexpr uint64_t TAP_SILENCE_WARN_S = 10;
 
+/// AUHAL's elements: 1 faces the device's input side, 0 its output side.
 constexpr UInt32 INPUT_BUS = 1;
 constexpr UInt32 OUTPUT_BUS = 0;
 
@@ -209,8 +209,10 @@ bool CoreAudioSource::negotiate_(StreamFormat& format, std::string& error) {
     // The device's own rate: AUHAL converts depth and channels on capture, but does not resample.
     const uint32_t rate = device_rate(device);
     if (max_channels == 0 || rate == 0) {
-        error = label + " went away before it could be asked what it captures -- run with -l to "
-                        "list this host's input devices";
+        error = label +
+                " went away before it could be asked what it captures -- run with -l to "
+                "list this host's " +
+                (this->loopback_ ? "output" : "input") + " devices";
         return false;
     }
     const uint8_t wanted = (format.channels != 0) ? format.channels : uint8_t{2};
@@ -254,12 +256,14 @@ bool CoreAudioSource::open(const StreamFormat& format) {
         cli_log(LogLevel::ERROR, "coreaudio: %s", error.c_str());
         return false;
     }
-    const std::string label = ca_device_name(device);
+    // The aggregate a tap is read through is private, so a loopback is named as typed.
+    const std::string label = this->loopback_ ? this->name() : ca_device_name(device);
 
     AudioStreamBasicDescription asbd = {};
     if (!ca_asbd_for(format.sample_rate, format.channels, format.bit_depth, asbd)) {
         cli_log(LogLevel::ERROR, "coreaudio: refusing capture at %u Hz / %u ch / %u-bit",
                 format.sample_rate, format.channels, format.bit_depth);
+        this->close();
         return false;
     }
     // Exact: the role announced this rate, and nothing here resamples.
@@ -269,11 +273,13 @@ bool CoreAudioSource::open(const StreamFormat& format) {
                 "coreaudio: input '%s' runs at %u Hz, not the %u Hz this run started with -- set "
                 "it back in Audio MIDI Setup, or restart sendspin-cli",
                 label.c_str(), rate, format.sample_rate);
+        this->close();
         return false;
     }
     if (format.channels > ca_channels(device, CaDirection::Input)) {
         cli_log(LogLevel::ERROR, "coreaudio: input '%s' has %u channels, so it cannot capture %u",
                 label.c_str(), ca_channels(device, CaDirection::Input), format.channels);
+        this->close();
         return false;
     }
 
@@ -282,6 +288,7 @@ bool CoreAudioSource::open(const StreamFormat& format) {
     if (unit == nullptr) {
         cli_log(LogLevel::ERROR, "coreaudio: cannot open input '%s': %s", label.c_str(),
                 ca_status_text(err).c_str());
+        this->close();
         return false;
     }
     // Held from here on so every failure below goes out through close().
@@ -354,6 +361,18 @@ bool CoreAudioSource::open(const StreamFormat& format) {
         return false;
     }
 
+    if (this->loopback_) {
+        const std::string tapped =
+            (this->tapped_output_ == kAudioObjectUnknown)
+                ? std::string("everything this Mac plays")
+                : "output device '" + ca_device_name(this->tapped_output_) + "'";
+        cli_log(LogLevel::INFO,
+                "coreaudio: input '%s' open at %u Hz, %u ch, %u-bit -- tapping %s, without "
+                "sendspin-cli's own playback",
+                label.c_str(), format.sample_rate, format.channels, format.bit_depth,
+                tapped.c_str());
+        return true;
+    }
     cli_log(LogLevel::INFO, "coreaudio: input '%s' (%s) open at %u Hz, %u ch, %u-bit",
             label.c_str(), this->name().c_str(), format.sample_rate, format.channels,
             format.bit_depth);
@@ -449,6 +468,15 @@ void CoreAudioSource::add_listeners_(AudioDeviceID device) {
     }
     this->listening_device_ = device;
 
+    // A tapped output's rate change reaches the tap's format, not the aggregate's own rate.
+    if (this->tap_.tap() != kAudioObjectUnknown) {
+        const AudioObjectPropertyAddress format = ca_address_of(TAP_FORMAT_SELECTOR);
+        if (AudioObjectAddPropertyListener(this->tap_.tap(), &format,
+                                           &CoreAudioSource::property_listener, this) == noErr) {
+            this->listening_tap_ = this->tap_.tap();
+        }
+    }
+
     // The aggregate outlives a tapped device that goes away, so that death is watched directly.
     if (this->tapped_output_ != kAudioObjectUnknown &&
         AudioObjectAddPropertyListener(this->tapped_output_, &alive,
@@ -481,6 +509,12 @@ void CoreAudioSource::remove_listeners_() {
         this->listening_rate_ = false;
     }
     this->listening_device_ = kAudioObjectUnknown;
+    if (this->listening_tap_ != kAudioObjectUnknown) {
+        const AudioObjectPropertyAddress format = ca_address_of(TAP_FORMAT_SELECTOR);
+        AudioObjectRemovePropertyListener(this->listening_tap_, &format,
+                                          &CoreAudioSource::property_listener, this);
+        this->listening_tap_ = kAudioObjectUnknown;
+    }
     if (this->listening_output_) {
         const AudioObjectPropertyAddress alive = ca_address_of(kAudioDevicePropertyDeviceIsAlive);
         AudioObjectRemovePropertyListener(this->tapped_output_, &alive,
@@ -504,6 +538,7 @@ OSStatus CoreAudioSource::property_listener(AudioObjectID /*object*/, UInt32 cou
         switch (addresses[i].mSelector) {
             case kAudioDevicePropertyDeviceIsAlive:
             case kAudioDevicePropertyNominalSampleRate:
+            case TAP_FORMAT_SELECTOR:
                 self->device_lost_.store(true);
                 self->data_ready_.notify_all();
                 break;

@@ -22,6 +22,9 @@
 
 namespace sendspin_cli {
 
+/// kAudioTapPropertyFormat, which SDKs before 14.2 lack; it changes with the tapped output's rate.
+inline constexpr AudioObjectPropertySelector TAP_FORMAT_SELECTOR = 0x74666d74;  // 'tfmt'
+
 /// How to grant System Audio Recording, for logs that need to say so.
 extern const char* const SYSTEM_AUDIO_HOW_TO_GRANT;
 
@@ -48,6 +51,11 @@ public:
     /// The aggregate device to capture from, or kAudioObjectUnknown before create().
     AudioDeviceID device() const {
         return this->aggregate_;
+    }
+
+    /// The tap itself, whose TAP_FORMAT_SELECTOR can be listened to; kAudioObjectUnknown if none.
+    AudioObjectID tap() const {
+        return this->tap_;
     }
 
 private:

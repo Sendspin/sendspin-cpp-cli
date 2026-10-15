@@ -15,6 +15,7 @@
 #include "coreaudio_tap.h"
 
 #include "coreaudio_device.h"
+#include "log.h"
 
 #import <Foundation/Foundation.h>
 
@@ -25,9 +26,14 @@
 #define SENDSPIN_CLI_HAVE_PROCESS_TAP 1
 #import <CoreAudio/AudioHardwareTapping.h>
 #import <CoreAudio/CATapDescription.h>
+static_assert(sendspin_cli::TAP_FORMAT_SELECTOR == kAudioTapPropertyFormat);
 #endif
 
 namespace sendspin_cli {
+
+#ifdef SENDSPIN_CLI_HAVE_PROCESS_TAP
+static constexpr const char* LOG_TAG = LOG_TAG_AUDIO;
+#endif
 
 const char* const SYSTEM_AUDIO_HOW_TO_GRANT =
     "allow it in System Settings > Privacy & Security > Screen & System Audio Recording, under "
@@ -85,6 +91,10 @@ bool CoreAudioTap::create(AudioDeviceID output, std::string& error) {
                                            &size, &self_object) == noErr &&
                 self_object != kAudioObjectUnknown) {
                 [excluded addObject:@(self_object)];
+            } else {
+                cli_log(sendspin::LogLevel::WARN,
+                        "coreaudio: macOS cannot name sendspin-cli's own audio process, so the "
+                        "loopback tap includes this player's own playback");
             }
 
             CATapDescription* description =

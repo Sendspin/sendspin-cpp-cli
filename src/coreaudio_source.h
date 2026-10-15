@@ -122,6 +122,7 @@ private:
     bool listening_rate_{false};
     bool listening_default_{false};
     bool listening_output_{false};
+    AudioObjectID listening_tap_{kAudioObjectUnknown};
     AudioDeviceID listening_device_{kAudioObjectUnknown};
 };
 
