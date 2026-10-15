@@ -32,6 +32,7 @@ enum class NullSinkOutput {
 };
 
 /// An AudioSink that needs no device; consumes instantly, and honours mute but not volume.
+/// Reports playback against a virtual clock that runs ahead of real time by the server's lead.
 class NullAudioSink final : public AudioSink {
 public:
     explicit NullAudioSink(NullSinkOutput output);
@@ -48,10 +49,16 @@ public:
     size_t total_bytes() const;
 
 private:
+    /// Reports `bytes` as played, finishing on the virtual clock. write()'s thread only.
+    void report_played(size_t bytes);
+
     NullSinkOutput output_;
     std::atomic<size_t> total_bytes_{0};
     /// Frame size, so a short stdout write rounds down to a frame boundary.
     std::atomic<size_t> bytes_per_frame_{0};
+    std::atomic<uint32_t> sample_rate_{0};
+    /// When the last reported frame finishes, in steady-clock microseconds.
+    int64_t playhead_us_{0};
     /// Latches once stdout goes bad; the sink then discards.
     std::atomic<bool> stdout_failed_{false};
     std::atomic<uint8_t> volume_{DEFAULT_SINK_VOLUME};
