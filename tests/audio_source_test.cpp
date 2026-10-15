@@ -273,7 +273,7 @@ TEST(ResolveInputSpec, WithoutPipeWireItsNameIsNotInThisBuild) {
 }
 #endif
 
-#if defined(SENDSPIN_CLI_HAVE_PULSE) || defined(SENDSPIN_CLI_HAVE_PIPEWIRE)
+#ifdef SENDSPIN_CLI_HAVE_LOOPBACK
 TEST(ResolveInputSpec, LoopbackTakesASinkOrTheDefault) {
     for (const char* spec : {"loopback", "loopback:default"}) {
         EXPECT_EQ(resolved(spec).backend, SourceBackend::Loopback) << spec;
@@ -301,6 +301,7 @@ TEST(ResolveInputSpec, TheBackendFormsAreUnchangedByLoopback) {
 #endif
 }
 
+#ifndef SENDSPIN_CLI_HAVE_COREAUDIO
 TEST(MakeAudioSource, LoopbackWithNoSoundServerNamesEveryOneTried) {
     const ScopedEnv remote("PIPEWIRE_REMOTE", "/nonexistent/sendspin-cli-test");
     const ScopedEnv server("PULSE_SERVER", "unix:/nonexistent/sendspin-cli-test");
@@ -314,11 +315,12 @@ TEST(MakeAudioSource, LoopbackWithNoSoundServerNamesEveryOneTried) {
     EXPECT_NE(error.find("PulseAudio"), std::string::npos) << error;
 #endif
 }
+#endif
 #else
 TEST(ResolveInputSpec, LoopbackNeedsASoundServerBackend) {
     for (const char* spec : {"loopback", "loopback:sink"}) {
         const std::string error = rejected(spec);
-        EXPECT_NE(error.find("PipeWire or PulseAudio"), std::string::npos) << spec;
+        EXPECT_NE(error.find("PipeWire, PulseAudio or CoreAudio"), std::string::npos) << spec;
         EXPECT_NE(error.find(input_backend_list()), std::string::npos) << spec;
     }
     EXPECT_EQ(input_backend_list().find("loopback"), std::string::npos);
@@ -326,6 +328,14 @@ TEST(ResolveInputSpec, LoopbackNeedsASoundServerBackend) {
 #endif
 
 // When a loopback might hear this player's own output
+
+#ifdef SENDSPIN_CLI_HAVE_COREAUDIO
+TEST(CoreaudioInputHearsOutput, OnlyCoreaudioOnBothSidesIsChecked) {
+    EXPECT_FALSE(coreaudio_input_hears_output("tone", "coreaudio"));
+    EXPECT_FALSE(coreaudio_input_hears_output("coreaudio", "null"));
+    EXPECT_FALSE(coreaudio_input_hears_output("loopback", "coreaudio"));
+}
+#endif
 
 TEST(MayCaptureOwnPlayback, NotWhenNothingIsPlayedToASink) {
     EXPECT_FALSE(may_capture_own_playback({SinkBackend::Null, ""}, ""));

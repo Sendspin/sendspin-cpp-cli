@@ -17,6 +17,7 @@
 #pragma once
 
 #include "audio_source.h"
+#include "coreaudio_tap.h"
 #include "pcm_ring.h"
 
 #include <AudioToolbox/AudioToolbox.h>
@@ -34,11 +35,12 @@
 namespace sendspin_cli {
 
 /// An AudioSource that captures through CoreAudio: `--input coreaudio:` an index, a device name,
-/// or empty for the system default input.
+/// or empty for the system default input. In loopback mode it captures a process tap instead:
+/// `--input loopback:` names an output device the way -o does, or empty for every output.
 /// The input callback reads the format fields unlocked: change them only while no unit runs.
 class CoreAudioSource final : public AudioSource {
 public:
-    explicit CoreAudioSource(std::string device);
+    explicit CoreAudioSource(std::string device, bool loopback = false);
     ~CoreAudioSource() override;
 
     std::string name() const override;
@@ -50,6 +52,9 @@ public:
     /// Prints this host's CoreAudio input devices.
     static void list_devices(std::FILE* out);
 
+    /// Prints the output devices `--input loopback:` can tap, numbered as -o counts them.
+    static void list_loopback_devices(std::FILE* out);
+
 private:
     static OSStatus input_callback(void* user_data, AudioUnitRenderActionFlags* flags,
                                    const AudioTimeStamp* timestamp, UInt32 bus, UInt32 frames,
@@ -59,12 +64,28 @@ private:
     static OSStatus property_listener(AudioObjectID object, UInt32 count,
                                       const AudioObjectPropertyAddress* addresses, void* user_data);
 
+    bool negotiate_(StreamFormat& format, std::string& error);
+
+    /// Resolves the device to capture from; in loopback mode, creates the tap that is that device.
+    bool resolve_device_(AudioDeviceID& out, std::string& error);
+
+    /// Warns once per open when a tap has delivered nothing but digital silence for a while.
+    void check_tap_silence_(const uint8_t* data, size_t bytes);
+
     /// Removal does not wait an in-flight notification out; close() runs long before destruction.
     void add_listeners_(AudioDeviceID device);
     void remove_listeners_();
 
     /// The device as --input spelled it, resolved per open.
     std::string device_;
+    bool loopback_;
+
+    /// Loopback mode only: the tap captured from, and the output device it taps, if just one.
+    CoreAudioTap tap_;
+    AudioDeviceID tapped_output_{kAudioObjectUnknown};
+    /// Consecutive all-zero frames read from the tap. Capture thread only.
+    uint64_t silent_frames_{0};
+    bool silence_warned_{false};
 
     AudioUnit unit_{nullptr};
     AudioDeviceID device_id_{kAudioObjectUnknown};
@@ -100,6 +121,7 @@ private:
     bool listening_alive_{false};
     bool listening_rate_{false};
     bool listening_default_{false};
+    bool listening_output_{false};
     AudioDeviceID listening_device_{kAudioObjectUnknown};
 };
 

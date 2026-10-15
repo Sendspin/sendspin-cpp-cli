@@ -28,6 +28,7 @@
 #include "pulse_source.h"
 #endif
 #ifdef SENDSPIN_CLI_HAVE_COREAUDIO
+#include "coreaudio_device.h"
 #include "coreaudio_source.h"
 #endif
 #ifdef SENDSPIN_CLI_HAVE_PORTAUDIO
@@ -66,10 +67,14 @@ constexpr bool HAVE_PIPEWIRE = true;
 #else
 constexpr bool HAVE_PIPEWIRE = false;
 #endif
-constexpr bool HAVE_LOOPBACK = HAVE_PULSE || HAVE_PIPEWIRE;
+#ifdef SENDSPIN_CLI_HAVE_LOOPBACK
+constexpr bool HAVE_LOOPBACK = true;
+#else
+constexpr bool HAVE_LOOPBACK = false;
+#endif
 
-#if defined(SENDSPIN_CLI_HAVE_PULSE) || defined(SENDSPIN_CLI_HAVE_PIPEWIRE)
-/// The loopback source on the first sound server that answers: PipeWire, then PulseAudio.
+#ifdef SENDSPIN_CLI_HAVE_LOOPBACK
+/// The loopback source on the first backend that can capture: PipeWire, PulseAudio, CoreAudio.
 std::unique_ptr<AudioSource> make_loopback_source(const std::string& device, std::string& error) {
     std::string tried;
 #ifdef SENDSPIN_CLI_HAVE_PIPEWIRE
@@ -86,7 +91,14 @@ std::unique_ptr<AudioSource> make_loopback_source(const std::string& device, std
     }
     tried += (tried.empty() ? "" : "; ") + ("PulseAudio: " + pulse_error);
 #endif
-    error = "--input loopback: no sound server answered (" + tried + ")";
+#ifdef SENDSPIN_CLI_HAVE_COREAUDIO
+    std::string coreaudio_error;
+    if (CoreAudioTap::supported(coreaudio_error)) {
+        return std::make_unique<CoreAudioSource>(device, true);
+    }
+    tried += (tried.empty() ? "" : "; ") + ("CoreAudio: " + coreaudio_error);
+#endif
+    error = "--input loopback found nothing to capture through (" + tried + ")";
     return nullptr;
 }
 #endif
@@ -308,8 +320,8 @@ bool resolve_input_spec(const std::string& spec, InputSpec& out, std::string& er
 
     if (prefix == "loopback") {
         if (!HAVE_LOOPBACK) {
-            error = "--input loopback needs the PipeWire or PulseAudio backend, and this build has "
-                    "neither, so --input takes only: " +
+            error = "--input loopback needs the PipeWire, PulseAudio or CoreAudio backend, and "
+                    "this build has none of them, so --input takes only: " +
                     input_backend_list();
             return false;
         }
@@ -377,6 +389,48 @@ bool may_capture_own_playback(const DeviceSpec& output, const std::string& loope
     return true;
 }
 
+#ifdef SENDSPIN_CLI_HAVE_COREAUDIO
+bool coreaudio_input_hears_output(const std::string& input, const std::string& output) {
+    InputSpec captured_spec;
+    DeviceSpec played_spec;
+    std::string error;
+    if (!resolve_input_spec(input, captured_spec, error) ||
+        captured_spec.backend != SourceBackend::CoreAudio ||
+        !resolve_device_spec(output, played_spec, error) ||
+        played_spec.backend != SinkBackend::CoreAudio) {
+        return false;
+    }
+    AudioDeviceID captured = kAudioObjectUnknown;
+    AudioDeviceID played = kAudioObjectUnknown;
+    if (!resolve_ca_device(captured_spec.device, CaDirection::Input, captured, error) ||
+        !resolve_ca_device(played_spec.device, CaDirection::Output, played, error)) {
+        return false;
+    }
+    // A hardware device's input is a microphone or line-in, not what the device plays.
+    if (ca_u32_property(captured, kAudioDevicePropertyTransportType,
+                        kAudioObjectPropertyScopeGlobal) != kAudioDeviceTransportTypeVirtual) {
+        return false;
+    }
+    if (captured == played) {
+        return true;
+    }
+    // A Multi-Output Device plays into each of its sub-devices.
+    const AudioObjectPropertyAddress address =
+        ca_address_of(kAudioAggregateDevicePropertyActiveSubDeviceList);
+    UInt32 size = 0;
+    if (AudioObjectGetPropertyDataSize(played, &address, 0, nullptr, &size) != noErr) {
+        return false;
+    }
+    std::vector<AudioObjectID> subdevices(size / sizeof(AudioObjectID));
+    if (subdevices.empty() || AudioObjectGetPropertyData(played, &address, 0, nullptr, &size,
+                                                         subdevices.data()) != noErr) {
+        return false;
+    }
+    subdevices.resize(size / sizeof(AudioObjectID));
+    return std::find(subdevices.begin(), subdevices.end(), captured) != subdevices.end();
+}
+#endif
+
 std::unique_ptr<AudioSource> make_audio_source(const std::string& spec, StreamFormat& format,
                                                std::string& error) {
     InputSpec resolved;
@@ -413,7 +467,7 @@ std::unique_ptr<AudioSource> make_audio_source(const std::string& spec, StreamFo
 #endif
             break;
         case SourceBackend::Loopback:
-#if defined(SENDSPIN_CLI_HAVE_PULSE) || defined(SENDSPIN_CLI_HAVE_PIPEWIRE)
+#ifdef SENDSPIN_CLI_HAVE_LOOPBACK
             source = make_loopback_source(resolved.device, error);
             if (!source) {
                 return nullptr;
@@ -519,6 +573,16 @@ void print_capture_devices(std::FILE* out) {
                  "takes it. A device plugged in or made default after startup is not seen\n"
                  "until sendspin-cli restarts; while --input portaudio runs, that goes for\n"
                  "-o portaudio's device too.\n");
+#endif
+#ifdef SENDSPIN_CLI_HAVE_COREAUDIO
+    std::fprintf(out,
+                 "\nLoopback (--input loopback[:<index|name>]):\n"
+                 "--input loopback captures everything this Mac plays, and --input\n"
+                 "loopback:<index|name> one output device, through a process tap (macOS 14.2 or\n"
+                 "later). sendspin-cli's own playback is left out. macOS asks once for System\n"
+                 "Audio Recording; refused, the capture is silent.\n"
+                 "\nCoreAudio output devices on this host:\n");
+    CoreAudioSource::list_loopback_devices(out);
 #endif
 #if !defined(SENDSPIN_CLI_HAVE_ALSA) && !defined(SENDSPIN_CLI_HAVE_PULSE) &&         \
     !defined(SENDSPIN_CLI_HAVE_PIPEWIRE) && !defined(SENDSPIN_CLI_HAVE_COREAUDIO) && \

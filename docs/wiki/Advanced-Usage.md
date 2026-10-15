@@ -140,6 +140,28 @@ so the server gets its own audio back. The player logs a warning at startup unle
 names a different PulseAudio or PipeWire sink, or is `null` or `stdout`. Loop back a sink the player
 does not play to.
 
+On macOS 14.2 or later, `loopback` captures everything the Mac plays through a CoreAudio
+process tap, and `loopback:<index|name>` captures one output device, numbered and named as
+`-o coreaudio:` names it. Both leave out sendspin-cli's own playback, so a player on the
+same Mac is never sent back to the server.
+
+```bash
+sendspin-cli -n den --input loopback
+sendspin-cli -n den --input "loopback:MacBook Pro Speakers"
+```
+
+A virtual loopback device installed by another app is an ordinary input:
+`--input "coreaudio:<device>"`. If `-o` plays into that same device, or into a Multi-Output
+Device that includes it, the player logs a warning at startup, since the server would get its own audio back.
+
+macOS asks once for **System Audio Recording**. It names the app sendspin-cli is started
+from: the terminal, or `sendspin-cli` itself under `launchd`. If the answer is no, macOS
+gives the tap silence rather than an error, so the player keeps running, and logs a
+warning after ten seconds of nothing but silence. Allow it under **System Settings →
+Privacy & Security → Screen & System Audio Recording → System Audio Recording Only**.
+macOS does not ask again by itself after a refusal; `tccutil reset AudioCapture` makes it
+ask on the next start.
+
 ### Microphone permission on macOS
 
 macOS asks for microphone access the first time `--input` opens a CoreAudio or PortAudio

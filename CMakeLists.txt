@@ -7,7 +7,8 @@ project(sendspin-cpp-cli
     LANGUAGES CXX
 )
 
-# The CoreAudio capture source asks for microphone access through AVFoundation, which is Objective-C.
+# The CoreAudio capture source asks for the microphone through AVFoundation and taps output
+# through CATapDescription, both Objective-C.
 if(APPLE)
     enable_language(OBJCXX)
 endif()
@@ -301,9 +302,10 @@ if(SENDSPIN_CLI_COREAUDIO_ENABLED)
         src/coreaudio_permission.mm
         src/coreaudio_sink.cpp
         src/coreaudio_source.cpp
+        src/coreaudio_tap.mm
     )
     # -Wno-error: blocks and Apple's headers are outside what -Wpedantic was chosen for.
-    set_source_files_properties(src/coreaudio_permission.mm PROPERTIES
+    set_source_files_properties(src/coreaudio_permission.mm src/coreaudio_tap.mm PROPERTIES
         COMPILE_OPTIONS "-fobjc-arc;-Wno-error")
     target_link_libraries(sendspin-cli-core PUBLIC
         "-framework CoreAudio" "-framework AudioToolbox" "-framework CoreFoundation"
