@@ -98,10 +98,10 @@ PipeWireAudioSource::~PipeWireAudioSource() {
 }
 
 std::string PipeWireAudioSource::name() const {
-    if (this->device_.empty()) {
-        return this->loopback_ ? "loopback" : "pipewire";
+    if (this->loopback_) {
+        return this->device_.empty() ? "loopback" : "loopback:" + this->device_;
     }
-    return "pipewire:" + this->device_;
+    return this->device_.empty() ? "pipewire" : "pipewire:" + this->device_;
 }
 
 std::optional<std::string> PipeWireAudioSource::looped_sink() const {
@@ -127,8 +127,12 @@ bool PipeWireAudioSource::daemon_answers(std::string& error) {
 
 bool PipeWireAudioSource::find_node_(std::string& error, int timeout_ms) {
     std::vector<PipeWireNode> nodes;
-    if (!pipewire_list_nodes({"Audio/Source", "Audio/Source/Virtual", "Audio/Duplex", SINK_CLASS},
-                             nodes, error, timeout_ms)) {
+    const bool listed =
+        this->loopback_ ? pipewire_list_nodes({SINK_CLASS}, nodes, error, timeout_ms)
+                        : pipewire_list_nodes(
+                              {"Audio/Source", "Audio/Source/Virtual", "Audio/Duplex", SINK_CLASS},
+                              nodes, error, timeout_ms);
+    if (!listed) {
         return false;
     }
     // A source of the name wins over a sink of the same name.
@@ -139,7 +143,8 @@ bool PipeWireAudioSource::find_node_(std::string& error, int timeout_ms) {
         }
     }
     if (match == nullptr) {
-        error = "--input " + this->name() + ": this graph has no audio node by that name";
+        error = "--input " + this->name() + ": this graph has no audio " +
+                (this->loopback_ ? "sink " : "") + "node by that name";
         return false;
     }
     this->capture_sink_ = match->media_class == SINK_CLASS;

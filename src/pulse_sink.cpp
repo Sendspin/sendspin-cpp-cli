@@ -115,7 +115,7 @@ bool list_sinks(PulseConnection& conn, std::vector<PulseSinkInfo>& out, int time
     return true;
 }
 
-std::string default_sink_name(PulseConnection& conn) {
+std::string default_sink_name(PulseConnection& conn, int timeout_ms) {
     ServerQuery query;
     query.conn = &conn;
     pa_operation* op = nullptr;
@@ -123,7 +123,7 @@ std::string default_sink_name(PulseConnection& conn) {
         const MainloopLock lock(conn.mainloop());
         op = pa_context_get_server_info(conn.context(), server_info_cb, &query);
     }
-    if (!await_query(conn, query, op)) {
+    if (!await_query(conn, query, op, timeout_ms)) {
         return "";
     }
     return query.default_sink;

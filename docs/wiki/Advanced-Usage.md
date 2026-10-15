@@ -134,7 +134,7 @@ running and PulseAudio otherwise. The backend forms do the same: `pipewire:<sink
 
 On Linux the capture includes this player's own playback when it plays to the same sink,
 so the server gets its own audio back. The player logs a warning at startup unless `-o`
-names a different PulseAudio or PipeWire sink, or is `null`. Loop back a sink the player
+names a different PulseAudio or PipeWire sink, or is `null` or `stdout`. Loop back a sink the player
 does not play to.
 
 ### Microphone permission on macOS

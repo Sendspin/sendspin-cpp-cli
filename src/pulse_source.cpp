@@ -140,10 +140,10 @@ PulseAudioSource::~PulseAudioSource() {
 }
 
 std::string PulseAudioSource::name() const {
-    if (this->device_.empty()) {
-        return this->loopback_ ? "loopback" : "pulse";
+    if (this->loopback_) {
+        return this->device_.empty() ? "loopback" : "loopback:" + this->device_;
     }
-    return "pulse:" + this->device_;
+    return this->device_.empty() ? "pulse" : "pulse:" + this->device_;
 }
 
 std::optional<std::string> PulseAudioSource::looped_sink() const {
@@ -218,7 +218,7 @@ bool PulseAudioSource::resolve_source_(std::string& error, int timeout_ms) {
         if (this->loopback_) {
             this->record_from_ = DEFAULT_MONITOR;
             this->looped_sink_ = "";
-            this->looped_sink_name_ = default_sink_name(this->conn_);
+            this->looped_sink_name_ = default_sink_name(this->conn_, timeout_ms);
         }
         return true;
     }
@@ -228,9 +228,12 @@ bool PulseAudioSource::resolve_source_(std::string& error, int timeout_ms) {
         error = "cannot list the sources on " + this->conn_.server_name();
         return false;
     }
+    // loopback: takes a sink or a sink's monitor, never an input.
     const auto source =
-        std::find_if(sources.begin(), sources.end(),
-                     [this](const PulseSourceInfo& info) { return info.name == this->device_; });
+        std::find_if(sources.begin(), sources.end(), [this](const PulseSourceInfo& info) {
+            return info.name == this->device_ &&
+                   (!this->loopback_ || !info.monitor_of_sink.empty());
+        });
     if (source != sources.end()) {
         this->record_from_ = source->name;
         if (!source->monitor_of_sink.empty()) {
@@ -249,7 +252,7 @@ bool PulseAudioSource::resolve_source_(std::string& error, int timeout_ms) {
     });
     if (sink == sinks.end() || sink->monitor_source.empty()) {
         error = "--input " + this->name() + ": " + this->conn_.server_name() +
-                " has no source or sink by that name";
+                (this->loopback_ ? " has no sink" : " has no source or sink") + " by that name";
         return false;
     }
     this->record_from_ = sink->monitor_source;
