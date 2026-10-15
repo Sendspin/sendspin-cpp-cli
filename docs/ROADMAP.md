@@ -1943,6 +1943,11 @@ the open off the loop would mean a recovery thread and a handle published under 
 is a background thread this sink is deliberately built without. The measurement below is what
 would justify revisiting that.
 
+**`--input portaudio` defeats tier 2.** `PortAudioSource` holds its own `PortAudioGuard`, and
+`Pa_Initialize()`/`Pa_Terminate()` are reference-counted process-wide, so while it runs the sink's
+cycle only moves the count and never rebuilds the device list. `-l` says so; neither side
+re-enumerates for a replugged device until restart.
+
 **Reasoned, not measured.** Unlike item 20, this was derived from the code and from the reporter's
 logs; nobody has yet pulled a DAC out of a running player and watched it come back. See the
 hardware pass below.

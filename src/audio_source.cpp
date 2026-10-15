@@ -31,6 +31,9 @@
 #include "coreaudio_device.h"
 #include "coreaudio_source.h"
 #endif
+#ifdef SENDSPIN_CLI_HAVE_PORTAUDIO
+#include "portaudio_source.h"
+#endif
 
 #include <algorithm>
 #include <chrono>
@@ -53,9 +56,6 @@ constexpr uint32_t READ_TIMEOUT_MS = 100;
 
 /// Length of the window the capture rate is checked over.
 constexpr int64_t RATE_WINDOW_MS = 1000;
-
-/// Output backends --input knows by name but cannot capture through.
-constexpr const char* UNSUPPORTED_BACKENDS[] = {"portaudio"};
 
 #ifdef SENDSPIN_CLI_HAVE_PULSE
 constexpr bool HAVE_PULSE = true;
@@ -225,6 +225,9 @@ std::string input_backend_list() {
 #ifdef SENDSPIN_CLI_HAVE_COREAUDIO
     list += ", coreaudio";
 #endif
+#ifdef SENDSPIN_CLI_HAVE_PORTAUDIO
+    list += ", portaudio";
+#endif
     if (HAVE_LOOPBACK) {
         list += ", loopback";
     }
@@ -332,12 +335,21 @@ bool resolve_input_spec(const std::string& spec, InputSpec& out, std::string& er
         return true;
     }
 
-    for (const char* name : UNSUPPORTED_BACKENDS) {
-        if (prefix == name) {
-            error = "capturing through the " + prefix +
-                    " backend is not supported yet -- --input takes: " + input_backend_list();
+    if (prefix == "portaudio") {
+#ifdef SENDSPIN_CLI_HAVE_PORTAUDIO
+        if (has_device && rest.empty()) {
+            error = "--input '" + spec +
+                    "' names no device -- write --input portaudio:<index|name>, or --input "
+                    "portaudio on its own for its default input";
             return false;
         }
+        out = {SourceBackend::PortAudio, rest};
+        return true;
+#else
+        error = "the PortAudio backend is not in this build, so --input takes only: " +
+                input_backend_list();
+        return false;
+#endif
     }
 
 #ifdef SENDSPIN_CLI_HAVE_ALSA
@@ -444,6 +456,11 @@ std::unique_ptr<AudioSource> make_audio_source(const std::string& spec, StreamFo
             }
 #endif
             break;
+        case SourceBackend::PortAudio:
+#ifdef SENDSPIN_CLI_HAVE_PORTAUDIO
+            source = std::make_unique<PortAudioSource>(resolved.device);
+#endif
+            break;
     }
     if (!source) {
         error = "internal error: input device '" + spec +
@@ -463,6 +480,9 @@ void print_capture_devices(std::FILE* out) {
     std::fprintf(out, "  tone      a 440 Hz test tone, for checking the path to a server\n");
 #ifdef SENDSPIN_CLI_HAVE_COREAUDIO
     std::fprintf(out, "  coreaudio this host's default input device, whatever it currently is\n");
+#endif
+#ifdef SENDSPIN_CLI_HAVE_PORTAUDIO
+    std::fprintf(out, "  portaudio PortAudio's default input device as of startup\n");
 #endif
     std::fprintf(out,
                  "\n--input reads its argument the way -o does: one of the names above, or\n"
@@ -526,6 +546,16 @@ void print_capture_devices(std::FILE* out) {
                  "16-bit. Audio MIDI Setup changes the rate. macOS asks for microphone access\n"
                  "the first time --input opens a device.\n");
 #endif
+#ifdef SENDSPIN_CLI_HAVE_PORTAUDIO
+    std::fprintf(out, "\nPortAudio input devices on this host (--input portaudio:<index|name>):\n");
+    PortAudioSource::list_devices(out);
+    std::fprintf(out,
+                 "\nA capture stream runs at one format for the whole run: 48000 Hz where the\n"
+                 "device takes it, else its default rate, up to 2 channels, 16-bit where it\n"
+                 "takes it. A device plugged in or made default after startup is not seen\n"
+                 "until sendspin-cli restarts; while --input portaudio runs, that goes for\n"
+                 "-o portaudio's device too.\n");
+#endif
 #ifdef SENDSPIN_CLI_HAVE_COREAUDIO
     std::fprintf(out,
                  "\nLoopback (--input loopback[:<index|name>]):\n"
@@ -536,10 +566,11 @@ void print_capture_devices(std::FILE* out) {
                  "\nCoreAudio output devices on this host:\n");
     CoreAudioSource::list_loopback_devices(out);
 #endif
-#if !defined(SENDSPIN_CLI_HAVE_ALSA) && !defined(SENDSPIN_CLI_HAVE_PULSE) && \
-    !defined(SENDSPIN_CLI_HAVE_PIPEWIRE) && !defined(SENDSPIN_CLI_HAVE_COREAUDIO)
-    std::fprintf(out, "\nThis build has no ALSA, PulseAudio, PipeWire or CoreAudio backend, so\n"
-                      "there is no sound card to capture from here.\n");
+#if !defined(SENDSPIN_CLI_HAVE_ALSA) && !defined(SENDSPIN_CLI_HAVE_PULSE) &&         \
+    !defined(SENDSPIN_CLI_HAVE_PIPEWIRE) && !defined(SENDSPIN_CLI_HAVE_COREAUDIO) && \
+    !defined(SENDSPIN_CLI_HAVE_PORTAUDIO)
+    std::fprintf(out, "\nThis build has no ALSA, PulseAudio, PipeWire, CoreAudio or PortAudio\n"
+                      "backend, so there is no sound card to capture from here.\n");
 #endif
 }
 

@@ -132,6 +132,7 @@ enum class SourceBackend {
     Pulse,      ///< a PulseAudio source, or the server's default with no device
     PipeWire,   ///< a PipeWire source node, or the graph's default with no device
     CoreAudio,  ///< a CoreAudio device by index or name, or this host's default input if empty
+    PortAudio,  ///< a PortAudio device by index or name, or its startup default input if empty
     Loopback,   ///< a sink's output on the first sound server that answers; the default if empty
 };
 
