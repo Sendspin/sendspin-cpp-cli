@@ -45,7 +45,7 @@ RestrictNamespaces=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
 
-# AF_NETLINK for getifaddrs(), which the default MAC-derived client id needs.
+# AF_NETLINK for getifaddrs(), where the library finds the MAC it reports in client/hello.
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 
 # @system-service covers libasound's syscalls.
