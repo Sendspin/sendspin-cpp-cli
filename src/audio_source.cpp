@@ -66,10 +66,14 @@ constexpr bool HAVE_PIPEWIRE = true;
 #else
 constexpr bool HAVE_PIPEWIRE = false;
 #endif
-constexpr bool HAVE_LOOPBACK = HAVE_PULSE || HAVE_PIPEWIRE;
+#ifdef SENDSPIN_CLI_HAVE_LOOPBACK
+constexpr bool HAVE_LOOPBACK = true;
+#else
+constexpr bool HAVE_LOOPBACK = false;
+#endif
 
-#if defined(SENDSPIN_CLI_HAVE_PULSE) || defined(SENDSPIN_CLI_HAVE_PIPEWIRE)
-/// The loopback source on the first sound server that answers: PipeWire, then PulseAudio.
+#ifdef SENDSPIN_CLI_HAVE_LOOPBACK
+/// The loopback source on the first backend that can capture: PipeWire, PulseAudio, CoreAudio.
 std::unique_ptr<AudioSource> make_loopback_source(const std::string& device, std::string& error) {
     std::string tried;
 #ifdef SENDSPIN_CLI_HAVE_PIPEWIRE
@@ -86,7 +90,14 @@ std::unique_ptr<AudioSource> make_loopback_source(const std::string& device, std
     }
     tried += (tried.empty() ? "" : "; ") + ("PulseAudio: " + pulse_error);
 #endif
-    error = "--input loopback: no sound server answered (" + tried + ")";
+#ifdef SENDSPIN_CLI_HAVE_COREAUDIO
+    std::string coreaudio_error;
+    if (CoreAudioTap::supported(coreaudio_error)) {
+        return std::make_unique<CoreAudioSource>(device, true);
+    }
+    tried += (tried.empty() ? "" : "; ") + ("CoreAudio: " + coreaudio_error);
+#endif
+    error = "--input loopback found nothing to capture through (" + tried + ")";
     return nullptr;
 }
 #endif
@@ -305,8 +316,8 @@ bool resolve_input_spec(const std::string& spec, InputSpec& out, std::string& er
 
     if (prefix == "loopback") {
         if (!HAVE_LOOPBACK) {
-            error = "--input loopback needs the PipeWire or PulseAudio backend, and this build has "
-                    "neither, so --input takes only: " +
+            error = "--input loopback needs the PipeWire, PulseAudio or CoreAudio backend, and "
+                    "this build has none of them, so --input takes only: " +
                     input_backend_list();
             return false;
         }
@@ -401,7 +412,7 @@ std::unique_ptr<AudioSource> make_audio_source(const std::string& spec, StreamFo
 #endif
             break;
         case SourceBackend::Loopback:
-#if defined(SENDSPIN_CLI_HAVE_PULSE) || defined(SENDSPIN_CLI_HAVE_PIPEWIRE)
+#ifdef SENDSPIN_CLI_HAVE_LOOPBACK
             source = make_loopback_source(resolved.device, error);
             if (!source) {
                 return nullptr;
@@ -489,6 +500,16 @@ void print_capture_devices(std::FILE* out) {
                  "current rate, since CoreAudio does not resample capture, up to 2 channels,\n"
                  "16-bit. Audio MIDI Setup changes the rate. macOS asks for microphone access\n"
                  "the first time --input opens a device.\n");
+#endif
+#ifdef SENDSPIN_CLI_HAVE_COREAUDIO
+    std::fprintf(out,
+                 "\nLoopback (--input loopback[:<index|name>]):\n"
+                 "--input loopback captures everything this Mac plays, and --input\n"
+                 "loopback:<index|name> one output device, through a process tap (macOS 14.2 or\n"
+                 "later). sendspin-cli's own playback is left out. macOS asks once for System\n"
+                 "Audio Recording; refused, the capture is silent.\n"
+                 "\nCoreAudio output devices on this host:\n");
+    CoreAudioSource::list_loopback_devices(out);
 #endif
 #if !defined(SENDSPIN_CLI_HAVE_ALSA) && !defined(SENDSPIN_CLI_HAVE_PULSE) && \
     !defined(SENDSPIN_CLI_HAVE_PIPEWIRE) && !defined(SENDSPIN_CLI_HAVE_COREAUDIO)

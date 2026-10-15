@@ -42,6 +42,9 @@ constexpr uint32_t MIN_RENDER_FRAMES = 4096;
 constexpr int64_t US_PER_S = 1000000;
 
 /// AUHAL's elements: 1 faces the device's input side, 0 its output side.
+/// How long a tap may deliver only digital silence before the permission hint is logged.
+constexpr uint64_t TAP_SILENCE_WARN_S = 10;
+
 constexpr UInt32 INPUT_BUS = 1;
 constexpr UInt32 OUTPUT_BUS = 0;
 
@@ -91,14 +94,63 @@ OSStatus set_capture_format(AudioUnit unit, const AudioStreamBasicDescription& a
 
 }  // namespace
 
-CoreAudioSource::CoreAudioSource(std::string device) : device_(std::move(device)) {}
+CoreAudioSource::CoreAudioSource(std::string device, bool loopback)
+    : device_(std::move(device)), loopback_(loopback) {}
 
 CoreAudioSource::~CoreAudioSource() {
     this->close();
 }
 
 std::string CoreAudioSource::name() const {
-    return this->device_.empty() ? "coreaudio" : "coreaudio:" + this->device_;
+    const char* prefix = this->loopback_ ? "loopback" : "coreaudio";
+    return this->device_.empty() ? prefix : prefix + (":" + this->device_);
+}
+
+void CoreAudioSource::list_loopback_devices(std::FILE* out) {
+    const std::vector<AudioDeviceID> outputs = ca_enumerate_devices(CaDirection::Output);
+    if (outputs.empty()) {
+        std::fprintf(out, "  (this host has no CoreAudio output devices)\n");
+        return;
+    }
+    const AudioDeviceID fallback = ca_default_device(CaDirection::Output);
+    for (size_t i = 0; i < outputs.size(); ++i) {
+        std::fprintf(out, "  %3zu  %s%s\n", i, ca_device_name(outputs[i]).c_str(),
+                     (outputs[i] == fallback) ? "  (system default)" : "");
+    }
+}
+
+bool CoreAudioSource::resolve_device_(AudioDeviceID& out, std::string& error) {
+    if (!this->loopback_) {
+        return resolve_ca_device(this->device_, CaDirection::Input, out, error);
+    }
+    this->tapped_output_ = kAudioObjectUnknown;
+    if (!this->device_.empty() &&
+        !resolve_ca_device(this->device_, CaDirection::Output, this->tapped_output_, error,
+                           "--input " + this->name())) {
+        return false;
+    }
+    if (!this->tap_.create(this->tapped_output_, error)) {
+        return false;
+    }
+    out = this->tap_.device();
+    return true;
+}
+
+void CoreAudioSource::check_tap_silence_(const uint8_t* data, size_t bytes) {
+    if (std::any_of(data, data + bytes, [](uint8_t byte) { return byte != 0; })) {
+        this->silent_frames_ = 0;
+        return;
+    }
+    this->silent_frames_ += bytes / this->bytes_per_frame_;
+    if (!this->silence_warned_ &&
+        this->silent_frames_ >= TAP_SILENCE_WARN_S * this->format_.sample_rate) {
+        this->silence_warned_ = true;
+        cli_log(LogLevel::WARN,
+                "coreaudio: input '%s' has captured only silence for %llu s. If something is "
+                "playing, macOS is withholding system audio: %s",
+                this->name().c_str(), static_cast<unsigned long long>(TAP_SILENCE_WARN_S),
+                SYSTEM_AUDIO_HOW_TO_GRANT);
+    }
 }
 
 void CoreAudioSource::list_devices(std::FILE* out) {
@@ -119,12 +171,26 @@ void CoreAudioSource::list_devices(std::FILE* out) {
 }
 
 bool CoreAudioSource::negotiate(StreamFormat& format, std::string& error) {
+    if (this->loopback_) {
+        cli_log(LogLevel::INFO,
+                "coreaudio: --input loopback needs System Audio Recording permission, which macOS "
+                "asks for once; if it is refused the capture is silent -- %s",
+                SYSTEM_AUDIO_HOW_TO_GRANT);
+        const bool settled = this->negotiate_(format, error);
+        this->tap_.destroy();
+        return settled;
+    }
+    return this->negotiate_(format, error);
+}
+
+bool CoreAudioSource::negotiate_(StreamFormat& format, std::string& error) {
     AudioDeviceID device = kAudioObjectUnknown;
-    if (!resolve_ca_device(this->device_, CaDirection::Input, device, error)) {
+    if (!this->resolve_device_(device, error)) {
         return false;
     }
 
-    if (microphone_prompt_pending()) {
+    // A tap needs System Audio Recording, not the microphone.
+    if (!this->loopback_ && microphone_prompt_pending()) {
         // macOS aborts the process, uncatchably, when the app hosting the shell may not prompt.
         cli_log(LogLevel::INFO,
                 "coreaudio: asking macOS for microphone access -- answer its prompt. If "
@@ -132,10 +198,12 @@ bool CoreAudioSource::negotiate(StreamFormat& format, std::string& error) {
                 "microphone: start it from Terminal.app");
     }
     // Without it the unit opens, starts and delivers silence.
-    if (!request_microphone_access(error)) {
+    if (!this->loopback_ && !request_microphone_access(error)) {
         return false;
     }
-    const std::string label = "CoreAudio input device '" + ca_device_name(device) + "'";
+    const std::string label = this->loopback_
+                                  ? "the process tap for --input " + this->name()
+                                  : "CoreAudio input device '" + ca_device_name(device) + "'";
 
     const uint32_t max_channels = ca_channels(device, CaDirection::Input);
     // The device's own rate: AUHAL converts depth and channels on capture, but does not resample.
@@ -182,7 +250,7 @@ bool CoreAudioSource::open(const StreamFormat& format) {
 
     AudioDeviceID device = kAudioObjectUnknown;
     std::string error;
-    if (!resolve_ca_device(this->device_, CaDirection::Input, device, error)) {
+    if (!this->resolve_device_(device, error)) {
         cli_log(LogLevel::ERROR, "coreaudio: %s", error.c_str());
         return false;
     }
@@ -248,6 +316,8 @@ bool CoreAudioSource::open(const StreamFormat& format) {
     this->frames_read_ = 0;
     this->epoch_us_.store(0);
     this->frames_dropped_.store(0);
+    this->silent_frames_ = 0;
+    this->silence_warned_ = false;
 
     const uint32_t latency_frames =
         ca_u32_property(device, kAudioDevicePropertyLatency, kAudioDevicePropertyScopeInput) +
@@ -334,6 +404,9 @@ int CoreAudioSource::read(uint8_t* data, size_t length, uint32_t timeout_ms,
     // Loaded before the read: the callback publishes it before the frames it covers.
     const int64_t epoch_us = this->epoch_us_.load();
     this->ring_.read(data, bytes);
+    if (this->loopback_) {
+        this->check_tap_silence_(data, bytes);
+    }
     capture_time_us =
         epoch_us + static_cast<int64_t>(this->frames_read_) * US_PER_S / this->format_.sample_rate;
     this->frames_read_ += bytes / this->bytes_per_frame_;
@@ -342,17 +415,18 @@ int CoreAudioSource::read(uint8_t* data, size_t length, uint32_t timeout_ms,
 
 void CoreAudioSource::close() {
     this->remove_listeners_();
-    if (this->unit_ == nullptr) {
-        return;
+    if (this->unit_ != nullptr) {
+        AudioOutputUnitStop(this->unit_);
+        // Uninitialize waits the input callback out, so nothing below races it.
+        AudioUnitUninitialize(this->unit_);
+        AudioComponentInstanceDispose(this->unit_);
+        this->unit_ = nullptr;
+        this->device_id_ = kAudioObjectUnknown;
+        this->bytes_per_frame_ = 0;
+        this->ring_.reset(0);
     }
-    AudioOutputUnitStop(this->unit_);
-    // Uninitialize waits the input callback out, so nothing below races it.
-    AudioUnitUninitialize(this->unit_);
-    AudioComponentInstanceDispose(this->unit_);
-    this->unit_ = nullptr;
-    this->device_id_ = kAudioObjectUnknown;
-    this->bytes_per_frame_ = 0;
-    this->ring_.reset(0);
+    // After the unit, which reads from it; an open that failed early may hold one too.
+    this->tap_.destroy();
 }
 
 void CoreAudioSource::add_listeners_(AudioDeviceID device) {
@@ -375,7 +449,14 @@ void CoreAudioSource::add_listeners_(AudioDeviceID device) {
     }
     this->listening_device_ = device;
 
-    if (this->device_.empty()) {
+    // The aggregate outlives a tapped device that goes away, so that death is watched directly.
+    if (this->tapped_output_ != kAudioObjectUnknown &&
+        AudioObjectAddPropertyListener(this->tapped_output_, &alive,
+                                       &CoreAudioSource::property_listener, this) == noErr) {
+        this->listening_output_ = true;
+    }
+
+    if (this->device_.empty() && !this->loopback_) {
         const AudioObjectPropertyAddress fallback =
             ca_address_of(kAudioHardwarePropertyDefaultInputDevice);
         if (AudioObjectAddPropertyListener(kAudioObjectSystemObject, &fallback,
@@ -400,6 +481,12 @@ void CoreAudioSource::remove_listeners_() {
         this->listening_rate_ = false;
     }
     this->listening_device_ = kAudioObjectUnknown;
+    if (this->listening_output_) {
+        const AudioObjectPropertyAddress alive = ca_address_of(kAudioDevicePropertyDeviceIsAlive);
+        AudioObjectRemovePropertyListener(this->tapped_output_, &alive,
+                                          &CoreAudioSource::property_listener, this);
+        this->listening_output_ = false;
+    }
     if (this->listening_default_) {
         const AudioObjectPropertyAddress fallback =
             ca_address_of(kAudioHardwarePropertyDefaultInputDevice);

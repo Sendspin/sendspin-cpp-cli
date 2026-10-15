@@ -59,8 +59,10 @@ AudioDeviceID ca_default_device(CaDirection direction);
 std::vector<AudioDeviceID> ca_enumerate_devices(CaDirection direction);
 
 /// Resolves a CoreAudio device spec: empty is the default, digits an index, else a unique name.
+/// @param typed The spec as the user wrote it, for error text; empty for `<flag>
+/// coreaudio:<device>`.
 bool resolve_ca_device(const std::string& device, CaDirection direction, AudioDeviceID& out,
-                       std::string& error);
+                       std::string& error, const std::string& typed = {});
 
 /// Maps a stream format onto the interleaved signed little-endian PCM an AUHAL unit takes.
 bool ca_asbd_for(uint32_t sample_rate, uint8_t channels, uint8_t bits_per_sample,

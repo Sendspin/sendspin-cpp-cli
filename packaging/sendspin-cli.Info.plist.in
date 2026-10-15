@@ -14,5 +14,7 @@
     <string>@PROJECT_VERSION@</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>sendspin-cli streams this microphone or line-in to your Sendspin server when run with --input.</string>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>sendspin-cli streams what this Mac plays to your Sendspin server when run with --input loopback.</string>
 </dict>
 </plist>

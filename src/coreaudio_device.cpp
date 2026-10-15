@@ -204,7 +204,7 @@ std::vector<AudioDeviceID> ca_enumerate_devices(CaDirection direction) {
 }
 
 bool resolve_ca_device(const std::string& device, CaDirection direction, AudioDeviceID& out,
-                       std::string& error) {
+                       std::string& error, const std::string& typed) {
     const std::string noun = noun_of(direction);
     if (device.empty()) {
         const AudioDeviceID fallback = ca_default_device(direction);
@@ -223,7 +223,8 @@ bool resolve_ca_device(const std::string& device, CaDirection direction, AudioDe
         return false;
     }
 
-    const std::string spec = std::string(flag_of(direction)) + " coreaudio:" + device;
+    const std::string spec =
+        typed.empty() ? std::string(flag_of(direction)) + " coreaudio:" + device : typed;
     if (is_device_index(device)) {
         // strtoull saturates rather than wrapping into a plausible index.
         const unsigned long long value = std::strtoull(device.c_str(), nullptr, 10);

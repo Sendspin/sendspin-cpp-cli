@@ -32,6 +32,12 @@
 #include <string>
 #include <thread>
 
+#if defined(SENDSPIN_CLI_HAVE_PULSE) || defined(SENDSPIN_CLI_HAVE_PIPEWIRE) || \
+    defined(SENDSPIN_CLI_HAVE_COREAUDIO)
+/// Some backend in this build can capture what the host plays.
+#define SENDSPIN_CLI_HAVE_LOOPBACK
+#endif
+
 namespace sendspin_cli {
 
 /// Bit depths the source role takes, in the order a capture device is asked for them.
