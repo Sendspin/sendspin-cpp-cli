@@ -41,11 +41,12 @@ Each needs a library change; nothing this repo can call fixes them. Re-check on 
   (`-d <category>=<level>` stays warn-and-ignore), and print the dialled URL unmasked —
   `Initiating client connection to:` at `info` and `WebSocket error on connection to` at
   `error`. That last one is why item 2 matters.
-- **A taken `--port` is not reported.** Two instances on one `--port` both log that they are
-  listening.
+- **A taken `--port` is invisible to the CLI.** The library logs `Error starting server` and
+  retries, but exposes no signal, so our `listening on port` line is still printed and the
+  player stays up with no listener.
 - **No connection origin.** The library does not say whether the live connection was dialled
-  or accepted, so `SENDSPIN_SERVER_URL` in a hook is the URL this run *dialled*, which can
-  differ from the server that answered. `SENDSPIN_SERVER_ID` is the reliable field.
+  or accepted. After a literal `-s <address>` dial, `SENDSPIN_SERVER_URL` in a hook is that
+  address even if a different server dialled in; `SENDSPIN_SERVER_ID` is the reliable field.
 
 ### 4. `switch` with more than one group
 
@@ -176,8 +177,9 @@ on its first `process()` — a reconnect inside the audible path, so it wants th
 
 **Also:** the `pipewire-minimum` job in `.github/workflows/build.yml` is the only build without
 `-DSENDSPIN_CLI_WERROR=ON`, because of gcc 12's `-Wrestrict` false positive on
-`line += " " + std::to_string(...)` in `src/control_common.cpp`. Rewriting those sites lets it
-hold the warning line like every other leg.
+`line += " " + std::to_string(...)` in `src/control_common.cpp`. The ARMv6 build carries
+`-Wno-error=restrict` for the same sites (`scripts/build_armv6_container.sh`). Rewriting them
+lets both legs drop their exemption.
 
 ### 15. `--interface`
 
