@@ -137,7 +137,7 @@ nothing for a player running as you.
   server sends. A repeat of the current value is skipped, but a slider drag is one rewrite
   per step; debouncing is a known gap, listed under
   [`docs/ROADMAP.md`](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/docs/ROADMAP.md)
-  item 8. If that worries you, point the state at the runtime directory, which is already a
+  item 5. If that worries you, point the state at the runtime directory, which is already a
   tmpfs — and accept that the player's identity and pairings, volume, mute and the output
   delay are then forgotten across reboots. It has to be a **drop-in** rather than a config key, because the unit passes
   `--state-dir` itself and the command line wins (`sudo systemctl edit sendspin-cli`):

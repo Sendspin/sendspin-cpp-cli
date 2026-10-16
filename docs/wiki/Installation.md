@@ -134,7 +134,7 @@ to check. Whether you notice depends entirely on the quarantine flag, which `tar
 xattr -d com.apple.quarantine ./sendspin-cli-0.1.0-macos-arm64/usr/local/bin/sendspin-cli
 ```
 
-A Developer ID signature and notarization are owed and tracked as roadmap item 10, so
+A Developer ID signature and notarization are owed and tracked as roadmap item 7, so
 `sudo installer` and the tarball are both affected until that lands.
 
 There is no launchd job in the payload. On macOS the player runs from a shell or under a
