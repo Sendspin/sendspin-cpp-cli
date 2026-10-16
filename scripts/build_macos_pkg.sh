@@ -99,7 +99,7 @@ sendspin-cli $VERSION ($ARCHITECTURES)
 This installer is NOT signed or notarized, and installing it does not make
 sendspin-cli pass Gatekeeper. The binary inside is ad-hoc signed, so it carries
 no developer identity for macOS to check. A Developer ID signature and
-notarization are still owed; see docs/ROADMAP.md item 10.
+notarization are still owed; see docs/ROADMAP.md item 7.
 
 Installs into /usr/local, which is the prefix the binary was built for:
 

@@ -57,7 +57,7 @@ build time, so it turns an Intel Mac away rather than reporting success.
 inside an emulated Raspbian container rather than cross-compiled, because Debian and Ubuntu
 armhf are an ARMv7-A port. There is no Intel-Mac build; that one is recorded in
 [`docs/ROADMAP.md`](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/docs/ROADMAP.md),
-item 12.
+item 10.
 Anything else builds from source.
 
 ## Where things live
@@ -66,7 +66,7 @@ Anything else builds from source.
   configuration, local control, services, troubleshooting, and
   [advanced usage](Advanced-Usage).
 - **[`docs/ROADMAP.md`](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/docs/ROADMAP.md)**
-  is what is built, what is not, and what was actually tested rather than reasoned about.
+  is what is still owed, item by item.
 - **`sendspin-cli --help`** is the flag reference, and the config file's reference too:
   every config key is a long flag name minus its dashes.
 

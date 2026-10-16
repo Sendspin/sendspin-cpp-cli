@@ -219,8 +219,8 @@ jobs:
             it, and how to contribute
           - [Contributors](https://github.com/@REPO@/blob/@TAG@/contributors.md) — development,
             testing, CI, and release guidance
-          - [Roadmap](https://github.com/@REPO@/blob/@TAG@/docs/ROADMAP.md) — what shipped and
-            what is owed, item by item
+          - [Roadmap](https://github.com/@REPO@/blob/@TAG@/docs/ROADMAP.md) — what is still owed,
+            item by item
           NOTES
 
           # One substitution pass, so nothing in the body is ever shell-expanded. Links pin to the tag.

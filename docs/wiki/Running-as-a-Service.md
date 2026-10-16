@@ -179,7 +179,7 @@ Read the installed unit for the full block. Three operator-visible edges:
   `PrivateDevices=`, `DeviceAllow=`, `ProcSubset=pid` and `RestrictRealtime=` — because they
   pass every check a machine with no sound card can make, and tracked as
   [`docs/ROADMAP.md`](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/docs/ROADMAP.md)
-  item 10.
+  item 8.
 
 Every directive the unit sets is listed above; `systemd-analyze security sendspin-cli`
 reports what your own systemd version makes of it.
