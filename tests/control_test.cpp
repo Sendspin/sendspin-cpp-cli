@@ -1256,14 +1256,20 @@ TEST(PrivateRuntimeDir, AMissingPathIsRefused) {
 }
 
 TEST(PrivateRuntimeDir, ADirectoryOwnedBySomeoneElseIsRefused) {
-#ifndef _WIN32
+#ifdef _WIN32
+    // TrustedInstaller owns the Windows folder everywhere; the drive root's owner varies.
+    const char* root = std::getenv("SystemRoot");
+    ASSERT_NE(root, nullptr);
+    const std::string other = root;
+#else
     // Root owns / and would pass.
     if (::geteuid() == 0) {
         GTEST_SKIP() << "running as root, which owns /";
     }
+    const std::string other = "/";
 #endif
     std::string reason;
-    EXPECT_FALSE(is_private_runtime_dir("/", reason));
+    EXPECT_FALSE(is_private_runtime_dir(other, reason));
     EXPECT_NE(reason.find("not by this user"), std::string::npos) << reason;
 }
 

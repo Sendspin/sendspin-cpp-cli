@@ -165,7 +165,8 @@ bool is_private_directory(const std::string& path, std::string& reason) {
         reason = "cannot tell which user this is: " + last_error_text();
         return false;
     }
-    if (EqualSid(owner, user.data()) == 0) {
+    // Administrators own what an elevated administrator creates, and could take ownership anyway.
+    if (EqualSid(owner, user.data()) == 0 && !is_well_known(owner, WinBuiltinAdministratorsSid)) {
         reason = path + " is owned by " + account_name(owner) + ", not by this user";
         return false;
     }

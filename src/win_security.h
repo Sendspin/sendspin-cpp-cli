@@ -26,8 +26,8 @@ std::string local_app_data_dir();
 /// This user's roaming AppData folder, the counterpart of ~/.config; as local_app_data_dir().
 std::string roaming_app_data_dir();
 
-/// True if `path` is a directory owned by this user that no one but SYSTEM and Administrators
-/// can also write to, or create files in that others could write.
+/// True if `path` is a directory owned by this user (or Administrators) that no one but SYSTEM
+/// and Administrators can also write to, or create files in that others could write.
 bool is_private_directory(const std::string& path, std::string& reason);
 
 /// Opens `path` read-write as a CRT descriptor, creating it if missing, like POSIX open().

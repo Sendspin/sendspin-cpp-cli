@@ -103,8 +103,22 @@ inline bool owner_only(const std::string& path, std::string& detail) {
         LocalFree(text);
     }
     LocalFree(descriptor);
-    // Protected, and one allow ACE for this user.
-    return detail == "D:P(A;;FA;;;" + current_user_sid() + ")";
+
+    // Protected, and one allow ACE for this user, spelled the way Windows prints it back: a
+    // well-known account comes back as its alias (LA for the built-in Administrator).
+    std::string expected = "D:P(A;;FA;;;" + current_user_sid() + ")";
+    PSECURITY_DESCRIPTOR built = nullptr;
+    if (ConvertStringSecurityDescriptorToSecurityDescriptorA(expected.c_str(), SDDL_REVISION_1,
+                                                             &built, nullptr) != 0) {
+        char* canonical = nullptr;
+        if (ConvertSecurityDescriptorToStringSecurityDescriptorA(
+                built, SDDL_REVISION_1, DACL_SECURITY_INFORMATION, &canonical, nullptr) != 0) {
+            expected = canonical;
+            LocalFree(canonical);
+        }
+        LocalFree(built);
+    }
+    return detail == expected;
 }
 #endif
 
