@@ -106,6 +106,23 @@ jobs:
             avahi: false
             systemd: true
 
+          # clang-cl from the image's Visual Studio; PortAudio is built from source and DNS-SD is
+          # part of Windows, so nothing is installed. No probes: there are no Bonjour enumerators.
+          - name: windows-x86_64
+            runner: windows-2025
+            arm32: ''
+            with_mdns: 'ON'
+            with_portaudio: 'ON'
+            with_pulse: 'OFF'
+            with_pipewire: 'OFF'
+            expect_probe: ''
+            expect_backends: '^-- sendspin-cli audio backends: null, stdout, portaudio$'
+            expect_mdns: '^-- sendspin-cli mDNS: windns \(built in\)$'
+            runtime_packages: 'none. PortAudio is linked in, and DNS-SD is part of Windows 10 1809 and later.'
+            publish: false
+            avahi: false
+            systemd: false
+
     steps:
       # Actions pinned to commits; the trailing comment is the version.
       - name: Check out
@@ -123,6 +140,37 @@ jobs:
             libpulse-dev \
             libpipewire-0.3-dev \
             libavahi-compat-libdnssd-dev
+
+      # What vcvars64.bat changes, exported for the later steps; inline rather than a third-party action.
+      - name: Set up clang-cl and the MSVC environment (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          vswhere='/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe'
+          vs=$("$vswhere" -latest -products '*' \
+            -requires Microsoft.VisualStudio.Component.VC.Llvm.Clang -property installationPath)
+          [ -n "$vs" ] || {
+            echo '::error::this image has no Visual Studio with the clang-cl component'
+            exit 1
+          }
+          echo "Visual Studio: $vs"
+
+          printf '@call "%s\\VC\\Auxiliary\\Build\\vcvars64.bat" >nul\r\n@set\r\n' "$vs" >vcvars.bat
+          cmd //c set | tr -d '\r' | sort >before.txt
+          # A full path: cmd may not look in the current directory for it.
+          cmd //c "$(cygpath -w "$PWD/vcvars.bat")" | tr -d '\r' | sort >after.txt
+          grep -qi '^VCToolsInstallDir=' after.txt || {
+            echo '::error::vcvars64.bat did not set up the developer environment'
+            exit 1
+          }
+
+          # New or changed variables; PATH goes through GITHUB_PATH instead.
+          comm -13 before.txt after.txt | grep -vi '^path=' >>"$GITHUB_ENV"
+          before_path=$(grep -i '^path=' before.txt | cut -d= -f2- | tr ';' '\n')
+          grep -i '^path=' after.txt | cut -d= -f2- | tr ';' '\n' |
+            grep -vxF -f <(printf '%s\n' "$before_path") >>"$GITHUB_PATH" || true
+          # The developer environment does not put clang-cl on PATH.
+          printf '%s\n' "$vs\\VC\\Tools\\Llvm\\x64\\bin" >>"$GITHUB_PATH"
+          rm -f vcvars.bat before.txt after.txt
 
       # Instead of the step above, so no host-arch -dev library can answer find_library.
       - name: Install the cross toolchain and armhf dependencies (cross-compiled 32-bit ARM)
@@ -233,6 +281,9 @@ jobs:
             -DSENDSPIN_CLI_WITH_PIPEWIRE="$WITH_PIPEWIRE"
             -DFETCHCONTENT_BASE_DIR="$DEPS_DIR"
           )
+          if [ "$RUNNER_OS" = 'Windows' ]; then
+            options+=(-G Ninja -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl)
+          fi
 
           if [ -n "$ARM32" ]; then
             scripts/build_arm32.sh "$ARM32" build "${options[@]}" 2>&1 | tee configure.log
