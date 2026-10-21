@@ -40,6 +40,11 @@ top:
 3. `$HOME/.config/sendspin-cli/config`
 4. `/etc/sendspin-cli.conf`
 
+On Windows, the search is `$XDG_CONFIG_HOME/sendspin-cli/config`, then
+`%APPDATA%\sendspin-cli\config`, and there is **no system-wide file**: unlike `/etc`, any user
+can create files under ProgramData, so a config there could not be trusted by a player running
+as someone else. `--config NUL` is Windows' `--config /dev/null`.
+
 Finding none is silent and normal. There is no `--no-config` flag — `--config /dev/null`
 already does that.
 
@@ -171,7 +176,8 @@ A state file written by 0.3.0 or earlier is upgraded in place: its `static-delay
 `blob-output_delay` once, and `last-server-hash` is dropped.
 
 It lives at `$XDG_STATE_HOME/sendspin-cli/state`, then
-`$HOME/.local/state/sendspin-cli/state`, and **`--state-dir <dir>` overrides both** — a
+`$HOME/.local/state/sendspin-cli/state` (on Windows, `%LOCALAPPDATA%\sendspin-cli\state`,
+readable by you alone), and **`--state-dir <dir>` overrides both** — a
 systemd *system* unit has neither variable and is handed `/var/lib/sendspin-cli` by
 `StateDirectory=`. With none of the three the player still runs and simply remembers
 nothing — which now includes its identity, so every run is a new, unpaired player to a

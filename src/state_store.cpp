@@ -18,9 +18,18 @@
 #include "sendspin/config.h"
 #include "sendspin/persistence_keys.h"
 
+#ifdef _WIN32
+#include "win_security.h"
+
+#include <direct.h>
+#include <io.h>
+#include <process.h>
+#include <windows.h>
+#else
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <cerrno>
@@ -94,6 +103,11 @@ std::string state_store_path(const std::string& state_dir) {
         return state_dir + "/" + STATE_FILE;
     }
     std::string base = env_or_empty("XDG_STATE_HOME");
+#ifdef _WIN32
+    if (base.empty()) {
+        base = local_app_data_dir();
+    }
+#endif
     if (base.empty()) {
         const std::string home = env_or_empty("HOME");
         if (home.empty()) {
@@ -264,9 +278,16 @@ bool StateStore::write() const {
 
     // Only the leaf directory is created; a mistyped parent should fail visibly.
     const std::string directory = parent_directory(this->path_);
+#ifdef _WIN32
+    // Inherits its parent's ACL; the file below is owner-only either way.
+    if (!directory.empty() && _mkdir(directory.c_str()) != 0 && errno != EEXIST) {
+        return false;
+    }
+#else
     if (!directory.empty() && mkdir(directory.c_str(), 0700) != 0 && errno != EEXIST) {
         return false;
     }
+#endif
 
     // Pid in the name, so two players sharing a state dir cannot rename each other's temp file.
     const std::string temporary = this->path_ + ".tmp." + std::to_string(getpid());
@@ -274,11 +295,17 @@ bool StateStore::write() const {
     std::remove(temporary.c_str());
 
     // 0600 at creation, so the file is never readable more widely.
+#ifdef _WIN32
+    std::string ignored;
+    const int fd = open_file(temporary, true, true, ignored);
+#else
     const int fd = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
+#endif
     if (fd < 0) {
         return false;
     }
-    std::FILE* file = ::fdopen(fd, "w");
+    // "b": no CRLF translation on Windows.
+    std::FILE* file = ::fdopen(fd, "wb");
     if (file == nullptr) {
         ::close(fd);
         std::remove(temporary.c_str());
@@ -293,6 +320,16 @@ bool StateStore::write() const {
         ok = std::fprintf(file, "%s = %s\n", key.c_str(), value.c_str()) > 0;
     }
     // fsync before rename, or a power cut can leave an empty file in place.
+#ifdef _WIN32
+    if (ok) {
+        ok = std::fflush(file) == 0 && ::_commit(fd) == 0;
+    }
+    ok = std::fclose(file) == 0 && ok;
+
+    // std::rename() will not replace an existing file here.
+    if (!ok || MoveFileExA(temporary.c_str(), this->path_.c_str(),
+                           MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == 0) {
+#else
     if (ok) {
         ok = std::fflush(file) == 0 && ::fsync(fd) == 0;
     }
@@ -300,6 +337,7 @@ bool StateStore::write() const {
     ok = std::fclose(file) == 0 && ok;
 
     if (!ok || std::rename(temporary.c_str(), this->path_.c_str()) != 0) {
+#endif
         std::remove(temporary.c_str());
         return false;
     }

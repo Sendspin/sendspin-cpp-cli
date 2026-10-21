@@ -19,11 +19,14 @@
 #include "cli.h"
 #include "control.h"
 #include "parse_harness.h"
+#include "posix_compat.h"
 #include "scoped_env.h"
 
+#ifdef _WIN32
+#include "win_security.h"
+#endif
+
 #include <gtest/gtest.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 #include <cstdio>
 #include <string>
@@ -101,6 +104,26 @@ private:
 
 // Where a config file is looked for
 
+#ifdef _WIN32
+TEST(ConfigSearchPaths, RunsXdgThenRoamingAppData) {
+    const ScopedEnv xdg("XDG_CONFIG_HOME", "/xdg/config");
+
+    const std::vector<std::string> paths = config_search_paths();
+    ASSERT_EQ(paths.size(), 2U);
+    EXPECT_EQ(paths[0], "/xdg/config/sendspin-cli/config");
+    EXPECT_EQ(paths[1], roaming_app_data_dir() + "/sendspin-cli/config");
+}
+
+TEST(ConfigSearchPaths, IgnoresHomeAndHasNoSystemFile) {
+    const ScopedEnv xdg("XDG_CONFIG_HOME", nullptr);
+    const ScopedEnv home("HOME", "/home/someone");
+
+    // Any user may create files under ProgramData, so there is no system-wide file to trust.
+    const std::vector<std::string> paths = config_search_paths();
+    ASSERT_EQ(paths.size(), 1U);
+    EXPECT_EQ(paths[0], roaming_app_data_dir() + "/sendspin-cli/config");
+}
+#else
 TEST(ConfigSearchPaths, RunsXdgThenHomeThenEtc) {
     const ScopedEnv xdg("XDG_CONFIG_HOME", "/xdg/config");
     const ScopedEnv home("HOME", "/home/someone");
@@ -121,6 +144,7 @@ TEST(ConfigSearchPaths, AnEmptyOrUnsetVariableContributesNothing) {
     ASSERT_EQ(paths.size(), 1U);
     EXPECT_EQ(paths[0], SYSTEM_CONFIG_PATH);
 }
+#endif
 
 TEST(LoadConfigFile, TakesTheFirstFileFoundAndStopsThere) {
     ScratchDir scratch;
@@ -423,7 +447,11 @@ TEST(LongAliases, AreListedByHelpAlongsideTheConfigSearchPath) {
         EXPECT_NE(text.find(flag), std::string::npos) << flag;
     }
     EXPECT_NE(text.find("/xdg/config/sendspin-cli/config"), std::string::npos);
+#ifdef _WIN32
+    EXPECT_NE(text.find(roaming_app_data_dir() + "/sendspin-cli/config"), std::string::npos);
+#else
     EXPECT_NE(text.find(SYSTEM_CONFIG_PATH), std::string::npos);
+#endif
 }
 
 // A configured value is validated by the same code a typed one is
@@ -567,7 +595,7 @@ TEST(ConfigMerge, AConfiguredControlSocketIsAbsolutizedUnderDaemonize) {
 
     ASSERT_TRUE(parse.ok()) << parse.diagnostics();
     // Absolutized under -z, which is gated on was_given().
-    EXPECT_EQ(parse.options().control_socket.front(), '/');
+    EXPECT_TRUE(is_absolute_path(parse.options().control_socket)) << parse.options().control_socket;
     EXPECT_NE(parse.options().control_socket.find("/sendspin.sock"), std::string::npos)
         << parse.options().control_socket;
 }
@@ -608,7 +636,7 @@ TEST(ConfigMerge, AConfiguredStateDirIsAbsolutizedUnderDaemonize) {
     Parse parse({"-z"}, config);
 
     ASSERT_TRUE(parse.ok()) << parse.diagnostics();
-    EXPECT_EQ(parse.options().state_dir.front(), '/');
+    EXPECT_TRUE(is_absolute_path(parse.options().state_dir)) << parse.options().state_dir;
 }
 
 // What a broken config must not be able to stop

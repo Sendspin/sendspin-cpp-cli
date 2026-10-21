@@ -18,13 +18,14 @@
 
 #include "daemon.h"
 #include "log.h"
+#include "socket_compat.h"
 
-#include <fcntl.h>
-#include <sys/file.h>
-#include <sys/socket.h>
+#ifdef _WIN32
+#include <io.h>  // close, unlink
+#else
 #include <sys/stat.h>
-#include <sys/un.h>
 #include <unistd.h>
+#endif
 
 #include <cerrno>
 #include <cstring>
@@ -40,7 +41,7 @@ static constexpr const char* LOG_TAG = LOG_TAG_CONTROL;
 namespace {
 
 /// Socket mode, forced around bind(): daemonize()'s umask alone would leave it world-connectable.
-constexpr mode_t CONTROL_SOCKET_MODE = 0600;
+constexpr unsigned CONTROL_SOCKET_MODE = 0600;
 
 /// Kernel backlog, equal to the connection cap so a burst hits the cap, which explains itself.
 constexpr int CONTROL_SOCKET_BACKLOG = static_cast<int>(MAX_CONTROL_CONNECTIONS);
@@ -56,7 +57,7 @@ void fill_address(sockaddr_un& address, const std::string& path) {
 
 /// One control connection: its descriptor, the line it is assembling, and when it arrived.
 struct Connection {
-    int fd{-1};
+    socket_t fd{INVALID_SOCKET_HANDLE};
     LineAssembler assembler;
     /// When this connection was accepted, for the idle deadline.
     int64_t accepted_ms{0};
@@ -65,7 +66,7 @@ struct Connection {
 }  // namespace
 
 struct ControlSocket::Impl {
-    int listener{-1};
+    socket_t listener{INVALID_SOCKET_HANDLE};
     int lock_fd{-1};
     std::string path;
     std::string lock_path;
@@ -90,8 +91,7 @@ ControlSocketStatus probe_control_socket(const std::string& path, std::string& e
         lock_file(path + CONTROL_LOCK_SUFFIX, "control socket", CONTROL_SOCKET_MODE, fd, error);
     switch (locked) {
         case PidFileStatus::Ok:
-            ::flock(fd, LOCK_UN);
-            ::close(fd);
+            release_lock(fd);
             return ControlSocketStatus::Ok;
         case PidFileStatus::AlreadyRunning:
             return ControlSocketStatus::AlreadyRunning;
@@ -122,9 +122,15 @@ ControlSocketStatus ControlSocket::open(const std::string& path, std::string& er
             return ControlSocketStatus::Failed;
     }
 
-    const int listener = ::socket(AF_UNIX, SOCK_STREAM, 0);
-    if (listener < 0) {
-        error = std::string("cannot create the control socket: ") + std::strerror(errno);
+    if (!socket_startup()) {
+        error = "cannot start the socket library: " + socket_error_text(socket_error());
+        ::close(lock_fd);
+        return ControlSocketStatus::Failed;
+    }
+
+    const socket_t listener = ::socket(AF_UNIX, SOCK_STREAM, 0);
+    if (listener == INVALID_SOCKET_HANDLE) {
+        error = "cannot create the control socket: " + socket_error_text(socket_error());
         ::close(lock_fd);
         return ControlSocketStatus::Failed;
     }
@@ -132,7 +138,7 @@ ControlSocketStatus ControlSocket::open(const std::string& path, std::string& er
     // Safe under the lock: bind() fails on any existing path, so a stale file must be removed.
     if (::unlink(path.c_str()) != 0 && errno != ENOENT) {
         error = "cannot remove the stale control socket " + path + ": " + std::strerror(errno);
-        ::close(listener);
+        close_socket(listener);
         ::close(lock_fd);
         return ControlSocketStatus::Failed;
     }
@@ -140,34 +146,41 @@ ControlSocketStatus ControlSocket::open(const std::string& path, std::string& er
     sockaddr_un address = {};
     fill_address(address, path);
 
+#ifdef _WIN32
+    // No modes: the socket file takes the ACL of its directory, which must be private.
+    const bool bound =
+        ::bind(listener, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == 0;
+    const int bind_errno = socket_error();
+#else
     // umask around bind(), so the socket is never world-connectable even briefly.
-    const mode_t previous_umask = ::umask(0777 & ~CONTROL_SOCKET_MODE);
+    const mode_t previous_umask = ::umask(0777 & ~static_cast<mode_t>(CONTROL_SOCKET_MODE));
     const bool bound =
         ::bind(listener, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == 0;
     const int bind_errno = errno;
     ::umask(previous_umask);
+#endif
 
     if (!bound) {
-        error = "cannot bind the control socket " + path + ": " + std::strerror(bind_errno);
-        ::close(listener);
+        error = "cannot bind the control socket " + path + ": " + socket_error_text(bind_errno);
+        close_socket(listener);
         ::close(lock_fd);
         return ControlSocketStatus::Failed;
     }
 
     if (::listen(listener, CONTROL_SOCKET_BACKLOG) != 0) {
-        error = "cannot listen on the control socket " + path + ": " + std::strerror(errno);
+        error = "cannot listen on the control socket " + path + ": " +
+                socket_error_text(socket_error());
         ::unlink(path.c_str());
-        ::close(listener);
+        close_socket(listener);
         ::close(lock_fd);
         return ControlSocketStatus::Failed;
     }
 
     // Non-blocking: poll() runs on the main loop.
-    const int flags = ::fcntl(listener, F_GETFL, 0);
-    if (flags < 0 || ::fcntl(listener, F_SETFL, flags | O_NONBLOCK) != 0) {
-        error = "cannot make the control socket non-blocking: " + std::string(std::strerror(errno));
+    if (!set_nonblocking(listener)) {
+        error = "cannot make the control socket non-blocking: " + socket_error_text(socket_error());
         ::unlink(path.c_str());
-        ::close(listener);
+        close_socket(listener);
         ::close(lock_fd);
         return ControlSocketStatus::Failed;
     }
@@ -181,17 +194,18 @@ ControlSocketStatus ControlSocket::open(const std::string& path, std::string& er
 }
 
 void ControlSocket::poll(int64_t now_ms, ControlHandler& handler) {
-    if (this->impl_->listener < 0) {
+    if (this->impl_->listener == INVALID_SOCKET_HANDLE) {
         return;
     }
 
     // Drain every waiting connection this tick.
     while (true) {
-        const int fd = ::accept(this->impl_->listener, nullptr, nullptr);
-        if (fd < 0) {
-            if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+        const socket_t fd = ::accept(this->impl_->listener, nullptr, nullptr);
+        if (fd == INVALID_SOCKET_HANDLE) {
+            const int reason = socket_error();
+            if (!socket_would_block(reason) && !socket_interrupted(reason)) {
                 cli_log(LogLevel::DEBUG, "accept on %s failed: %s", this->impl_->path.c_str(),
-                        std::strerror(errno));
+                        socket_error_text(reason).c_str());
             }
             break;
         }
@@ -206,16 +220,15 @@ void ControlSocket::poll(int64_t now_ms, ControlHandler& handler) {
                     " control connections open, which is as many as it will take -- try again",
                 "");
             // Best-effort: the peer is about to be closed anyway.
-            const ssize_t ignored = ::write(fd, busy.data(), busy.size());
+            const long ignored = send_bytes(fd, busy.data(), busy.size());
             static_cast<void>(ignored);
-            ::close(fd);
+            close_socket(fd);
             continue;
         }
-        const int flags = ::fcntl(fd, F_GETFL, 0);
-        if (flags < 0 || ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) != 0) {
+        if (!set_nonblocking(fd)) {
             cli_log(LogLevel::DEBUG, "cannot make a control connection non-blocking: %s",
-                    std::strerror(errno));
-            ::close(fd);
+                    socket_error_text(socket_error()).c_str());
+            close_socket(fd);
             continue;
         }
         Connection connection;
@@ -234,7 +247,7 @@ void ControlSocket::poll(int64_t now_ms, ControlHandler& handler) {
         bool closed = false;
 
         while (state == LineState::Incomplete && !closed) {
-            const ssize_t read_bytes = ::read(connection.fd, buffer, sizeof(buffer));
+            const long read_bytes = receive_bytes(connection.fd, buffer, sizeof(buffer));
             if (read_bytes > 0) {
                 state = connection.assembler.feed(buffer, static_cast<size_t>(read_bytes));
                 continue;
@@ -245,13 +258,15 @@ void ControlSocket::poll(int64_t now_ms, ControlHandler& handler) {
                 state = connection.assembler.finish();
                 break;
             }
-            if (errno == EINTR) {
+            const int reason = socket_error();
+            if (socket_interrupted(reason)) {
                 continue;
             }
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            if (socket_would_block(reason)) {
                 break;
             }
-            cli_log(LogLevel::DEBUG, "control connection read failed: %s", std::strerror(errno));
+            cli_log(LogLevel::DEBUG, "control connection read failed: %s",
+                    socket_error_text(reason).c_str());
             closed = true;
             break;
         }
@@ -262,12 +277,12 @@ void ControlSocket::poll(int64_t now_ms, ControlHandler& handler) {
         } else if (state == LineState::TooLong || state == LineState::Invalid) {
             reply = encode_control_reply(ControlStatus::Usage, line_state_reason(state), "");
         } else if (closed) {
-            ::close(connection.fd);
+            close_socket(connection.fd);
             continue;
         } else if (now_ms - connection.accepted_ms >= CONTROL_IDLE_TIMEOUT_MS) {
             cli_log(LogLevel::DEBUG, "dropping a control connection that sent nothing in %lld ms",
                     static_cast<long long>(CONTROL_IDLE_TIMEOUT_MS));
-            ::close(connection.fd);
+            close_socket(connection.fd);
             continue;
         } else {
             surviving.push_back(std::move(connection));
@@ -277,21 +292,23 @@ void ControlSocket::poll(int64_t now_ms, ControlHandler& handler) {
         // One command per connection; the reply may need several writes.
         size_t written = 0;
         while (written < reply.size()) {
-            const ssize_t wrote =
-                ::write(connection.fd, reply.data() + written, reply.size() - written);
+            const long wrote =
+                send_bytes(connection.fd, reply.data() + written, reply.size() - written);
             if (wrote > 0) {
                 written += static_cast<size_t>(wrote);
                 continue;
             }
-            if (wrote < 0 && errno == EINTR) {
+            const int reason = socket_error();
+            if (wrote < 0 && socket_interrupted(reason)) {
                 continue;
             }
             // SIGPIPE is ignored process-wide, so a vanished peer shows up here as EPIPE.
             cli_log(LogLevel::DEBUG, "control reply write failed after %zu of %zu bytes: %s",
-                    written, reply.size(), wrote < 0 ? std::strerror(errno) : "wrote nothing");
+                    written, reply.size(),
+                    wrote < 0 ? socket_error_text(reason).c_str() : "wrote nothing");
             break;
         }
-        ::close(connection.fd);
+        close_socket(connection.fd);
     }
 
     this->impl_->connections = std::move(surviving);
@@ -299,13 +316,13 @@ void ControlSocket::poll(int64_t now_ms, ControlHandler& handler) {
 
 void ControlSocket::close() {
     for (Connection& connection : this->impl_->connections) {
-        ::close(connection.fd);
+        close_socket(connection.fd);
     }
     this->impl_->connections.clear();
 
-    if (this->impl_->listener >= 0) {
-        ::close(this->impl_->listener);
-        this->impl_->listener = -1;
+    if (this->impl_->listener != INVALID_SOCKET_HANDLE) {
+        close_socket(this->impl_->listener);
+        this->impl_->listener = INVALID_SOCKET_HANDLE;
     }
     if (!this->impl_->path.empty()) {
         ::unlink(this->impl_->path.c_str());

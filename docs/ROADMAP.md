@@ -212,3 +212,22 @@ mDNS half lands under its own name.
 
 The Python CLI's `--interface` takes an IP address only, and `aiosendspin` binds to it without
 scoping its advertisement, so this flag is a superset of it.
+
+### 16. Windows
+
+The player runs on Windows 10 1809+ at parity with Linux and macOS, from a per-user install
+that starts at logon. Still owed:
+
+- **A Windows service**, so a player runs before anyone logs on. It needs Service Control
+  Manager integration, a service account, a state directory under that account's profile,
+  and a deliberate ACL on the control socket so an administrator can drive it — the
+  counterpart of the `sudo` the Linux unit needs.
+- **A system-wide config.** ProgramData lets any user create files, so a file there needs an
+  ACL check (owned by, and writable only by, SYSTEM or Administrators) before a service could
+  trust it.
+- **Signing.** The exe is unsigned, so SmartScreen warns on first run.
+- **Log rotation.** There is no SIGHUP to reopen `-f` on, so the logfile only grows.
+- **Logoff and shutdown** are handled through the console control events and are untested.
+- **PortAudio picks MME's default device**, with around 180 ms of device latency; WASAPI
+  would cut that. `-l` lists the WASAPI devices, and `-o portaudio:<index>` picks one.
+- **A no-mDNS build's `-s mdns:` refusal** names Linux packages to install, even on Windows.

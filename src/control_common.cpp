@@ -16,10 +16,15 @@
 
 #include "control.h"
 
+#include "socket_compat.h"
+
+#ifdef _WIN32
+#include "win_security.h"
+#else
 #include <limits.h>
 #include <sys/stat.h>
-#include <sys/un.h>
 #include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <cerrno>
@@ -745,6 +750,10 @@ const char* line_state_reason(LineState state) {
 }
 
 bool is_private_runtime_dir(const std::string& path, std::string& reason) {
+#ifdef _WIN32
+    // No uid or mode bits: the ACL is what keeps other accounts out.
+    return is_private_directory(path, reason);
+#else
     struct stat info = {};
     // stat(), not lstat(): judge a symlink by its target, so a linked runtime dir still works.
     if (::stat(path.c_str(), &info) != 0) {
@@ -765,6 +774,7 @@ bool is_private_runtime_dir(const std::string& path, std::string& reason) {
         return false;
     }
     return true;
+#endif
 }
 
 std::string control_platform_runtime_dir(std::string& rejection) {
@@ -786,6 +796,12 @@ std::string control_platform_runtime_dir(std::string& rejection) {
         return {};
     }
     if (!is_private_runtime_dir(path, rejection)) {
+        return {};
+    }
+    return path;
+#elif defined(_WIN32)
+    const std::string path = local_app_data_dir();
+    if (path.empty() || !is_private_runtime_dir(path, rejection)) {
         return {};
     }
     return path;
@@ -832,7 +848,11 @@ std::string control_socket_absent_reason(const ControlRuntimeDir& runtime,
                    runtime.rejection +
                    ". Give --control-socket <path> to choose one, or --no-control to stop asking";
         }
-#ifdef __APPLE__
+#if defined(_WIN32)
+        return "$XDG_RUNTIME_DIR is not set and this user's LocalAppData folder could not be "
+               "found, so there is nowhere user-private to put a control socket. "
+               "Give --control-socket <path> to choose one, or --no-control to stop asking";
+#elif defined(__APPLE__)
         return "$XDG_RUNTIME_DIR is not set and this host's own per-user temporary directory "
                "could not be used, so there is nowhere user-private to put a control socket. "
                "Give --control-socket <path> to choose one, or --no-control to stop asking";

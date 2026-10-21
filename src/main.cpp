@@ -38,6 +38,10 @@
 // For sigaction(), which <csignal> is not required to declare.
 #include <signal.h>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -63,6 +67,36 @@ std::atomic<bool> g_running{true};
 void handle_signal(int /*sig*/) {
     g_running.store(false);
 }
+
+#ifdef _WIN32
+/// Set by TeardownDone once main() has destroyed everything else.
+std::atomic<bool> g_teardown_done{false};
+
+/// Declared first in main(), so it is destroyed last, on every return path.
+struct TeardownDone {
+    TeardownDone() = default;
+    TeardownDone(const TeardownDone&) = delete;
+    TeardownDone& operator=(const TeardownDone&) = delete;
+    ~TeardownDone() {
+        g_teardown_done.store(true);
+    }
+};
+
+/// Window close, logoff and shutdown end the process as soon as this returns, so it holds them
+/// until main() has said goodbye, closed the control socket and released the pidfile.
+BOOL WINAPI handle_console_event(DWORD event) {
+    g_running.store(false);
+    if (event == CTRL_C_EVENT || event == CTRL_BREAK_EVENT) {
+        return TRUE;
+    }
+    // Windows terminates the process about 5 s after these events regardless.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(4500);
+    while (!g_teardown_done.load() && std::chrono::steady_clock::now() < deadline) {
+        Sleep(10);
+    }
+    return TRUE;
+}
+#endif
 
 /// Monotonic milliseconds, immune to wall-clock steps at boot.
 int64_t monotonic_ms() {
@@ -597,6 +631,9 @@ void start_advertising(MdnsService& mdns, const Options& opts) {
 }  // namespace
 
 int main(int argc, char* argv[]) {
+#ifdef _WIN32
+    const TeardownDone teardown_done;
+#endif
     Options opts;
     if (!parse_options(argc, argv, opts)) {
         std::fprintf(stderr, "Try '%s --help' for the full flag list.\n", argv[0]);
@@ -673,10 +710,15 @@ int main(int argc, char* argv[]) {
         }
     }
 
+#ifndef _WIN32
     // A closed pipe on -o stdout must not kill the daemon.
     std::signal(SIGPIPE, SIG_IGN);
+#endif
     std::signal(SIGINT, handle_signal);
     std::signal(SIGTERM, handle_signal);
+#ifdef _WIN32
+    SetConsoleCtrlHandler(handle_console_event, TRUE);
+#else
     if (!opts.logfile.empty()) {
         // Only with -f. sigaction() so the handler survives repeated rotations.
         struct sigaction hup = {};
@@ -685,6 +727,7 @@ int main(int argc, char* argv[]) {
         hup.sa_flags = SA_RESTART;
         sigaction(SIGHUP, &hup, nullptr);
     }
+#endif
 
     // Above make_audio_sink(), so racing instances collide on the pidfile, not the sound card.
     PidFile pidfile;

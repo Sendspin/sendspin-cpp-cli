@@ -27,7 +27,8 @@ jobs:
       # Every leg's result, not just the first failure.
       fail-fast: false
       # Spell every key on every leg, false included: a missing key reads as false and silently disables that leg's work.
-      # A publish: true leg also needs entries in both asset sets release.yml diffs (macOS: tarball and .pkg).
+      # A publish: true leg also needs entries in both asset sets release.yml diffs (macOS: tarball and .pkg;
+      # Windows: zip).
       matrix:
         include:
           - name: linux-x86_64
@@ -106,6 +107,23 @@ jobs:
             avahi: false
             systemd: true
 
+          # clang-cl from the image's Visual Studio; PortAudio is built from source and DNS-SD is
+          # part of Windows, so nothing is installed. No probes: there are no Bonjour enumerators.
+          - name: windows-x86_64
+            runner: windows-2025
+            arm32: ''
+            with_mdns: 'ON'
+            with_portaudio: 'ON'
+            with_pulse: 'OFF'
+            with_pipewire: 'OFF'
+            expect_probe: ''
+            expect_backends: '^-- sendspin-cli audio backends: null, stdout, portaudio$'
+            expect_mdns: '^-- sendspin-cli mDNS: windns \(built in\)$'
+            runtime_packages: 'none. PortAudio is linked in, and DNS-SD is part of Windows 10 1809 and later.'
+            publish: true
+            avahi: false
+            systemd: false
+
     steps:
       # Actions pinned to commits; the trailing comment is the version.
       - name: Check out
@@ -123,6 +141,37 @@ jobs:
             libpulse-dev \
             libpipewire-0.3-dev \
             libavahi-compat-libdnssd-dev
+
+      # What vcvars64.bat changes, exported for the later steps; inline rather than a third-party action.
+      - name: Set up clang-cl and the MSVC environment (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          vswhere='/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe'
+          vs=$("$vswhere" -latest -products '*' \
+            -requires Microsoft.VisualStudio.Component.VC.Llvm.Clang -property installationPath)
+          [ -n "$vs" ] || {
+            echo '::error::this image has no Visual Studio with the clang-cl component'
+            exit 1
+          }
+          echo "Visual Studio: $vs"
+
+          printf '@call "%s\\VC\\Auxiliary\\Build\\vcvars64.bat" >nul\r\n@set\r\n' "$vs" >vcvars.bat
+          cmd //c set | tr -d '\r' | sort >before.txt
+          # A full path: cmd may not look in the current directory for it.
+          cmd //c "$(cygpath -w "$PWD/vcvars.bat")" | tr -d '\r' | sort >after.txt
+          grep -qi '^VCToolsInstallDir=' after.txt || {
+            echo '::error::vcvars64.bat did not set up the developer environment'
+            exit 1
+          }
+
+          # New or changed variables; PATH goes through GITHUB_PATH instead.
+          comm -13 before.txt after.txt | grep -vi '^path=' >>"$GITHUB_ENV"
+          before_path=$(grep -i '^path=' before.txt | cut -d= -f2- | tr ';' '\n')
+          grep -i '^path=' after.txt | cut -d= -f2- | tr ';' '\n' |
+            grep -vxF -f <(printf '%s\n' "$before_path") >>"$GITHUB_PATH" || true
+          # The developer environment does not put clang-cl on PATH.
+          printf '%s\n' "$vs\\VC\\Tools\\Llvm\\x64\\bin" >>"$GITHUB_PATH"
+          rm -f vcvars.bat before.txt after.txt
 
       # Instead of the step above, so no host-arch -dev library can answer find_library.
       - name: Install the cross toolchain and armhf dependencies (cross-compiled 32-bit ARM)
@@ -233,6 +282,9 @@ jobs:
             -DSENDSPIN_CLI_WITH_PIPEWIRE="$WITH_PIPEWIRE"
             -DFETCHCONTENT_BASE_DIR="$DEPS_DIR"
           )
+          if [ "$RUNNER_OS" = 'Windows' ]; then
+            options+=(-G Ninja -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl)
+          fi
 
           if [ -n "$ARM32" ]; then
             scripts/build_arm32.sh "$ARM32" build "${options[@]}" 2>&1 | tee configure.log
@@ -331,8 +383,14 @@ jobs:
 
       # Before avahi-daemon is installed, to exercise the non-fatal advertise-failure path.
       - name: Smoke test
-        if: matrix.publish
+        if: matrix.publish && runner.os != 'Windows'
         run: scripts/smoke_test.sh build/sendspin-cli
+
+      # smoke_test.sh's kill/wait handling does not apply to a Windows binary; the same ground in PowerShell.
+      - name: Smoke test (Windows)
+        if: matrix.publish && runner.os == 'Windows'
+        shell: pwsh
+        run: scripts/smoke_test_windows.ps1 -Binary build/sendspin-cli.exe
 
       # Proves libavahi-compat-libdnssd implements our dns_sd calls: register, browse, resolve, QueryRecord.
       - name: Advertise and discover through a real Avahi daemon
@@ -413,7 +471,7 @@ jobs:
 
       # DESTDIR (not --prefix) keeps ExecStart valid; --component keeps it ours; tarred to keep +x.
       - name: Package
-        if: matrix.publish
+        if: matrix.publish && runner.os != 'Windows'
         id: package
         env:
           RUNTIME_PACKAGES: ${{ matrix.runtime_packages }}
@@ -515,7 +573,7 @@ jobs:
 
       # Assert the exact payload; keep in step with build-armv6.yml's list of the same.
       - name: Assert the payload holds exactly what it should
-        if: matrix.publish
+        if: matrix.publish && runner.os != 'Windows'
         env:
           NAME: ${{ steps.package.outputs.name }}
         run: |
@@ -813,13 +871,31 @@ jobs:
           /usr/local/bin/sendspin-cli --version
           scripts/smoke_test.sh /usr/local/bin/sendspin-cli
 
+      # A zip of the binary and its docs, asserted to hold exactly that.
+      - name: Package (Windows)
+        if: matrix.publish && runner.os == 'Windows'
+        id: package_windows
+        shell: pwsh
+        env:
+          LEG: ${{ matrix.name }}
+        run: scripts/package_windows.ps1 -Binary build/sendspin-cli.exe -Leg $env:LEG
+
       - name: Upload
-        if: matrix.publish
+        if: matrix.publish && runner.os != 'Windows'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: ${{ steps.package.outputs.name }}
           path: ${{ steps.package.outputs.name }}.tar.gz
           # Long enough to bisect; releases take their own copy.
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Upload (Windows)
+        if: matrix.publish && runner.os == 'Windows'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ${{ steps.package_windows.outputs.name }}
+          path: ${{ steps.package_windows.outputs.name }}.zip
           retention-days: 14
           if-no-files-found: error
 

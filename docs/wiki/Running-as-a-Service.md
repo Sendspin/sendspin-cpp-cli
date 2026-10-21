@@ -1,6 +1,8 @@
 # Running as a Service
 
-One systemd unit ships in the Linux payload, with sane defaults and nothing to fill in.
+One systemd unit ships in the Linux payload, with sane defaults and nothing to fill in. On
+Windows there is no service yet: [Getting Started on Windows](Getting-Started-on-Windows)
+sets up a scheduled task that starts the player whenever you log on.
 
 ```bash
 sudo systemd-sysusers

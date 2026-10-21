@@ -1,25 +1,27 @@
 # Installation
 
-Four ways in, depending on what you have. If you are on Linux and want the short version,
-[Getting Started on Linux](Getting-Started-on-Linux) does all of this in one command.
+Five ways in, depending on what you have. If you are on Linux and want the short version,
+[Getting Started on Linux](Getting-Started-on-Linux) does all of this in one command;
+[Getting Started on Windows](Getting-Started-on-Windows) is the same for Windows.
 
 | You have | Take |
 |---|---|
 | A Linux box or a Raspberry Pi | The `linux-x86_64`, `linux-arm64`, `linux-armv7` or `linux-armv6` tarball |
 | An Apple-silicon Mac | The `macos-arm64` installer `.pkg`, or the tarball |
+| A Windows 10 1809+ or Windows 11 PC | The `windows-x86_64` zip |
 | Anything else | [Build from source](#build-from-source) |
 
 Everything published is on the
 [Releases page](https://github.com/Sendspin/sendspin-cpp-cli/releases), and every release
-carries all six archives. Per-commit builds of unreleased work are under the repository's
-Actions tab and expire after 14 days — five archives per commit there, `linux-armv6` being
+carries all seven archives. Per-commit builds of unreleased work are under the repository's
+Actions tab and expire after 14 days — six archives per commit there, `linux-armv6` being
 built by a workflow of its own rather than on every push. See
 [the Actions tab](https://github.com/Sendspin/sendspin-cpp-cli/actions).
 
 ## What is in the archive
 
 Every tarball is a staged `cmake --install` payload, which means **every path under `usr/`
-is the path the file installs to**:
+is the path the file installs to** (the Windows zip is flat instead; see [Windows](#windows)):
 
 ```
 sendspin-cli-0.1.0-linux-arm64/
@@ -140,6 +142,26 @@ A Developer ID signature and notarization are owed and tracked as roadmap item 7
 There is no launchd job in the payload. On macOS the player runs from a shell or under a
 launch agent you write.
 
+## Windows
+
+The zip holds one folder: `sendspin-cli.exe`, `BUILD-INFO.txt`, `README.md`,
+`contributors.md`, `LICENSE` and `sendspin-cli.conf.example`. **It needs nothing installed
+alongside it** — PortAudio is linked in, and mDNS is Windows' own.
+
+[Getting Started on Windows](Getting-Started-on-Windows) installs it for you, verified and
+starting at logon. By hand:
+
+```powershell
+Get-FileHash .\sendspin-cli-0.5.0-windows-x86_64.zip -Algorithm SHA256   # compare with SHA256SUMS
+Expand-Archive .\sendspin-cli-0.5.0-windows-x86_64.zip .
+Get-ChildItem .\sendspin-cli-0.5.0-windows-x86_64 | Unblock-File
+.\sendspin-cli-0.5.0-windows-x86_64\sendspin-cli.exe --version
+```
+
+**The binary is not signed**, so SmartScreen may warn the first time it runs; that is what
+checking it against `SHA256SUMS` is for. There is no Windows service in the payload: the
+guided installer starts it at logon from a scheduled task instead.
+
 ## Raspberry Pi
 
 The Pi takes the `linux-arm64` archive on a 64-bit OS and the `linux-armv7` one on a 32-bit
@@ -164,6 +186,16 @@ cd sendspin-cpp-cli
 cmake -B build
 cmake --build build
 ./build/sendspin-cli --help
+```
+
+On Windows, build with clang-cl from a Visual Studio developer prompt with the
+"C++ Clang tools for Windows" component installed; PortAudio is built from source and mDNS
+needs nothing:
+
+```powershell
+cmake -B build -G Ninja -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl
+cmake --build build
+.\build\sendspin-cli.exe --help
 ```
 
 Needs CMake ≥ 3.16, a C++20 compiler, and network access on the first configure —

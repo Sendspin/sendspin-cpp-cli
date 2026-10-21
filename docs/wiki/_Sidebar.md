@@ -6,6 +6,7 @@
 
 - [Getting Started on Linux](Getting-Started-on-Linux)
 - [Getting Started on a Raspberry Pi](Getting-Started-on-a-Raspberry-Pi)
+- [Getting Started on Windows](Getting-Started-on-Windows)
 - [Installation](Installation)
 
 **Use it**
