@@ -23,6 +23,9 @@ namespace sendspin_cli {
 /// This user's LocalAppData folder with '/' separators, or empty when it cannot be found.
 std::string local_app_data_dir();
 
+/// This user's roaming AppData folder, the counterpart of ~/.config; as local_app_data_dir().
+std::string roaming_app_data_dir();
+
 /// True if `path` is a directory owned by this user that no one but SYSTEM and Administrators
 /// can also write to, or create files in that others could write.
 bool is_private_directory(const std::string& path, std::string& reason);

@@ -100,10 +100,13 @@ std::string last_error_text() {
     return message.empty() ? "error " + std::to_string(code) : message;
 }
 
-std::string local_app_data_dir() {
-    // The known folder, not %LOCALAPPDATA%, which the environment could redirect.
+namespace {
+
+/// A known folder with '/' separators, or empty when it cannot be found.
+std::string known_folder(REFKNOWNFOLDERID id) {
+    // The known folder, not its environment variable, which could redirect it.
     PWSTR wide = nullptr;
-    if (FAILED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DEFAULT, nullptr, &wide))) {
+    if (FAILED(SHGetKnownFolderPath(id, KF_FLAG_DEFAULT, nullptr, &wide))) {
         return {};
     }
     // The ANSI code page, which every narrow Win32 call here reads paths in.
@@ -121,6 +124,16 @@ std::string local_app_data_dir() {
         }
     }
     return path;
+}
+
+}  // namespace
+
+std::string local_app_data_dir() {
+    return known_folder(FOLDERID_LocalAppData);
+}
+
+std::string roaming_app_data_dir() {
+    return known_folder(FOLDERID_RoamingAppData);
 }
 
 bool is_private_directory(const std::string& path, std::string& reason) {
