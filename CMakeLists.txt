@@ -204,7 +204,8 @@ endif()
 
 # mDNS
 
-# Auto-detected: Bonjour on macOS, libavahi-compat-libdnssd on Linux. OFF forces it out.
+# Auto-detected: Bonjour on macOS, libavahi-compat-libdnssd on Linux, windns on Windows. OFF
+# forces it out.
 option(SENDSPIN_CLI_WITH_MDNS "Build mDNS advertisement/discovery if dns_sd.h is available" ON)
 
 set(SENDSPIN_CLI_MDNS_ENABLED OFF)
@@ -212,9 +213,9 @@ set(SENDSPIN_CLI_MDNS_DESCRIPTION "none")
 
 if(SENDSPIN_CLI_WITH_MDNS)
     if(WIN32)
-        message(STATUS
-            "sendspin-cli: no mDNS on Windows yet -- the player cannot be discovered and -s "
-            "mdns: is refused at parse time.")
+        # Windows 10 1809+ has DNS-SD in dnsapi, so there is nothing to find.
+        set(SENDSPIN_CLI_MDNS_ENABLED ON)
+        set(SENDSPIN_CLI_MDNS_DESCRIPTION "windns (built in)")
     elseif(APPLE)
         # dns_sd lives in libSystem here, so there is nothing to find and nothing to link.
         set(SENDSPIN_CLI_MDNS_ENABLED ON)
@@ -236,7 +237,7 @@ if(SENDSPIN_CLI_WITH_MDNS)
 endif()
 
 # Bonjour-only error enumerators, probed by compiling a use: #ifdef cannot see enumerators.
-if(SENDSPIN_CLI_MDNS_ENABLED)
+if(SENDSPIN_CLI_MDNS_ENABLED AND NOT WIN32)
     include(CheckCXXSourceCompiles)
 
     # The same dns_sd.h include directory the build uses.
@@ -308,7 +309,11 @@ else()
 endif()
 
 # One MdnsService implementation per build.
-if(SENDSPIN_CLI_MDNS_ENABLED)
+if(SENDSPIN_CLI_MDNS_ENABLED AND WIN32)
+    target_sources(sendspin-cli-core PRIVATE src/mdns_windns.cpp)
+    target_compile_definitions(sendspin-cli-core PUBLIC SENDSPIN_CLI_HAVE_MDNS)
+    target_link_libraries(sendspin-cli-core PUBLIC dnsapi)
+elseif(SENDSPIN_CLI_MDNS_ENABLED)
     target_sources(sendspin-cli-core PRIVATE src/mdns_dnssd.cpp)
     target_compile_definitions(sendspin-cli-core PUBLIC SENDSPIN_CLI_HAVE_MDNS)
     # PRIVATE: only mdns_dnssd.cpp reads these.
