@@ -819,19 +819,6 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
         }
     }
 
-#ifndef SENDSPIN_CLI_HAVE_HOOKS
-    if (error.empty() && out.was_given(Opt::HookStart)) {
-        fail_for(Opt::HookStart,
-                 "--hook-start is not supported on this platform yet, so the hook would never "
-                 "run. Drop it.");
-    }
-    if (error.empty() && out.was_given(Opt::HookStop)) {
-        fail_for(Opt::HookStop,
-                 "--hook-stop is not supported on this platform yet, so the hook would never "
-                 "run. Drop it.");
-    }
-#endif
-
     // -z sends stdout to /dev/null, so -o stdout under -z is a contradiction.
     if (error.empty() && out.was_given(Opt::Daemonize) && out.was_given(Opt::Device)) {
         DeviceSpec spec;
@@ -1156,10 +1143,11 @@ void print_usage(std::FILE* out, const char* prog) {
     std::fprintf(out, "                listed as itself\n");
     std::fprintf(out, "  --hook-start <command>\n");
     std::fprintf(out, "  --hook-stop <command>\n");
-#ifndef SENDSPIN_CLI_HAVE_HOOKS
-    std::fprintf(out, "                (not supported on this platform yet)\n");
-#endif
+#ifdef _WIN32
+    std::fprintf(out, "                Run <command> through cmd.exe when a stream starts or\n");
+#else
     std::fprintf(out, "                Run <command> through /bin/sh when a stream starts or\n");
+#endif
     std::fprintf(out, "                stops -- an amplifier relay, a light. The event's facts\n");
     std::fprintf(out, "                arrive as SENDSPIN_EVENT (start|stop) and, where known,\n");
     std::fprintf(out, "                SENDSPIN_SERVER_ID, SENDSPIN_SERVER_NAME,\n");

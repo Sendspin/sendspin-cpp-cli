@@ -281,6 +281,7 @@ add_library(sendspin-cli-core STATIC
     src/control_common.cpp
     src/control_socket.cpp
     src/config_file.cpp
+    src/hooks.cpp
     src/key_value_file.cpp
     src/log.cpp
     src/mdns_common.cpp
@@ -295,16 +296,15 @@ add_library(sendspin-cli-core STATIC
     src/supported_formats.cpp
 )
 
-# Windows has no fork(), flock() or /bin/sh: its own daemon and lock code, and no hooks yet.
+# Windows has no fork(), flock() or /bin/sh, so -z, locks and hooks have their own implementation.
 if(WIN32)
-    target_sources(sendspin-cli-core PRIVATE src/daemon_win.cpp src/hooks_null.cpp src/win_security.cpp)
+    target_sources(sendspin-cli-core PRIVATE src/daemon_win.cpp src/hooks_win.cpp src/win_security.cpp)
     # POSIX names (open, close, unlink, ...) without the CRT's deprecation warnings.
     target_compile_definitions(sendspin-cli-core PUBLIC
         NOMINMAX WIN32_LEAN_AND_MEAN NOGDI _CRT_NONSTDC_NO_WARNINGS _CRT_SECURE_NO_WARNINGS)
     target_link_libraries(sendspin-cli-core PUBLIC ws2_32 advapi32 shell32 ole32)
 else()
-    target_sources(sendspin-cli-core PRIVATE src/daemon.cpp src/hooks.cpp)
-    target_compile_definitions(sendspin-cli-core PUBLIC SENDSPIN_CLI_HAVE_HOOKS)
+    target_sources(sendspin-cli-core PRIVATE src/daemon.cpp src/hooks_posix.cpp)
 endif()
 
 # One MdnsService implementation per build.
