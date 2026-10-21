@@ -71,6 +71,9 @@ public:
     /// Seeds the sink from the state store without marking it server-set. Call before connecting.
     void restore_volume(uint8_t volume, bool muted);
 
+    /// Seeds the sink from the hardware mixer, marking the pair hardware-sourced.
+    void seed_volume(uint8_t volume, bool muted);
+
     /// Pins the sink at full gain, unmuted, and ignores volume and mute from then on.
     void fix_volume();
 

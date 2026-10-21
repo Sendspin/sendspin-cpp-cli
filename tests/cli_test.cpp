@@ -446,6 +446,46 @@ TEST(ParseOptions, FixedVolumeIsOffUnlessAsked) {
     EXPECT_TRUE(on.options().fixed_volume);
 }
 
+TEST(ParseOptions, AlsaMixerDefaultsToSoftwareVolume) {
+    Parse parse({});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_TRUE(parse.options().alsa_mixer.empty());
+    EXPECT_FALSE(parse.options().was_given(Opt::AlsaMixer));
+}
+
+TEST(ParseOptions, AlsaMixerIsAccepted) {
+    Parse parse({"-o", "alsa:default", "--alsa-mixer", "0:Master"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_EQ(parse.options().alsa_mixer, "0:Master");
+    EXPECT_TRUE(parse.options().was_given(Opt::AlsaMixer));
+}
+
+TEST(ParseOptions, AlsaMixerNeedsTheAlsaBackend) {
+    Parse parse({"-o", "null", "--alsa-mixer", "0:Master"});
+
+    EXPECT_FALSE(parse.ok());
+    EXPECT_NE(parse.diagnostics().find("needs -o alsa:<device>"), std::string::npos)
+        << parse.diagnostics();
+}
+
+TEST(ParseOptions, AlsaMixerContradictsFixedVolume) {
+    Parse parse({"-o", "alsa:default", "--alsa-mixer", "0:Master", "--fixed-volume"});
+
+    EXPECT_FALSE(parse.ok());
+    EXPECT_NE(parse.diagnostics().find("contradict each other"), std::string::npos)
+        << parse.diagnostics();
+}
+
+TEST(ParseOptions, AlsaMixerRefusesAnEmptyValue) {
+    Parse parse({"-o", "alsa:default", "--alsa-mixer", ""});
+
+    EXPECT_FALSE(parse.ok());
+    EXPECT_NE(parse.diagnostics().find("needs a non-empty value"), std::string::npos)
+        << parse.diagnostics();
+}
+
 TEST(ParseOptions, OutputDelayDefaultsToNoDelay) {
     Parse parse({});
 

@@ -130,6 +130,14 @@ void PlayerListener::restore_volume(uint8_t volume, bool muted) {
     this->volume_source_ = VolumeSource::Restored;
 }
 
+void PlayerListener::seed_volume(uint8_t volume, bool muted) {
+    this->sink_.set_volume(volume);
+    this->sink_.set_muted(muted);
+    this->applied_volume_ = volume;
+    this->applied_muted_ = muted;
+    this->volume_source_ = VolumeSource::Hardware;
+}
+
 void PlayerListener::fix_volume() {
     this->sink_.set_volume(DEFAULT_SINK_VOLUME);
     this->sink_.set_muted(false);

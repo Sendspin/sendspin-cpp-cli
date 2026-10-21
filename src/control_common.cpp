@@ -177,6 +177,8 @@ const char* volume_source_note(VolumeSource source) {
             return "";
         case VolumeSource::Fixed:
             return " (fixed; the server cannot set it)";
+        case VolumeSource::Hardware:
+            return " (read from the hardware mixer at startup)";
         case VolumeSource::SinkDefault:
             break;
     }
