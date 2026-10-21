@@ -18,6 +18,8 @@
 #include "coreaudio_permission.h"
 #include "log.h"
 
+#include <sendspin/client.h>
+
 #include <mach/mach_time.h>
 
 #include <algorithm>
@@ -28,6 +30,7 @@
 namespace sendspin_cli {
 
 using sendspin::LogLevel;
+using sendspin::SendspinClient;
 
 static constexpr const char* LOG_TAG = LOG_TAG_AUDIO;
 
@@ -47,12 +50,6 @@ constexpr uint64_t TAP_SILENCE_WARN_S = 10;
 /// AUHAL's elements: 1 faces the device's input side, 0 its output side.
 constexpr UInt32 INPUT_BUS = 1;
 constexpr UInt32 OUTPUT_BUS = 0;
-
-int64_t now_us() {
-    return std::chrono::duration_cast<std::chrono::microseconds>(
-               std::chrono::steady_clock::now().time_since_epoch())
-        .count();
-}
 
 /// The device's own rate as a whole number of Hz; 0 when it cannot be read.
 uint32_t device_rate(AudioDeviceID device) {
@@ -539,7 +536,7 @@ OSStatus CoreAudioSource::property_listener(AudioObjectID /*object*/, UInt32 cou
 OSStatus CoreAudioSource::input_callback(void* user_data, AudioUnitRenderActionFlags* flags,
                                          const AudioTimeStamp* timestamp, UInt32 bus, UInt32 frames,
                                          AudioBufferList* /*data*/) {
-    const int64_t entered_us = now_us();
+    const int64_t entered_us = SendspinClient::now_us();
     const uint64_t entered_host = mach_absolute_time();
 
     auto* self = static_cast<CoreAudioSource*>(user_data);

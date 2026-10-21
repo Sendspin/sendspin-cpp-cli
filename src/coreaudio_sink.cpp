@@ -18,6 +18,8 @@
 #include "log.h"
 #include "pcm_volume.h"
 
+#include <sendspin/client.h>
+
 #include <mach/mach_time.h>
 
 #include <algorithm>
@@ -32,6 +34,7 @@
 namespace sendspin_cli {
 
 using sendspin::LogLevel;
+using sendspin::SendspinClient;
 
 static constexpr const char* LOG_TAG = LOG_TAG_AUDIO;
 
@@ -46,12 +49,6 @@ constexpr size_t MIN_RING_FRAMES = 1024;
 /// CoreAudio's spelling of PROBE_BIT_DEPTHS, in the same order.
 constexpr std::array<const char*, PROBE_BIT_DEPTHS.size()> PROBE_FORMAT_NAMES{"SInt8", "SInt16",
                                                                               "SInt24", "SInt32"};
-
-int64_t now_us() {
-    return std::chrono::duration_cast<std::chrono::microseconds>(
-               std::chrono::steady_clock::now().time_since_epoch())
-        .count();
-}
 
 /// Asks the unit whether it will take this exact format on its input scope; the AU converts on
 /// top of what the device itself does, so this is what a stream would really get.
@@ -863,7 +860,7 @@ OSStatus CoreAudioSink::property_listener(AudioObjectID /*object*/, UInt32 count
 OSStatus CoreAudioSink::render_callback(void* user_data, AudioUnitRenderActionFlags* /*flags*/,
                                         const AudioTimeStamp* timestamp, UInt32 /*bus*/,
                                         UInt32 frames, AudioBufferList* data) {
-    const int64_t entered_us = now_us();
+    const int64_t entered_us = SendspinClient::now_us();
     const uint64_t entered_host = mach_absolute_time();
 
     auto* self = static_cast<CoreAudioSink*>(user_data);

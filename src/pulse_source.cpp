@@ -16,8 +16,9 @@
 
 #include "log.h"
 
+#include <sendspin/client.h>
+
 #include <algorithm>
-#include <chrono>
 #include <cstring>
 #include <utility>
 #include <vector>
@@ -25,6 +26,7 @@
 namespace sendspin_cli {
 
 using sendspin::LogLevel;
+using sendspin::SendspinClient;
 
 static constexpr const char* LOG_TAG = LOG_TAG_AUDIO;
 
@@ -37,12 +39,6 @@ constexpr const char* PULSE_STREAM_NAME = "sendspin-cli input";
 constexpr pa_usec_t FRAGMENT_US = 20000;
 
 constexpr int64_t US_PER_S = 1000000;
-
-int64_t now_us() {
-    return std::chrono::duration_cast<std::chrono::microseconds>(
-               std::chrono::steady_clock::now().time_since_epoch())
-        .count();
-}
 
 /// PulseAudio's packed little-endian format for a capture bit depth.
 pa_sample_format_t pulse_format_for(uint8_t bit_depth) {
@@ -397,7 +393,7 @@ int PulseAudioSource::drain_(uint8_t* data, size_t length, int64_t& capture_time
     const bool timed =
         pa_stream_get_latency(this->stream_, &latency_us, &negative) == 0 && negative == 0;
     // The read index only moves with a whole fragment, so the part already returned is added back.
-    const int64_t first_us = now_us() - static_cast<int64_t>(latency_us) +
+    const int64_t first_us = SendspinClient::now_us() - static_cast<int64_t>(latency_us) +
                              static_cast<int64_t>(this->fragment_offset_ / this->bytes_per_frame_) *
                                  US_PER_S / this->rate_;
 

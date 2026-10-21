@@ -17,6 +17,8 @@
 #include "log.h"
 #include "pcm_volume.h"
 
+#include <sendspin/client.h>
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -28,6 +30,7 @@
 namespace sendspin_cli {
 
 using sendspin::LogLevel;
+using sendspin::SendspinClient;
 
 static constexpr const char* LOG_TAG = LOG_TAG_AUDIO;
 
@@ -38,12 +41,6 @@ constexpr double RING_LATENCY_MULTIPLE = 3.0;
 
 /// Absolute floor on the ring, for a device that reports no latency at all.
 constexpr size_t MIN_RING_FRAMES = 1024;
-
-int64_t now_us() {
-    return std::chrono::duration_cast<std::chrono::microseconds>(
-               std::chrono::steady_clock::now().time_since_epoch())
-        .count();
-}
 
 /// How -l names each PA_FORMATS entry.
 constexpr std::array<const char*, PROBE_BIT_DEPTHS.size()> PROBE_FORMAT_NAMES{"paInt8", "paInt16",
@@ -705,7 +702,7 @@ void PortAudioSink::update_target_multiplier_() {
 int PortAudioSink::pa_callback(const void* /*input*/, void* output, unsigned long frame_count,
                                const PaStreamCallbackTimeInfo* time_info,
                                PaStreamCallbackFlags /*status_flags*/, void* user_data) {
-    const int64_t entered_us = now_us();
+    const int64_t entered_us = SendspinClient::now_us();
 
     auto* self = static_cast<PortAudioSink*>(user_data);
     auto* out = static_cast<uint8_t*>(output);

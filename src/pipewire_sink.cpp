@@ -17,6 +17,8 @@
 #include "log.h"
 #include "pcm_volume.h"
 
+#include <sendspin/client.h>
+
 #include <spa/param/audio/format-utils.h>
 #include <spa/pod/builder.h>
 #include <spa/support/log.h>
@@ -34,6 +36,7 @@
 namespace sendspin_cli {
 
 using sendspin::LogLevel;
+using sendspin::SendspinClient;
 
 static constexpr const char* LOG_TAG = LOG_TAG_AUDIO;
 
@@ -41,12 +44,6 @@ namespace {
 
 /// The name this stream carries in the graph.
 constexpr const char* PIPEWIRE_APP_NAME = "sendspin-cli";
-
-int64_t now_us() {
-    return std::chrono::duration_cast<std::chrono::microseconds>(
-               std::chrono::steady_clock::now().time_since_epoch())
-        .count();
-}
 
 /// SPA format per PROBE_BIT_DEPTHS entry, exactly as the player emits; PipeWire converts.
 constexpr std::array<spa_audio_format, PROBE_BIT_DEPTHS.size()> PROBE_FORMATS{
@@ -588,7 +585,7 @@ void PipeWireSink::stream_state_cb(void* userdata, enum pw_stream_state /*old*/,
 
 void PipeWireSink::stream_process_cb(void* userdata) {
     auto* self = static_cast<PipeWireSink*>(userdata);
-    const int64_t entered_us = now_us();
+    const int64_t entered_us = SendspinClient::now_us();
 
     // Safe unlocked: pw_stream_disconnect() waits for this callback to return.
     pw_buffer* buffer = pw_stream_dequeue_buffer(self->stream_);
