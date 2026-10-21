@@ -18,10 +18,14 @@
 
 #include "cli.h"
 #include "parse_harness.h"
+#include "posix_compat.h"
 #include "scoped_env.h"
 
 #include <gtest/gtest.h>
-#include <unistd.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 #include <chrono>
 #include <csignal>
@@ -162,16 +166,30 @@ TEST(HookRunner, RunsTheCommandWithTheEventEnvironment) {
     context.client_name = "kitchen";
 
     HookRunner runner;
+#ifdef _WIN32
+    runner.run("<nul set /p =\"%SENDSPIN_EVENT%|%SENDSPIN_SERVER_ID%|%SENDSPIN_SERVER_NAME%|"
+               "%SENDSPIN_SERVER_URL%|%SENDSPIN_CLIENT_ID%|%SENDSPIN_CLIENT_NAME%\"> " +
+                   out.path(),
+               "start", context);
+#else
     runner.run("printf '%s|%s|%s|%s|%s|%s' \"$SENDSPIN_EVENT\" \"$SENDSPIN_SERVER_ID\" "
                "\"$SENDSPIN_SERVER_NAME\" \"$SENDSPIN_SERVER_URL\" \"$SENDSPIN_CLIENT_ID\" "
                "\"$SENDSPIN_CLIENT_NAME\" > " +
                    out.path(),
                "start", context);
+#endif
 
     ASSERT_TRUE(drain(runner));
     EXPECT_EQ(slurp(out.path()),
               "start|srv-1|Living Room|ws://hifi:8927/sendspin|kitchen-left|kitchen");
 }
+
+#ifdef _WIN32
+/// A command printing `name`'s value, or "unset" when the hook did not get it, with no newline.
+std::string value_or_unset(const std::string& name) {
+    return "(if defined " + name + " (<nul set /p =\"%" + name + "%\") else (<nul set /p =unset))";
+}
+#endif
 
 TEST(HookRunner, AnUnknownFieldIsAbsentRatherThanEmpty) {
     // An unknown must be unset, not empty; ${VAR-unset} tells the two apart.
@@ -180,10 +198,16 @@ TEST(HookRunner, AnUnknownFieldIsAbsentRatherThanEmpty) {
     context.client_name = "kitchen";
 
     HookRunner runner;
+#ifdef _WIN32
+    runner.run("(" + value_or_unset("SENDSPIN_SERVER_ID") + " & <nul set /p =\"|\" & " +
+                   value_or_unset("SENDSPIN_SERVER_URL") + ")> " + out.path(),
+               "stop", context);
+#else
     runner.run(
         "printf '%s|%s' \"${SENDSPIN_SERVER_ID-unset}\" \"${SENDSPIN_SERVER_URL-unset}\" > " +
             out.path(),
         "stop", context);
+#endif
 
     ASSERT_TRUE(drain(runner));
     EXPECT_EQ(slurp(out.path()), "unset|unset");
@@ -194,8 +218,12 @@ TEST(HookRunner, AnInheritedSendspinVariableDoesNotLeakThrough) {
     ScratchFile out;
 
     HookRunner runner;
+#ifdef _WIN32
+    runner.run(value_or_unset("SENDSPIN_SERVER_ID") + "> " + out.path(), "start", HookContext{});
+#else
     runner.run("printf '%s' \"${SENDSPIN_SERVER_ID-unset}\" > " + out.path(), "start",
                HookContext{});
+#endif
 
     ASSERT_TRUE(drain(runner));
     EXPECT_EQ(slurp(out.path()), "unset");
@@ -212,9 +240,34 @@ TEST(HookRunner, AFailingHookIsReapedRatherThanLeaked) {
 
 // One at a time, newest event wins the wait
 
+/// A command appending `text` to `path` with no newline, which cmd's echo cannot leave off.
+std::string append_text(const std::string& path, const std::string& text) {
+#ifdef _WIN32
+    return "<nul set /p =\"" + text + "\">> " + path;
+#else
+    return "printf '" + text + "' >> " + path;
+#endif
+}
+
+/// A command that succeeds and does nothing.
+std::string succeed() {
+#ifdef _WIN32
+    return "exit /b 0";
+#else
+    return "true";
+#endif
+}
+
 /// A hook that waits for `gate` to exist, then runs `then`: ordering without timing assumptions.
 std::string gated(const std::string& gate, const std::string& then) {
+#ifdef _WIN32
+    // cmd has neither a short sleep nor a loop it can leave.
+    return "powershell -NoProfile -NonInteractive -Command \"while (-not (Test-Path -LiteralPath "
+           "'" +
+           gate + "')) { Start-Sleep -Milliseconds 10 }\" & " + then;
+#else
     return "while [ ! -e " + gate + " ]; do sleep 0.01; done; " + then;
+#endif
 }
 
 void open_gate(const std::string& path) {
@@ -226,8 +279,8 @@ TEST(HookRunner, ASecondEventWaitsForTheRunningHook) {
     ScratchFile gate;
     HookRunner runner;
     // Run side by side, the stop hook's 'b' would land first; the order below is the contract.
-    runner.run(gated(gate.path(), "printf 'a' >> " + out.path()), "start", HookContext{});
-    runner.run("printf 'b' >> " + out.path(), "stop", HookContext{});
+    runner.run(gated(gate.path(), append_text(out.path(), "a")), "start", HookContext{});
+    runner.run(append_text(out.path(), "b"), "stop", HookContext{});
 
     EXPECT_EQ(runner.running(), 1U);
     open_gate(gate.path());
@@ -239,9 +292,9 @@ TEST(HookRunner, TheNewestEventReplacesTheWaitingOne) {
     ScratchFile out;
     ScratchFile gate;
     HookRunner runner;
-    runner.run(gated(gate.path(), "printf 'a' >> " + out.path()), "start", HookContext{});
-    runner.run("printf 'b' >> " + out.path(), "stop", HookContext{});
-    runner.run("printf 'c' >> " + out.path(), "start", HookContext{});
+    runner.run(gated(gate.path(), append_text(out.path(), "a")), "start", HookContext{});
+    runner.run(append_text(out.path(), "b"), "stop", HookContext{});
+    runner.run(append_text(out.path(), "c"), "start", HookContext{});
 
     open_gate(gate.path());
     ASSERT_TRUE(drain(runner));
@@ -252,11 +305,15 @@ TEST(HookRunner, AWaitingEventKeepsItsOwnContext) {
     ScratchFile out;
     ScratchFile gate;
     HookRunner runner;
-    runner.run(gated(gate.path(), "true"), "start", HookContext{});
+    runner.run(gated(gate.path(), succeed()), "start", HookContext{});
 
     HookContext context;
     context.server_id = "srv-b";
+#ifdef _WIN32
+    runner.run("<nul set /p =\"%SENDSPIN_SERVER_ID%\"> " + out.path(), "stop", context);
+#else
     runner.run("printf '%s' \"$SENDSPIN_SERVER_ID\" > " + out.path(), "stop", context);
+#endif
     // The waiting event keeps the context it was fired with.
     context.server_id = "srv-c";
 
@@ -269,8 +326,8 @@ TEST(HookRunner, FlushRunsTheWaitingHookBesideAHungOne) {
     ScratchFile out;
     ScratchFile gate;
     HookRunner runner;
-    runner.run(gated(gate.path(), "true"), "start", HookContext{});
-    runner.run("printf 'b' >> " + out.path(), "stop", HookContext{});
+    runner.run(gated(gate.path(), succeed()), "start", HookContext{});
+    runner.run(append_text(out.path(), "b"), "stop", HookContext{});
 
     // flush() runs both at once: the stop hook outranks ordering at shutdown.
     runner.flush();
@@ -294,6 +351,7 @@ TEST(HookRunner, FlushWithNothingWaitingDoesNothing) {
     EXPECT_EQ(runner.running(), 0U);
 }
 
+#ifndef _WIN32
 TEST(HookRunner, DoesNotHandTheHookThePlayersIgnoredSIGPIPE) {
     // An ignored SIGPIPE survives execve(); 141 (128 + SIGPIPE) shows the child reset it.
     ScopedSignal ignored(SIGPIPE, SIG_IGN);
@@ -330,6 +388,33 @@ TEST(HookRunner, DoesNotHandTheHookThePlayersOpenDescriptors) {
     ASSERT_TRUE(drained);
     EXPECT_EQ(slurp(out.path()), "closed\n");
 }
+#else
+TEST(HookRunner, DoesNotHandTheHookThePlayersOpenHandles) {
+    // An inheritable, unshared handle stands in for the player's own sockets.
+    ScratchFile held_path;
+    ScratchFile gate;
+    SECURITY_ATTRIBUTES inherit = {sizeof(inherit), nullptr, TRUE};
+    HANDLE held = CreateFileA(held_path.path().c_str(), GENERIC_WRITE, 0, &inherit, CREATE_ALWAYS,
+                              FILE_ATTRIBUTE_NORMAL, nullptr);
+    ASSERT_NE(held, INVALID_HANDLE_VALUE);
+
+    HookRunner runner;
+    runner.run(gated(gate.path(), succeed()), "start", HookContext{});
+    CloseHandle(held);
+
+    // A copy inherited by the hook would still hold the file open and unshared.
+    HANDLE reopened = CreateFileA(held_path.path().c_str(), GENERIC_WRITE, 0, nullptr,
+                                  OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    const bool free = reopened != INVALID_HANDLE_VALUE;
+    if (free) {
+        CloseHandle(reopened);
+    }
+
+    open_gate(gate.path());
+    ASSERT_TRUE(drain(runner));
+    EXPECT_TRUE(free);
+}
+#endif
 
 }  // namespace
 }  // namespace sendspin_cli

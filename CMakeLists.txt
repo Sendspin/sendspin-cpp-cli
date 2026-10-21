@@ -468,7 +468,14 @@ if(SENDSPIN_CLI_BUILD_TESTS)
     )
     set(INSTALL_GTEST OFF CACHE BOOL "Install GoogleTest alongside our own targets")
     set(BUILD_GMOCK OFF CACHE BOOL "Build GoogleMock")
+    # The CRT the rest of the build links (/MD), not GoogleTest's own /MT default.
+    set(gtest_force_shared_crt ON CACHE BOOL "Use the shared CRT for GoogleTest")
     FetchContent_MakeAvailable(googletest)
+    if(CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+        # GoogleTest builds itself with /WX, which newer clang-cl warnings break.
+        target_compile_options(gtest PRIVATE -Wno-error)
+        target_compile_options(gtest_main PRIVATE -Wno-error)
+    endif()
 
     enable_testing()
     include(GoogleTest)

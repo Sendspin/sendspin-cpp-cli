@@ -16,13 +16,18 @@
 
 #include "state_store.h"
 
+#include "file_access.h"
 #include "key_value_file.h"
+#include "posix_compat.h"
 #include "scoped_env.h"
 #include "sendspin/persistence_keys.h"
 
+#ifdef _WIN32
+#include "win_security.h"
+#endif
+
 #include <gtest/gtest.h>
 #include <sys/stat.h>
-#include <unistd.h>
 
 #include <cstdio>
 #include <cstring>
@@ -44,7 +49,7 @@ public:
 
     ~ScratchDir() {
         // Restored in case a test made it unwritable, or the removals below cannot work.
-        ::chmod(this->path_.c_str(), 0700);
+        set_writable(this->path_, true);
         // A failed write can leave its temporary behind, and the pid is in that name.
         const std::string temporary_suffix = ".tmp." + std::to_string(getpid());
         for (const std::string& leaf : {std::string("state"), "state" + temporary_suffix}) {
@@ -196,9 +201,14 @@ TEST(StateStore, WritesTheFileAt0600) {
     StateStore store(scratch.file());
     ASSERT_TRUE(store.set_last_server("srv-abc123"));
 
+#ifdef _WIN32
+    std::string acl;
+    EXPECT_TRUE(owner_only(scratch.file(), acl)) << acl;
+#else
     struct stat info = {};
     ASSERT_EQ(::stat(scratch.file().c_str(), &info), 0);
     EXPECT_EQ(info.st_mode & 0777, 0600U);
+#endif
 }
 
 TEST(StateStore, LeavesNoTemporaryBehind) {
@@ -259,7 +269,7 @@ TEST(StateStore, AnUnwritableDirectoryFails) {
     const ScratchDir scratch;
     ASSERT_TRUE(scratch.created());
     // Walkable but not writable: the permissions case.
-    ASSERT_EQ(::chmod(scratch.path().c_str(), 0500), 0);
+    ASSERT_TRUE(set_writable(scratch.path(), false));
 
     StateStore store(scratch.file());
     EXPECT_FALSE(store.set_last_server("srv-abc123"));
@@ -270,14 +280,14 @@ TEST(StateStore, AFailedWriteIsNotRememberedAsASuccess) {
     ASSERT_TRUE(scratch.created());
     StateStore store(scratch.file());
     ASSERT_TRUE(store.set_volume_and_muted(30, false));
-    ASSERT_EQ(::chmod(scratch.path().c_str(), 0500), 0);
+    ASSERT_TRUE(set_writable(scratch.path(), false));
 
     EXPECT_FALSE(store.set_volume_and_muted(40, false));
     // Rolled back, or the short-circuit would claim the retry below succeeded.
     EXPECT_EQ(store.volume(), 30);
     EXPECT_FALSE(store.set_volume_and_muted(40, false));
 
-    ASSERT_EQ(::chmod(scratch.path().c_str(), 0700), 0);
+    ASSERT_TRUE(set_writable(scratch.path(), true));
     EXPECT_TRUE(store.set_volume_and_muted(40, false));
     EXPECT_EQ(loaded(scratch.file()).volume(), 40);
 }
@@ -304,9 +314,9 @@ TEST(StateStore, WritesVolumeAndMuteInOneGo) {
     ASSERT_TRUE(store.set_volume_and_muted(20, false));
 
     // One write for the pair: with writing impossible, neither half may move.
-    ASSERT_EQ(::chmod(scratch.path().c_str(), 0500), 0);
+    ASSERT_TRUE(set_writable(scratch.path(), false));
     EXPECT_FALSE(store.set_volume_and_muted(90, true));
-    ASSERT_EQ(::chmod(scratch.path().c_str(), 0700), 0);
+    ASSERT_TRUE(set_writable(scratch.path(), true));
 
     const StateStore reloaded = loaded(scratch.file());
     EXPECT_EQ(reloaded.volume(), 20);
@@ -347,9 +357,14 @@ TEST(StateStore, ABlobWriteLeavesTheFileAt0600) {
     const std::vector<uint8_t> key(32, 0x5a);
     ASSERT_TRUE(store.set_blob(sendspin::persistence_keys::KEYPAIR, key.data(), key.size()));
 
+#ifdef _WIN32
+    std::string acl;
+    EXPECT_TRUE(owner_only(scratch.file(), acl)) << acl;
+#else
     struct stat info{};
     ASSERT_EQ(::stat(scratch.file().c_str(), &info), 0);
     EXPECT_EQ(info.st_mode & 0777, 0600U);
+#endif
 }
 
 TEST(StateStore, APairingRecordIsAnOccupiedSlotNotAFreedOne) {
@@ -472,6 +487,20 @@ TEST(StateStorePath, PrefersXdgStateHome) {
     EXPECT_EQ(state_store_path(""), "/xdg/state/sendspin-cli/state");
 }
 
+#ifdef _WIN32
+TEST(StateStorePath, FallsBackToLocalAppDataRatherThanHome) {
+    const ScopedEnv state("XDG_STATE_HOME", nullptr);
+    const ScopedEnv home("HOME", "/home/someone");
+
+    EXPECT_EQ(state_store_path(""), local_app_data_dir() + "/sendspin-cli/state");
+}
+
+TEST(StateStorePath, AnEmptyXdgStateHomeCountsAsUnset) {
+    const ScopedEnv state("XDG_STATE_HOME", "");
+
+    EXPECT_EQ(state_store_path(""), local_app_data_dir() + "/sendspin-cli/state");
+}
+#else
 TEST(StateStorePath, FallsBackToHomeLocalState) {
     const ScopedEnv state("XDG_STATE_HOME", nullptr);
     const ScopedEnv home("HOME", "/home/someone");
@@ -492,6 +521,7 @@ TEST(StateStorePath, IsEmptyWhenThereIsNowhereToPutIt) {
 
     EXPECT_TRUE(state_store_path("").empty());
 }
+#endif
 
 // The shared flat file format
 
