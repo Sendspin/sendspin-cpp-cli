@@ -16,13 +16,20 @@
 
 #pragma once
 
+#ifndef _WIN32
 #include <sys/types.h>
+#endif
 
 #include <optional>
 #include <string>
 #include <vector>
 
 namespace sendspin_cli {
+
+#ifdef _WIN32
+/// hooks_null.cpp spawns nothing; this only keeps RunningHook's shape.
+using pid_t = int;
+#endif
 
 /// Connection facts exported to a hook; empty fields are left out of the environment.
 struct HookContext {

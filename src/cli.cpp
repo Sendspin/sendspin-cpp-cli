@@ -22,9 +22,18 @@
 #include "mdns.h"
 #include "supported_formats.h"
 
+#ifdef _WIN32
+#include "getopt_win.h"
+
+#include <direct.h>  // getcwd
+#include <stdlib.h>  // _MAX_PATH
+#include <windows.h>
+#define PATH_MAX _MAX_PATH
+#else
 #include <getopt.h>
 #include <limits.h>
 #include <unistd.h>
+#endif
 
 #include <cstdio>
 #include <cstdlib>
@@ -537,7 +546,8 @@ void print_wrapped(std::FILE* out, const char* text, size_t indent) {
 
 /// Resets getopt's global state so parse_options() can run more than once in a process.
 void reset_getopt() {
-#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || \
+    defined(_WIN32)
     optreset = 1;
     optind = 1;
 #else
@@ -803,6 +813,27 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
         }
     }
 
+#ifndef SENDSPIN_CLI_HAVE_DAEMON
+    // Refused rather than ignored: the player would quietly stay in the foreground.
+    if (error.empty() && out.was_given(Opt::Daemonize)) {
+        fail_for(Opt::Daemonize,
+                 "-z needs fork(), which this platform does not have, so the player cannot "
+                 "detach. Drop -z, and start it from a service manager or a scheduled task.");
+    }
+#endif
+#ifndef SENDSPIN_CLI_HAVE_HOOKS
+    if (error.empty() && out.was_given(Opt::HookStart)) {
+        fail_for(Opt::HookStart,
+                 "--hook-start is not supported on this platform yet, so the hook would never "
+                 "run. Drop it.");
+    }
+    if (error.empty() && out.was_given(Opt::HookStop)) {
+        fail_for(Opt::HookStop,
+                 "--hook-stop is not supported on this platform yet, so the hook would never "
+                 "run. Drop it.");
+    }
+#endif
+
     // -z sends stdout to /dev/null, so -o stdout under -z is a contradiction.
     if (error.empty() && out.was_given(Opt::Daemonize) && out.was_given(Opt::Device)) {
         DeviceSpec spec;
@@ -1001,9 +1032,13 @@ void print_usage(std::FILE* out, const char* prog) {
                  DISCOVERY_PREFIX);
     std::fprintf(out, "                does not have)\n");
 #endif
+#ifdef SENDSPIN_CLI_HAVE_DAEMON
     std::fprintf(out, "  -z            Fork into the background and detach from the terminal.\n");
     std::fprintf(out, "                Refuses -o stdout, whose output would go to /dev/null;\n");
     std::fprintf(out, "                warns without -f, which is where the log would go\n");
+#else
+    std::fprintf(out, "  -z            (needs fork(), which this platform does not have)\n");
+#endif
     std::fprintf(out, "  -P, --pidfile <path>\n");
     std::fprintf(out, "                Hold <path> as a locked pidfile, refusing to start if\n");
     std::fprintf(out, "                another instance already holds it. A file left by a\n");
@@ -1016,8 +1051,12 @@ void print_usage(std::FILE* out, const char* prog) {
     std::fprintf(out, "                '<L> <tag>: <message>', so filter it with grep\n");
     std::fprintf(out, "  -f, --logfile <path>\n");
     std::fprintf(out, "                Write log output to <path> instead of stderr, with a\n");
+#ifdef _WIN32
+    std::fprintf(out, "                UTC timestamp on every line\n");
+#else
     std::fprintf(out, "                UTC timestamp on every line. SIGHUP reopens the path,\n");
     std::fprintf(out, "                so logrotate and newsyslog can rotate it\n");
+#endif
     std::fprintf(out, "  --config <path>\n");
     std::fprintf(out, "                Read this config file instead of searching. Exits 1 if\n");
     std::fprintf(out, "                it cannot be read, since you named it -- falling back\n");
@@ -1082,10 +1121,11 @@ void print_usage(std::FILE* out, const char* prog) {
     std::fprintf(out, "                $XDG_RUNTIME_DIR, where that is set. The <port> is\n");
     std::fprintf(out, "                --port, so two players on one host each get their own --\n");
     std::fprintf(out, "                and a subcommand needs the same --port or this flag\n");
-#ifdef __APPLE__
-    std::fprintf(out, "                Where it is not set, as on macOS, this host's own\n");
-    std::fprintf(out, "                per-user directory is used instead. Never /tmp, which\n");
-    std::fprintf(out, "                would let any local user drive this player\n");
+#if defined(__APPLE__) || defined(_WIN32)
+    std::fprintf(out, "                Where it is not set, as on macOS and Windows, this\n");
+    std::fprintf(out, "                host's own per-user directory is used instead. Never a\n");
+    std::fprintf(out, "                shared one, which would let any local user drive this\n");
+    std::fprintf(out, "                player\n");
 #else
     std::fprintf(out, "                Where it is not set -- a systemd *system* unit has none,\n");
     std::fprintf(out, "                so pair RuntimeDirectory= with this flag -- there is no\n");
@@ -1098,12 +1138,18 @@ void print_usage(std::FILE* out, const char* prog) {
     std::fprintf(out, "                Where this player keeps what it remembers across\n");
     std::fprintf(out, "                restarts -- its identity key and pairings, the last\n");
     std::fprintf(out, "                server, the output delay and its volume. Defaults to\n");
+#ifdef _WIN32
+    std::fprintf(out, "                $XDG_STATE_HOME/sendspin-cli, or this user's\n");
+    std::fprintf(out, "                LocalAppData\\sendspin-cli. Two players on one host\n");
+    std::fprintf(out, "                need their own, or they share one identity\n");
+#else
     std::fprintf(out, "                $XDG_STATE_HOME/sendspin-cli, or\n");
     std::fprintf(out, "                $HOME/.local/state/sendspin-cli. A systemd *system*\n");
     std::fprintf(out, "                unit has neither, so pair StateDirectory= with this\n");
     std::fprintf(out, "                flag; with none of the three the player still runs and\n");
     std::fprintf(out, "                simply remembers nothing. Two players on one host need\n");
     std::fprintf(out, "                their own, or they share one identity\n");
+#endif
     std::fprintf(out, "  --manufacturer <text>\n");
     std::fprintf(out, "  --product-name <text>\n");
     std::fprintf(out, "                The device info client/hello carries, shown in server\n");
@@ -1112,6 +1158,9 @@ void print_usage(std::FILE* out, const char* prog) {
     std::fprintf(out, "                listed as itself\n");
     std::fprintf(out, "  --hook-start <command>\n");
     std::fprintf(out, "  --hook-stop <command>\n");
+#ifndef SENDSPIN_CLI_HAVE_HOOKS
+    std::fprintf(out, "                (not supported on this platform yet)\n");
+#endif
     std::fprintf(out, "                Run <command> through /bin/sh when a stream starts or\n");
     std::fprintf(out, "                stops -- an amplifier relay, a light. The event's facts\n");
     std::fprintf(out, "                arrive as SENDSPIN_EVENT (start|stop) and, where known,\n");
@@ -1273,11 +1322,19 @@ std::string redact_url_userinfo(const std::string& url) {
 
 std::string default_client_name() {
     char hostname[256];
+#ifdef _WIN32
+    // Winsock's gethostname() fails before WSAStartup(), and this runs at parse time.
+    DWORD size = sizeof(hostname);
+    if (GetComputerNameExA(ComputerNameDnsHostname, hostname, &size) == 0) {
+        return FALLBACK_NAME;
+    }
+#else
     if (gethostname(hostname, sizeof(hostname)) != 0) {
         return FALLBACK_NAME;
     }
     // POSIX does not promise termination when the name does not fit.
     hostname[sizeof(hostname) - 1] = '\0';
+#endif
     return hostname[0] == '\0' ? FALLBACK_NAME : hostname;
 }
 

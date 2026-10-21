@@ -35,6 +35,9 @@ enum class PidFileStatus {
 PidFileStatus lock_file(const std::string& path, const char* what, unsigned mode, int& fd,
                         std::string& error);
 
+/// Unlocks and closes a descriptor lock_file() returned.
+void release_lock(int fd);
+
 /// Holds the -P pidfile locked for the process's life, and unlinks it on destruction.
 class PidFile {
 public:

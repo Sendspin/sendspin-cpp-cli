@@ -60,6 +60,11 @@ PidFileStatus lock_file(const std::string& path, const char* what, unsigned mode
     return PidFileStatus::Failed;
 }
 
+void release_lock(int fd) {
+    ::flock(fd, LOCK_UN);
+    ::close(fd);
+}
+
 PidFile::~PidFile() {
     if (this->fd_ < 0) {
         return;
@@ -104,8 +109,7 @@ PidFileStatus probe_pidfile(const std::string& path, std::string& error) {
     int fd = -1;
     const PidFileStatus locked = lock_file(path, "pidfile", PIDFILE_MODE, fd, error);
     if (locked == PidFileStatus::Ok) {
-        ::flock(fd, LOCK_UN);
-        ::close(fd);
+        release_lock(fd);
     }
     return locked;
 }

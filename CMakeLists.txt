@@ -103,7 +103,24 @@ if(SENDSPIN_CLI_WITH_COREAUDIO AND APPLE)
     list(APPEND SENDSPIN_CLI_BACKENDS coreaudio)
 endif()
 
-if(SENDSPIN_CLI_WITH_PORTAUDIO)
+if(SENDSPIN_CLI_WITH_PORTAUDIO AND WIN32)
+    # No pkg-config or system PortAudio on Windows, so it is built from source; it is C.
+    enable_language(C)
+    FetchContent_Declare(
+        portaudio
+        GIT_REPOSITORY https://github.com/PortAudio/portaudio.git
+        GIT_TAG        v19.7.0
+        GIT_SHALLOW    TRUE
+    )
+    set(PA_BUILD_SHARED OFF CACHE BOOL "Build PortAudio as a shared library")
+    # v19.7.0 declares cmake_minimum_required(VERSION 3.1), which CMake 4 rejects.
+    set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+    FetchContent_MakeAvailable(portaudio)
+    unset(CMAKE_POLICY_VERSION_MINIMUM)
+    set(SENDSPIN_CLI_PORTAUDIO_TARGET portaudio_static)
+    set(SENDSPIN_CLI_PORTAUDIO_ENABLED ON)
+    list(APPEND SENDSPIN_CLI_BACKENDS portaudio)
+elseif(SENDSPIN_CLI_WITH_PORTAUDIO)
     # No CMake module; IMPORTED_TARGET carries macOS framework links through.
     find_package(PkgConfig QUIET)
     if(PkgConfig_FOUND)
@@ -111,6 +128,7 @@ if(SENDSPIN_CLI_WITH_PORTAUDIO)
     endif()
 
     if(TARGET PkgConfig::PORTAUDIO)
+        set(SENDSPIN_CLI_PORTAUDIO_TARGET PkgConfig::PORTAUDIO)
         set(SENDSPIN_CLI_PORTAUDIO_ENABLED ON)
         list(APPEND SENDSPIN_CLI_BACKENDS portaudio)
     elseif(NOT PkgConfig_FOUND)
@@ -193,7 +211,11 @@ set(SENDSPIN_CLI_MDNS_ENABLED OFF)
 set(SENDSPIN_CLI_MDNS_DESCRIPTION "none")
 
 if(SENDSPIN_CLI_WITH_MDNS)
-    if(APPLE)
+    if(WIN32)
+        message(STATUS
+            "sendspin-cli: no mDNS on Windows yet -- the player cannot be discovered and -s "
+            "mdns: is refused at parse time.")
+    elseif(APPLE)
         # dns_sd lives in libSystem here, so there is nothing to find and nothing to link.
         set(SENDSPIN_CLI_MDNS_ENABLED ON)
         set(SENDSPIN_CLI_MDNS_DESCRIPTION "dns_sd (Bonjour, built in)")
@@ -238,7 +260,12 @@ endif()
 option(SENDSPIN_CLI_WERROR "Turn warnings from sendspin-cli's own sources into errors" OFF)
 
 # Applied per target: FetchContent'd trees (ixwebsocket especially) would fail under -Werror.
-set(SENDSPIN_CLI_WARNING_FLAGS -Wall -Wextra -Wpedantic)
+if(CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+    # clang-cl reads -Wall as -Weverything; /W4 is its -Wall -Wextra.
+    set(SENDSPIN_CLI_WARNING_FLAGS /W4 -Wpedantic)
+else()
+    set(SENDSPIN_CLI_WARNING_FLAGS -Wall -Wextra -Wpedantic)
+endif()
 if(SENDSPIN_CLI_WERROR)
     list(APPEND SENDSPIN_CLI_WARNING_FLAGS -Werror)
 endif()
@@ -254,8 +281,6 @@ add_library(sendspin-cli-core STATIC
     src/control_common.cpp
     src/control_socket.cpp
     src/config_file.cpp
-    src/daemon.cpp
-    src/hooks.cpp
     src/key_value_file.cpp
     src/log.cpp
     src/mdns_common.cpp
@@ -269,6 +294,18 @@ add_library(sendspin-cli-core STATIC
     src/state_store.cpp
     src/supported_formats.cpp
 )
+
+# Windows has no fork(), flock() or /bin/sh: no -z, and no hooks yet.
+if(WIN32)
+    target_sources(sendspin-cli-core PRIVATE src/daemon_win.cpp src/hooks_null.cpp src/win_security.cpp)
+    # POSIX names (open, close, unlink, ...) without the CRT's deprecation warnings.
+    target_compile_definitions(sendspin-cli-core PUBLIC
+        NOMINMAX WIN32_LEAN_AND_MEAN NOGDI _CRT_NONSTDC_NO_WARNINGS _CRT_SECURE_NO_WARNINGS)
+    target_link_libraries(sendspin-cli-core PUBLIC ws2_32 advapi32 shell32 ole32)
+else()
+    target_sources(sendspin-cli-core PRIVATE src/daemon.cpp src/hooks.cpp)
+    target_compile_definitions(sendspin-cli-core PUBLIC SENDSPIN_CLI_HAVE_DAEMON SENDSPIN_CLI_HAVE_HOOKS)
+endif()
 
 # One MdnsService implementation per build.
 if(SENDSPIN_CLI_MDNS_ENABLED)
@@ -319,7 +356,7 @@ if(SENDSPIN_CLI_PORTAUDIO_ENABLED)
         src/portaudio_sink.cpp
         src/portaudio_source.cpp
     )
-    target_link_libraries(sendspin-cli-core PUBLIC PkgConfig::PORTAUDIO)
+    target_link_libraries(sendspin-cli-core PUBLIC ${SENDSPIN_CLI_PORTAUDIO_TARGET})
     target_compile_definitions(sendspin-cli-core PUBLIC SENDSPIN_CLI_HAVE_PORTAUDIO)
 endif()
 

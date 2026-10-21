@@ -673,10 +673,13 @@ int main(int argc, char* argv[]) {
         }
     }
 
+#ifndef _WIN32
     // A closed pipe on -o stdout must not kill the daemon.
     std::signal(SIGPIPE, SIG_IGN);
+#endif
     std::signal(SIGINT, handle_signal);
     std::signal(SIGTERM, handle_signal);
+#ifndef _WIN32
     if (!opts.logfile.empty()) {
         // Only with -f. sigaction() so the handler survives repeated rotations.
         struct sigaction hup = {};
@@ -685,6 +688,7 @@ int main(int argc, char* argv[]) {
         hup.sa_flags = SA_RESTART;
         sigaction(SIGHUP, &hup, nullptr);
     }
+#endif
 
     // Above make_audio_sink(), so racing instances collide on the pidfile, not the sound card.
     PidFile pidfile;

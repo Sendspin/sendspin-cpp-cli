@@ -15,7 +15,14 @@
 #include "log.h"
 
 #include <fcntl.h>
+#ifdef _WIN32
+#include <io.h>
+// The CRT's names for these.
+#define O_CLOEXEC _O_NOINHERIT
+#define STDERR_FILENO 2
+#else
 #include <unistd.h>
+#endif
 
 #include <cerrno>
 #include <csignal>
@@ -69,9 +76,15 @@ void write_timestamp(char* out, size_t size) {
     const std::time_t now = std::time(nullptr);
     std::tm utc{};
     // gmtime_r: sinks log from the sync task's thread.
+#ifdef _WIN32
+    if (::gmtime_s(&utc, &now) != 0) {
+        return;
+    }
+#else
     if (::gmtime_r(&now, &utc) == nullptr) {
         return;
     }
+#endif
     if (std::strftime(out, size, "%Y-%m-%dT%H:%M:%SZ ", &utc) == 0) {
         out[0] = '\0';
     }
