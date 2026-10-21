@@ -25,10 +25,9 @@
 #ifdef _WIN32
 #include "getopt_win.h"
 
-#include <direct.h>  // getcwd
-#include <stdlib.h>  // _MAX_PATH
 #include <windows.h>
-#define PATH_MAX _MAX_PATH
+
+#include <filesystem>
 #else
 #include <getopt.h>
 #include <limits.h>
@@ -510,6 +509,12 @@ bool merge_config(const ConfigFile& config, bool subcommand_run, Options& out,
 
 /// `path` made absolute against the cwd, for -z: the daemon chdir()s to /.
 std::string absolute_path(const std::string& path) {
+#ifdef _WIN32
+    // Drive letters, UNC paths and \-rooted paths all need more than a leading-'/' test.
+    std::error_code ignored;
+    const std::filesystem::path absolute = std::filesystem::absolute(path, ignored);
+    return absolute.empty() ? path : absolute.string();
+#else
     if (!path.empty() && path.front() == '/') {
         return path;
     }
@@ -518,6 +523,7 @@ std::string absolute_path(const std::string& path) {
         return path;
     }
     return std::string(cwd) + "/" + path;
+#endif
 }
 
 /// The column --help wraps at.
@@ -813,14 +819,6 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
         }
     }
 
-#ifndef SENDSPIN_CLI_HAVE_DAEMON
-    // Refused rather than ignored: the player would quietly stay in the foreground.
-    if (error.empty() && out.was_given(Opt::Daemonize)) {
-        fail_for(Opt::Daemonize,
-                 "-z needs fork(), which this platform does not have, so the player cannot "
-                 "detach. Drop -z, and start it from a service manager or a scheduled task.");
-    }
-#endif
 #ifndef SENDSPIN_CLI_HAVE_HOOKS
     if (error.empty() && out.was_given(Opt::HookStart)) {
         fail_for(Opt::HookStart,
@@ -1032,12 +1030,12 @@ void print_usage(std::FILE* out, const char* prog) {
                  DISCOVERY_PREFIX);
     std::fprintf(out, "                does not have)\n");
 #endif
-#ifdef SENDSPIN_CLI_HAVE_DAEMON
     std::fprintf(out, "  -z            Fork into the background and detach from the terminal.\n");
     std::fprintf(out, "                Refuses -o stdout, whose output would go to /dev/null;\n");
     std::fprintf(out, "                warns without -f, which is where the log would go\n");
-#else
-    std::fprintf(out, "  -z            (needs fork(), which this platform does not have)\n");
+#ifdef _WIN32
+    std::fprintf(out, "                On Windows it starts a hidden copy of itself, which\n");
+    std::fprintf(out, "                'taskkill /PID <pid>' (no /F) stops cleanly\n");
 #endif
     std::fprintf(out, "  -P, --pidfile <path>\n");
     std::fprintf(out, "                Hold <path> as a locked pidfile, refusing to start if\n");

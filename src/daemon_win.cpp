@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-/// daemon.h on Windows: LockFileEx() in place of flock(), and no fork() for -z.
+/// daemon.h on Windows: LockFileEx() in place of flock(), and a detached copy in place of fork().
 
 #include "daemon.h"
 
@@ -29,6 +29,9 @@
 namespace sendspin_cli {
 
 namespace {
+
+/// Set in the environment of the copy daemonize() starts.
+constexpr const wchar_t* DETACHED_MARKER = L"SENDSPIN_CLI_DETACHED";
 
 /// One byte far past any content, so the lock never blocks a reader of the pidfile.
 OVERLAPPED lock_region() {
@@ -125,9 +128,53 @@ PidFileStatus probe_pidfile(const std::string& path, std::string& error) {
 }
 
 bool daemonize(bool /*discard_stderr*/, std::string& error) {
-    // cli.cpp refuses -z on this platform, so this is only reached by a caller that skipped it.
-    error = "-z needs fork(), which Windows does not have";
-    return false;
+    // The system drive's root, as chdir("/") does: nothing keeps the launch directory busy.
+    wchar_t root[MAX_PATH] = L"C:\\";
+    if (GetSystemWindowsDirectoryW(root, MAX_PATH) >= 3) {
+        root[3] = L'\0';
+    }
+
+    // The copy started below re-runs main() from the same command line; the marker says so.
+    // It starts in the launch directory, so its relative paths absolutize as the parent's did.
+    if (GetEnvironmentVariableW(DETACHED_MARKER, nullptr, 0) != 0) {
+        SetEnvironmentVariableW(DETACHED_MARKER, nullptr);
+        if (SetCurrentDirectoryW(root) == 0) {
+            error = "cannot change directory to the drive root: " + last_error_text();
+            return false;
+        }
+        return true;
+    }
+
+    wchar_t module[MAX_PATH];
+    const DWORD module_length = GetModuleFileNameW(nullptr, module, MAX_PATH);
+    if (module_length == 0 || module_length == MAX_PATH) {
+        error = "cannot find this executable to start it detached: " + last_error_text();
+        return false;
+    }
+    // The command line as typed, so nothing is re-quoted; CreateProcessW() may write to it.
+    std::wstring command_line = GetCommandLineW();
+
+    // A hidden console of its own: no terminal, yet taskkill /PID still delivers the close event
+    // main() shuts down cleanly on, as kill does with SIGTERM.
+    STARTUPINFOW startup = {};
+    startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESHOWWINDOW;
+    startup.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION process = {};
+    SetEnvironmentVariableW(DETACHED_MARKER, L"1");
+    const BOOL created = CreateProcessW(module, command_line.data(), nullptr, nullptr, FALSE,
+                                        CREATE_NEW_CONSOLE, nullptr, nullptr, &startup, &process);
+    const DWORD reason = GetLastError();
+    SetEnvironmentVariableW(DETACHED_MARKER, nullptr);
+    if (created == 0) {
+        SetLastError(reason);
+        error = "cannot start the detached player: " + last_error_text();
+        return false;
+    }
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    // _exit(), as on POSIX: the copy owns everything from here.
+    _exit(0);
 }
 
 }  // namespace sendspin_cli
