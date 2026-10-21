@@ -34,7 +34,7 @@ passing such a URL today.
 ### 3. Upstream gaps in sendspin-cpp
 
 Each needs a library change; nothing this repo can call fixes them. Re-check on every
-`SENDSPIN_GIT_TAG` bump (currently v0.9.5).
+`SENDSPIN_GIT_TAG` bump (currently `90cbd808`, past v0.9.5).
 
 - **No log sink hook.** The host `SS_LOG*` macros are bare `fprintf(stderr, ...)` gated on one
   global level. So library lines carry no timestamp under `-f`, cannot be filtered per tag

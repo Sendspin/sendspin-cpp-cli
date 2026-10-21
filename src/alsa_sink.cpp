@@ -36,6 +36,7 @@
 namespace sendspin_cli {
 
 using sendspin::LogLevel;
+using sendspin::SendspinClient;
 
 static constexpr const char* LOG_TAG = LOG_TAG_AUDIO;
 
@@ -77,12 +78,6 @@ void alsa_error_handler(const char* file, int line, const char* function, int er
     cli_log(LogLevel::DEBUG, "alsa: %s:%d %s: %s%s%s", (file != nullptr) ? file : "?", line,
             (function != nullptr) ? function : "?", message, (err != 0) ? " -- " : "",
             (err != 0) ? snd_strerror(err) : "");
-}
-
-int64_t now_us() {
-    return std::chrono::duration_cast<std::chrono::microseconds>(
-               std::chrono::steady_clock::now().time_since_epoch())
-        .count();
 }
 
 /// Maps the stream's bit depth onto the interleaved little-endian PCM format ALSA wants.
@@ -632,7 +627,8 @@ size_t AlsaAudioSink::write(const uint8_t* data, size_t length, uint32_t timeout
         if (frames_done > 0 && this->pcm_ != nullptr && this->rate_ > 0) {
             snd_pcm_sframes_t delay = 0;
             if (snd_pcm_delay(this->pcm_, &delay) == 0 && delay >= 0) {
-                finish_us = now_us() + ((static_cast<int64_t>(delay) * 1000000) / this->rate_);
+                finish_us = SendspinClient::now_us() +
+                            ((static_cast<int64_t>(delay) * 1000000) / this->rate_);
                 have_timing = true;
                 // Taken with the timestamp under the same lock, so nothing reports between them.
                 gap_frames = this->recovery_.take_discarded_frames();

@@ -17,13 +17,15 @@
 #include "alsa_sink.h"
 #include "log.h"
 
-#include <chrono>
+#include <sendspin/client.h>
+
 #include <utility>
 #include <vector>
 
 namespace sendspin_cli {
 
 using sendspin::LogLevel;
+using sendspin::SendspinClient;
 
 static constexpr const char* LOG_TAG = LOG_TAG_AUDIO;
 
@@ -34,12 +36,6 @@ constexpr unsigned int BUFFER_TIME_US = 200000;
 constexpr unsigned int PERIOD_TIME_US = 20000;
 
 constexpr int64_t US_PER_S = 1000000;
-
-int64_t now_us() {
-    return std::chrono::duration_cast<std::chrono::microseconds>(
-               std::chrono::steady_clock::now().time_since_epoch())
-        .count();
-}
 
 /// ALSA's packed little-endian format for a capture bit depth.
 snd_pcm_format_t alsa_format_for(uint8_t bit_depth) {
@@ -247,7 +243,7 @@ int AlsaAudioSource::read(uint8_t* data, size_t length, uint32_t timeout_ms,
 
     // Frames queued ahead of this read: the oldest is the first sample returned.
     snd_pcm_sframes_t delay = 0;
-    const int64_t now = now_us();
+    const int64_t now = SendspinClient::now_us();
     const bool have_delay = snd_pcm_delay(this->pcm_, &delay) == 0 && delay >= 0;
 
     const snd_pcm_sframes_t frames =

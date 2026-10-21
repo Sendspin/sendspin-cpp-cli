@@ -17,6 +17,8 @@
 #include "log.h"
 #include "pcm_volume.h"
 
+#include <sendspin/client.h>
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -28,6 +30,7 @@
 namespace sendspin_cli {
 
 using sendspin::LogLevel;
+using sendspin::SendspinClient;
 
 static constexpr const char* LOG_TAG = LOG_TAG_AUDIO;
 
@@ -38,12 +41,6 @@ constexpr int WRITE_SLICE_MS = 10;
 
 /// The application name the server shows in its mixer.
 constexpr const char* PULSE_APP_NAME = "sendspin-cli";
-
-int64_t now_us() {
-    return std::chrono::duration_cast<std::chrono::microseconds>(
-               std::chrono::steady_clock::now().time_since_epoch())
-        .count();
-}
 
 /// PulseAudio format per PROBE_BIT_DEPTHS entry; signed 8-bit goes out as sign-flipped U8.
 constexpr std::array<pa_sample_format_t, PROBE_BIT_DEPTHS.size()> PROBE_FORMATS{
@@ -468,7 +465,7 @@ size_t PulseAudioSink::write(const uint8_t* data, size_t length, uint32_t timeou
         pa_usec_t latency_us = 0;
         int negative = 0;
         if (pa_stream_get_latency(this->stream_, &latency_us, &negative) == 0 && negative == 0) {
-            finish_us = now_us() + static_cast<int64_t>(latency_us);
+            finish_us = SendspinClient::now_us() + static_cast<int64_t>(latency_us);
             have_timing = true;
             // Taken with the timestamp, under the same lock, so no report can land between the
             // outage being retired and the first real playback being reported.

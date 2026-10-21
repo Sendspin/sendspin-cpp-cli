@@ -20,6 +20,8 @@
 #include "coreaudio_permission.h"
 #endif
 
+#include <sendspin/client.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -30,6 +32,7 @@
 namespace sendspin_cli {
 
 using sendspin::LogLevel;
+using sendspin::SendspinClient;
 
 static constexpr const char* LOG_TAG = LOG_TAG_AUDIO;
 
@@ -45,12 +48,6 @@ constexpr double RING_LATENCY_MULTIPLE = 3.0;
 constexpr int64_t STALL_US = 2000000;
 
 constexpr int64_t US_PER_S = 1000000;
-
-int64_t now_us() {
-    return std::chrono::duration_cast<std::chrono::microseconds>(
-               std::chrono::steady_clock::now().time_since_epoch())
-        .count();
-}
 
 PaStreamParameters input_params(PaDeviceIndex device, const PaDeviceInfo* info, uint8_t channels,
                                 PaSampleFormat format) {
@@ -251,7 +248,7 @@ bool PortAudioSource::open(const StreamFormat& format) {
     // The spare byte the ring keeps to tell full from empty.
     this->ring_.reset((ring_frames * this->bytes_per_frame_) + 1);
 
-    this->opened_us_ = now_us();
+    this->opened_us_ = SendspinClient::now_us();
     err = Pa_StartStream(this->stream_);
     pa_lock.unlock();
     if (err != paNoError) {
@@ -286,7 +283,7 @@ int PortAudioSource::read(uint8_t* data, size_t length, uint32_t timeout_ms,
         }
         // Some host APIs keep a stream on a vanished device active but never call back again.
         const int64_t last_us = this->last_callback_us_.load();
-        if (now_us() - (last_us != 0 ? last_us : this->opened_us_) > STALL_US) {
+        if (SendspinClient::now_us() - (last_us != 0 ? last_us : this->opened_us_) > STALL_US) {
             cli_log(LogLevel::ERROR, "portaudio: input '%s' stopped delivering audio",
                     this->name().c_str());
             return -1;
@@ -331,7 +328,7 @@ void PortAudioSource::close() {
 int PortAudioSource::pa_callback(const void* input, void* /*output*/, unsigned long frame_count,
                                  const PaStreamCallbackTimeInfo* time_info,
                                  PaStreamCallbackFlags /*status_flags*/, void* user_data) {
-    const int64_t entered_us = now_us();
+    const int64_t entered_us = SendspinClient::now_us();
 
     auto* self = static_cast<PortAudioSource*>(user_data);
     self->last_callback_us_.store(entered_us);

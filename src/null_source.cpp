@@ -14,6 +14,8 @@
 
 #include "null_source.h"
 
+#include <sendspin/client.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -22,18 +24,14 @@
 
 namespace sendspin_cli {
 
+using sendspin::SendspinClient;
+
 namespace {
 
 constexpr double TONE_HZ = 440.0;
 constexpr double TONE_AMPLITUDE = 0.25;
 constexpr double TWO_PI = 6.283185307179586;
 constexpr int64_t US_PER_S = 1000000;
-
-int64_t now_us() {
-    return std::chrono::duration_cast<std::chrono::microseconds>(
-               std::chrono::steady_clock::now().time_since_epoch())
-        .count();
-}
 
 }  // namespace
 
@@ -60,7 +58,7 @@ bool NullAudioSource::open(const StreamFormat& format) {
     this->format_ = format;
     this->bytes_per_frame_ =
         static_cast<size_t>(format.channels) * (static_cast<size_t>(format.bit_depth) / 8U);
-    this->start_us_ = now_us();
+    this->start_us_ = SendspinClient::now_us();
     this->frames_ = 0;
     return this->bytes_per_frame_ != 0 && format.sample_rate != 0;
 }
@@ -77,12 +75,13 @@ int NullAudioSource::read(uint8_t* data, size_t length, uint32_t timeout_ms,
     };
 
     // Wait for the whole read to have "happened", as a device would.
-    const int64_t wait_us = std::min<int64_t>(time_of(this->frames_ + wanted) - now_us(),
-                                              static_cast<int64_t>(timeout_ms) * 1000);
+    const int64_t wait_us =
+        std::min<int64_t>(time_of(this->frames_ + wanted) - SendspinClient::now_us(),
+                          static_cast<int64_t>(timeout_ms) * 1000);
     if (wait_us > 0) {
         std::this_thread::sleep_for(std::chrono::microseconds(wait_us));
     }
-    const int64_t elapsed_frames = (now_us() - this->start_us_) * rate / US_PER_S;
+    const int64_t elapsed_frames = (SendspinClient::now_us() - this->start_us_) * rate / US_PER_S;
     const int64_t due = elapsed_frames - static_cast<int64_t>(this->frames_);
     if (due <= 0) {
         return 0;

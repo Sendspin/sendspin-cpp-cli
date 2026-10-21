@@ -20,12 +20,12 @@
 
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <cstdio>
 
 namespace sendspin_cli {
 
 using sendspin::LogLevel;
+using sendspin::SendspinClient;
 
 static constexpr const char* LOG_TAG = LOG_TAG_AUDIO;
 
@@ -36,12 +36,6 @@ constexpr size_t SILENCE_CHUNK = 4096;
 constexpr std::array<uint8_t, SILENCE_CHUNK> SILENCE{};
 
 constexpr int64_t US_PER_S = 1000000;
-
-int64_t now_us() {
-    return std::chrono::duration_cast<std::chrono::microseconds>(
-               std::chrono::steady_clock::now().time_since_epoch())
-        .count();
-}
 
 /// Rounds `bytes` down to whole frames; a frame size of 0 means no stream, so no alignment.
 size_t align_to_frame(size_t bytes, size_t bytes_per_frame) {
@@ -157,7 +151,7 @@ void NullAudioSink::report_played(size_t bytes) {
         return;
     }
     // Never behind real time, so a stream that paused resumes from now rather than the past.
-    this->playhead_us_ = std::max(this->playhead_us_, now_us()) +
+    this->playhead_us_ = std::max(this->playhead_us_, SendspinClient::now_us()) +
                          (static_cast<int64_t>(frames) * US_PER_S) / static_cast<int64_t>(rate);
     this->on_frames_played(frames, this->playhead_us_);
 }

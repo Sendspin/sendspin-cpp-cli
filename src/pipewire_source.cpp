@@ -16,6 +16,8 @@
 
 #include "log.h"
 
+#include <sendspin/client.h>
+
 #include <spa/param/audio/format-utils.h>
 #include <spa/pod/builder.h>
 #include <spa/utils/result.h>
@@ -23,6 +25,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <ctime>
 #include <initializer_list>
 #include <optional>
 #include <utility>
@@ -31,6 +34,7 @@
 namespace sendspin_cli {
 
 using sendspin::LogLevel;
+using sendspin::SendspinClient;
 
 static constexpr const char* LOG_TAG = LOG_TAG_AUDIO;
 
@@ -48,6 +52,13 @@ constexpr uint32_t QUANTUM_MS = 20;
 constexpr uint32_t RING_MS = 1000;
 
 constexpr int64_t US_PER_S = 1000000;
+
+/// CLOCK_MONOTONIC, the clock pw_time::now is on, in microseconds.
+int64_t monotonic_us() {
+    timespec ts{};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (static_cast<int64_t>(ts.tv_sec) * US_PER_S) + (ts.tv_nsec / 1000);
+}
 
 /// SPA's packed little-endian format for a capture bit depth.
 spa_audio_format spa_format_for(uint8_t bit_depth) {
@@ -340,8 +351,10 @@ void PipeWireAudioSource::stream_process_cb(void* userdata) {
                      static_cast<double>(time.rate.denom)) +
                     (static_cast<double>(time.buffered + frames) /
                      static_cast<double>(self->rate_));
-                // `now` is CLOCK_MONOTONIC, which is what steady_clock reads here.
-                const int64_t first_us = (time.now / 1000) - static_cast<int64_t>(age_s * 1e6);
+                // `now` is on CLOCK_MONOTONIC; its age there carries onto the client clock.
+                const int64_t graph_age_us = monotonic_us() - (time.now / 1000);
+                const int64_t first_us =
+                    SendspinClient::now_us() - graph_age_us - static_cast<int64_t>(age_s * 1e6);
                 self->origin_us_.store(first_us - static_cast<int64_t>(self->frames_written_) *
                                                       US_PER_S / self->rate_);
             }
