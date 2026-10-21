@@ -215,6 +215,29 @@ avahi-browse -rt _sendspin._tcp     # Linux
 dns-sd -B _sendspin._tcp            # macOS
 ```
 
+## Windows
+
+**A server cannot find it, or finds it and cannot connect.** The server dials the player on
+port 8928, which Windows Firewall blocks until a rule allows it. Add the rule
+[Getting Started on Windows](Getting-Started-on-Windows#letting-a-server-reach-it) shows, from
+an administrator PowerShell, and check Windows has the network marked Private: the rule
+covers private networks only. Or have the player dial out, with `server = <host>`.
+
+**"this host's own per-user directory cannot hold a control socket"** names your LocalAppData
+and someone it lets write there. The player refuses to put its control socket anywhere
+another account can write, so it runs without one rather than in a shared folder. Give
+`--control-socket <path>` in a folder only you can write, or remove the extra permission.
+
+**SmartScreen says it protected your PC.** The build is unsigned. Check the zip against
+`SHA256SUMS` before choosing to run it anyway.
+
+**`taskkill` without `/F` reports SUCCESS, and the player keeps running.** `taskkill` asks a
+process to close through its console window, and that player has none — it was started under
+`conhost --headless`, say. A player the guided installer started runs with `-z`, which gives
+it a hidden console of its own that `taskkill` can close. For any other, `taskkill /F` stops
+it at once: the server sees the connection drop instead of a goodbye, and nothing on disk is
+left inconsistent.
+
 ## The subcommands cannot find the player
 
 ```console
