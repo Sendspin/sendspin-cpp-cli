@@ -154,13 +154,14 @@ jobs:
       # Diff the downloaded set against the expected assets: a green build may have uploaded nothing.
       - name: Assert the release is complete before creating anything
         run: |
-          # File names, spelled out; macOS contributes a tarball and a .pkg.
+          # File names, spelled out; macOS contributes a tarball and a .pkg, Windows a zip.
           expected=$(mktemp)
           {
             for leg in linux-x86_64 linux-arm64 linux-armv7 linux-armv6 macos-arm64; do
               echo "sendspin-cli-$VERSION-$leg.tar.gz"
             done
             echo "sendspin-cli-$VERSION-macos-arm64.pkg"
+            echo "sendspin-cli-$VERSION-windows-x86_64.zip"
           } | sort >"$expected"
 
           actual=$(mktemp)
@@ -177,8 +178,8 @@ jobs:
       - name: Checksum what is being published
         run: |
           cd dist
-          # The .pkg is checksummed too; an unmatched glob errors under -e, and the set is already asserted.
-          sha256sum -- *.tar.gz *.pkg >SHA256SUMS
+          # The .pkg and .zip are checksummed too; an unmatched glob errors under -e, and the set is already asserted.
+          sha256sum -- *.tar.gz *.pkg *.zip >SHA256SUMS
           cat SHA256SUMS
 
       - name: Write the release notes
@@ -215,6 +216,10 @@ jobs:
           a link because it is worth knowing before you download; what to do about it is under
           [the macOS installation guide](https://github.com/@REPO@/wiki/Installation#macos).
 
+          The Windows zip is **unsigned** as well, so SmartScreen may warn the first time it runs.
+          [Getting Started on Windows](https://github.com/@REPO@/wiki/Getting-Started-on-Windows)
+          has a guided installer that checks the zip against `SHA256SUMS` before installing it.
+
           - [README](https://github.com/@REPO@/blob/@TAG@/README.md) — what it is, how to run
             it, and how to contribute
           - [Contributors](https://github.com/@REPO@/blob/@TAG@/contributors.md) — development,
@@ -244,7 +249,7 @@ jobs:
             --title "sendspin-cli $VERSION" \
             --notes-file notes.md \
             --draft \
-            dist/*.tar.gz dist/*.pkg dist/SHA256SUMS | tee created.txt
+            dist/*.tar.gz dist/*.pkg dist/*.zip dist/SHA256SUMS | tee created.txt
 
           # Resolve the draft's numeric id from its html_url once; later steps use the REST id endpoints.
           url="$(tail -n1 created.txt)"
@@ -271,6 +276,7 @@ jobs:
               echo "sendspin-cli-$VERSION-$leg.tar.gz"
             done
             echo "sendspin-cli-$VERSION-macos-arm64.pkg"
+            echo "sendspin-cli-$VERSION-windows-x86_64.zip"
           } | sort >"$expected"
 
           # Read back by id: releases/tags/<tag> never returns drafts, which once failed every release.
