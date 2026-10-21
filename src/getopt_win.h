@@ -12,11 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-/// getopt_long() for Windows, which has none: the subset cli.cpp uses, with BSD semantics
-/// (no argument permutation, unique long-option prefixes, optreset).
+/// getopt_long() for Windows, which has none: the subset cli.cpp uses, behaving as glibc's and
+/// the BSDs' do (argv permuted so options come first, unique long-option prefixes, optreset).
 
 #pragma once
 
+#include <algorithm>
 #include <cstring>
 
 inline char* optarg = nullptr;
@@ -62,6 +63,53 @@ inline int missing_value(const char* optstring) {
     return optstring[0] == ':' ? ':' : '?';
 }
 
+inline bool is_option(const char* word) {
+    return word[0] == '-' && word[1] != '\0';
+}
+
+/// How many words the option word at `index` takes: 2 when its value is the next word.
+inline int option_words(int argc, char* const argv[], int index, const char* optstring,
+                        const option* longopts) {
+    const char* word = argv[index];
+    if (index + 1 >= argc) {
+        return 1;
+    }
+    if (word[1] == '-') {
+        const char* name = word + 2;
+        if (*name == '\0' || std::strchr(name, '=') != nullptr) {
+            return 1;
+        }
+        const option* opt = find_long(longopts, name, std::strlen(name));
+        return opt != nullptr && opt->has_arg == required_argument ? 2 : 1;
+    }
+    for (const char* c = word + 1; *c != '\0'; ++c) {
+        const char* spec = *c == ':' ? nullptr : std::strchr(optstring, *c);
+        if (spec != nullptr && spec[1] == ':') {
+            // The rest of the word is the value, or the next word is.
+            return c[1] == '\0' ? 2 : 1;
+        }
+    }
+    return 1;
+}
+
+/// Moves the next option (and its value word) in front of the non-options at optind.
+/// @return false when no option is left, which leaves optind on the first non-option.
+inline bool permute(int argc, char* const argv[], const char* optstring, const option* longopts) {
+    int next = optind;
+    while (next < argc && !is_option(argv[next])) {
+        ++next;
+    }
+    if (next >= argc) {
+        return false;
+    }
+    const int words = std::strcmp(argv[next], "--") == 0
+                          ? 1
+                          : option_words(argc, argv, next, optstring, longopts);
+    char** const words_start = const_cast<char**>(argv);
+    std::rotate(words_start + optind, words_start + next, words_start + next + words);
+    return true;
+}
+
 }  // namespace getopt_win
 
 inline int getopt_long(int argc, char* const argv[], const char* optstring, const option* longopts,
@@ -75,7 +123,11 @@ inline int getopt_long(int argc, char* const argv[], const char* optstring, cons
     optopt = 0;
 
     if (getopt_win::short_pos == 1) {
-        if (optind >= argc || argv[optind][0] != '-' || argv[optind][1] == '\0') {
+        if (optind >= argc) {
+            return -1;
+        }
+        if (!getopt_win::is_option(argv[optind]) &&
+            !getopt_win::permute(argc, argv, optstring, longopts)) {
             return -1;
         }
         if (std::strcmp(argv[optind], "--") == 0) {

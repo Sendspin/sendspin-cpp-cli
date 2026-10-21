@@ -510,10 +510,14 @@ bool merge_config(const ConfigFile& config, bool subcommand_run, Options& out,
 /// `path` made absolute against the cwd, for -z: the daemon chdir()s to /.
 std::string absolute_path(const std::string& path) {
 #ifdef _WIN32
-    // Drive letters, UNC paths and \-rooted paths all need more than a leading-'/' test.
+    // Rooted paths stay as typed: the detached copy moves to the root of this same drive.
+    const std::filesystem::path typed(path);
+    if (path.empty() || typed.has_root_directory()) {
+        return path;
+    }
     std::error_code ignored;
-    const std::filesystem::path absolute = std::filesystem::absolute(path, ignored);
-    return absolute.empty() ? path : absolute.string();
+    const std::filesystem::path absolute = std::filesystem::absolute(typed, ignored);
+    return absolute.empty() ? path : absolute.generic_string();
 #else
     if (!path.empty() && path.front() == '/') {
         return path;

@@ -22,6 +22,8 @@
 #define STDERR_FILENO 2
 #else
 #include <unistd.h>
+// Only Windows translates line endings.
+#define O_BINARY 0
 #endif
 
 #include <cerrno>
@@ -119,7 +121,8 @@ __attribute__((format(printf, 3, 0))) void emit(sendspin::LogLevel level, const 
 /// Points fd 2 at `path`, appending, and leaves it alone if the file cannot be opened.
 /// @return true on success; on false errno is the reason.
 bool point_stderr_at(const std::string& path) {
-    const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+    // Binary, so every line ends in \n on Windows too.
+    const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | O_BINARY, 0644);
     if (fd < 0) {
         return false;
     }

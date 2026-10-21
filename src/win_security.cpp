@@ -195,7 +195,7 @@ bool is_private_directory(const std::string& path, std::string& reason) {
             is_well_known(trustee, WinCreatorOwnerSid)) {
             continue;
         }
-        reason = path + " grants " + account_name(trustee) + " write access";
+        reason = path + " is writable by " + account_name(trustee);
         return false;
     }
     return true;

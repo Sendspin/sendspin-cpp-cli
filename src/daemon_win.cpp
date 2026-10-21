@@ -128,17 +128,13 @@ PidFileStatus probe_pidfile(const std::string& path, std::string& error) {
 }
 
 bool daemonize(bool /*discard_stderr*/, std::string& error) {
-    // The system drive's root, as chdir("/") does: nothing keeps the launch directory busy.
-    wchar_t root[MAX_PATH] = L"C:\\";
-    if (GetSystemWindowsDirectoryW(root, MAX_PATH) >= 3) {
-        root[3] = L'\0';
-    }
-
     // The copy started below re-runs main() from the same command line; the marker says so.
     // It starts in the launch directory, so its relative paths absolutize as the parent's did.
     if (GetEnvironmentVariableW(DETACHED_MARKER, nullptr, 0) != 0) {
         SetEnvironmentVariableW(DETACHED_MARKER, nullptr);
-        if (SetCurrentDirectoryW(root) == 0) {
+        // This drive's root, as chdir("/") does: nothing keeps the launch directory busy, and a
+        // path rooted without a drive letter still names what it did.
+        if (SetCurrentDirectoryW(L"\\") == 0) {
             error = "cannot change directory to the drive root: " + last_error_text();
             return false;
         }
