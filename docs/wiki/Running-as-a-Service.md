@@ -1,6 +1,9 @@
 # Running as a Service
 
-One systemd unit ships in the Linux payload, with sane defaults and nothing to fill in.
+Two systemd units ship in the Linux payload: a hardened system unit, which this page is
+mostly about, and [a user unit](#a-user-unit-instead). The
+[getting-started script](Getting-Started-on-Linux) sets either one up; by hand, the system
+one is:
 
 ```bash
 sudo systemd-sysusers
@@ -23,9 +26,8 @@ the unit runs as, out of a declaration installed beside the unit, and a tarball 
 > seconds indefinitely — `Restart=on-failure` with `RestartSec=5`, and a system unit has no
 > session for ALSA's `default` PCM to follow. Run `sendspin-cli -l`, pick a card, and put
 > `output = hw:1,0` in `/etc/sendspin-cli.conf`.
-> [Getting Started on Linux](Getting-Started-on-Linux) has the argument in full, and is why
 > [`scripts/get_started_linux.sh`](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/scripts/get_started_linux.sh)
-> enables this unit without starting it.
+> asks for one before it starts the unit for exactly this reason.
 
 ## What the payload installs
 
@@ -33,6 +35,7 @@ the unit runs as, out of a declaration installed beside the unit, and a tarball 
 |---|---|
 | `/usr/local/bin/sendspin-cli` | the binary |
 | `/usr/local/lib/systemd/system/sendspin-cli.service` | the unit |
+| `/usr/local/lib/systemd/user/sendspin-cli.service` | the user unit |
 | `/usr/local/lib/sysusers.d/sendspin-cli.conf` | the account the unit runs as, declared |
 | `/usr/local/share/doc/sendspin-cli/README.md` | quick-start and wiki links |
 | `/usr/local/share/doc/sendspin-cli/contributors.md` | how to build and contribute |
@@ -230,39 +233,76 @@ and a second one would be noise. Only a `-f` logfile gets our own timestamp. See
 
 ## A user unit instead
 
-If the player should follow your desktop session's sound server, a user unit is the better
-fit — `$XDG_RUNTIME_DIR` and `$XDG_STATE_HOME` both exist there, so neither flag is needed
-and `output = default` works as it does from your shell:
+If the player should follow your desktop session's sound server, run it as a user service.
+`$XDG_RUNTIME_DIR` and `$XDG_STATE_HOME` both exist there, so the control socket and the
+state take their defaults, subcommands need neither `sudo` nor a flag, and
+`output = default` works as it does from your shell.
+
+`get_started_linux.sh --user-service` does all of it. By hand:
 
 ```bash
-mkdir -p ~/.config/systemd/user
-cp /usr/local/lib/systemd/system/sendspin-cli.service ~/.config/systemd/user/
-# edit out the --control-socket and --state-dir arguments, the two Directory= lines,
-# and the User= line -- a user unit cannot set one, and would refuse to start with it
+sudo systemctl disable --now sendspin-cli      # the two listen on the same port
+mkdir -p ~/.config/sendspin-cli
+cp /usr/local/share/doc/sendspin-cli/sendspin-cli.conf.example ~/.config/sendspin-cli/config
+nano ~/.config/sendspin-cli/config             # output = default
 systemctl --user daemon-reload
 systemctl --user enable --now sendspin-cli
-loginctl enable-linger "$USER"     # so it runs when you are not logged in
+sudo loginctl enable-linger "$USER"            # start at boot, keep running after logout
+journalctl --user -u sendspin-cli -f
 ```
 
-Your own account needs `audio` membership for `/dev/snd` here, since the `sendspin-cli`
-account's membership does nothing for a unit that is not running as it:
-`sudo usermod -aG audio "$USER"`, then log out and back in.
+The unit is installed at `/usr/local/lib/systemd/user/sendspin-cli.service`, on the user
+manager's own search path. It is not a copy of the system unit:
 
-The unit that ships is the system one; this is a recipe rather than something the project
-installs or tests.
+- No `User=`, `RuntimeDirectory=` or `StateDirectory=`, and no `--control-socket` or
+  `--state-dir` on `ExecStart` — a user manager cannot set the first three and has no need
+  of the last two.
+- `WantedBy=default.target`; a user manager has no `multi-user.target`.
+- Of the hardening block it keeps what an unprivileged manager can apply: `NoNewPrivileges=`,
+  `LockPersonality=`, `MemoryDenyWriteExecute=`, `RestrictSUIDSGID=`,
+  `RestrictAddressFamilies=`, `SystemCallArchitectures=` and `SystemCallFilter=`. The
+  `Protect*=` and `Private*=` family needs privileges it does not have.
+
+Your own account needs `audio` membership to open a `hw:` device directly, since the
+`sendspin-cli` account's membership does nothing for a unit that is not running as it:
+`sudo usermod -aG audio "$USER"`, then log out and back in. PipeWire and PulseAudio outputs
+do not need it.
+
+A release older than the user unit installs none. The script then writes an equivalent to
+`~/.config/systemd/user/sendspin-cli.service`, marked as its own on the first line, and
+removes it again on the first upgrade that ships one.
 
 ## Uninstalling
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/Sendspin/sendspin-cpp-cli/main/scripts/uninstall_linux.sh | bash
+```
+
+[`scripts/uninstall_linux.sh`](https://github.com/Sendspin/sendspin-cpp-cli/blob/main/scripts/uninstall_linux.sh)
+stops and disables the service in whichever mode it runs, and removes the binary, both
+units, the account declaration and the installed documentation. Like the installer it prints
+every command first and waits for a yes, and `--yes` skips the question. On a host with
+nothing installed it says so and exits 0.
+
+**It keeps your config, the player's remembered state and the `sendspin-cli` account** unless
+you answer yes when it asks, or pass `--purge`. Packages the installer added through `apt`,
+`dnf` or `pacman` stay, and so does lingering for your user — other things may rely on both.
+
+By hand, the same thing:
+
+```bash
 sudo systemctl disable --now sendspin-cli
+systemctl --user disable --now sendspin-cli    # if you ran it as a user service
 sudo rm -f /usr/local/bin/sendspin-cli
 sudo rm -f /usr/local/lib/systemd/system/sendspin-cli.service
+sudo rm -f /usr/local/lib/systemd/user/sendspin-cli.service
 sudo rm -f /usr/local/lib/sysusers.d/sendspin-cli.conf
 sudo rm -rf /usr/local/share/doc/sendspin-cli
-sudo rm -rf /var/lib/sendspin-cli          # what it remembered
-sudo rm -f /etc/sendspin-cli.conf          # your config
 sudo systemctl daemon-reload
-sudo userdel sendspin-cli                  # the account, if you want it gone too
+# what --purge adds:
+sudo rm -rf /var/lib/sendspin-cli ~/.local/state/sendspin-cli   # what it remembered
+sudo rm -rf /etc/sendspin-cli.conf ~/.config/sendspin-cli       # your config
+sudo userdel sendspin-cli                                       # the account
 ```
 
 Removing the fragment does not remove the account — `systemd-sysusers` creates users and

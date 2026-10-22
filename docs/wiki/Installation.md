@@ -27,6 +27,7 @@ sendspin-cli-0.1.0-linux-arm64/
 └── usr/local/
     ├── bin/sendspin-cli
     ├── lib/systemd/system/sendspin-cli.service             # Linux only
+    ├── lib/systemd/user/sendspin-cli.service               # Linux only
     ├── lib/sysusers.d/sendspin-cli.conf                    # Linux only
     └── share/doc/sendspin-cli/
         ├── README.md
@@ -84,11 +85,16 @@ it with no file to verify.
 archive** instead of writing it to `/`. `--strip-components=1` drops the archive's own top
 level so the rest lands where it belongs.
 
-Runtime packages, if the binary will not start:
+Runtime packages, if the binary will not start — `ldd /usr/local/bin/sendspin-cli | grep 'not found'`
+names what is missing, and the getting-started script installs these for you:
 
 ```bash
-sudo apt install libasound2t64 libportaudio2 libavahi-compat-libdnssd1   # Debian / Ubuntu
-sudo dnf install alsa-lib portaudio avahi-compat-libdns_sd               # Fedora / RHEL
+# Debian / Ubuntu; libasound2 and libpipewire-0.3-0 before the t64 renames
+sudo apt install libasound2t64 libportaudio2 libpulse0 libpipewire-0.3-0t64 libavahi-compat-libdnssd1
+# Fedora / RHEL
+sudo dnf install alsa-lib portaudio pulseaudio-libs pipewire-libs avahi-compat-libdns_sd
+# Arch
+sudo pacman -S --needed alsa-lib portaudio libpulse libpipewire avahi
 ```
 
 To run it without installing anywhere, unpack it and use it in place:
