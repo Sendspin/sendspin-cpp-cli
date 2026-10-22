@@ -303,7 +303,7 @@ void warn_if_shadowing_an_alsa_pcm([[maybe_unused]] const std::string& spec,
 // buffer_ms is unused on a build with no device-backed backend.
 std::unique_ptr<AudioSink> make_audio_sink(const std::string& device,
                                            [[maybe_unused]] uint32_t buffer_ms,
-                                           std::string& error) {
+                                           const std::string& alsa_mixer, std::string& error) {
     DeviceSpec spec;
     if (!resolve_device_spec(device, spec, error)) {
         return nullptr;
@@ -321,7 +321,10 @@ std::unique_ptr<AudioSink> make_audio_sink(const std::string& device,
             if (!AlsaAudioSink::probe(spec.device, error)) {
                 return nullptr;
             }
-            return std::make_unique<AlsaAudioSink>(spec.device, buffer_ms);
+            if (!alsa_mixer.empty() && !AlsaAudioSink::probe_mixer(alsa_mixer, error)) {
+                return nullptr;
+            }
+            return std::make_unique<AlsaAudioSink>(spec.device, buffer_ms, alsa_mixer);
 #else
             break;  // unreachable: resolve_device_spec() never yields Alsa without the backend
 #endif

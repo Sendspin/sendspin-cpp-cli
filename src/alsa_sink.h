@@ -36,7 +36,9 @@ namespace sendspin_cli {
 class AlsaAudioSink final : public AudioSink {
 public:
     /// @param buffer_ms Ring size request, already range-checked; ALSA rounds it to the card.
-    AlsaAudioSink(std::string device, uint32_t buffer_ms);
+    /// @param mixer_spec `card:control` naming the hardware mixer to drive, e.g. `1:Digital`;
+    ///                   empty keeps the software volume. Only the ALSA backend takes one.
+    AlsaAudioSink(std::string device, uint32_t buffer_ms, std::string mixer_spec = {});
     ~AlsaAudioSink() override;
 
     std::string name() const override;
@@ -56,6 +58,13 @@ public:
     /// Checks that `device` names a playback PCM this host can open; a busy device passes.
     static bool probe(const std::string& device, std::string& error);
 
+    /// Checks that `mixer_spec` names a playback mixer control this host can open.
+    static bool probe_mixer(const std::string& mixer_spec, std::string& error);
+
+    /// Reads the mixer's current volume and mute; -1 volume when the mixer cannot be read.
+    /// @param muted Set from the control's playback switch; false without one.
+    static int read_mixer_volume(const std::string& mixer_spec, bool& muted);
+
     /// Prints the host's playback PCMs, as `aplay -L` does.
     static void list_devices(std::FILE* out);
 
@@ -72,9 +81,28 @@ private:
     bool handle_device_loss_();
     void update_target_multiplier_();
 
+    /// Opens the mixer for `mixer_spec`; caller closes *handle even on a null element.
+    static snd_mixer_elem_t* open_mixer_(const std::string& mixer_spec, snd_mixer_t** handle);
+    /// The dB range for playback volume, or false when the control has none.
+    static bool playback_dB_range_(snd_mixer_elem_t* elem, long& min, long& max);
+    /// A control with one dB range for both channels; false when no channel reports one.
+    static bool playback_dB_(snd_mixer_elem_t* elem, long& dB);
+    /// The playback switch state of the first channel that has one; false when none does.
+    static bool playback_switch_(snd_mixer_elem_t* elem);
+    /// Maps a 0-100 volume onto a dB range, alsamixer's way: linear in perceived loudness.
+    static long mixer_dB_for_volume_(long min, long max, uint8_t volume);
+    /// The inverse of mixer_dB_for_volume_().
+    static uint8_t volume_for_mixer_dB_(long min, long max, long dB);
+    /// @return true when the control took the volume; false leaves the caller on software gain.
+    static bool set_mixer_volume_(const std::string& mixer_spec, uint8_t volume);
+    /// @return true when the control took the mute, or has no switch for the caller to fall back.
+    static bool set_mixer_mute_(const std::string& mixer_spec, bool muted);
+
     std::string device_;
     /// Ring size to ask ALSA for, in milliseconds; the period is this over PERIODS_PER_BUFFER.
     uint32_t buffer_ms_;
+    /// `card:control` for hardware volume, empty for software volume.
+    std::string mixer_spec_;
 
     /// Serialises every snd_pcm_* call and the fields describing the open stream.
     std::mutex device_mutex_;

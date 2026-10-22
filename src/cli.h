@@ -84,6 +84,7 @@ enum class Opt : unsigned {
     Input,          ///< --input
     PairingCode,    ///< --pairing-code
     FixedVolume,    ///< --fixed-volume
+    AlsaMixer,      ///< --alsa-mixer
 };
 
 /// Everything the flag surface configures.
@@ -120,6 +121,10 @@ struct Options {
 
     /// --fixed-volume: play at full gain, unmuted, and withhold volume and mute from the server.
     bool fixed_volume{false};
+
+    /// --alsa-mixer <card:control>: drive this hardware mixer instead of scaling the PCM.
+    /// ALSA only; empty scales the stream in software.
+    std::string alsa_mixer;
 
     /// --no-mdns: do not advertise `_sendspin._tcp`.
     bool no_mdns{false};

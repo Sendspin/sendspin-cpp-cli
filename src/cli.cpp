@@ -71,6 +71,7 @@ enum LongOnly {
     OPT_INPUT,
     OPT_PAIRING_CODE,
     OPT_FIXED_VOLUME,
+    OPT_ALSA_MIXER,
 };
 
 /// An option a config file may set: its key (the long flag name) and how diagnostics name it.
@@ -111,6 +112,7 @@ const std::vector<SettableOption>& settable_options() {
         {Opt::AllowUnpaired, "allow-unpaired", "--allow-unpaired"},
         {Opt::PairingCode, "pairing-code", "--pairing-code"},
         {Opt::FixedVolume, "fixed-volume", "--fixed-volume"},
+        {Opt::AlsaMixer, "alsa-mixer", "--alsa-mixer"},
     };
     return table;
 }
@@ -415,6 +417,12 @@ bool apply_option(const SettableOption& option, const std::string& value, Option
                 return false;
             }
             break;
+        case Opt::AlsaMixer:
+            if (empty_value()) {
+                return false;
+            }
+            out.alsa_mixer = value;
+            break;
         case Opt::PairingCode:
             // The value is a credential, so the message does not repeat it.
             if (value.size() != 8 || value.find_first_not_of("0123456789") != std::string::npos) {
@@ -580,6 +588,7 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
         {"allow-unpaired", no_argument, nullptr, OPT_ALLOW_UNPAIRED},
         {"pairing-code", required_argument, nullptr, OPT_PAIRING_CODE},
         {"fixed-volume", no_argument, nullptr, OPT_FIXED_VOLUME},
+        {"alsa-mixer", required_argument, nullptr, OPT_ALSA_MIXER},
         {nullptr, 0, nullptr, 0},
     };
 
@@ -725,6 +734,9 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
             case OPT_FIXED_VOLUME:
                 apply(Opt::FixedVolume, "true");
                 break;
+            case OPT_ALSA_MIXER:
+                apply(Opt::AlsaMixer, optarg);
+                break;
             case OPT_MANUFACTURER:
                 apply(Opt::Manufacturer, optarg);
                 break;
@@ -819,6 +831,21 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
              "' contradict each other -- drop one");
     }
 
+    // The mixer spec names an ALSA control; no other backend has one. An unresolvable -o is
+    // left to make_audio_sink(), which names the device problem.
+    if (error.empty() && out.was_given(Opt::AlsaMixer)) {
+        DeviceSpec spec;
+        std::string reason;
+        if (resolve_device_spec(out.device, spec, reason) && spec.backend != SinkBackend::Alsa) {
+            fail("--alsa-mixer '" + out.alsa_mixer +
+                 "' needs -o alsa:<device> -- no other backend has a hardware mixer");
+        }
+        if (out.fixed_volume) {
+            fail("--alsa-mixer and --fixed-volume contradict each other -- the mixer exists to "
+                 "let the server set the level");
+        }
+    }
+
     // Absolutized before the length check, since the resolved path is what must fit.
     if (error.empty()) {
         // --no-control governs only a daemon; a subcommand still needs the path.
@@ -864,7 +891,7 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
             Opt::NoMdns,       Opt::MdnsName,    Opt::NoControl,   Opt::StateDir,
             Opt::OutputDelay,  Opt::HookStart,   Opt::HookStop,    Opt::ClientId,
             Opt::Manufacturer, Opt::ProductName, Opt::AudioFormat, Opt::AllowUnpaired,
-            Opt::Input,        Opt::PairingCode, Opt::FixedVolume,
+            Opt::Input,        Opt::PairingCode, Opt::FixedVolume, Opt::AlsaMixer,
         };
         for (Opt opt : DAEMON_ONLY) {
             if (out.was_given(opt)) {
@@ -1059,6 +1086,13 @@ void print_usage(std::FILE* out, const char* prog) {
     std::fprintf(out, "                such as a line-out into an amplifier. A remembered\n");
     std::fprintf(out, "                volume is kept but ignored, and returns once the flag\n");
     std::fprintf(out, "                is dropped. 'vol' and 'mute' still address the group\n");
+    std::fprintf(out, "  --alsa-mixer <card:control>\n");
+    std::fprintf(out, "                Drive this ALSA hardware mixer for volume and mute\n");
+    std::fprintf(out, "                instead of scaling the stream in software, e.g.\n");
+    std::fprintf(out, "                0:Master. The value is mapped over the control's dB\n");
+    std::fprintf(out, "                range the way alsamixer lays its scale out. ALSA\n");
+    std::fprintf(out, "                outputs only; a mixer that cannot be opened or set\n");
+    std::fprintf(out, "                falls back to software gain\n");
     std::fprintf(out, "  --allow-unpaired\n");
     std::fprintf(out, "                Let a server that has not paired with this player play\n");
     std::fprintf(out, "                on it. Off by default: every connection is encrypted,\n");

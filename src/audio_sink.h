@@ -56,6 +56,7 @@ enum class VolumeSource {
     Restored,     ///< read back from the state store at startup
     Server,       ///< a server sent a volume or mute command this run
     Fixed,        ///< --fixed-volume: full gain, unmuted, and no server may change it
+    Hardware,     ///< --alsa-mixer: read from the hardware mixer at startup
 };
 
 /// The parameters configure() takes, as one value.
@@ -152,9 +153,10 @@ void print_sink_capabilities(std::FILE* out, const SinkCapabilities& caps,
 
 /// Builds the sink named by -o.
 /// @param buffer_ms Already range-checked by the parser.
+/// @param alsa_mixer `card:control` naming a hardware mixer; ignored off the ALSA backend.
 /// @return The sink, or nullptr with `error` set.
 std::unique_ptr<AudioSink> make_audio_sink(const std::string& device, uint32_t buffer_ms,
-                                           std::string& error);
+                                           const std::string& alsa_mixer, std::string& error);
 
 /// Prints the device specs make_audio_sink() accepts, for -l.
 void print_audio_devices(std::FILE* out);

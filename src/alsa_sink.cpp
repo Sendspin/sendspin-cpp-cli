@@ -23,6 +23,7 @@
 #include <array>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -193,8 +194,8 @@ void install_alsa_error_handler() {
     std::call_once(once, [] { snd_lib_error_set_handler(&alsa_error_handler); });
 }
 
-AlsaAudioSink::AlsaAudioSink(std::string device, uint32_t buffer_ms)
-    : device_(std::move(device)), buffer_ms_(buffer_ms) {}
+AlsaAudioSink::AlsaAudioSink(std::string device, uint32_t buffer_ms, std::string mixer_spec)
+    : device_(std::move(device)), buffer_ms_(buffer_ms), mixer_spec_(std::move(mixer_spec)) {}
 
 AlsaAudioSink::~AlsaAudioSink() {
     // A sink destroyed without stop() must still release the device.
@@ -693,12 +694,25 @@ void AlsaAudioSink::stop() {
 
 void AlsaAudioSink::set_volume(uint8_t volume) {
     this->volume_.store(volume > 100 ? 100 : volume);
+    // Hardware first: a mixer that takes the value leaves the PCM scaling at unity.
+    if (!this->mixer_spec_.empty() && set_mixer_volume_(this->mixer_spec_, volume)) {
+        this->target_multiplier_.store(Q32_ONE, std::memory_order_relaxed);
+        cli_log(LogLevel::DEBUG, "alsa: mixer '%s' volume now %u", this->mixer_spec_.c_str(),
+                this->volume_.load());
+        return;
+    }
     this->update_target_multiplier_();
     cli_log(LogLevel::DEBUG, "alsa: volume now %u", this->volume_.load());
 }
 
 void AlsaAudioSink::set_muted(bool muted) {
     this->muted_.store(muted);
+    if (!this->mixer_spec_.empty() && set_mixer_mute_(this->mixer_spec_, muted)) {
+        this->target_multiplier_.store(Q32_ONE, std::memory_order_relaxed);
+        cli_log(LogLevel::DEBUG, "alsa: mixer '%s' %s", this->mixer_spec_.c_str(),
+                muted ? "muted" : "unmuted");
+        return;
+    }
     this->update_target_multiplier_();
     cli_log(LogLevel::DEBUG, "alsa: %s", muted ? "muted" : "unmuted");
 }
@@ -745,6 +759,164 @@ void AlsaAudioSink::update_target_multiplier_() {
     // Only the target moves; write() walks current_multiplier_ toward it.
     this->target_multiplier_.store(q32_gain_for(this->volume_.load(), this->muted_.load()),
                                    std::memory_order_relaxed);
+}
+
+// ============================================================================
+// Hardware mixer
+// ============================================================================
+
+snd_mixer_elem_t* AlsaAudioSink::open_mixer_(const std::string& mixer_spec, snd_mixer_t** handle) {
+    const size_t colon = mixer_spec.find(':');
+    if (colon == std::string::npos || colon == 0 || colon + 1 == mixer_spec.size()) {
+        return nullptr;
+    }
+    const std::string card = mixer_spec.substr(0, colon);
+    const std::string control = mixer_spec.substr(colon + 1);
+
+    if (snd_mixer_open(handle, 0) < 0) {
+        return nullptr;
+    }
+    const std::string hw = "hw:" + card;
+    if (snd_mixer_attach(*handle, hw.c_str()) < 0 ||
+        snd_mixer_selem_register(*handle, nullptr, nullptr) < 0 || snd_mixer_load(*handle) < 0) {
+        snd_mixer_close(*handle);
+        return nullptr;
+    }
+
+    snd_mixer_selem_id_t* sid = nullptr;
+    snd_mixer_selem_id_alloca(&sid);
+    snd_mixer_selem_id_set_index(sid, 0);
+    snd_mixer_selem_id_set_name(sid, control.c_str());
+    snd_mixer_elem_t* elem = snd_mixer_find_selem(*handle, sid);
+    if (elem == nullptr) {
+        snd_mixer_close(*handle);
+    }
+    return elem;
+}
+
+bool AlsaAudioSink::playback_dB_range_(snd_mixer_elem_t* elem, long& min, long& max) {
+    if (!snd_mixer_selem_has_playback_volume(elem)) {
+        return false;
+    }
+    return snd_mixer_selem_get_playback_dB_range(elem, &min, &max) == 0;
+}
+
+bool AlsaAudioSink::playback_dB_(snd_mixer_elem_t* elem, long& dB) {
+    // Channels share one dB range, so the first channel that reports carries the control's value.
+    for (unsigned int channel = 0; channel <= SND_MIXER_SCHN_LAST; ++channel) {
+        if (snd_mixer_selem_get_playback_dB(
+                elem, static_cast<snd_mixer_selem_channel_id_t>(channel), &dB) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool AlsaAudioSink::playback_switch_(snd_mixer_elem_t* elem) {
+    int value = 0;
+    for (unsigned int channel = 0; channel <= SND_MIXER_SCHN_LAST; ++channel) {
+        if (snd_mixer_selem_get_playback_switch(
+                elem, static_cast<snd_mixer_selem_channel_id_t>(channel), &value) == 0) {
+            return value != 0;
+        }
+    }
+    return false;
+}
+
+long AlsaAudioSink::mixer_dB_for_volume_(long min, long max, uint8_t volume) {
+    if (volume >= 100) {
+        return max;
+    }
+    if (volume == 0) {
+        return min;
+    }
+    // alsamixer's curve: linear in perceived loudness between the control's endpoints, not in
+    // dB, so a control whose floor is far below -100 dB stays usable across the whole scale.
+    const double min_norm = std::pow(10.0, static_cast<double>(min - max) / 6000.0);
+    const double normalized = static_cast<double>(volume) / 100.0 * (1.0 - min_norm) + min_norm;
+    return static_cast<long>(
+        std::lround(6000.0 * std::log10(normalized) + static_cast<double>(max)));
+}
+
+uint8_t AlsaAudioSink::volume_for_mixer_dB_(long min, long max, long dB) {
+    double normalized = std::pow(10.0, static_cast<double>(dB - max) / 6000.0);
+    if (min != SND_CTL_TLV_DB_GAIN_MUTE) {
+        const double min_norm = std::pow(10.0, static_cast<double>(min - max) / 6000.0);
+        normalized = (normalized - min_norm) / (1.0 - min_norm);
+    }
+    return static_cast<uint8_t>(std::lround(normalized * 100.0));
+}
+
+bool AlsaAudioSink::set_mixer_volume_(const std::string& mixer_spec, uint8_t volume) {
+    snd_mixer_t* handle = nullptr;
+    snd_mixer_elem_t* elem = open_mixer_(mixer_spec, &handle);
+    if (elem == nullptr) {
+        cli_log(LogLevel::WARN, "alsa: cannot open mixer '%s' -- using software volume",
+                mixer_spec.c_str());
+        return false;
+    }
+
+    long min = 0;
+    long max = 0;
+    if (!playback_dB_range_(elem, min, max) ||
+        snd_mixer_selem_set_playback_dB_all(elem, mixer_dB_for_volume_(min, max, volume), 0) < 0) {
+        cli_log(LogLevel::WARN, "alsa: mixer '%s' refused volume %u -- using software volume",
+                mixer_spec.c_str(), volume);
+        snd_mixer_close(handle);
+        return false;
+    }
+    snd_mixer_close(handle);
+    return true;
+}
+
+bool AlsaAudioSink::set_mixer_mute_(const std::string& mixer_spec, bool muted) {
+    snd_mixer_t* handle = nullptr;
+    snd_mixer_elem_t* elem = open_mixer_(mixer_spec, &handle);
+    if (elem == nullptr) {
+        cli_log(LogLevel::WARN, "alsa: cannot open mixer '%s' -- using software mute",
+                mixer_spec.c_str());
+        return false;
+    }
+    // A control without a switch is not a failure: there is simply nothing to mute with.
+    const bool took = snd_mixer_selem_has_playback_switch(elem) &&
+                      snd_mixer_selem_set_playback_switch_all(elem, muted ? 0 : 1) == 0;
+    snd_mixer_close(handle);
+    return took;
+}
+
+bool AlsaAudioSink::probe_mixer(const std::string& mixer_spec, std::string& error) {
+    install_alsa_error_handler();
+
+    snd_mixer_t* handle = nullptr;
+    if (open_mixer_(mixer_spec, &handle) == nullptr) {
+        error = "cannot open ALSA mixer '" + mixer_spec +
+                "' -- the spec is card:control, e.g. '0:Master', or run -l to list this host's "
+                "PCMs and amixer to list the controls";
+        return false;
+    }
+    snd_mixer_close(handle);
+    return true;
+}
+
+int AlsaAudioSink::read_mixer_volume(const std::string& mixer_spec, bool& muted) {
+    install_alsa_error_handler();
+
+    snd_mixer_t* handle = nullptr;
+    snd_mixer_elem_t* elem = open_mixer_(mixer_spec, &handle);
+    if (elem == nullptr) {
+        return -1;
+    }
+    muted = !playback_switch_(elem);
+    long min = 0;
+    long max = 0;
+    long dB = 0;
+    if (!playback_dB_(elem, dB) || !playback_dB_range_(elem, min, max)) {
+        snd_mixer_close(handle);
+        return -1;
+    }
+    const uint8_t volume = volume_for_mixer_dB_(min, max, dB);
+    snd_mixer_close(handle);
+    return volume;
 }
 
 }  // namespace sendspin_cli
