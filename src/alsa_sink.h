@@ -45,6 +45,7 @@ public:
     bool configure(uint32_t sample_rate, uint8_t channels, uint8_t bits_per_sample) override;
     size_t write(const uint8_t* data, size_t length, uint32_t timeout_ms) override;
     void clear() override;
+    void release() override;
     void stop() override;
     void set_volume(uint8_t volume) override;
     void set_muted(bool muted) override;

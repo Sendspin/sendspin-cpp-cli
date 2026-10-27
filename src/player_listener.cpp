@@ -91,7 +91,12 @@ void PlayerListener::on_stream_end() {
     } else {
         cli_log(LogLevel::INFO, "Stream ended");
     }
-    this->sink_.clear();
+    // Before the stop hook, so a hook that starts another player finds the device free.
+    if (this->release_device_) {
+        this->sink_.release();
+    } else {
+        this->sink_.clear();
+    }
     if (this->on_stream_event) {
         this->on_stream_event(false);
     }

@@ -85,6 +85,7 @@ enum class Opt : unsigned {
     PairingCode,    ///< --pairing-code
     FixedVolume,    ///< --fixed-volume
     AlsaMixer,      ///< --alsa-mixer
+    ReleaseDevice,  ///< --release-device
 };
 
 /// Everything the flag surface configures.
@@ -125,6 +126,9 @@ struct Options {
     /// --alsa-mixer <card:control>: drive this hardware mixer instead of scaling the PCM.
     /// ALSA only; empty scales the stream in software.
     std::string alsa_mixer;
+
+    /// --release-device: close the output device at stream end instead of holding it.
+    bool release_device{false};
 
     /// --no-mdns: do not advertise `_sendspin._tcp`.
     bool no_mdns{false};

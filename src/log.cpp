@@ -15,7 +15,16 @@
 #include "log.h"
 
 #include <fcntl.h>
+#ifdef _WIN32
+#include <io.h>
+// The CRT's names for these.
+#define O_CLOEXEC _O_NOINHERIT
+#define STDERR_FILENO 2
+#else
 #include <unistd.h>
+// Only Windows translates line endings.
+#define O_BINARY 0
+#endif
 
 #include <cerrno>
 #include <csignal>
@@ -69,9 +78,15 @@ void write_timestamp(char* out, size_t size) {
     const std::time_t now = std::time(nullptr);
     std::tm utc{};
     // gmtime_r: sinks log from the sync task's thread.
+#ifdef _WIN32
+    if (::gmtime_s(&utc, &now) != 0) {
+        return;
+    }
+#else
     if (::gmtime_r(&now, &utc) == nullptr) {
         return;
     }
+#endif
     if (std::strftime(out, size, "%Y-%m-%dT%H:%M:%SZ ", &utc) == 0) {
         out[0] = '\0';
     }
@@ -106,7 +121,8 @@ __attribute__((format(printf, 3, 0))) void emit(sendspin::LogLevel level, const 
 /// Points fd 2 at `path`, appending, and leaves it alone if the file cannot be opened.
 /// @return true on success; on false errno is the reason.
 bool point_stderr_at(const std::string& path) {
-    const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+    // Binary, so every line ends in \n on Windows too.
+    const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | O_BINARY, 0644);
     if (fd < 0) {
         return false;
     }

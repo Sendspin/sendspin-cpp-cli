@@ -10,32 +10,55 @@ OS), systemd, a sound card, and root.
 ## The short way
 
 ```bash
-curl -fLO https://raw.githubusercontent.com/Sendspin/sendspin-cpp-cli/main/scripts/get_started_linux.sh
-less get_started_linux.sh          # it is about to run things as root; read it
-chmod +x get_started_linux.sh
-./get_started_linux.sh
+curl -fsSL https://raw.githubusercontent.com/Sendspin/sendspin-cpp-cli/main/scripts/get_started_linux.sh | bash
 ```
 
-It installs the release for this machine's architecture and sets the service up. It does
-not pipe into a shell, and it does not run anything as root without printing the exact
-commands first and waiting for you to say yes:
+Or read it before it runs anything:
+
+```bash
+curl -fLO https://raw.githubusercontent.com/Sendspin/sendspin-cpp-cli/main/scripts/get_started_linux.sh
+less get_started_linux.sh
+bash get_started_linux.sh
+```
+
+Both behave the same. It installs the release for this machine's architecture, asks for a
+player name and an output device, writes them to the config, and starts the service. Piped
+into `bash`, its questions are still asked on your terminal. It does not run anything as
+root without printing the exact commands first and waiting for you to say yes:
 
 ```
 ==> These are the commands that need root
 
-  sudo tar -xzf /tmp/tmp.XXXX/sendspin-cli-0.1.0-linux-arm64.tar.gz --strip-components=1 -C / sendspin-cli-0.1.0-linux-arm64/usr
-  sudo cp /usr/local/share/doc/sendspin-cli/sendspin-cli.conf.example /etc/sendspin-cli.conf
+  sudo tar -xzf /tmp/tmp.XXXX/sendspin-cli-0.3.0-linux-arm64.tar.gz --strip-components=1 -C / sendspin-cli-0.3.0-linux-arm64/usr
   sudo systemd-sysusers
   sudo systemctl daemon-reload
   sudo systemctl enable sendspin-cli
   sudo /usr/local/bin/sendspin-cli -l
+  sudo install -m 0644 /tmp/tmp.XXXX/sendspin-cli.conf /etc/sendspin-cli.conf
+  sudo systemctl restart sendspin-cli
 
 Run them? [y/N]
 ```
 
-`--yes` skips the prompt, and is required when stdin is not a terminal — a script that
-cannot ask refuses rather than assuming. `--version v0.1.0` installs a specific release
-instead of the newest.
+The config it installs is composed in the temporary directory from the annotated example
+plus your two answers, and the lines it sets are printed again just before it is copied.
+
+| Flag | What it does |
+|---|---|
+| `--version v0.3.0` | Install that release instead of the newest. |
+| `--name <name>` | The player's name, instead of being asked. |
+| `--output <device>` | The output device, instead of being asked. |
+| `--user-service` | Run as you rather than as the `sendspin-cli` account — see [below](#as-a-system-service-or-as-you). |
+| `--system-service` | The default; also switches a user-service install back. |
+| `--yes` | Ask nothing: run the root commands as printed, and take the name and output only from the flags. |
+
+Piped, flags go after `bash -s --`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Sendspin/sendspin-cpp-cli/main/scripts/get_started_linux.sh | bash -s -- --yes --name kitchen --output hw:1,0
+```
+
+With no terminal to ask on and no `--yes`, it refuses and installs nothing.
 
 ### What it actually does
 
@@ -47,33 +70,58 @@ instead of the newest.
    and older is refused with the reason rather than an "unsupported" shrug.
 2. **Finds the newest release** and downloads that archive plus `SHA256SUMS`.
 3. **Verifies the checksum**, and stops without installing anything if it does not match.
-4. **Unpacks it into `/`** with the member-selected `tar` form, so `BUILD-INFO.txt` stays in
+4. **Checks the binary can load here.** Shared libraries this host lacks are mapped to
+   their `apt`, `dnf` or `pacman` packages and the install command joins the list you
+   confirm. A library it cannot map, a host with none of those package managers, or a glibc
+   older than the build needs stops it there, naming what is missing, with nothing installed.
+5. **Unpacks it into `/`** with the member-selected `tar` form, so `BUILD-INFO.txt` stays in
    the archive.
-5. **Copies the annotated example config** to `/etc/sendspin-cli.conf` if you have none.
-   Every line in it is commented out, so it chooses nothing.
 6. **Runs `systemd-sysusers`**, which creates the unprivileged `sendspin-cli` account the
-   unit runs as out of the declaration the payload just installed. This is the one step a
-   tarball cannot do for itself, and without it the unit does not start at all — see
+   unit runs as out of the declaration the payload just installed — see
    [Running as a Service](Running-as-a-Service#it-runs-as-its-own-account).
-7. **Enables the unit — and starts it only if an output is already configured.** More on
-   that below; it is the one surprising thing the script does.
-8. **Lists this host's sound devices** and prints the two commands that finish the job.
+7. **Enables the unit.**
+8. **Asks for a name and an output device**, after listing what this host can play
+   through, and writes `name` and `output` into `/etc/sendspin-cli.conf` — seeded from the
+   annotated example if you have no config yet. A key your config already sets is never
+   asked for and never replaced.
+9. **Starts the service**, waits two seconds, and either confirms it is running or shows
+   the journal's account of why it is not.
 
-Re-running it is how you upgrade: it overwrites the same paths, and restarts the service if
-step 7 finds an `output` configured — which after a first run it will. Both step 6 and step 7
-are idempotent, so nothing there minds being run twice.
+Re-running it is how you upgrade: it overwrites the same paths and restarts the service.
+On a host whose config already names an `output` it asks nothing but the root confirmation.
 
-### Why it does not start the player
+### As a system service, or as you
 
-A systemd **system** unit has no user session, so there is no PipeWire or PulseAudio for
-ALSA's `default` PCM to follow — and the device that opens perfectly from your shell usually
-will not open under `systemctl`. The unit is `Restart=on-failure` with `RestartSec=5`, so a
-player started before you have named a card fails and is retried every five seconds forever,
-while the script that started it prints congratulations.
+On a fresh host the script asks which:
 
-So it enables the unit, shows you the devices, and leaves starting it to you. Once
-`/etc/sendspin-cli.conf` names an `output`, the script starts the player itself on every
-subsequent run.
+- **A system service** (the default, `--system-service`). The hardened unit, running as the
+  unprivileged `sendspin-cli` account, configured in `/etc/sendspin-cli.conf`. It has no
+  desktop session, so name a card — `hw:1,0` — rather than `default`. Right for a headless
+  box or a Pi.
+- **A user service** (`--user-service`). Runs as you under `systemctl --user`, configured in
+  `~/.config/sendspin-cli/config`, so `output = default` follows your session's PipeWire or
+  PulseAudio. The script enables lingering so it starts at boot and survives logout, and adds
+  you to the `audio` group for direct `hw:` devices. Subcommands need no `sudo` and no
+  flags: `sendspin-cli status`.
+
+Both listen on the same port, so choosing one stops and disables the other. See
+[Running as a Service](Running-as-a-Service#a-user-unit-instead) for what the user unit is.
+
+### When it does not start the player
+
+One case: `--yes` with no `--output`, on a host whose config names none. There is nobody to
+ask, and a system unit started without a card fails and is retried every five seconds —
+`Restart=on-failure`, and no session for ALSA's `default` to follow. So the unit is enabled,
+the device list is printed, and the two commands that finish the job are the last thing it
+says. Answering the output question with nothing ends the same way.
+
+### Removing it
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Sendspin/sendspin-cpp-cli/main/scripts/uninstall_linux.sh | bash
+```
+
+See [Uninstalling](Running-as-a-Service#uninstalling).
 
 ## The long way
 
@@ -130,8 +178,8 @@ Three forms are worth knowing, and there are more in
 | `default` | follow the host's own configuration — PipeWire, PulseAudio or bare hardware |
 
 `default` is the right answer from a login shell and usually the wrong one under a system
-unit, for the reason above. Under a **user** unit (`systemctl --user`) it is right again,
-because there the session and its sound server exist.
+unit, which has no session to follow. Under the **user** service (`--user-service`) it is
+right again, because there the session and its sound server exist.
 
 ## Check it worked
 
@@ -163,8 +211,9 @@ see [Controlling the Player](Controlling-the-Player).
 ## Now find it from your server
 
 The player advertises `_sendspin._tcp` and waits. Open your Sendspin controller and it
-should appear under the name it logged — which is `-n`, falling back to this host's name.
-Nothing needs configuring on the server side.
+should appear under the name it logged — which is `name`, falling back to this host's name.
+A server has to pair with it before it may play; the script prints the `pair-token` command
+for that as its last step, and [Pairing a Player](Pairing-a-Player) has the rest.
 
 To go the other way and have the player dial the server instead, set `server` in the config:
 

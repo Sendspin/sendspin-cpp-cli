@@ -76,6 +76,19 @@ TEST(SinkRecovery, AFailedReopenEscalatesToTheRescan) {
     EXPECT_TRUE(recovery.pending());
 }
 
+TEST(SinkRecovery, CancellingDropsAnOwedRescanAndTheGap) {
+    SinkRecovery recovery;
+    escalate(recovery);
+    recovery.discard_frames(480U);
+    ASSERT_TRUE(recovery.pending());
+
+    recovery.cancel();
+
+    EXPECT_FALSE(recovery.pending());
+    EXPECT_EQ(rescan_fires_at(recovery, T0, T0 + SINK_RESCAN_MAX_DELAY_MS), -1);
+    EXPECT_EQ(recovery.take_discarded_frames(), 0U);
+}
+
 TEST(SinkRecovery, ReturnsTheDiscardedGapOnceWhenADeviceComesBack) {
     SinkRecovery recovery;
     escalate(recovery);

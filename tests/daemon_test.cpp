@@ -18,11 +18,10 @@
 #include "daemon.h"
 
 #include "log.h"
+#include "posix_compat.h"
 
 #include <fcntl.h>
 #include <gtest/gtest.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 #include <csignal>
 #include <cstdio>
@@ -230,7 +229,8 @@ TEST(LogFileTest, StampsOnlyAFileAndReopensThePathOnSighup) {
     ASSERT_GE(saved_stderr, 0);
 
     // 1. Bare stderr: level letter and tag, no timestamp.
-    const int scratch = ::open(dir.file("other").c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    const int scratch =
+        ::open(dir.file("other").c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0600);
     ASSERT_GE(scratch, 0);
     ASSERT_GE(::dup2(scratch, STDERR_FILENO), 0);
     ::close(scratch);
@@ -250,11 +250,13 @@ TEST(LogFileTest, StampsOnlyAFileAndReopensThePathOnSighup) {
     const bool opened = log_to_file(dir.file("log"));
     log_line(sendspin::LogLevel::INFO, LOG_TAG_MDNS, "stamped %d", 2);
 
+#ifndef _WIN32
     // 5. Rotation: rename, then the reopen the SIGHUP handler requests.
     const bool renamed = std::rename(dir.file("log").c_str(), dir.file("log.1").c_str()) == 0;
     log_handle_sighup(SIGHUP);
     log_reopen_if_requested();
     log_line(sendspin::LogLevel::INFO, LOG_TAG_MDNS, "after rotation %d", 3);
+#endif
     std::fflush(stderr);
 
     ASSERT_GE(::dup2(saved_stderr, STDERR_FILENO), 0);
@@ -262,7 +264,9 @@ TEST(LogFileTest, StampsOnlyAFileAndReopensThePathOnSighup) {
 
     EXPECT_TRUE(opened);
     EXPECT_FALSE(unopenable);
+#ifndef _WIN32
     ASSERT_TRUE(renamed);
+#endif
 
     // Bare stderr lines, including the complaint about the unopenable path.
     const std::string bare = read_file(dir.file("other"));
@@ -271,19 +275,26 @@ TEST(LogFileTest, StampsOnlyAFileAndReopensThePathOnSighup) {
     EXPECT_NE(bare.find("E cli: fatal at none 9\n"), std::string::npos) << bare;
     EXPECT_EQ(bare.find("gated away"), std::string::npos) << bare;
 
+#ifdef _WIN32
+    // No SIGHUP, so no rotation: the stamped line stays in the file it was written to.
+    const std::string rotated = read_file(dir.file("log"));
+#else
     const std::string rotated = read_file(dir.file("log.1"));
+#endif
     EXPECT_NE(rotated.find(" I mdns: stamped 2\n"), std::string::npos) << rotated;
     // 2026-08-10T03:14:15Z, so the letter is at a fixed offset and the Z is the field's end.
     ASSERT_GE(rotated.size(), 21U);
     EXPECT_EQ(rotated[10], 'T');
     EXPECT_EQ(rotated[19], 'Z');
     EXPECT_EQ(rotated[20], ' ');
+#ifndef _WIN32
     // The old descriptor must no longer be written.
     EXPECT_EQ(rotated.find("after rotation"), std::string::npos) << rotated;
 
     const std::string fresh = read_file(dir.file("log"));
     EXPECT_NE(fresh.find("Reopened"), std::string::npos) << fresh;
     EXPECT_NE(fresh.find(" I mdns: after rotation 3\n"), std::string::npos) << fresh;
+#endif
 }
 
 }  // namespace

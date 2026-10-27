@@ -16,13 +16,20 @@
 
 #pragma once
 
+#ifndef _WIN32
 #include <sys/types.h>
+#endif
 
 #include <optional>
 #include <string>
 #include <vector>
 
 namespace sendspin_cli {
+
+#ifdef _WIN32
+/// A process id, a DWORD.
+using pid_t = unsigned long;
+#endif
 
 /// Connection facts exported to a hook; empty fields are left out of the environment.
 struct HookContext {
@@ -34,7 +41,8 @@ struct HookContext {
     std::string client_name;  ///< SENDSPIN_CLIENT_NAME: this player's friendly name
 };
 
-/// Runs hooks as `/bin/sh -c`, one at a time in event order, without blocking the caller.
+/// Runs hooks as `/bin/sh -c` (`cmd.exe /c` on Windows), one at a time in event order, without
+/// blocking the caller.
 /// While one runs, only the newest event waits. Every method must be called on the main loop.
 class HookRunner {
 public:
@@ -58,6 +66,9 @@ private:
     struct RunningHook {
         pid_t pid;
         std::string event;
+#ifdef _WIN32
+        void* process;  ///< the HANDLE reap() waits on and closes
+#endif
     };
 
     /// The event waiting for the running hook to finish, newest wins.
@@ -67,8 +78,11 @@ private:
         HookContext context;
     };
 
-    /// Forks and execs one hook unconditionally.
+    /// Starts one hook unconditionally.
     void spawn(const std::string& command, const char* event, const HookContext& context);
+
+    /// Logs how a finished hook ended. @return false while it is still running.
+    bool reap(RunningHook& hook);
 
     std::vector<RunningHook> running_;
     std::optional<PendingHook> pending_;

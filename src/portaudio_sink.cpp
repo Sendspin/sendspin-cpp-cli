@@ -399,6 +399,23 @@ void PortAudioSink::clear() {
     this->ring_.drop();
 }
 
+void PortAudioSink::release() {
+    const std::lock_guard<std::mutex> lock(this->mutex_);
+
+    // Nothing to reopen at, so neither write() nor poll() brings the stream back.
+    this->last_format_ = {};
+    this->recovery_.cancel();
+    this->gap_handoff_.forget();
+    // Latched so a late write() discards without the not-playing error.
+    this->failed_.store(true);
+
+    if (this->stream_ == nullptr) {
+        return;
+    }
+    this->close_stream_();
+    cli_log(LogLevel::INFO, "portaudio: '%s' released", this->name().c_str());
+}
+
 void PortAudioSink::stop() {
     // Before the mutex, so a blocked write() bails out.
     this->stopping_.store(true);

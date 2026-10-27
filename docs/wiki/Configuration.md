@@ -40,6 +40,11 @@ top:
 3. `$HOME/.config/sendspin-cli/config`
 4. `/etc/sendspin-cli.conf`
 
+On Windows, the search is `$XDG_CONFIG_HOME/sendspin-cli/config`, then
+`%APPDATA%\sendspin-cli\config`, and there is **no system-wide file**: unlike `/etc`, any user
+can create files under ProgramData, so a config there could not be trusted by a player running
+as someone else. `--config NUL` is Windows' `--config /dev/null`.
+
 Finding none is silent and normal. There is no `--no-config` flag — `--config /dev/null`
 already does that.
 
@@ -60,6 +65,7 @@ already does that.
 | `allow-unpaired` | `--allow-unpaired` | `true`/`false` — let a server that has not paired with this player play on it | `false` |
 | `fixed-volume` | `--fixed-volume` | `true`/`false` — play at full volume, unmuted, and offer the server neither volume nor mute, for an output whose level is set elsewhere (a line-out into an amplifier). A remembered volume is kept but ignored, and returns once the key is dropped | `false` |
 | `alsa-mixer` | `--alsa-mixer` | `<card>:<control>` — drive this ALSA hardware mixer for volume and mute instead of scaling the stream in software, e.g. `0:Master`. The value is mapped over the control's dB range on the spec's curve, and the level the mixer is at when the player starts is what it reports and keeps until a server sends its own. A change made outside the player (alsamixer, `amixer`, a hardware knob) is reported to the server, and volume 0 silences the stream even when the control's floor is not silent. ALSA outputs only; a mixer that cannot be opened or set falls back to software gain. Contradicts `fixed-volume` | none |
+| `release-device` | `--release-device` | `true`/`false` — close the output device at each stream end and reopen it at the next stream start, for an exclusive device such as an ALSA `hw:` DAC shared with other players (Squeezelite, AirPlay, Spotify). The trade-off: another app can take the device between streams, and the next stream is then discarded; each stream also pays a fresh open. ALSA and PortAudio only; other backends ignore it | `false` |
 | `pairing-code` | `--pairing-code` | exactly 8 digits — a static code a server can pair with, confirmed each time with `sendspin-cli pair confirm`; replaces the 6-digit code the player otherwise shows. See [Pairing a Player](Pairing-a-Player#3-static-code) | none |
 | `no-mdns` | `--no-mdns` | `true`/`false` — do not advertise `_sendspin._tcp` | `false` |
 | `mdns-name` | `--mdns-name` | the instance label to advertise, when it should differ from `name` | `name` |
@@ -172,7 +178,8 @@ A state file written by 0.3.0 or earlier is upgraded in place: its `static-delay
 `blob-output_delay` once, and `last-server-hash` is dropped.
 
 It lives at `$XDG_STATE_HOME/sendspin-cli/state`, then
-`$HOME/.local/state/sendspin-cli/state`, and **`--state-dir <dir>` overrides both** — a
+`$HOME/.local/state/sendspin-cli/state` (on Windows, `%LOCALAPPDATA%\sendspin-cli\state`,
+readable by you alone), and **`--state-dir <dir>` overrides both** — a
 systemd *system* unit has neither variable and is handed `/var/lib/sendspin-cli` by
 `StateDirectory=`. With none of the three the player still runs and simply remembers
 nothing — which now includes its identity, so every run is a new, unpaired player to a

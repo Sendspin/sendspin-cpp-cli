@@ -698,6 +698,24 @@ void AlsaAudioSink::clear() {
     }
 }
 
+void AlsaAudioSink::release() {
+    const std::lock_guard<std::mutex> lock(this->device_mutex_);
+
+    this->current_multiplier_ = this->target_multiplier_.load(std::memory_order_relaxed);
+    // Nothing to reopen at, so poll() leaves the device to the next configure().
+    this->last_format_ = {};
+    this->recovery_.cancel();
+    // Latched so a late write() discards without the device-lost error.
+    this->failed_.store(true);
+
+    if (this->pcm_ == nullptr) {
+        return;
+    }
+    snd_pcm_drop(this->pcm_);
+    this->close_device_();
+    cli_log(LogLevel::INFO, "alsa: '%s' released", this->device_.c_str());
+}
+
 void AlsaAudioSink::stop() {
     // Before the lock, so a blocked write() bails out.
     this->stopping_.store(true);

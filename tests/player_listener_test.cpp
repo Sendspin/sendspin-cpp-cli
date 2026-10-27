@@ -17,13 +17,12 @@
 #include "player_listener.h"
 
 #include "null_sink.h"
+#include "posix_compat.h"
 #include "state_store.h"
 
 #include <sendspin/client.h>
 
 #include <gtest/gtest.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 #include <cstdio>
 #include <fstream>
@@ -55,6 +54,50 @@ struct Harness {
     NullAudioSink sink;
     PlayerListener listener;
     std::vector<bool> events;
+};
+
+/// A sink that logs flushes and releases, beside the listener's stop events.
+class RecordingSink final : public AudioSink {
+public:
+    explicit RecordingSink(std::vector<std::string>& log) : log_(log) {}
+
+    std::string name() const override {
+        return "recording";
+    }
+    bool configure(uint32_t /*sample_rate*/, uint8_t /*channels*/, uint8_t /*bits*/) override {
+        return true;
+    }
+    size_t write(const uint8_t* /*data*/, size_t length, uint32_t /*timeout_ms*/) override {
+        return length;
+    }
+    void clear() override {
+        this->log_.emplace_back("clear");
+    }
+    void release() override {
+        this->log_.emplace_back("release");
+    }
+
+private:
+    std::vector<std::string>& log_;
+};
+
+/// A listener over a RecordingSink, logging stream events into the sink's log.
+struct RecordingHarness {
+    RecordingHarness()
+        : client(sendspin::SendspinClientConfig{}),
+          player(client.add_player(Harness::player_config())),
+          sink(log),
+          listener(player, sink) {
+        this->listener.on_stream_event = [this](bool started) {
+            this->log.emplace_back(started ? "start" : "stop");
+        };
+    }
+
+    std::vector<std::string> log;
+    sendspin::SendspinClient client;
+    sendspin::PlayerRole& player;
+    RecordingSink sink;
+    PlayerListener listener;
 };
 
 /// A state file under the build tree holding a remembered volume, removed afterwards.
@@ -147,6 +190,25 @@ TEST(PlayerListener, ARepeatedEndFiresOneStopEventPerStart) {
     harness.listener.on_stream_end();
 
     EXPECT_EQ(harness.events, (std::vector<bool>{true, false}));
+}
+
+TEST(PlayerListener, AStreamEndClearsTheSinkByDefault) {
+    RecordingHarness harness;
+
+    harness.listener.on_stream_start();
+    harness.listener.on_stream_end();
+
+    EXPECT_EQ(harness.log, (std::vector<std::string>{"start", "clear", "stop"}));
+}
+
+TEST(PlayerListener, AStreamEndReleasesTheDeviceBeforeTheStopEventWhenAsked) {
+    RecordingHarness harness;
+    harness.listener.release_device_between_streams();
+
+    harness.listener.on_stream_start();
+    harness.listener.on_stream_end();
+
+    EXPECT_EQ(harness.log, (std::vector<std::string>{"start", "release", "stop"}));
 }
 
 }  // namespace

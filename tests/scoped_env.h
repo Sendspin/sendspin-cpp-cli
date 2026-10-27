@@ -32,17 +32,17 @@ public:
             this->previous_ = previous;
         }
         if (value == nullptr) {
-            ::unsetenv(name);
+            unset(name);
         } else {
-            ::setenv(name, value, 1);
+            set(name, value);
         }
     }
 
     ~ScopedEnv() {
         if (this->had_previous_) {
-            ::setenv(this->name_, this->previous_.c_str(), 1);
+            set(this->name_, this->previous_.c_str());
         } else {
-            ::unsetenv(this->name_);
+            unset(this->name_);
         }
     }
 
@@ -50,6 +50,23 @@ public:
     ScopedEnv& operator=(const ScopedEnv&) = delete;
 
 private:
+#ifdef _WIN32
+    // Windows holds no empty variable: "" unsets it, which every reader here treats alike.
+    static void set(const char* name, const char* value) {
+        ::_putenv_s(name, value);
+    }
+    static void unset(const char* name) {
+        ::_putenv_s(name, "");
+    }
+#else
+    static void set(const char* name, const char* value) {
+        ::setenv(name, value, 1);
+    }
+    static void unset(const char* name) {
+        ::unsetenv(name);
+    }
+#endif
+
     const char* name_;
     std::string previous_;
     bool had_previous_{false};
