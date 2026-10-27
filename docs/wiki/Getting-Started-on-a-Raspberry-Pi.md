@@ -57,16 +57,16 @@ itself carries, where the other archives need `2.38`. So it loads on Raspberry P
 Exactly as on any Linux host:
 
 ```bash
-curl -fLO https://raw.githubusercontent.com/Sendspin/sendspin-cpp-cli/main/scripts/get_started_linux.sh
-less get_started_linux.sh          # read it before it runs things as root
-chmod +x get_started_linux.sh
-./get_started_linux.sh
+curl -fsSL https://raw.githubusercontent.com/Sendspin/sendspin-cpp-cli/main/scripts/get_started_linux.sh | bash
 ```
 
-The script detects the Pi from `/proc/device-tree/model` and adds the notes below to what it
-prints at the end. Everything on
-[Getting Started on Linux](Getting-Started-on-Linux) — what it does, why it enables the unit
-without starting it, and the by-hand equivalent — applies unchanged.
+It asks for a name and an output device — section 3 is how to answer the second — and
+starts the service. The script detects the Pi from `/proc/device-tree/model` and adds the
+notes below to what it prints at the end. Everything on
+[Getting Started on Linux](Getting-Started-on-Linux) — what it does, reading it before
+running it, the flags for an unattended install, and the by-hand equivalent — applies
+unchanged. A Pi OS Lite image usually lacks `libportaudio2` and
+`libavahi-compat-libdnssd1`; the script offers to install them.
 
 ## 3. The Pi has several sound cards, and you must pick one
 
@@ -85,7 +85,8 @@ $ sendspin-cli -l
       ...
 ```
 
-Then name it in `/etc/sendspin-cli.conf`:
+The getting-started script shows this list and asks which; what you type lands in
+`/etc/sendspin-cli.conf`:
 
 ```ini
 output = hw:1,0
@@ -121,8 +122,9 @@ The getting-started script does that for you. Skipping it is a unit that does no
 `systemctl status` reading `217/USER`; it is not a player that starts and stays silent. See
 [Running as a Service](Running-as-a-Service#it-runs-as-its-own-account).
 
-**From your own shell, it is on you.** Put yourself in the `audio` group once, then log out
-and back in — group membership is only picked up at login:
+**From your own shell, it is on you** — as it is under the user service, where the script's
+`--user-service` mode runs this for you. Put yourself in the `audio` group once, then log
+out and back in — group membership is only picked up at login:
 
 ```bash
 sudo usermod -aG audio "$USER"

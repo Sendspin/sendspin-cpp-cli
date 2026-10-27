@@ -1,0 +1,36 @@
+# sendspin-cli as a user service, following your session's PipeWire or PulseAudio:
+#
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now sendspin-cli
+#   sudo loginctl enable-linger "$USER"
+#
+# Configure it in ~/.config/sendspin-cli/config. Not beside the system unit: both take one port.
+
+[Unit]
+Description=Sendspin audio player
+Documentation=https://github.com/Sendspin/sendspin-cpp-cli
+# Ordering only: whichever sound server this session has, if any.
+After=pipewire.service pipewire-pulse.service pulseaudio.service
+
+[Service]
+# Foreground; journald captures stderr.
+Type=simple
+
+# The seccomp half of the system unit's hardening; the rest needs privileges a user manager lacks.
+NoNewPrivileges=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+
+# $XDG_RUNTIME_DIR and $XDG_STATE_HOME exist here, so the socket and state take their defaults.
+ExecStart=@SENDSPIN_CLI_INSTALLED_BINARY@
+
+Restart=on-failure
+RestartSec=5
+
+[Install]
+# A user manager has no multi-user.target.
+WantedBy=default.target

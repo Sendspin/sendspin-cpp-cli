@@ -45,7 +45,7 @@ $ sendspin-cli vol 40
 
 | Platform | Architecture | How |
 |---|---|---|
-| Linux | `x86_64`, `arm64`, `armv7`, `armv6` | Release tarball, or `scripts/get_started_linux.sh` |
+| Linux | `x86_64`, `arm64`, `armv7`, `armv6` | [`scripts/get_started_linux.sh`](Getting-Started-on-Linux), or the release tarball |
 | macOS | Apple silicon (`arm64`) | Release tarball or installer `.pkg` |
 | Raspberry Pi | `arm64`, or `armv7`/`armv6` on a 32-bit OS | The Linux tarball, same as any other Linux host |
 
