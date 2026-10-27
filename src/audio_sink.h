@@ -88,6 +88,11 @@ public:
     /// Drops buffered audio without releasing the device.
     virtual void clear() {}
 
+    /// Drops buffered audio and closes the device until the next configure().
+    virtual void release() {
+        this->clear();
+    }
+
     /// Releases the device. Called once, during shutdown.
     virtual void stop() {}
 
