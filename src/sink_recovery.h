@@ -75,6 +75,10 @@ public:
     /// Drops the discarded-frame count, leaving the recovery budget alone.
     void forget_discarded_frames();
 
+    /// Drops any owed rescan and the discarded-frame count, for a device closed on purpose.
+    /// Leaves the budget for the next configure()'s reset(). Not while a rescan is in flight.
+    void cancel();
+
     /// Refills the budget; call only when configure() really opened a stream.
     void reset();
 

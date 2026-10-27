@@ -114,6 +114,13 @@ void SinkRecovery::forget_discarded_frames() {
     this->discarded_frames_ = 0;
 }
 
+void SinkRecovery::cancel() {
+    this->rescan_immediate_ = false;
+    this->rescan_owed_.store(false, std::memory_order_relaxed);
+    this->rescan_at_ms_ = NOT_STAMPED;
+    this->discarded_frames_ = 0;
+}
+
 void SinkRecovery::reset() {
     this->refill_();
     this->discarded_frames_ = 0;

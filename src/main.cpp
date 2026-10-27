@@ -852,6 +852,19 @@ int main(int argc, char* argv[]) {
     }
 
     PlayerListener player_listener(player, *sink, &state_store);
+    if (opts.release_device) {
+        DeviceSpec output;
+        std::string output_error;
+        resolve_device_spec(opts.device, output, output_error);
+        if (output.backend == SinkBackend::Alsa || output.backend == SinkBackend::PortAudio) {
+            player_listener.release_device_between_streams();
+        } else {
+            log_line(LogLevel::INFO, LOG_TAG_AUDIO,
+                     "--release-device does nothing for -o %s -- only ALSA and PortAudio hold a "
+                     "device between streams",
+                     opts.device.c_str());
+        }
+    }
     MetadataLogger metadata_logger;
     PairingListener pairing_listener;
     HostNetworkProvider network_provider;

@@ -74,6 +74,11 @@ public:
     /// Pins the sink at full gain, unmuted, and ignores volume and mute from then on.
     void fix_volume();
 
+    /// Closes the sink's device at each stream end, so other players can open it between streams.
+    void release_device_between_streams() {
+        this->release_device_ = true;
+    }
+
     /// The format the sink was configured for; absent between streams and for a refused one.
     const std::optional<StreamFormat>& stream_format() const {
         return this->stream_format_;
@@ -89,6 +94,7 @@ private:
 
     /// Main loop only, so not atomic.
     bool streaming_{false};
+    bool release_device_{false};
 
     /// What the sink was last told; starts at the sink's own default.
     uint8_t applied_volume_{DEFAULT_SINK_VOLUME};

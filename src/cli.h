@@ -84,6 +84,7 @@ enum class Opt : unsigned {
     Input,          ///< --input
     PairingCode,    ///< --pairing-code
     FixedVolume,    ///< --fixed-volume
+    ReleaseDevice,  ///< --release-device
 };
 
 /// Everything the flag surface configures.
@@ -120,6 +121,9 @@ struct Options {
 
     /// --fixed-volume: play at full gain, unmuted, and withhold volume and mute from the server.
     bool fixed_volume{false};
+
+    /// --release-device: close the output device at stream end instead of holding it.
+    bool release_device{false};
 
     /// --no-mdns: do not advertise `_sendspin._tcp`.
     bool no_mdns{false};
