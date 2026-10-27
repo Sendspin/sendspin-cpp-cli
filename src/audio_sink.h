@@ -113,6 +113,10 @@ public:
     /// Assign before start() and never after: backends read it from their audio thread.
     std::function<void(uint32_t frames, int64_t timestamp)> on_frames_played;
 
+    /// Reports a level changed outside the sink, e.g. through a hardware mixer. Fired on the main
+    /// loop from poll(); a sink that has no such control never calls it.
+    std::function<void(uint8_t volume, bool muted)> on_local_volume_changed;
+
 protected:
     AudioSink() = default;
 };

@@ -19,6 +19,8 @@
 
 #include <sendspin/client.h>
 
+#include <poll.h>
+
 #include <algorithm>
 #include <array>
 #include <cerrno>
@@ -52,6 +54,17 @@ constexpr int WAIT_SLICE_MS = 20;
 /// snd_pcm_resume() retries before falling back to prepare(), after a system suspend.
 constexpr int RESUME_TRIES = 10;
 constexpr auto RESUME_PAUSE = std::chrono::milliseconds(10);
+
+/// A hardware mixer write is stepped over this long, so the level does not jump in one click.
+constexpr int MIXER_RAMP_STEPS = 4;
+constexpr int MIXER_RAMP_STEP_MS = 5;
+
+/// Monotonic milliseconds, for spacing mixer ramp steps.
+int64_t mixer_now_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
 
 /// ALSA's spelling of PROBE_BIT_DEPTHS; 24-bit is packed S24_3LE, not padded S24_LE.
 constexpr std::array<snd_pcm_format_t, PROBE_BIT_DEPTHS.size()> PROBE_FORMATS{
@@ -195,13 +208,22 @@ void install_alsa_error_handler() {
 }
 
 AlsaAudioSink::AlsaAudioSink(std::string device, uint32_t buffer_ms, std::string mixer_spec)
-    : device_(std::move(device)), buffer_ms_(buffer_ms), mixer_spec_(std::move(mixer_spec)) {}
+    : device_(std::move(device)), buffer_ms_(buffer_ms), mixer_spec_(std::move(mixer_spec)) {
+    if (!this->mixer_spec_.empty()) {
+        install_alsa_error_handler();
+        // Held open for the run, so poll() can watch it for changes made outside this process.
+        this->mixer_open_();
+    }
+}
 
 AlsaAudioSink::~AlsaAudioSink() {
     // A sink destroyed without stop() must still release the device.
     this->stopping_.store(true);
-    const std::lock_guard<std::mutex> lock(this->device_mutex_);
-    this->close_device_();
+    {
+        const std::lock_guard<std::mutex> lock(this->device_mutex_);
+        this->close_device_();
+    }
+    this->mixer_close_();
 }
 
 std::string AlsaAudioSink::name() const {
@@ -694,12 +716,11 @@ void AlsaAudioSink::stop() {
 
 void AlsaAudioSink::set_volume(uint8_t volume) {
     this->volume_.store(volume > 100 ? 100 : volume);
-    // Hardware first: a mixer that takes the value leaves the PCM scaling at unity.
-    if (!this->mixer_spec_.empty() && set_mixer_volume_(this->mixer_spec_, volume)) {
-        this->target_multiplier_.store(Q32_ONE, std::memory_order_relaxed);
-        cli_log(LogLevel::DEBUG, "alsa: mixer '%s' volume now %u", this->mixer_spec_.c_str(),
-                this->volume_.load());
-        return;
+    // The mixer carries the level when it has the control; the software gain only ever covers
+    // what the mixer cannot, so it is recomputed from both fields rather than forced to unity.
+    if (this->mixer_elem_ != nullptr) {
+        start_mixer_ramp_(
+            mixer_dB_for_volume(this->mixer_dB_min_, this->mixer_dB_max_, this->volume_.load()));
     }
     this->update_target_multiplier_();
     cli_log(LogLevel::DEBUG, "alsa: volume now %u", this->volume_.load());
@@ -707,17 +728,18 @@ void AlsaAudioSink::set_volume(uint8_t volume) {
 
 void AlsaAudioSink::set_muted(bool muted) {
     this->muted_.store(muted);
-    if (!this->mixer_spec_.empty() && set_mixer_mute_(this->mixer_spec_, muted)) {
-        this->target_multiplier_.store(Q32_ONE, std::memory_order_relaxed);
-        cli_log(LogLevel::DEBUG, "alsa: mixer '%s' %s", this->mixer_spec_.c_str(),
-                muted ? "muted" : "unmuted");
-        return;
+    // A control without a switch leaves the mute to the software gain below.
+    if (this->mixer_elem_ != nullptr && this->mixer_has_switch_) {
+        set_mixer_mute_(muted);
     }
     this->update_target_multiplier_();
     cli_log(LogLevel::DEBUG, "alsa: %s", muted ? "muted" : "unmuted");
 }
 
 void AlsaAudioSink::poll(int64_t now_ms) {
+    // Before the fast path: a ramp step and an external mixer change are both due on every tick.
+    this->poll_mixer_();
+
     // Unlocked fast path: nothing to do on almost every tick.
     if (!this->recovery_.pending() || this->stopping_.load()) {
         return;
@@ -757,8 +779,21 @@ void AlsaAudioSink::poll(int64_t now_ms) {
 
 void AlsaAudioSink::update_target_multiplier_() {
     // Only the target moves; write() walks current_multiplier_ toward it.
-    this->target_multiplier_.store(q32_gain_for(this->volume_.load(), this->muted_.load()),
-                                   std::memory_order_relaxed);
+    this->target_multiplier_.store(this->software_gain_(), std::memory_order_relaxed);
+}
+
+uint64_t AlsaAudioSink::software_gain_() const {
+    // Volume 0 is silence per the spec; a control whose floor is only -60 dB cannot reach it, so
+    // the PCM gain carries it. This is independent of mute, which stays on the switch.
+    if (this->volume_.load() == 0) {
+        return 0;
+    }
+    // The mixer owns the level when it has a control, so the PCM stays at unity and only a mute
+    // without a hardware switch falls back to gain 0. Without a mixer, volume stays in software.
+    if (this->mixer_elem_ != nullptr) {
+        return (this->muted_.load() && !this->mixer_has_switch_) ? 0 : Q32_ONE;
+    }
+    return q32_gain_for(this->volume_.load(), this->muted_.load());
 }
 
 // ============================================================================
@@ -823,65 +858,198 @@ bool AlsaAudioSink::playback_switch_(snd_mixer_elem_t* elem) {
     return false;
 }
 
-long AlsaAudioSink::mixer_dB_for_volume_(long min, long max, uint8_t volume) {
+long mixer_dB_for_volume(long min, long max, uint8_t volume) {
     if (volume >= 100) {
         return max;
     }
     if (volume == 0) {
-        return min;
+        return min;  // the curve is -inf here; the floor is the closest a control can get
     }
-    // alsamixer's curve: linear in perceived loudness between the control's endpoints, not in
-    // dB, so a control whose floor is far below -100 dB stays usable across the whole scale.
-    const double min_norm = std::pow(10.0, static_cast<double>(min - max) / 6000.0);
-    const double normalized = static_cast<double>(volume) / 100.0 * (1.0 - min_norm) + min_norm;
-    return static_cast<long>(
-        std::lround(6000.0 * std::log10(normalized) + static_cast<double>(max)));
+    // The spec's curve, amplitude = (v/100)^1.5, is 30*log10(v/100) dB below max, in 0.01 dB.
+    const double dB =
+        static_cast<double>(max) + 3000.0 * std::log10(static_cast<double>(volume) / 100.0);
+    return std::max(min, static_cast<long>(std::lround(dB)));
 }
 
-uint8_t AlsaAudioSink::volume_for_mixer_dB_(long min, long max, long dB) {
-    double normalized = std::pow(10.0, static_cast<double>(dB - max) / 6000.0);
-    if (min != SND_CTL_TLV_DB_GAIN_MUTE) {
-        const double min_norm = std::pow(10.0, static_cast<double>(min - max) / 6000.0);
-        normalized = (normalized - min_norm) / (1.0 - min_norm);
+uint8_t volume_for_mixer_dB(long min, long max, long dB) {
+    if (dB <= min) {
+        return 0;
     }
-    return static_cast<uint8_t>(std::lround(normalized * 100.0));
+    if (dB >= max) {
+        return 100;
+    }
+    // The inverse of mixer_dB_for_volume().
+    const double volume = 100.0 * std::pow(10.0, static_cast<double>(dB - max) / 3000.0);
+    return static_cast<uint8_t>(std::lround(std::clamp(volume, 0.0, 100.0)));
 }
 
-bool AlsaAudioSink::set_mixer_volume_(const std::string& mixer_spec, uint8_t volume) {
-    snd_mixer_t* handle = nullptr;
-    snd_mixer_elem_t* elem = open_mixer_(mixer_spec, &handle);
-    if (elem == nullptr) {
+bool AlsaAudioSink::mixer_open_() {
+    this->mixer_ = nullptr;
+    this->mixer_elem_ = nullptr;
+    this->mixer_elem_ = open_mixer_(this->mixer_spec_, &this->mixer_);
+    if (this->mixer_elem_ == nullptr) {
         cli_log(LogLevel::WARN, "alsa: cannot open mixer '%s' -- using software volume",
-                mixer_spec.c_str());
+                this->mixer_spec_.c_str());
         return false;
     }
-
-    long min = 0;
-    long max = 0;
-    if (!playback_dB_range_(elem, min, max) ||
-        snd_mixer_selem_set_playback_dB_all(elem, mixer_dB_for_volume_(min, max, volume), 0) < 0) {
-        cli_log(LogLevel::WARN, "alsa: mixer '%s' refused volume %u -- using software volume",
-                mixer_spec.c_str(), volume);
-        snd_mixer_close(handle);
+    if (!playback_dB_range_(this->mixer_elem_, this->mixer_dB_min_, this->mixer_dB_max_)) {
+        cli_log(LogLevel::WARN, "alsa: mixer '%s' has no playback volume -- using software volume",
+                this->mixer_spec_.c_str());
+        this->mixer_close_();
         return false;
     }
-    snd_mixer_close(handle);
+    this->mixer_has_switch_ = snd_mixer_selem_has_playback_switch(this->mixer_elem_) != 0;
+    this->sync_mixer_reported_();
     return true;
 }
 
-bool AlsaAudioSink::set_mixer_mute_(const std::string& mixer_spec, bool muted) {
-    snd_mixer_t* handle = nullptr;
-    snd_mixer_elem_t* elem = open_mixer_(mixer_spec, &handle);
-    if (elem == nullptr) {
-        cli_log(LogLevel::WARN, "alsa: cannot open mixer '%s' -- using software mute",
-                mixer_spec.c_str());
+void AlsaAudioSink::mixer_close_() {
+    if (this->mixer_ != nullptr) {
+        snd_mixer_close(this->mixer_);
+    }
+    this->mixer_ = nullptr;
+    this->mixer_elem_ = nullptr;
+    this->mixer_ramping_ = false;
+}
+
+void AlsaAudioSink::sync_mixer_reported_() {
+    long dB = 0;
+    if (playback_dB_(this->mixer_elem_, dB)) {
+        this->mixer_reported_dB_ = dB;
+    }
+    this->mixer_reported_muted_ = this->mixer_has_switch_ && !playback_switch_(this->mixer_elem_);
+}
+
+bool AlsaAudioSink::write_mixer_dB_(long dB) {
+    if (this->mixer_elem_ == nullptr) {
         return false;
     }
-    // A control without a switch is not a failure: there is simply nothing to mute with.
-    const bool took = snd_mixer_selem_has_playback_switch(elem) &&
-                      snd_mixer_selem_set_playback_switch_all(elem, muted ? 0 : 1) == 0;
-    snd_mixer_close(handle);
-    return took;
+    if (snd_mixer_selem_set_playback_dB_all(this->mixer_elem_, dB, 0) < 0) {
+        return false;
+    }
+    // Store the read-back, not the request: ALSA rounds to the control's step, and the rounded
+    // value is what the next event reports. Recording the request would make that echo look like
+    // a change made outside this process.
+    long actual = dB;
+    if (playback_dB_(this->mixer_elem_, actual)) {
+        this->mixer_reported_dB_ = actual;
+    } else {
+        this->mixer_reported_dB_ = dB;
+    }
+    return true;
+}
+
+bool AlsaAudioSink::set_mixer_mute_(bool muted) {
+    if (this->mixer_elem_ == nullptr || !this->mixer_has_switch_) {
+        return false;
+    }
+    if (snd_mixer_selem_set_playback_switch_all(this->mixer_elem_, muted ? 0 : 1) < 0) {
+        return false;
+    }
+    this->mixer_reported_muted_ = muted;
+    return true;
+}
+
+bool AlsaAudioSink::start_mixer_ramp_(long target_dB) {
+    if (this->mixer_elem_ == nullptr) {
+        return false;
+    }
+    // A move of one step or less is not worth a ramp; write it now.
+    const long distance = std::abs(target_dB - this->mixer_reported_dB_);
+    const long step =
+        std::max<long>(1, std::abs(this->mixer_dB_max_ - this->mixer_dB_min_) / MIXER_RAMP_STEPS);
+    if (distance <= step) {
+        return this->write_mixer_dB_(target_dB);
+    }
+    this->mixer_ramping_ = true;
+    this->mixer_ramp_from_dB_ = this->mixer_reported_dB_;
+    this->mixer_ramp_target_dB_ = target_dB;
+    this->mixer_ramp_step_ = 0;
+    this->mixer_ramp_next_ms_ = mixer_now_ms();
+    return true;
+}
+
+bool AlsaAudioSink::step_mixer_ramp_() {
+    if (!this->mixer_ramping_) {
+        return true;
+    }
+    ++this->mixer_ramp_step_;
+    const double progress = static_cast<double>(this->mixer_ramp_step_) / MIXER_RAMP_STEPS;
+    const long dB = static_cast<long>(std::lround(
+        static_cast<double>(this->mixer_ramp_from_dB_) +
+        progress * (static_cast<double>(this->mixer_ramp_target_dB_) - this->mixer_ramp_from_dB_)));
+    if (this->mixer_ramp_step_ >= MIXER_RAMP_STEPS) {
+        this->mixer_ramping_ = false;
+        return this->write_mixer_dB_(this->mixer_ramp_target_dB_);
+    }
+    this->mixer_ramp_next_ms_ = mixer_now_ms() + MIXER_RAMP_STEP_MS;
+    return this->write_mixer_dB_(dB);
+}
+
+void AlsaAudioSink::report_mixer_change_() {
+    if (this->mixer_elem_ == nullptr) {
+        return;
+    }
+    long dB = 0;
+    const bool have_dB = playback_dB_(this->mixer_elem_, dB);
+    const bool muted = this->mixer_has_switch_ && !playback_switch_(this->mixer_elem_);
+    // Our own write stores its read-back, so any other value is a change made outside this
+    // process. A muted control reports its mute-level dB, which is not a volume change.
+    const bool dB_changed = have_dB && !muted && dB != this->mixer_reported_dB_;
+    const bool mute_changed = this->mixer_has_switch_ && muted != this->mixer_reported_muted_;
+    if (!dB_changed && !mute_changed) {
+        return;
+    }
+    if (have_dB && !muted) {
+        this->mixer_reported_dB_ = dB;
+    }
+    this->mixer_reported_muted_ = muted;
+
+    const uint8_t volume = (have_dB && !muted)
+                               ? volume_for_mixer_dB(this->mixer_dB_min_, this->mixer_dB_max_, dB)
+                               : this->volume_.load();
+    this->volume_.store(volume);
+    this->muted_.store(muted);
+    // A control whose floor is not silent reports volume 0 here; this is what makes it silent.
+    this->update_target_multiplier_();
+    cli_log(LogLevel::INFO, "alsa: mixer '%s' changed to %u%s", this->mixer_spec_.c_str(),
+            static_cast<unsigned>(volume), muted ? " (muted)" : "");
+    if (this->on_local_volume_changed) {
+        this->on_local_volume_changed(volume, muted);
+    }
+}
+
+void AlsaAudioSink::poll_mixer_() {
+    if (this->mixer_ == nullptr) {
+        return;
+    }
+    if (this->mixer_ramping_ && mixer_now_ms() >= this->mixer_ramp_next_ms_) {
+        if (!this->step_mixer_ramp_()) {
+            cli_log(LogLevel::WARN, "alsa: mixer '%s' stopped taking the volume ramp",
+                    this->mixer_spec_.c_str());
+            this->mixer_ramping_ = false;
+        }
+    }
+
+    // poll() with a zero timeout, so a tick never blocks; handle_events() only runs when a
+    // descriptor is readable, which is what keeps it from blocking on the control handle.
+    const int count = snd_mixer_poll_descriptors_count(this->mixer_);
+    if (count <= 0) {
+        return;
+    }
+    std::array<struct pollfd, 8> pfds{};
+    const unsigned int space =
+        std::min<unsigned int>(static_cast<unsigned int>(count), pfds.size());
+    if (snd_mixer_poll_descriptors(this->mixer_, pfds.data(), space) <= 0) {
+        return;
+    }
+    if (::poll(pfds.data(), space, 0) <= 0) {
+        return;
+    }
+    // Read the element after draining rather than trusting the event count: the callback chain
+    // may report no event for a change, and the read is cheap and echo-suppressed anyway.
+    snd_mixer_handle_events(this->mixer_);
+    this->report_mixer_change_();
 }
 
 bool AlsaAudioSink::probe_mixer(const std::string& mixer_spec, std::string& error) {
@@ -906,7 +1074,8 @@ int AlsaAudioSink::read_mixer_volume(const std::string& mixer_spec, bool& muted)
     if (elem == nullptr) {
         return -1;
     }
-    muted = !playback_switch_(elem);
+    // A control without a switch is not muted: there is nothing whose state could say so.
+    muted = snd_mixer_selem_has_playback_switch(elem) != 0 && !playback_switch_(elem);
     long min = 0;
     long max = 0;
     long dB = 0;
@@ -914,7 +1083,7 @@ int AlsaAudioSink::read_mixer_volume(const std::string& mixer_spec, bool& muted)
         snd_mixer_close(handle);
         return -1;
     }
-    const uint8_t volume = volume_for_mixer_dB_(min, max, dB);
+    const uint8_t volume = volume_for_mixer_dB(min, max, dB);
     snd_mixer_close(handle);
     return volume;
 }

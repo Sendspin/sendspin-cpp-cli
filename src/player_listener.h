@@ -77,6 +77,10 @@ public:
     /// Pins the sink at full gain, unmuted, and ignores volume and mute from then on.
     void fix_volume();
 
+    /// Records volume and mute the sink applied on its own, e.g. a hardware mixer turned by hand,
+    /// and publishes them so the server sees the change. Main loop only.
+    void on_sink_volume_changed(uint8_t volume, bool muted);
+
     /// The format the sink was configured for; absent between streams and for a refused one.
     const std::optional<StreamFormat>& stream_format() const {
         return this->stream_format_;

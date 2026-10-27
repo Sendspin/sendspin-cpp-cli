@@ -146,6 +146,21 @@ void PlayerListener::fix_volume() {
     this->volume_source_ = VolumeSource::Fixed;
 }
 
+void PlayerListener::on_sink_volume_changed(uint8_t volume, bool muted) {
+    // A local change while fixed must not reach the state file or the server's view.
+    if (this->volume_source_ == VolumeSource::Fixed) {
+        return;
+    }
+    this->applied_volume_ = volume;
+    this->applied_muted_ = muted;
+    this->volume_source_ = VolumeSource::Hardware;
+    // Through the role, not the sink: the sink already applied it, and this is what sends
+    // client/state out so a controller sees the new level.
+    this->player_.update_volume(volume);
+    this->player_.update_muted(muted);
+    this->persist_volume();
+}
+
 void PlayerListener::persist_volume() const {
     if (this->store_ == nullptr) {
         return;

@@ -114,7 +114,9 @@ above `output:` says so, and appears whenever a server is connected.
   server is offered neither volume nor mute, and a volume remembered from an earlier run is
   kept but ignored until the flag is dropped. `vol` and `mute` still address the group.
   With `--alsa-mixer` it starts at the level the hardware control was already at, marked
-  `(read from the hardware mixer at startup)`, until the server sends a volume of its own.
+  `(read from the hardware mixer at startup)`, until the server sends a volume of its own. A
+  later change made outside the player — in alsamixer, `amixer`, or by a hardware knob — is
+  picked up and reported, so a controller keeps showing the real level.
 - **`state` and `stream` are different facts.** `state` is the *group's* transport state.
   `stream` is whether audio is arriving at *this* endpoint — a player dropped from the group
   loses it while the group plays on. A `stream: receiving` line with **no format after the

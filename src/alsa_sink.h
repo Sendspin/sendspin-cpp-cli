@@ -79,6 +79,7 @@ private:
     /// Retires a lost device and arms poll() to get it back. Caller holds device_mutex_.
     /// @return false always.
     bool handle_device_loss_();
+    /// Sets target_multiplier_ from volume_ and muted_ for the software-gain path.
     void update_target_multiplier_();
 
     /// Opens the mixer for `mixer_spec`; caller closes *handle even on a null element.
@@ -89,14 +90,30 @@ private:
     static bool playback_dB_(snd_mixer_elem_t* elem, long& dB);
     /// The playback switch state of the first channel that has one; false when none does.
     static bool playback_switch_(snd_mixer_elem_t* elem);
-    /// Maps a 0-100 volume onto a dB range, alsamixer's way: linear in perceived loudness.
-    static long mixer_dB_for_volume_(long min, long max, uint8_t volume);
-    /// The inverse of mixer_dB_for_volume_().
-    static uint8_t volume_for_mixer_dB_(long min, long max, long dB);
-    /// @return true when the control took the volume; false leaves the caller on software gain.
-    static bool set_mixer_volume_(const std::string& mixer_spec, uint8_t volume);
-    /// @return true when the control took the mute, or has no switch for the caller to fall back.
-    static bool set_mixer_mute_(const std::string& mixer_spec, bool muted);
+
+    /// Opens the persistent mixer handle and element; false when the spec has no usable control.
+    bool mixer_open_();
+    /// Closes the persistent mixer handle. Idempotent.
+    void mixer_close_();
+    /// Records the control's current dB and switch as our own, so a later event reads as an echo.
+    void sync_mixer_reported_();
+    /// Writes `dB` to the persistent element, recording the read-back as our own value.
+    /// @return false when there is no control, or ALSA refused the write.
+    bool write_mixer_dB_(long dB);
+    /// @return true when the control took the mute; false when it has no switch, leaving the
+    ///         caller on software mute.
+    bool set_mixer_mute_(bool muted);
+    /// Begins a short stepped write toward `target_dB`; false when the first step was refused.
+    bool start_mixer_ramp_(long target_dB);
+    /// Writes one ramp step; a no-op outside a ramp.
+    /// @return false when the step was refused, which abandons the ramp where it stands.
+    bool step_mixer_ramp_();
+    /// Records the mixer's current volume and mute, unless it is an echo of our own write.
+    void report_mixer_change_();
+    /// Steps any ramp and handles a pending control event. Main-loop only.
+    void poll_mixer_();
+    /// Q32 software gain to pair with the mixer: unity when it carries the level, 0 when silencing.
+    uint64_t software_gain_() const;
 
     std::string device_;
     /// Ring size to ask ALSA for, in milliseconds; the period is this over PERIODS_PER_BUFFER.
@@ -130,7 +147,34 @@ private:
     std::atomic<uint64_t> target_multiplier_{Q32_ONE};
     /// Q32 gain being applied, walked toward target_multiplier_; guarded by device_mutex_.
     std::uint64_t current_multiplier_{Q32_ONE};
+
+    /// The persistent mixer handle and element; both null when --alsa-mixer opened nothing.
+    /// Touched only from the main loop after construction, so no lock guards them.
+    snd_mixer_t* mixer_{nullptr};
+    snd_mixer_elem_t* mixer_elem_{nullptr};
+    /// The control's playback dB range; valid only while mixer_elem_ is set.
+    long mixer_dB_min_{0};
+    long mixer_dB_max_{0};
+    /// True when the control has a playback switch, so mute is hardware rather than software.
+    bool mixer_has_switch_{false};
+    /// The switch state we last set or read; an event holding it is our own echo.
+    bool mixer_reported_muted_{false};
+    /// dB the control was last set to by us or read back; an event holding it is our own echo.
+    long mixer_reported_dB_{0};
+    /// A stepped write in progress: where it started, where it ends, and how far along it is.
+    bool mixer_ramping_{false};
+    long mixer_ramp_from_dB_{0};
+    long mixer_ramp_target_dB_{0};
+    int mixer_ramp_step_{0};
+    int64_t mixer_ramp_next_ms_{0};
 };
+
+/// Maps a 0-100 volume onto a hardware mixer's dB range on the spec's curve, amplitude =
+/// (v/100)^1.5, i.e. 30*log10(v/100) dB below max. Clamped to the control's floor.
+long mixer_dB_for_volume(long min, long max, uint8_t volume);
+
+/// The inverse of mixer_dB_for_volume(): the 0-100 volume a mixer dB reading stands for.
+uint8_t volume_for_mixer_dB(long min, long max, long dB);
 
 /// Routes libasound's diagnostics to our logger; call before any snd_* that can fail.
 void install_alsa_error_handler();

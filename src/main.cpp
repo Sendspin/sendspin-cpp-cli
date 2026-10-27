@@ -860,6 +860,11 @@ int main(int argc, char* argv[]) {
     PairingListener pairing_listener;
     HostNetworkProvider network_provider;
 
+    // A hardware mixer turned by hand reaches the server through the listener's own pair.
+    sink->on_local_volume_changed = [&player_listener](uint8_t volume, bool muted) {
+        player_listener.on_sink_volume_changed(volume, muted);
+    };
+
     client.set_listener(&pairing_listener);
 
     player.set_listener(&player_listener);

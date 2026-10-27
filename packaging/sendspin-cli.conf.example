@@ -47,10 +47,11 @@
 #fixed-volume = true
 
 # Drive an ALSA hardware mixer for volume and mute instead of scaling the stream in software,
-# as card:control, e.g. 0:Master. The value is mapped over the control's dB range the way
-# alsamixer lays its scale out, and the level the mixer is at when the player starts is what
-# it reports and keeps until a server sends its own. ALSA outputs only; a mixer that cannot
-# be opened or set falls back to software gain. Contradicts fixed-volume.
+# as card:control, e.g. 0:Master. The value is mapped over the control's dB range on the spec's
+# curve, and the level the mixer is at when the player starts is what it reports and keeps until
+# a server sends its own. A change made outside the player (alsamixer, amixer, a hardware knob)
+# is reported to the server, and volume 0 silences the stream. ALSA outputs only; a mixer that
+# cannot be opened or set falls back to software gain. Contradicts fixed-volume.
 #alsa-mixer = 0:Master
 
 # A static pairing code: exactly 8 digits, chosen at random for this player. Every attempt
