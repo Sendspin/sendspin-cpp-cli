@@ -545,6 +545,10 @@ jobs:
           /etc/sendspin-cli.conf; there is an annotated example beside the installed README,
           under usr/local/share/doc/sendspin-cli. Its ExecStart names /usr/local/bin/sendspin-cli
           absolutely, so a binary put anywhere else needs the unit changed to match.
+
+          To run it as yourself instead, following your session's PipeWire or PulseAudio, there is a
+          user unit at usr/local/lib/systemd/user/sendspin-cli.service: systemctl --user enable --now
+          sendspin-cli, configured in ~/.config/sendspin-cli/config. Not both: they share a port.
           LINUX
           fi
 
@@ -588,6 +592,7 @@ jobs:
             if [ "$RUNNER_OS" = 'Linux' ]; then
               echo usr/local/lib/sysusers.d/sendspin-cli.conf
               echo usr/local/lib/systemd/system/sendspin-cli.service
+              echo usr/local/lib/systemd/user/sendspin-cli.service
             fi
           } | sort >"$expected"
 
@@ -612,6 +617,58 @@ jobs:
             echo '::error::the staged sendspin-cli is not executable'
             exit 1
           }
+
+      # The installer against this payload on images that lack its runtime libraries, as a fresh Pi OS does.
+      - name: Run get_started_linux.sh on clean Debian trixie and bookworm
+        if: matrix.publish && runner.os == 'Linux' && !matrix.arm32
+        env:
+          NAME: ${{ steps.package.outputs.name }}
+        run: |
+          # -c, not -s: anything the script runs that reads stdin would swallow the rest of a piped script.
+          in_container() {
+            docker run --rm -v "$PWD:/src:ro" -e "TARBALL=/src/$NAME.tar.gz" -e "NAME=$NAME" \
+              -e DEBIAN_FRONTEND=noninteractive "$1" bash -euo pipefail -c "$2"
+          }
+
+          in_container debian:trixie '
+            fail() { echo "::error::trixie: $*"; exit 1; }
+
+            # Proves the image reproduces #98, so the install below cannot pass vacuously.
+            mkdir /tmp/staged
+            tar -xzf "$TARBALL" -C /tmp/staged
+            before="$(ldd "/tmp/staged/$NAME/usr/local/bin/sendspin-cli" 2>&1 || true)"
+            printf "%s\n" "$before"
+            grep -q "libdns_sd\.so\.1 => not found" <<<"$before" ||
+              fail "the clean image already resolves libdns_sd.so.1, so it cannot show the #98 failure"
+
+            # A real host has package lists; a fresh container has none.
+            apt-get update -qq
+
+            SENDSPIN_CLI_TARBALL="$TARBALL" /src/scripts/get_started_linux.sh --yes </dev/null 2>&1 |
+              tee /tmp/install.log
+            grep -q "^==> Installing the missing libraries$" /tmp/install.log ||
+              fail "the script never ran its missing-libraries step"
+
+            after="$(ldd /usr/local/bin/sendspin-cli 2>&1)"
+            printf "%s\n" "$after"
+            ! grep -q "not found" <<<"$after" || fail "the installed binary still has unresolved libraries"
+
+            /usr/local/bin/sendspin-cli --version || fail "--version failed"
+            /usr/local/bin/sendspin-cli -l || fail "-l failed"
+          '
+
+          # bookworm has glibc 2.36, under this build's floor: the script must refuse before installing.
+          in_container debian:bookworm '
+            fail() { echo "::error::bookworm: $*"; exit 1; }
+
+            status=0
+            SENDSPIN_CLI_TARBALL="$TARBALL" /src/scripts/get_started_linux.sh --yes </dev/null \
+              >/tmp/install.log 2>&1 || status=$?
+            cat /tmp/install.log
+            [ "$status" -ne 0 ] || fail "the script succeeded on a glibc older than the build needs"
+            grep -q "needs a newer glibc" /tmp/install.log || fail "the script failed without its glibc message"
+            [ ! -e /usr/local/bin/sendspin-cli ] || fail "the script installed a binary it had refused"
+          '
 
       # What would have caught the dyld abort: a Homebrew load command is a dependency no clean
       # Mac has, and CI never sees it because the runner installed it.
@@ -667,6 +724,9 @@ jobs:
           echo "What was installed as $unit:"
           cat "$unit"
           systemd-analyze verify "$unit"
+          # --user needs a runtime directory to initialise, which a runner step may not export.
+          XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" \
+            systemd-analyze --user verify /usr/local/lib/systemd/user/sendspin-cli.service
 
       # Run the hardened unit as its account on a real systemd runner, via the same systemd-sysusers step as README.
       - name: Run the unit as its own user, with the hardening block

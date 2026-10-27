@@ -446,6 +446,16 @@ TEST(ParseOptions, FixedVolumeIsOffUnlessAsked) {
     EXPECT_TRUE(on.options().fixed_volume);
 }
 
+TEST(ParseOptions, ReleaseDeviceIsOffUnlessAsked) {
+    Parse off({});
+    Parse on({"--release-device"});
+
+    ASSERT_TRUE(off.ok()) << off.diagnostics();
+    ASSERT_TRUE(on.ok()) << on.diagnostics();
+    EXPECT_FALSE(off.options().release_device);
+    EXPECT_TRUE(on.options().release_device);
+}
+
 TEST(ParseOptions, OutputDelayDefaultsToNoDelay) {
     Parse parse({});
 

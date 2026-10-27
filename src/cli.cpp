@@ -79,6 +79,7 @@ enum LongOnly {
     OPT_INPUT,
     OPT_PAIRING_CODE,
     OPT_FIXED_VOLUME,
+    OPT_RELEASE_DEVICE,
 };
 
 /// An option a config file may set: its key (the long flag name) and how diagnostics name it.
@@ -119,6 +120,7 @@ const std::vector<SettableOption>& settable_options() {
         {Opt::AllowUnpaired, "allow-unpaired", "--allow-unpaired"},
         {Opt::PairingCode, "pairing-code", "--pairing-code"},
         {Opt::FixedVolume, "fixed-volume", "--fixed-volume"},
+        {Opt::ReleaseDevice, "release-device", "--release-device"},
     };
     return table;
 }
@@ -423,6 +425,12 @@ bool apply_option(const SettableOption& option, const std::string& value, Option
                 return false;
             }
             break;
+        case Opt::ReleaseDevice:
+            if (!parse_bool(value, out.release_device)) {
+                error = "invalid --release-device '" + value + "' -- expected true or false";
+                return false;
+            }
+            break;
         case Opt::PairingCode:
             // The value is a credential, so the message does not repeat it.
             if (value.size() != 8 || value.find_first_not_of("0123456789") != std::string::npos) {
@@ -600,6 +608,7 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
         {"allow-unpaired", no_argument, nullptr, OPT_ALLOW_UNPAIRED},
         {"pairing-code", required_argument, nullptr, OPT_PAIRING_CODE},
         {"fixed-volume", no_argument, nullptr, OPT_FIXED_VOLUME},
+        {"release-device", no_argument, nullptr, OPT_RELEASE_DEVICE},
         {nullptr, 0, nullptr, 0},
     };
 
@@ -745,6 +754,9 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
             case OPT_FIXED_VOLUME:
                 apply(Opt::FixedVolume, "true");
                 break;
+            case OPT_RELEASE_DEVICE:
+                apply(Opt::ReleaseDevice, "true");
+                break;
             case OPT_MANUFACTURER:
                 apply(Opt::Manufacturer, optarg);
                 break;
@@ -884,7 +896,7 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
             Opt::NoMdns,       Opt::MdnsName,    Opt::NoControl,   Opt::StateDir,
             Opt::OutputDelay,  Opt::HookStart,   Opt::HookStop,    Opt::ClientId,
             Opt::Manufacturer, Opt::ProductName, Opt::AudioFormat, Opt::AllowUnpaired,
-            Opt::Input,        Opt::PairingCode, Opt::FixedVolume,
+            Opt::Input,        Opt::PairingCode, Opt::FixedVolume, Opt::ReleaseDevice,
         };
         for (Opt opt : DAEMON_ONLY) {
             if (out.was_given(opt)) {
@@ -1087,6 +1099,12 @@ void print_usage(std::FILE* out, const char* prog) {
     std::fprintf(out, "                such as a line-out into an amplifier. A remembered\n");
     std::fprintf(out, "                volume is kept but ignored, and returns once the flag\n");
     std::fprintf(out, "                is dropped. 'vol' and 'mute' still address the group\n");
+    std::fprintf(out, "  --release-device\n");
+    std::fprintf(out, "                Close the output device when a stream ends and reopen\n");
+    std::fprintf(out, "                it at the next, so other players can share an exclusive\n");
+    std::fprintf(out, "                device such as an ALSA hw: DAC. Another app may then\n");
+    std::fprintf(out, "                hold it when a stream starts, and that stream is\n");
+    std::fprintf(out, "                discarded. ALSA and PortAudio only\n");
     std::fprintf(out, "  --allow-unpaired\n");
     std::fprintf(out, "                Let a server that has not paired with this player play\n");
     std::fprintf(out, "                on it. Off by default: every connection is encrypted,\n");
