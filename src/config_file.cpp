@@ -16,6 +16,10 @@
 
 #include "key_value_file.h"
 
+#ifdef _WIN32
+#include "win_security.h"
+#endif
+
 #include <cstdlib>
 #include <string>
 #include <vector>
@@ -48,12 +52,20 @@ std::vector<std::string> config_search_paths() {
     if (!xdg.empty()) {
         paths.push_back(xdg + "/" + CONFIG_SUBDIR + "/" + CONFIG_FILE);
     }
+#ifdef _WIN32
+    // No system-wide file: any user may create files under ProgramData, unlike /etc.
+    const std::string appdata = roaming_app_data_dir();
+    if (!appdata.empty()) {
+        paths.push_back(appdata + "/" + CONFIG_SUBDIR + "/" + CONFIG_FILE);
+    }
+#else
     const std::string home = env_or_empty("HOME");
     if (!home.empty()) {
         // Listed even when it duplicates the XDG default; the first hit wins anyway.
         paths.push_back(home + "/.config/" + CONFIG_SUBDIR + "/" + CONFIG_FILE);
     }
     paths.push_back(SYSTEM_CONFIG_PATH);
+#endif
     return paths;
 }
 

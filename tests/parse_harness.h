@@ -21,19 +21,38 @@
 
 #include <algorithm>
 #include <cstdio>
+#ifdef _WIN32
+#include <filesystem>
+#endif
 #include <string>
 #include <utility>
 #include <vector>
 
 namespace sendspin_cli {
 
+/// A config file that exists and is empty.
+#ifdef _WIN32
+inline constexpr const char* EMPTY_CONFIG = "NUL";
+#else
+inline constexpr const char* EMPTY_CONFIG = "/dev/null";
+#endif
+
+/// Whether `path` names the same file from any working directory.
+inline bool is_absolute_path(const std::string& path) {
+#ifdef _WIN32
+    return std::filesystem::path(path).is_absolute();
+#else
+    return !path.empty() && path.front() == '/';
+#endif
+}
+
 /// Runs parse_options() on a list of words, owning argv and a tmpfile() diagnostics stream.
-/// Always names a config (default /dev/null) so no machine's real config leaks into a test.
+/// Always names a config (default EMPTY_CONFIG) so no machine's real config leaks into a test.
 class Parse {
 public:
     /// @param args The command line after argv[0]. A subcommand must still come first.
     /// @param config The config file to read; defaults to an empty one.
-    explicit Parse(std::vector<std::string> args, std::string config = "/dev/null")
+    explicit Parse(std::vector<std::string> args, std::string config = EMPTY_CONFIG)
         : words_(std::move(args)) {
         this->words_.insert(this->words_.begin(), "sendspin-cli");
         // Inserted after any subcommand, and before flags so a missing value cannot swallow it.

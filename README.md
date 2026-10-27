@@ -4,7 +4,7 @@
 [Sendspin](https://github.com/Sendspin/spec) protocol. It appears on your network, a
 Sendspin server finds it, and it plays synchronized audio with the rest of your group.
 
-It runs on Linux and Apple-silicon macOS.
+It runs on Linux, Apple-silicon macOS and Windows 10 1809 or later.
 
 ## Quick start
 
@@ -39,6 +39,20 @@ Download the Apple-silicon `.pkg` installer or tarball from
 [installation guide](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Installation#macos)
 and start a player from a terminal with `sendspin-cli -n living-room`.
 
+### Windows
+
+The guided Windows installer needs no administrator rights:
+
+```powershell
+Invoke-WebRequest https://raw.githubusercontent.com/Sendspin/sendspin-cpp-cli/main/scripts/get_started_windows.ps1 -OutFile get_started_windows.ps1
+notepad get_started_windows.ps1
+powershell -ExecutionPolicy Bypass -File .\get_started_windows.ps1
+```
+
+It verifies the release, installs it for your user and starts it whenever you log on. See
+[Getting Started on Windows](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Getting-Started-on-Windows)
+for the walkthrough, including the firewall rule a server needs to reach it.
+
 ### Pair it with your server
 
 The player advertises itself on the local network and a Sendspin server finds it.
@@ -49,7 +63,7 @@ Print the token to paste into the server:
 # Linux service, as installed above
 sudo sendspin-cli pair-token --control-socket /run/sendspin-cli/control.sock
 
-# --user-service, macOS, or a player started from your own shell
+# --user-service, macOS, Windows, or a player started from your own shell
 sendspin-cli pair-token
 ```
 

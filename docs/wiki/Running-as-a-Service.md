@@ -1,5 +1,8 @@
 # Running as a Service
 
+On Windows there is no service yet: [Getting Started on Windows](Getting-Started-on-Windows)
+sets up a scheduled task that starts the player whenever you log on.
+
 Two systemd units ship in the Linux payload: a hardened system unit, which this page is
 mostly about, and [a user unit](#a-user-unit-instead). The
 [getting-started script](Getting-Started-on-Linux) sets either one up; by hand, the system

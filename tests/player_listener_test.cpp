@@ -17,13 +17,12 @@
 #include "player_listener.h"
 
 #include "null_sink.h"
+#include "posix_compat.h"
 #include "state_store.h"
 
 #include <sendspin/client.h>
 
 #include <gtest/gtest.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 #include <cstdio>
 #include <fstream>

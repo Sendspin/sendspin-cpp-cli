@@ -16,15 +16,16 @@
 
 #include "control.h"
 
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <unistd.h>
+#include "socket_compat.h"
 
-#include <cerrno>
 #include <csignal>
 #include <cstdio>
 #include <cstring>
 #include <string>
+
+#ifdef _WIN32
+#include <filesystem>
+#endif
 
 namespace sendspin_cli {
 
@@ -46,18 +47,23 @@ void split_first_line(const std::string& reply, std::string& first, std::string&
 }
 
 /// Connects to `path`, or explains why not: no socket, nothing accepting, or no permission.
-int connect_to_socket(const std::string& path, std::string& error) {
+socket_t connect_to_socket(const std::string& path, std::string& error) {
     // Re-checked because a memcpy into sun_path follows.
     if (!control_socket_path_fits(path)) {
         error = "control socket path '" + path + "' does not fit a Unix socket address (" +
                 std::to_string(control_socket_path_limit() - 1) + " bytes)";
-        return -1;
+        return INVALID_SOCKET_HANDLE;
     }
 
-    const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd < 0) {
-        error = std::string("cannot create a socket: ") + std::strerror(errno);
-        return -1;
+    if (!socket_startup()) {
+        error = "cannot start the socket library: " + socket_error_text(socket_error());
+        return INVALID_SOCKET_HANDLE;
+    }
+
+    const socket_t fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd == INVALID_SOCKET_HANDLE) {
+        error = "cannot create a socket: " + socket_error_text(socket_error());
+        return INVALID_SOCKET_HANDLE;
     }
 
     sockaddr_un address = {};
@@ -68,51 +74,58 @@ int connect_to_socket(const std::string& path, std::string& error) {
         return fd;
     }
 
-    const int reason = errno;
-    ::close(fd);
-    if (reason == ENOENT) {
+    const int reason = socket_error();
+    close_socket(fd);
+    ConnectFailure failure = classify_connect_error(reason);
+#ifdef _WIN32
+    std::error_code ignored;
+    if (failure == ConnectFailure::Refused && !std::filesystem::exists(path, ignored)) {
+        failure = ConnectFailure::Missing;
+    }
+#endif
+    if (failure == ConnectFailure::Missing) {
         error = "no sendspin-cli is listening on " + path +
                 ". Start one, or point this at the right socket with --control-socket -- and "
                 "note that a non-default --port moves the default path, so the same --port has "
                 "to be given here";
-    } else if (reason == ECONNREFUSED) {
+    } else if (failure == ConnectFailure::Refused) {
         error = path +
                 " exists but nothing accepted the connection: either the player it belonged to "
                 "is gone and left the file behind, or it already has as many control connections "
                 "open as it will take. Try again, and if it keeps failing, restart the player";
-    } else if (reason == EACCES || reason == EPERM) {
+    } else if (failure == ConnectFailure::Denied) {
         error = "not allowed to connect to " + path +
                 ": the socket is 0600, so only the user running the player can drive it";
     } else {
-        error = "cannot connect to " + path + ": " + std::strerror(reason);
+        error = "cannot connect to " + path + ": " + socket_error_text(reason);
     }
-    return -1;
+    return INVALID_SOCKET_HANDLE;
 }
 
 /// Writes the whole of `text`, or says why it could not.
-bool write_all(int fd, const std::string& text, std::string& error) {
+bool write_all(socket_t fd, const std::string& text, std::string& error) {
     size_t written = 0;
     while (written < text.size()) {
-        const ssize_t wrote = ::write(fd, text.data() + written, text.size() - written);
+        const long wrote = send_bytes(fd, text.data() + written, text.size() - written);
         if (wrote > 0) {
             written += static_cast<size_t>(wrote);
             continue;
         }
-        if (wrote < 0 && errno == EINTR) {
+        if (wrote < 0 && socket_interrupted(socket_error())) {
             continue;
         }
         error = "cannot send the request: " +
-                std::string(wrote < 0 ? std::strerror(errno) : "short write");
+                (wrote < 0 ? socket_error_text(socket_error()) : std::string("short write"));
         return false;
     }
     return true;
 }
 
 /// Reads until the daemon closes, which is its end-of-reply marker.
-bool read_reply(int fd, std::string& reply, std::string& error) {
+bool read_reply(socket_t fd, std::string& reply, std::string& error) {
     char buffer[4096];
     while (true) {
-        const ssize_t read_bytes = ::read(fd, buffer, sizeof(buffer));
+        const long read_bytes = receive_bytes(fd, buffer, sizeof(buffer));
         if (read_bytes > 0) {
             if (reply.size() + static_cast<size_t>(read_bytes) > MAX_REPLY_BYTES) {
                 error = "the reply is longer than " + std::to_string(MAX_REPLY_BYTES) +
@@ -125,10 +138,11 @@ bool read_reply(int fd, std::string& reply, std::string& error) {
         if (read_bytes == 0) {
             return true;
         }
-        if (errno == EINTR) {
+        const int reason = socket_error();
+        if (socket_interrupted(reason)) {
             continue;
         }
-        error = std::string("cannot read the reply: ") + std::strerror(errno);
+        error = "cannot read the reply: " + socket_error_text(reason);
         return false;
     }
 }
@@ -137,8 +151,10 @@ bool read_reply(int fd, std::string& reply, std::string& error) {
 
 ControlStatus run_control_subcommand(const ControlRequest& request, const std::string& path,
                                      const std::string& absent_reason, std::FILE* out) {
+#ifndef _WIN32
     // A daemon closing before our write would raise SIGPIPE; ignore it and report EPIPE.
     std::signal(SIGPIPE, SIG_IGN);
+#endif
 
     if (path.empty()) {
         std::fprintf(stderr, "error: %s\n",
@@ -150,8 +166,8 @@ ControlStatus run_control_subcommand(const ControlRequest& request, const std::s
     }
 
     std::string error;
-    const int fd = connect_to_socket(path, error);
-    if (fd < 0) {
+    const socket_t fd = connect_to_socket(path, error);
+    if (fd == INVALID_SOCKET_HANDLE) {
         std::fprintf(stderr, "error: %s\n", error.c_str());
         return ControlStatus::NoDaemon;
     }
@@ -161,7 +177,7 @@ ControlStatus run_control_subcommand(const ControlRequest& request, const std::s
     std::string reply;
     // Read even after a failed write: the daemon's `error` reply beats our guess.
     const bool received = read_reply(fd, reply, error);
-    ::close(fd);
+    close_socket(fd);
 
     if (!sent && reply.empty()) {
         std::fprintf(stderr, "error: %s\n", error.c_str());

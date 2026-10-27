@@ -16,9 +16,15 @@
 
 #include "control.h"
 
+#include "file_access.h"
+#include "posix_compat.h"
+
 #include <gtest/gtest.h>
-#include <sys/stat.h>
-#include <unistd.h>
+
+#ifdef _WIN32
+#include <cstdlib>
+#include <filesystem>
+#endif
 
 #include <algorithm>
 #include <optional>
@@ -1166,10 +1172,19 @@ public:
         this->path_ = "control-test-" + std::to_string(::getpid()) + "-" +
                       std::to_string(ScratchDir::next_id());
         this->created_ = ::mkdir(this->path_.c_str(), mode) == 0;
+#ifdef _WIN32
+        // A mode's group or other bits become a grant to Everyone.
+        const std::string owner = "(A;OICI;FA;;;" + current_user_sid() + ")";
+        if (this->created_) {
+            this->created_ = set_dacl(
+                this->path_, "D:P" + owner + ((mode & 077) != 0 ? "(A;OICI;FA;;;WD)" : ""));
+        }
+#else
         // mkdir() applies the umask, so set the mode again.
         if (this->created_) {
             this->created_ = ::chmod(this->path_.c_str(), mode) == 0;
         }
+#endif
     }
 
     ~ScratchDir() {
@@ -1222,8 +1237,15 @@ TEST(PrivateRuntimeDir, AGroupOrWorldWritableDirectoryIsRefused) {
 }
 
 TEST(PrivateRuntimeDir, SomethingThatIsNotADirectoryIsRefused) {
+#ifdef _WIN32
+    const char* root = std::getenv("SystemRoot");
+    ASSERT_NE(root, nullptr);
+    const std::string file = std::string(root) + "/System32/drivers/etc/hosts";
+#else
+    const std::string file = "/etc/hosts";
+#endif
     std::string reason;
-    EXPECT_FALSE(is_private_runtime_dir("/etc/hosts", reason));
+    EXPECT_FALSE(is_private_runtime_dir(file, reason));
     EXPECT_NE(reason.find("not a directory"), std::string::npos) << reason;
 }
 
@@ -1234,16 +1256,27 @@ TEST(PrivateRuntimeDir, AMissingPathIsRefused) {
 }
 
 TEST(PrivateRuntimeDir, ADirectoryOwnedBySomeoneElseIsRefused) {
+#ifdef _WIN32
+    // TrustedInstaller owns the Windows folder everywhere; the drive root's owner varies.
+    const char* root = std::getenv("SystemRoot");
+    ASSERT_NE(root, nullptr);
+    const std::string other = root;
+#else
     // Root owns / and would pass.
     if (::geteuid() == 0) {
         GTEST_SKIP() << "running as root, which owns /";
     }
+    const std::string other = "/";
+#endif
     std::string reason;
-    EXPECT_FALSE(is_private_runtime_dir("/", reason));
+    EXPECT_FALSE(is_private_runtime_dir(other, reason));
     EXPECT_NE(reason.find("not by this user"), std::string::npos) << reason;
 }
 
 TEST(PrivateRuntimeDir, ASymlinkIsJudgedByWhatItPointsAt) {
+#ifdef _WIN32
+    GTEST_SKIP() << "creating a symlink on Windows needs Developer Mode or an elevated process";
+#else
     // stat() follows links: a link to a world-writable directory is refused.
     const ScratchDir target(0700);
     ASSERT_TRUE(target.created());
@@ -1259,20 +1292,29 @@ TEST(PrivateRuntimeDir, ASymlinkIsJudgedByWhatItPointsAt) {
 
     ::unlink(safe_link.c_str());
     ::unlink(unsafe_link.c_str());
+#endif
 }
 
 TEST(PrivateRuntimeDir, TmpIsRefused) {
     std::string reason;
+#ifdef _WIN32
+    // The shared folder every local user can write: Windows' /tmp.
+    const char* shared = std::getenv("PUBLIC");
+    ASSERT_NE(shared, nullptr);
+    EXPECT_FALSE(is_private_runtime_dir(shared, reason)) << shared << " must never be usable";
+#else
     EXPECT_FALSE(is_private_runtime_dir("/tmp", reason)) << "/tmp must never be usable";
+#endif
 }
 
 TEST(PlatformRuntimeDir, WhateverItReturnsIsPrivate) {
     // Empty except on macOS, and never a path that would fail the check.
     std::string rejection;
     const std::string platform = control_platform_runtime_dir(rejection);
-#ifdef __APPLE__
+#if defined(__APPLE__) || defined(_WIN32)
     ASSERT_FALSE(platform.empty())
-        << "macOS must supply a per-user runtime directory; rejected because: " << rejection;
+        << "macOS and Windows must supply a per-user runtime directory; rejected because: "
+        << rejection;
 #else
     // No third source elsewhere.
     EXPECT_TRUE(platform.empty()) << platform;
@@ -1284,8 +1326,12 @@ TEST(PlatformRuntimeDir, WhateverItReturnsIsPrivate) {
     std::string reason;
     EXPECT_TRUE(is_private_runtime_dir(platform, reason)) << platform << ": " << reason;
     // Absolute, and not the one directory that is always wrong.
+#ifdef _WIN32
+    EXPECT_TRUE(std::filesystem::path(platform).is_absolute()) << platform;
+#else
     EXPECT_EQ(platform.front(), '/') << platform;
     EXPECT_NE(platform, "/tmp");
+#endif
     // No trailing slash: confstr() supplies one, and a path built on it would carry a '//'.
     EXPECT_NE(platform.back(), '/') << platform;
     // And short enough to still leave room for the socket's own leaf.

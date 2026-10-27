@@ -613,8 +613,8 @@ TEST(ParseOptions, DaemonizeMakesRelativePidfileAndLogfilePathsAbsolute) {
     Parse parse({"-z", "-o", "null", "-P", "sendspin.pid", "-f", "sendspin.log"});
 
     ASSERT_TRUE(parse.ok()) << parse.diagnostics();
-    EXPECT_EQ(parse.options().pidfile.front(), '/') << parse.options().pidfile;
-    EXPECT_EQ(parse.options().logfile.front(), '/') << parse.options().logfile;
+    EXPECT_TRUE(is_absolute_path(parse.options().pidfile)) << parse.options().pidfile;
+    EXPECT_TRUE(is_absolute_path(parse.options().logfile)) << parse.options().logfile;
     EXPECT_NE(parse.options().pidfile.find("/sendspin.pid"), std::string::npos)
         << parse.options().pidfile;
     EXPECT_NE(parse.options().logfile.find("/sendspin.log"), std::string::npos)
@@ -1202,7 +1202,7 @@ TEST(ParseOptions, ARelativeControlSocketIsMadeAbsoluteUnderZ) {
     Parse parse({"-z", "-f", "/tmp/log", "--control-socket", "mine.sock"});
 
     ASSERT_TRUE(parse.ok()) << parse.diagnostics();
-    EXPECT_EQ(parse.options().control_socket.front(), '/');
+    EXPECT_TRUE(is_absolute_path(parse.options().control_socket)) << parse.options().control_socket;
     EXPECT_NE(parse.options().control_socket.find("/mine.sock"), std::string::npos)
         << parse.options().control_socket;
 }
