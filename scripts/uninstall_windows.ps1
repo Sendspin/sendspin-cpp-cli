@@ -68,6 +68,12 @@ function Confirm-Action([string]$Question) {
     return $answer -match '^(y|yes)$'
 }
 
+# Players running from the installed binary, not some other copy.
+function Get-RunningPlayers {
+    return @(Get-CimInstance Win32_Process -Filter "Name = 'sendspin-cli.exe'" |
+            Where-Object { $_.ExecutablePath -eq $Binary })
+}
+
 if ($Help) {
     # The header's usage block, from '# Usage:' to the end of the comment.
     $inUsage = $false
@@ -99,8 +105,7 @@ $DataDir = Join-Path $LocalAppData 'sendspin-cli'
 # What is here
 
 $Task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-$Running = @(Get-CimInstance Win32_Process -Filter "Name = 'sendspin-cli.exe'" |
-        Where-Object { $_.ExecutablePath -eq $Binary })
+$Running = @(Get-RunningPlayers)
 $HaveInstall = Test-Path -LiteralPath $InstallDir
 $UserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 $OnPath = ($UserPath -split ';') -contains $InstallDir
@@ -179,7 +184,8 @@ if ($Task) {
     # Disabled first, so its once-a-minute check cannot start the player again.
     Disable-ScheduledTask -TaskName $TaskName | Out-Null
 }
-foreach ($process in $Running) {
+# Asked again, not taken from the plan: the task may have started one while it was on screen.
+foreach ($process in (Get-RunningPlayers)) {
     Say "  stopping the running player (pid $($process.ProcessId))"
     # Without /F: its close handler says goodbye to the server first.
     $target = $process.ProcessId

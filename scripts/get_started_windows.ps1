@@ -118,7 +118,15 @@ function Set-ConfigKey([string]$Key, [string]$Value) {
 
 # One entry per output device, from -l's DirectSound rows: full names, and Windows resamples.
 function Get-OutputChoices {
-    $listing = @(Invoke-Native { & $Binary -l })
+    # -l prints UTF-8, which PowerShell would read as the console's code page, turning a name
+    # with an umlaut in it into one no device has.
+    $encoding = [Console]::OutputEncoding
+    [Console]::OutputEncoding = New-Object Text.UTF8Encoding $false
+    try {
+        $listing = @(Invoke-Native { & $Binary -l })
+    } finally {
+        [Console]::OutputEncoding = $encoding
+    }
     $default = ''
     $choices = @()
     $inOutputs = $false
@@ -416,13 +424,16 @@ try {
             if (-not $answer) {
                 $answer = '0'
             }
-            if ($answer -match '^\d+$' -and [int]$answer -le $choices.Count) {
+            # TryParse, so 00 is 0 and a number past Int32 is off the list rather than an error.
+            $number = 0
+            if ($answer -match '^\d+$' -and [int]::TryParse($answer, [ref]$number) -and
+                $number -le $choices.Count) {
                 break
             }
             Say "  '$answer' is not on the list"
         }
-        $Output = if ($answer -eq '0') { 'portaudio' } else {
-            "portaudio:directsound:$($choices[[int]$answer - 1].Name)"
+        $Output = if ($number -eq 0) { 'portaudio' } else {
+            "portaudio:directsound:$($choices[$number - 1].Name)"
         }
     }
     if ($NameFrom -ne 'none' -or $OutputFrom -ne 'none') {
