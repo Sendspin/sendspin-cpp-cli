@@ -173,6 +173,7 @@ struct StatusSnapshot {
 
     /// The connection's trust; absent before its handshake reports one.
     std::optional<sendspin::ConnectionTrust> trust{};
+    size_t paired_servers{0};  ///< servers with a stored pairing, connected or not
 
     std::string pairing_server_id;    ///< the server a pairing is in progress with, else empty
     std::string pairing_code;         ///< the dynamic code on show, else empty

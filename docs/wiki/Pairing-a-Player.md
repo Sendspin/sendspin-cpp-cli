@@ -9,10 +9,14 @@ There are three ways to pair. All of them work from a terminal on the player's o
 and all of them end the same way:
 
 ```console
-$ sendspin-cli status | grep -E '^(trust|pairing)'
+$ sendspin-cli status | grep -E '^(trust|paired|pairing)'
 trust: paired
+paired servers: 1
 pairing: none
 ```
+
+`trust` is about the server connected right now; `paired servers` counts every server this
+player has paired with, connected or not.
 
 | Method | You carry to the server | Player setup | Use it when |
 |---|---|---|---|

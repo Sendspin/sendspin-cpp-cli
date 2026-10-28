@@ -162,18 +162,23 @@ bool StateStore::set_blob(const std::string& key, const uint8_t* data, size_t le
     return this->set_all({{KEY_BLOB_PREFIX + key, to_hex(data, len)}});
 }
 
-bool StateStore::has_pairing_record() const {
+size_t StateStore::pairing_record_count() const {
     const size_t slots = sendspin::SendspinClientConfig::DEFAULT_MAX_PAIRING_RECORDS;
+    size_t count = 0;
     for (size_t slot = 0; slot < slots; ++slot) {
         const std::optional<std::vector<uint8_t>> record =
             this->blob(sendspin::persistence_keys::record_slot_key(slot));
         // A freed slot is kept as zeroes.
         if (record.has_value() &&
             std::any_of(record->begin(), record->end(), [](uint8_t byte) { return byte != 0; })) {
-            return true;
+            ++count;
         }
     }
-    return false;
+    return count;
+}
+
+bool StateStore::has_pairing_record() const {
+    return this->pairing_record_count() > 0;
 }
 
 std::optional<uint8_t> StateStore::volume() const {

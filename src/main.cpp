@@ -404,7 +404,8 @@ public:
                       const MetadataLogger& metadata_logger,
                       const PairingListener& pairing_listener,
                       const PlayerListener& player_listener, sendspin::PlayerRole& player,
-                      const AudioSink& sink, const SourceCapture* capture)
+                      const AudioSink& sink, const SourceCapture* capture,
+                      const StateStore& state_store)
         : opts_(opts),
           client_(client),
           controller_(controller),
@@ -414,7 +415,8 @@ public:
           player_listener_(player_listener),
           player_(player),
           sink_(sink),
-          capture_(capture) {}
+          capture_(capture),
+          state_store_(state_store) {}
 
     std::string handle_control_request(const std::string& line) override {
         std::string name;
@@ -495,6 +497,7 @@ private:
         snapshot.client_id = this->client_.client_id();
         snapshot.connected = this->client_.is_connected();
         snapshot.trust = this->pairing_listener_.trust();
+        snapshot.paired_servers = this->state_store_.pairing_record_count();
         // A dropped connection ends its attempt without a callback.
         if (snapshot.connected) {
             snapshot.pairing_server_id = this->pairing_listener_.server_id();
@@ -560,6 +563,7 @@ private:
     sendspin::PlayerRole& player_;
     const AudioSink& sink_;
     const SourceCapture* capture_;  ///< null without --input
+    const StateStore& state_store_;
 };
 
 /// Binds the control socket, or logs why this run has none.
@@ -982,7 +986,7 @@ int main(int argc, char* argv[]) {
 
     ControlDispatcher control_dispatcher(opts, client, controller, metadata, metadata_logger,
                                          pairing_listener, player_listener, player, *sink,
-                                         capture.get());
+                                         capture.get(), state_store);
 
     std::unique_ptr<OutboundMode> outbound;
     if (opts.was_given(Opt::Server)) {
