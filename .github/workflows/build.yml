@@ -329,7 +329,7 @@ jobs:
         run: |
           dumpbin -nologo -dependents build/sendspin-cli.exe >imports.txt
           cat imports.txt
-          if grep -Eiq '^[[:space:]]*(msvcp|vcruntime|concrt)[0-9_]*\.dll' imports.txt; then
+          if grep -Eiq '^[[:space:]]*(msvcp|vcruntime|concrt)[0-9a-z_]*\.dll' imports.txt; then
             echo '::error::sendspin-cli.exe imports a Visual C++ Redistributable DLL, which a clean Windows install does not have'
             exit 1
           fi
