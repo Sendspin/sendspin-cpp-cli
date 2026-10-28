@@ -79,7 +79,7 @@ TEST(MatchPaDeviceName, ANameUnderSeveralHostApisIsRefusedWithThePrefixedForm) {
     EXPECT_NE(error.find("3 output devices share that name (4 mme, 12 directsound, 19 wasapi)"),
               std::string::npos)
         << error;
-    EXPECT_NE(error.find("-o portaudio:mme:Speakers (7- Schiit Modi+)"), std::string::npos)
+    EXPECT_NE(error.find("-o \"portaudio:mme:Speakers (7- Schiit Modi+)\""), std::string::npos)
         << error;
 }
 

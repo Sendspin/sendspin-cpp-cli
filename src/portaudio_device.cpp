@@ -201,8 +201,10 @@ bool match_pa_device_name(const std::string& device, const std::vector<PaDeviceE
         error = spec + ": " + std::to_string(matches.size()) + " " + noun +
                 " devices share that name (" + listed + ") -- ";
         if (by_host_api) {
+            // Quoted, since device names carry spaces and parentheses.
             error += "put its host API in front to pick one, e.g. " + flag +
-                     " portaudio:" + matches.front()->host_api + ":" + matches.front()->name;
+                     " \"portaudio:" + matches.front()->host_api + ":" + matches.front()->name +
+                     "\"";
         } else {
             error += "name the one you mean by index instead";
         }
