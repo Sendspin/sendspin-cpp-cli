@@ -16,6 +16,7 @@
 
 #include "key_value_file.h"
 #include "sendspin/config.h"
+#include "sendspin/persistence_codec.h"
 #include "sendspin/persistence_keys.h"
 
 #ifdef _WIN32
@@ -31,7 +32,6 @@
 #include <unistd.h>
 #endif
 
-#include <algorithm>
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
@@ -168,9 +168,10 @@ size_t StateStore::pairing_record_count() const {
     for (size_t slot = 0; slot < slots; ++slot) {
         const std::optional<std::vector<uint8_t>> record =
             this->blob(sendspin::persistence_keys::record_slot_key(slot));
-        // A freed slot is kept as zeroes.
+        // Counted as the library loads them: a freed slot is kept as zeroes, which it rejects
+        // along with any other blob it could not use.
         if (record.has_value() &&
-            std::any_of(record->begin(), record->end(), [](uint8_t byte) { return byte != 0; })) {
+            sendspin::decode_pairing_record(record->data(), record->size()).has_value()) {
             ++count;
         }
     }

@@ -15,8 +15,8 @@ paired servers: 1
 pairing: none
 ```
 
-`trust` is about the server connected right now; `paired servers` counts every server this
-player has paired with, connected or not.
+`trust` is about the server connected right now; `paired servers` counts the servers this
+player holds a pairing for, connected or not. An unpaired server drops out of it.
 
 | Method | You carry to the server | Player setup | Use it when |
 |---|---|---|---|

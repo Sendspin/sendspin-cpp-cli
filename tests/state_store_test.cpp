@@ -413,6 +413,23 @@ TEST(StateStore, CountsEachOccupiedPairingSlot) {
     EXPECT_EQ(store.pairing_record_count(), 1U);
 }
 
+TEST(StateStore, DoesNotCountASlotTheLibraryWouldNotLoad) {
+    const ScratchDir scratch;
+    ASSERT_TRUE(scratch.created());
+    StateStore store(scratch.file());
+
+    // Too short to be a record, and a record whose PSK half is all zeroes.
+    const std::vector<uint8_t> short_blob(sendspin::persistence_keys::RECORD_SLOT_SIZE / 2, 0x5a);
+    std::vector<uint8_t> zero_psk(sendspin::persistence_keys::PAIRING_PSK_SIZE, 0);
+    zero_psk.resize(sendspin::persistence_keys::RECORD_SLOT_SIZE, 0x5a);
+    ASSERT_TRUE(store.set_blob(sendspin::persistence_keys::record_slot_key(0), short_blob.data(),
+                               short_blob.size()));
+    ASSERT_TRUE(store.set_blob(sendspin::persistence_keys::record_slot_key(1), zero_psk.data(),
+                               zero_psk.size()));
+    EXPECT_EQ(store.pairing_record_count(), 0U);
+    EXPECT_FALSE(store.has_pairing_record());
+}
+
 // Upgrading a pre-rc1 state file
 
 /// The output-delay blob as milliseconds, or nothing when absent or the wrong size.
