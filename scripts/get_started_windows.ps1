@@ -14,14 +14,21 @@
 # limitations under the License.
 #
 # Installs a released sendspin-cli for this Windows user and starts it at every logon.
-# Verifies SHA256SUMS, installs under LocalAppData, writes a config and registers a scheduled
-# task. Nothing needs administrator rights except the optional firewall rule, asked for apart.
+# Verifies SHA256SUMS, installs under LocalAppData, asks for a name and an output device, writes
+# a config and registers a scheduled task. Nothing needs administrator rights except the
+# optional firewall rule, asked for apart. uninstall_windows.ps1 removes it all again.
 #
-# Usage: get_started_windows.ps1 [-Version <tag>] [-Yes] [-Firewall]
+# Usage: get_started_windows.ps1 [-Version <tag>] [-Name <name>] [-Output <device>] [-Yes]
+#                                [-Firewall]
 #
-#   -Version <tag>  install this release instead of the latest, e.g. -Version v0.5.0
-#   -Yes            do not ask before installing. Required when there is no console to ask on
-#   -Firewall       also add the firewall rule without asking (still needs a UAC prompt)
+#   -Version <tag>    install this release instead of the latest, e.g. -Version v0.5.0
+#   -Name <name>      the name a server shows for this player, instead of being asked.
+#                     Ignored when the config already sets one
+#   -Output <device>  the output device, e.g. "portaudio:directsound:Speakers (USB DAC)",
+#                     instead of being asked. Ignored when the config already sets one
+#   -Yes              do not ask anything, taking the name and output only from the flags
+#                     above. Required when there is no console to ask on
+#   -Firewall         also add the firewall rule without asking (still needs a UAC prompt)
 #
 # Environment:
 #
@@ -32,6 +39,8 @@
 [CmdletBinding()]
 param(
     [string]$Version = '',
+    [string]$Name = '',
+    [string]$Output = '',
     [switch]$Yes,
     [switch]$Firewall,
     [switch]$Help
@@ -77,6 +86,68 @@ function Test-CanAsk {
 function Confirm-Action([string]$Question) {
     $answer = Read-Host "$Question [y/N]"
     return $answer -match '^(y|yes)$'
+}
+
+# Does the config set this key, uncommented.
+function Test-ConfigSets([string]$Key) {
+    if (-not (Test-Path -LiteralPath $Config)) {
+        return $false
+    }
+    $pattern = '^\s*' + [regex]::Escape($Key) + '\s*='
+    return [bool]([IO.File]::ReadAllLines($Config) | Where-Object { $_ -match $pattern })
+}
+
+# Replaces the example's commented line for the key, else appends. Without a BOM: the player
+# would read one as part of the first line and refuse the file.
+function Set-ConfigKey([string]$Key, [string]$Value) {
+    $lines = [Collections.Generic.List[string]]::new([IO.File]::ReadAllLines($Config))
+    $at = -1
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i].StartsWith("#$Key = ")) {
+            $at = $i
+            break
+        }
+    }
+    if ($at -ge 0) {
+        $lines[$at] = "$Key = $Value"
+    } else {
+        $lines.Add("$Key = $Value")
+    }
+    [IO.File]::WriteAllLines($Config, $lines, (New-Object Text.UTF8Encoding $false))
+}
+
+# One entry per output device, from -l's DirectSound rows: full names, and Windows resamples.
+function Get-OutputChoices {
+    # -l prints UTF-8, which PowerShell would read as the console's code page, turning a name
+    # with an umlaut in it into one no device has.
+    $encoding = [Console]::OutputEncoding
+    [Console]::OutputEncoding = New-Object Text.UTF8Encoding $false
+    try {
+        $listing = @(Invoke-Native { & $Binary -l })
+    } finally {
+        [Console]::OutputEncoding = $encoding
+    }
+    $default = ''
+    $choices = @()
+    $inOutputs = $false
+    foreach ($line in $listing) {
+        if ($line -match '^PortAudio output devices') {
+            $inOutputs = $true
+        } elseif ($inOutputs -and $line -notmatch '^\s') {
+            break
+        } elseif ($inOutputs -and $line -match '^\s+\d+\s+(.+?)\s+mme\s+\d+ ch.*\(system default\)') {
+            # MME carries the default, cut to 31 characters.
+            $default = $Matches[1]
+        } elseif ($inOutputs -and $line -match '^\s+\d+\s+(.+?)\s+directsound\s+\d+ ch') {
+            # Primary Sound Driver is DirectSound's own follow-the-default, which choice 0 is.
+            if ($Matches[1] -ne 'Primary Sound Driver') {
+                $choices += $Matches[1]
+            }
+        }
+    }
+    return @($choices | ForEach-Object {
+            [pscustomobject]@{ Name = $_; IsDefault = ($default -and $_.StartsWith($default)) }
+        })
 }
 
 if ($Help) {
@@ -227,11 +298,48 @@ try {
         $HaveRule = $false
     }
 
+    # From the flag, asked, or neither; a key the config already sets is never asked or replaced.
+    $NameFrom = 'none'
+    $OutputFrom = 'none'
+    if (Test-ConfigSets 'output') {
+        if ($Output) {
+            Say "  note: $Config already sets an output, so -Output is ignored"
+        }
+    } elseif ($Output) {
+        $OutputFrom = 'flag'
+    } elseif (-not $Yes) {
+        $OutputFrom = 'ask'
+    }
+    if (Test-ConfigSets 'name') {
+        if ($Name) {
+            Say "  note: $Config already sets a name, so -Name is ignored"
+        }
+    } elseif ($Name) {
+        $NameFrom = 'flag'
+    } elseif ($OutputFrom -eq 'ask') {
+        # A config with an output is set up: upgrading it asks nothing.
+        $NameFrom = 'ask'
+    }
+    if ("$Name$Output" -match '[\r\n]') {
+        Fail '-Name and -Output are one line each'
+    }
+
+    $Choosing = @()
+    if ($NameFrom -eq 'flag') { $Choosing += "name = $Name" }
+    if ($NameFrom -eq 'ask') { $Choosing += 'the name you choose' }
+    if ($OutputFrom -eq 'flag') { $Choosing += "output = $Output" }
+    if ($OutputFrom -eq 'ask') { $Choosing += 'the output you choose' }
+    $Setting = if ($Choosing) { ", setting $($Choosing -join ' and ')" } else { '' }
+
     Step 'This is what it will do, as you, with no administrator rights'
     Say ''
     Say "  install   $InstallDir\  (sendspin-cli.exe and its README, LICENSE and config example)"
-    if ($SeedConfig) {
+    if ($SeedConfig -and $Choosing) {
+        Say "  config    $Config  (from the example$Setting)"
+    } elseif ($SeedConfig) {
         Say "  config    $Config  (from the example; every line in it is commented out)"
+    } elseif ($Choosing) {
+        Say "  config    $Config  (exists$Setting; nothing else in it changes)"
     } else {
         Say "  config    $Config  (exists; left as it is)"
     }
@@ -288,6 +396,57 @@ try {
         New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
         Copy-Item -LiteralPath (Join-Path $InstallDir 'sendspin-cli.conf.example') -Destination $Config
         Say "  $Config  (from the example; everything in it is commented out)"
+    }
+
+    # Name and output
+
+    if ($NameFrom -eq 'ask') {
+        Step 'Naming the player'
+        Say ''
+        Say '  This is what a Sendspin server shows it as.'
+        Say ''
+        $hostName = [Net.Dns]::GetHostName()
+        $answer = (Read-Host "  Name [$hostName]").Trim()
+        $Name = if ($answer) { $answer } else { $hostName }
+    }
+    if ($OutputFrom -eq 'ask') {
+        Step 'What it plays through'
+        Say ''
+        $choices = @(Get-OutputChoices)
+        Say "  0) Whatever Windows' default output is -- change it in Settings > System > Sound"
+        for ($i = 0; $i -lt $choices.Count; $i++) {
+            Say ("  {0}) {1}{2}" -f ($i + 1), $choices[$i].Name,
+                $(if ($choices[$i].IsDefault) { '   (the default right now)' } else { '' }))
+        }
+        Say ''
+        while ($true) {
+            $answer = (Read-Host "  Choose 0-$($choices.Count) [0]").Trim()
+            if (-not $answer) {
+                $answer = '0'
+            }
+            # TryParse, so 00 is 0 and a number past Int32 is off the list rather than an error.
+            $number = 0
+            if ($answer -match '^\d+$' -and [int]::TryParse($answer, [ref]$number) -and
+                $number -le $choices.Count) {
+                break
+            }
+            Say "  '$answer' is not on the list"
+        }
+        $Output = if ($number -eq 0) { 'portaudio' } else {
+            "portaudio:directsound:$($choices[$number - 1].Name)"
+        }
+    }
+    if ($NameFrom -ne 'none' -or $OutputFrom -ne 'none') {
+        Step "Writing $Config"
+        Say ''
+        if ($NameFrom -ne 'none') {
+            Set-ConfigKey 'name' $Name
+            Say "  name = $Name"
+        }
+        if ($OutputFrom -ne 'none') {
+            Set-ConfigKey 'output' $Output
+            Say "  output = $Output"
+        }
     }
 
     if ($AddToPath) {
@@ -382,23 +541,28 @@ try {
 
     Step 'Next'
     Say ''
-    Say '  Ask it what it is doing (in a new terminal, so PATH is up to date):'
+    Say '  Ask it what it is doing:'
     Say ''
-    Say '    sendspin-cli status'
+    Say "    & '$Binary' status"
+    Say ''
+    Say "  Plain 'sendspin-cli status' works in terminals opened from now on. One already open,"
+    Say "  this one included, still has the old PATH; so do VS Code's until VS Code restarts."
     Say ''
     Say '  Pair it from your Sendspin server: when the server asks for a code, it is in the log.'
     Say ''
     Say "    Get-Content '$LogFile' -Wait -Tail 20"
     Say ''
     Say "  Change what it plays through, or anything else, in $Config --"
-    Say "  'sendspin-cli -l' lists the devices -- then stop it, and the task starts it again"
-    Say '  within a minute with the new settings:'
+    Say "  & '$Binary' -l lists the devices -- then stop it, and the task starts it"
+    Say '  again within a minute with the new settings:'
     Say ''
     Say "    taskkill /PID (Get-Content '$PidFile')"
     Say ''
     Say '  To keep it stopped, disable the task first:'
     Say ''
     Say "    Disable-ScheduledTask $TaskName; taskkill /PID (Get-Content '$PidFile')"
+    Say ''
+    Say "  To remove all of this again: https://github.com/$Repo#uninstall"
     Say ''
 } finally {
     Remove-Item -LiteralPath $WorkDir -Recurse -Force -ErrorAction SilentlyContinue
