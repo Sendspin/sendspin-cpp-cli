@@ -20,7 +20,7 @@ It prints what it is about to do, as you, and waits for you to say yes:
 ==> This is what it will do, as you, with no administrator rights
 
   install   C:\Users\you\AppData\Local\Programs\sendspin-cli\  (sendspin-cli.exe and its README, LICENSE and config example)
-  config    C:\Users\you\AppData\Roaming\sendspin-cli\config  (from the example; every line in it is commented out)
+  config    C:\Users\you\AppData\Roaming\sendspin-cli\config  (from the example, setting the name you choose and the output you choose)
   PATH      add C:\Users\you\AppData\Local\Programs\sendspin-cli to your user PATH, so 'sendspin-cli status' works anywhere
   task      'sendspin-cli' in Task Scheduler: start the player, without a window, when you
             log on, logging to C:\Users\you\AppData\Local\sendspin-cli\sendspin-cli.log; it checks every minute
@@ -30,9 +30,27 @@ It prints what it is about to do, as you, and waits for you to say yes:
 Go ahead? [y/N]
 ```
 
-`-Yes` skips the prompt, and is required when there is no console to ask on. `-Version v0.5.0`
-installs a specific release instead of the newest. `-Firewall` adds the firewall rule without
-asking, though Windows still asks for administrator approval.
+Then it asks two things, the name a server shows for the player and what it plays through:
+
+```
+==> What it plays through
+
+  0) Whatever Windows' default output is -- change it in Settings > System > Sound
+  1) Speakers (USB DAC)   (the default right now)
+  2) Odyssey G95NC (NVIDIA High Definition Audio)
+
+  Choose 0-2 [0]:
+```
+
+`0` follows Windows' default as you change it; a number pins that device, written to the
+config as `output = portaudio:directsound:<name>`. Neither is asked again once the config
+sets it, so running the script again to upgrade asks nothing.
+
+`-Name kitchen` and `-Output "portaudio:directsound:Speakers (USB DAC)"` answer them up
+front. `-Yes` skips every prompt, and is required when there is no console to ask on; with it,
+only those two flags set anything. `-Version v0.5.0` installs a specific release instead of
+the newest. `-Firewall` adds the firewall rule without asking, though Windows still asks for
+administrator approval.
 
 ### What it actually does
 
@@ -45,10 +63,11 @@ asking, though Windows still asks for administrator approval.
    already running from there is stopped cleanly first, so running the script again upgrades
    it.
 5. **Copies the annotated example config** to `AppData\Roaming\sendspin-cli\config` if you
-   have none. Every line in it is commented out, so it chooses nothing: the player plays
-   through your **default output device**, and follows it when you change it.
-6. **Adds the install folder to your user PATH**, so `sendspin-cli status` works in any new
-   terminal.
+   have none, then **asks for a name and an output** unless the config already sets an
+   output, and writes your answers into it.
+6. **Adds the install folder to your user PATH**, so `sendspin-cli status` works in any
+   terminal opened afterwards. One already open keeps the old PATH, and VS Code's terminals
+   do until VS Code restarts, so the script prints the full path to use straight away.
 7. **Registers a scheduled task** that runs `sendspin-cli -z` when you log on, with no window.
    The task also checks every minute: while the player runs, that check finds its pidfile
    held and does nothing, and if the player has stopped, it starts it again.
@@ -142,22 +161,20 @@ rotated, so it only grows; it is safe to delete while the player is stopped.
 ## Uninstalling
 
 ```powershell
-Disable-ScheduledTask sendspin-cli
-taskkill /PID (Get-Content $env:LOCALAPPDATA\sendspin-cli\sendspin-cli.pid)
-Unregister-ScheduledTask sendspin-cli -Confirm:$false
-$dir = "$env:LOCALAPPDATA\Programs\sendspin-cli"
-[Environment]::SetEnvironmentVariable('Path', (([Environment]::GetEnvironmentVariable('Path', 'User') -split ';' | Where-Object { $_ -and $_ -ne $dir }) -join ';'), 'User')
-Remove-Item $dir -Recurse
+Invoke-WebRequest https://raw.githubusercontent.com/Sendspin/sendspin-cpp-cli/main/scripts/uninstall_windows.ps1 -OutFile uninstall_windows.ps1
+powershell -ExecutionPolicy Bypass -File .\uninstall_windows.ps1
 ```
 
-Your config, state and log are left where they are, so reinstalling keeps the player's
-identity and pairings. Remove `%APPDATA%\sendspin-cli` and `%LOCALAPPDATA%\sendspin-cli` too
-to forget it entirely; a server then sees a new, unpaired player. The firewall rule, if you
-added it, goes from an administrator PowerShell:
+It shows what it will remove and waits for you to say yes: the scheduled task, the running
+player (stopped cleanly), the install folder, its PATH entry, and the firewall rule if you
+added it, which brings up a UAC prompt. It also tidies the control-socket files players leave
+in `%LOCALAPPDATA%`.
 
-```powershell
-Remove-NetFirewallRule -DisplayName sendspin-cli
-```
+Your config and the player's remembered state (`%APPDATA%\sendspin-cli` and
+`%LOCALAPPDATA%\sendspin-cli`) are kept by default, so reinstalling keeps the player's
+identity and pairings; it asks whether to remove them too. `-Purge` removes them without
+asking, after which a server sees a new, unpaired player. `-Yes` asks nothing, keeping them
+unless `-Purge`.
 
 ## Without the script
 
