@@ -173,8 +173,10 @@ Get-ChildItem .\sendspin-cli-0.5.0-windows-x86_64 | Unblock-File
 .\sendspin-cli-0.5.0-windows-x86_64\sendspin-cli.exe
 ```
 
-`-l` lists what it can play through; `-o portaudio:<index>` picks one. Ctrl+C and closing
-the window stop it cleanly, and it handles logging off and shutting down the same way.
+`-l` lists what it can play through. Windows lists each device once per host API, so pick one
+by that column and its name, e.g. `-o "portaudio:directsound:Speakers (USB DAC)"`; an index
+works too, but shifts as devices come and go. Ctrl+C and closing the window stop it cleanly,
+and it handles logging off and shutting down the same way.
 
 ## Next
 

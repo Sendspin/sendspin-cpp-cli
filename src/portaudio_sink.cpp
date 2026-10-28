@@ -237,11 +237,9 @@ void PortAudioSink::list_devices(std::FILE* out) {
             std::fprintf(out, "  idx  name                                   host API     "
                               "out ch  default rate\n");
         }
-        const PaHostApiInfo* host = Pa_GetHostApiInfo(info->hostApi);
         std::fprintf(out, "  %3d  %-38s %-12s %2d ch  %6.0f Hz%s\n", static_cast<int>(i),
-                     info->name, (host != nullptr) ? host->name : "(unknown host API)",
-                     info->maxOutputChannels, info->defaultSampleRate,
-                     (i == fallback) ? "  (system default)" : "");
+                     info->name, pa_host_api_label(info->hostApi), info->maxOutputChannels,
+                     info->defaultSampleRate, (i == fallback) ? "  (system default)" : "");
         print_device_capabilities(out, i);
         ++listed;
     }
