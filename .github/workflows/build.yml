@@ -323,6 +323,22 @@ jobs:
       - name: Build
         run: cmake --build build
 
+      # The zip ships the .exe alone, and this runner has the Redistributable, so only the imports can tell.
+      - name: Assert the binary needs no Visual C++ Redistributable (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          dumpbin -nologo -dependents build/sendspin-cli.exe >imports.txt
+          cat imports.txt
+          if grep -Eiq '^[[:space:]]*(msvcp|vcruntime|concrt)[0-9_]*\.dll' imports.txt; then
+            echo '::error::sendspin-cli.exe imports a Visual C++ Redistributable DLL, which a clean Windows install does not have'
+            exit 1
+          fi
+          grep -Eiq '^[[:space:]]*kernel32\.dll' imports.txt || {
+            echo '::error::dumpbin listed no imports at all, so the check above proved nothing'
+            exit 1
+          }
+          rm -f imports.txt
+
       # Read the target architecture off the linked binary, which covers every dependency, before running the suite.
       - name: Assert the binary is built for the architecture this leg claims
         if: matrix.arm32

@@ -18,6 +18,11 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Static CRT for every target, so the Windows .exe runs without the Visual C++ Redistributable.
+if(NOT DEFINED CMAKE_MSVC_RUNTIME_LIBRARY)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
@@ -475,8 +480,6 @@ if(SENDSPIN_CLI_BUILD_TESTS)
     )
     set(INSTALL_GTEST OFF CACHE BOOL "Install GoogleTest alongside our own targets")
     set(BUILD_GMOCK OFF CACHE BOOL "Build GoogleMock")
-    # The CRT the rest of the build links (/MD), not GoogleTest's own /MT default.
-    set(gtest_force_shared_crt ON CACHE BOOL "Use the shared CRT for GoogleTest")
     FetchContent_MakeAvailable(googletest)
     if(CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
         # GoogleTest builds itself with /WX, which newer clang-cl warnings break.
