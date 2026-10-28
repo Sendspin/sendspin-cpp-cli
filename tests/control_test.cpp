@@ -799,6 +799,16 @@ TEST(FormatStatus, TrustFollowsTheConnection) {
     EXPECT_EQ(field(format_status(snapshot), "trust"), "not connected");
 }
 
+TEST(FormatStatus, PairedServersAreReportedEvenWhileDisconnected) {
+    StatusSnapshot snapshot;
+    EXPECT_EQ(field(format_status(snapshot), "paired servers"), "0");
+
+    // What an installer reads to tell "never paired" from "paired, server not here yet".
+    snapshot.paired_servers = 2;
+    EXPECT_EQ(field(format_status(snapshot), "trust"), "not connected");
+    EXPECT_EQ(field(format_status(snapshot), "paired servers"), "2");
+}
+
 TEST(FormatStatus, AnIdlePlayerReportsNoPairing) {
     const std::string block = format_status(playing_snapshot());
     EXPECT_EQ(field(block, "pairing"), "none");

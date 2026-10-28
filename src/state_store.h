@@ -61,6 +61,9 @@ public:
     std::optional<std::vector<uint8_t>> blob(const std::string& key) const;
     bool set_blob(const std::string& key, const uint8_t* data, size_t len);
 
+    /// How many servers the library has a pairing record stored for.
+    size_t pairing_record_count() const;
+
     /// True if the library has a pairing record stored for any server.
     bool has_pairing_record() const;
 

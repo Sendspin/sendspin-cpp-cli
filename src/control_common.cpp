@@ -550,6 +550,7 @@ std::string format_status(const StatusSnapshot& snapshot) {
         append_line(out, "trust",
                     *snapshot.trust == sendspin::ConnectionTrust::USER ? "paired" : "unpaired");
     }
+    append_line(out, "paired servers", std::to_string(snapshot.paired_servers));
 
     append_line(out, "pairing",
                 snapshot.pairing_server_id.empty()

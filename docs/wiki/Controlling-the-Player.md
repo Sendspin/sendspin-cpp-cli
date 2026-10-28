@@ -10,6 +10,7 @@ name: living-room
 client id: fLNgT-h015The-sALW0IVza7J0FThgDU1leu1MLDww4
 server: Music Assistant (connected)
 trust: paired
+paired servers: 1
 pairing: none
 state: playing
 stream: receiving
