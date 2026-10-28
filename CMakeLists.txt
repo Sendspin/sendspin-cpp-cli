@@ -501,6 +501,7 @@ if(SENDSPIN_CLI_BUILD_TESTS)
         tests/pcm_volume_test.cpp
         tests/pipewire_sink_test.cpp
         tests/player_listener_test.cpp
+        tests/portaudio_device_test.cpp
         tests/sink_recovery_test.cpp
         tests/state_store_test.cpp
         tests/supported_formats_test.cpp
