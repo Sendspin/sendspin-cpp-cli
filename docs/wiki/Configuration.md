@@ -65,7 +65,7 @@ already does that.
 | `allow-unpaired` | `--allow-unpaired` | `true`/`false` — let a server that has not paired with this player play on it | `false` |
 | `fixed-volume` | `--fixed-volume` | `true`/`false` — play at full volume, unmuted, and offer the server neither volume nor mute, for an output whose level is set elsewhere (a line-out into an amplifier). A remembered volume is kept but ignored, and returns once the key is dropped | `false` |
 | `release-device` | `--release-device` | `true`/`false` — close the output device at each stream end and reopen it at the next stream start, for an exclusive device such as an ALSA `hw:` DAC shared with other players (Squeezelite, AirPlay, Spotify). The trade-off: another app can take the device between streams, and the next stream is then discarded; each stream also pays a fresh open. ALSA and PortAudio only; other backends ignore it | `false` |
-| `pairing-code` | `--pairing-code` | exactly 8 digits — a static code a server can pair with, confirmed each time with `sendspin-cli pair confirm`; replaces the 6-digit code the player otherwise shows. See [Pairing a Player](Pairing-a-Player#3-static-code) | none |
+| `pairing-code` | `--pairing-code` | exactly 8 digits — a static code a server can pair with, confirmed each time with `sendspin-cli pair confirm`; replaces the 6-digit code the player otherwise shows. See [Pairing a Player](Pairing-a-Player#2-static-code) | none |
 | `no-mdns` | `--no-mdns` | `true`/`false` — do not advertise `_sendspin._tcp` | `false` |
 | `mdns-name` | `--mdns-name` | the instance label to advertise, when it should differ from `name` | `name` |
 | `control-socket` | `--control-socket` | the Unix socket the subcommands talk to | `$XDG_RUNTIME_DIR/sendspin-cli-<port>.sock` |
