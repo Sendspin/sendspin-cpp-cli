@@ -57,19 +57,20 @@ for the walkthrough, including the firewall rule a server needs to reach it.
 
 The player advertises itself on the local network and a Sendspin server finds it.
 Connections are encrypted, and a server must pair with the player before it can play.
-Print the token to paste into the server:
+Pair it from the server, and the player shows a six-digit code to type in. Read it from
+`status`:
 
 ```bash
 # Linux service, as installed above
-sudo sendspin-cli pair-token --control-socket /run/sendspin-cli/control.sock
+sudo sendspin-cli status --control-socket /run/sendspin-cli/control.sock
 
 # --user-service, macOS, Windows, or a player started from your own shell
-sendspin-cli pair-token
+sendspin-cli status
 ```
 
 [Pairing a player](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Pairing-a-Player)
-covers that and the two code-based ways. `--allow-unpaired` lets any server on the network
-play without pairing.
+covers that and a fixed code you choose yourself. `--allow-unpaired` lets any server on the
+network play without pairing.
 
 ## Everyday use
 
