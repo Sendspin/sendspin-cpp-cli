@@ -163,9 +163,11 @@ void print_sink_capabilities(std::FILE* out, const SinkCapabilities& caps,
 /// Builds the sink named by -o.
 /// @param buffer_ms Already range-checked by the parser.
 /// @param alsa_mixer `card:control` naming a hardware mixer; ignored off the ALSA backend.
+/// @param alsa_mixer_curve How volume maps onto the mixer's dB range; ignored without a mixer.
 /// @return The sink, or nullptr with `error` set.
 std::unique_ptr<AudioSink> make_audio_sink(const std::string& device, uint32_t buffer_ms,
-                                           const std::string& alsa_mixer, std::string& error);
+                                           const std::string& alsa_mixer,
+                                           const std::string& alsa_mixer_curve, std::string& error);
 
 /// Prints the device specs make_audio_sink() accepts, for -l.
 void print_audio_devices(std::FILE* out);

@@ -332,6 +332,22 @@ TEST(ConfigPrecedence, AlsaMixerIsSettableAndLosesToTheCommandLine) {
     EXPECT_EQ(override.options().alsa_mixer, "0:Master");
 }
 
+TEST(ConfigPrecedence, AlsaMixerCurveIsSettableAndLosesToTheCommandLine) {
+    ScratchDir scratch;
+    ASSERT_TRUE(scratch.created());
+    const std::string file =
+        scratch.write("mixer", "alsa-mixer = 1:Digital\nalsa-mixer-curve = cubic\n");
+
+    Parse from_file({}, file);
+    ASSERT_TRUE(from_file.ok()) << from_file.diagnostics();
+    EXPECT_EQ(from_file.options().alsa_mixer_curve, "cubic");
+    EXPECT_TRUE(from_file.options().was_given(Opt::AlsaMixerCurve));
+
+    Parse override({"--alsa-mixer-curve", "spec"}, file);
+    ASSERT_TRUE(override.ok()) << override.diagnostics();
+    EXPECT_EQ(override.options().alsa_mixer_curve, "spec");
+}
+
 TEST(ConfigPrecedence, ReleaseDeviceIsSettableAndOffByDefault) {
     ScratchDir scratch;
     ASSERT_TRUE(scratch.created());

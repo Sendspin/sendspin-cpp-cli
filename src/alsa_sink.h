@@ -31,6 +31,17 @@
 
 namespace sendspin_cli {
 
+/// How a 0-100 volume maps onto a hardware mixer control's dB range.
+enum class MixerCurve {
+    kSpec,   ///< The spec's perceived-loudness curve: amplitude (v/100)^1.5, 30*log10 dB.
+    kCubic,  ///< Amplitude (v/100)^3, the steeper curve Snapcast uses for hardware volume.
+             ///< Its inverse, 100*10^(dB/60), is alsamixer's slider position, so the two track
+             ///< each other on a control with more than 24 dB of range.
+};
+
+/// Parses a curve name ("spec", "cubic"). @return false when unrecognized.
+bool parse_mixer_curve(const std::string& name, MixerCurve& curve);
+
 /// An AudioSink that plays through an ALSA PCM, e.g. `default` or `hw:2,0`.
 /// Every snd_pcm_* call holds device_mutex_. write() never reopens a dead device; poll() does.
 class AlsaAudioSink final : public AudioSink {
@@ -38,7 +49,9 @@ public:
     /// @param buffer_ms Ring size request, already range-checked; ALSA rounds it to the card.
     /// @param mixer_spec `card:control` naming the hardware mixer to drive, e.g. `1:Digital`;
     ///                   empty keeps the software volume. Only the ALSA backend takes one.
-    AlsaAudioSink(std::string device, uint32_t buffer_ms, std::string mixer_spec = {});
+    /// @param curve How volume maps onto the mixer's dB range; ignored without a mixer.
+    AlsaAudioSink(std::string device, uint32_t buffer_ms, std::string mixer_spec = {},
+                  MixerCurve curve = MixerCurve::kSpec);
     ~AlsaAudioSink() override;
 
     std::string name() const override;
@@ -64,7 +77,9 @@ public:
 
     /// Reads the mixer's current volume and mute; -1 volume when the mixer cannot be read.
     /// @param muted Set from the control's playback switch; false without one.
-    static int read_mixer_volume(const std::string& mixer_spec, bool& muted);
+    /// @param curve How volume maps onto the mixer's dB range.
+    static int read_mixer_volume(const std::string& mixer_spec, bool& muted,
+                                 MixerCurve curve = MixerCurve::kSpec);
 
     /// Prints the host's playback PCMs, as `aplay -L` does.
     static void list_devices(std::FILE* out);
@@ -121,6 +136,8 @@ private:
     uint32_t buffer_ms_;
     /// `card:control` for hardware volume, empty for software volume.
     std::string mixer_spec_;
+    /// Curve mapping volume onto the mixer's dB range; kSpec unless configured otherwise.
+    MixerCurve mixer_curve_{MixerCurve::kSpec};
 
     /// Serialises every snd_pcm_* call and the fields describing the open stream.
     std::mutex device_mutex_;
@@ -170,12 +187,14 @@ private:
     int64_t mixer_ramp_next_ms_{0};
 };
 
-/// Maps a 0-100 volume onto a hardware mixer's dB range on the spec's curve, amplitude =
-/// (v/100)^1.5, i.e. 30*log10(v/100) dB below max. Clamped to the control's floor.
-long mixer_dB_for_volume(long min, long max, uint8_t volume);
+/// Maps a 0-100 volume onto a hardware mixer's dB range on the given curve.
+/// The spec curve is amplitude (v/100)^1.5, i.e. 30*log10(v/100) dB below max; the cubic curve
+/// is twice that. Clamped to the control's floor.
+long mixer_dB_for_volume(long min, long max, uint8_t volume,
+                         MixerCurve curve = MixerCurve::kSpec);
 
 /// The inverse of mixer_dB_for_volume(): the 0-100 volume a mixer dB reading stands for.
-uint8_t volume_for_mixer_dB(long min, long max, long dB);
+uint8_t volume_for_mixer_dB(long min, long max, long dB, MixerCurve curve = MixerCurve::kSpec);
 
 /// Routes libasound's diagnostics to our logger; call before any snd_* that can fail.
 void install_alsa_error_handler();

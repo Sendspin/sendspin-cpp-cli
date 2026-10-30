@@ -207,8 +207,10 @@ void install_alsa_error_handler() {
     std::call_once(once, [] { snd_lib_error_set_handler(&alsa_error_handler); });
 }
 
-AlsaAudioSink::AlsaAudioSink(std::string device, uint32_t buffer_ms, std::string mixer_spec)
-    : device_(std::move(device)), buffer_ms_(buffer_ms), mixer_spec_(std::move(mixer_spec)) {
+AlsaAudioSink::AlsaAudioSink(std::string device, uint32_t buffer_ms, std::string mixer_spec,
+                             MixerCurve curve)
+    : device_(std::move(device)), buffer_ms_(buffer_ms), mixer_spec_(std::move(mixer_spec)),
+      mixer_curve_(curve) {
     if (!this->mixer_spec_.empty()) {
         install_alsa_error_handler();
         // Held open for the run, so poll() can watch it for changes made outside this process.
@@ -737,8 +739,8 @@ void AlsaAudioSink::set_volume(uint8_t volume) {
     // The mixer carries the level when it has the control; the software gain only ever covers
     // what the mixer cannot, so it is recomputed from both fields rather than forced to unity.
     if (this->mixer_elem_ != nullptr) {
-        start_mixer_ramp_(
-            mixer_dB_for_volume(this->mixer_dB_min_, this->mixer_dB_max_, this->volume_.load()));
+        start_mixer_ramp_(mixer_dB_for_volume(this->mixer_dB_min_, this->mixer_dB_max_,
+                                              this->volume_.load(), this->mixer_curve_));
     }
     this->update_target_multiplier_();
     cli_log(LogLevel::DEBUG, "alsa: volume now %u", this->volume_.load());
@@ -851,7 +853,40 @@ bool AlsaAudioSink::playback_dB_range_(snd_mixer_elem_t* elem, long& min, long& 
     if (!snd_mixer_selem_has_playback_volume(elem)) {
         return false;
     }
-    return snd_mixer_selem_get_playback_dB_range(elem, &min, &max) == 0;
+    if (snd_mixer_selem_get_playback_dB_range(elem, &min, &max) != 0) {
+        return false;
+    }
+    // A control that mutes at its lowest step reports that step as SND_CTL_TLV_DB_GAIN_MUTE
+    // (-9999999) rather than a real level, so the range comes back as -99999.99 dB .. 0 dB. As a
+    // curve floor that makes every volume but 100% collapse onto it, and inflates the ramp step
+    // to the whole sentinel range. Rebuild the floor from the raw range and the per-step dB,
+    // which is where alsamixer gets the same numbers. A range without the sentinel is untouched.
+    if (min != SND_CTL_TLV_DB_GAIN_MUTE) {
+        return true;
+    }
+    long raw_min = 0;
+    long raw_max = 0;
+    if (snd_mixer_selem_get_playback_volume_range(elem, &raw_min, &raw_max) < 0 ||
+        raw_max <= raw_min) {
+        return true;
+    }
+    long top = 0;
+    long previous = 0;
+    if (snd_mixer_selem_ask_playback_vol_dB(elem, raw_max, &top) < 0 ||
+        snd_mixer_selem_ask_playback_vol_dB(elem, raw_max - 1, &previous) < 0) {
+        return true;
+    }
+    const long step = top - previous;
+    if (step <= 0) {
+        return true;
+    }
+    const long floor = top - (raw_max - raw_min) * step;
+    if (floor >= top) {
+        return true;
+    }
+    min = floor;
+    max = top;
+    return true;
 }
 
 bool AlsaAudioSink::playback_dB_(snd_mixer_elem_t* elem, long& dB) {
@@ -876,20 +911,45 @@ bool AlsaAudioSink::playback_switch_(snd_mixer_elem_t* elem) {
     return false;
 }
 
-long mixer_dB_for_volume(long min, long max, uint8_t volume) {
+bool parse_mixer_curve(const std::string& name, MixerCurve& curve) {
+    if (name == "spec") {
+        curve = MixerCurve::kSpec;
+    } else if (name == "cubic") {
+        curve = MixerCurve::kCubic;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+namespace {
+
+/// dB per volume-decade * 100 for a curve, i.e. the slope of dB = max + slope*log10(v/100).
+/// kSpec is 3000 (30 dB/decade); kCubic is 6000 (60 dB/decade).
+int mixer_curve_slope_centi_dB(MixerCurve curve) {
+    return curve == MixerCurve::kCubic ? 6000 : 3000;
+}
+
+}  // namespace
+
+long mixer_dB_for_volume(long min, long max, uint8_t volume, MixerCurve curve) {
     if (volume >= 100) {
         return max;
     }
     if (volume == 0) {
         return min;  // the curve is -inf here; the floor is the closest a control can get
     }
-    // The spec's curve, amplitude = (v/100)^1.5, is 30*log10(v/100) dB below max, in 0.01 dB.
+    // The spec's curve, amplitude = (v/100)^1.5, is 30*log10(v/100) dB below max, in 0.01 dB;
+    // the cubic (Snapcast) curve is twice that, and its inverse 100*10^(dB/60) is the position
+    // alsamixer gives the same control. Volume 0 never reaches the floor on either, which is
+    // what the min clamp handles.
+    const int slope = mixer_curve_slope_centi_dB(curve);
     const double dB =
-        static_cast<double>(max) + 3000.0 * std::log10(static_cast<double>(volume) / 100.0);
+        static_cast<double>(max) + slope * std::log10(static_cast<double>(volume) / 100.0);
     return std::max(min, static_cast<long>(std::lround(dB)));
 }
 
-uint8_t volume_for_mixer_dB(long min, long max, long dB) {
+uint8_t volume_for_mixer_dB(long min, long max, long dB, MixerCurve curve) {
     if (dB <= min) {
         return 0;
     }
@@ -897,7 +957,8 @@ uint8_t volume_for_mixer_dB(long min, long max, long dB) {
         return 100;
     }
     // The inverse of mixer_dB_for_volume().
-    const double volume = 100.0 * std::pow(10.0, static_cast<double>(dB - max) / 3000.0);
+    const int slope = mixer_curve_slope_centi_dB(curve);
+    const double volume = 100.0 * std::pow(10.0, static_cast<double>(dB - max) / slope);
     return static_cast<uint8_t>(std::lround(std::clamp(volume, 0.0, 100.0)));
 }
 
@@ -1024,7 +1085,8 @@ void AlsaAudioSink::report_mixer_change_() {
     this->mixer_reported_muted_ = muted;
 
     const uint8_t volume = (have_dB && !muted)
-                               ? volume_for_mixer_dB(this->mixer_dB_min_, this->mixer_dB_max_, dB)
+                               ? volume_for_mixer_dB(this->mixer_dB_min_, this->mixer_dB_max_, dB,
+                                                     this->mixer_curve_)
                                : this->volume_.load();
     this->volume_.store(volume);
     this->muted_.store(muted);
@@ -1084,7 +1146,7 @@ bool AlsaAudioSink::probe_mixer(const std::string& mixer_spec, std::string& erro
     return true;
 }
 
-int AlsaAudioSink::read_mixer_volume(const std::string& mixer_spec, bool& muted) {
+int AlsaAudioSink::read_mixer_volume(const std::string& mixer_spec, bool& muted, MixerCurve curve) {
     install_alsa_error_handler();
 
     snd_mixer_t* handle = nullptr;
@@ -1101,7 +1163,7 @@ int AlsaAudioSink::read_mixer_volume(const std::string& mixer_spec, bool& muted)
         snd_mixer_close(handle);
         return -1;
     }
-    const uint8_t volume = volume_for_mixer_dB(min, max, dB);
+    const uint8_t volume = volume_for_mixer_dB(min, max, dB, curve);
     snd_mixer_close(handle);
     return volume;
 }

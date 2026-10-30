@@ -80,6 +80,7 @@ enum LongOnly {
     OPT_PAIRING_CODE,
     OPT_FIXED_VOLUME,
     OPT_ALSA_MIXER,
+    OPT_ALSA_MIXER_CURVE,
     OPT_RELEASE_DEVICE,
 };
 
@@ -122,6 +123,7 @@ const std::vector<SettableOption>& settable_options() {
         {Opt::PairingCode, "pairing-code", "--pairing-code"},
         {Opt::FixedVolume, "fixed-volume", "--fixed-volume"},
         {Opt::AlsaMixer, "alsa-mixer", "--alsa-mixer"},
+        {Opt::AlsaMixerCurve, "alsa-mixer-curve", "--alsa-mixer-curve"},
         {Opt::ReleaseDevice, "release-device", "--release-device"},
     };
     return table;
@@ -433,6 +435,13 @@ bool apply_option(const SettableOption& option, const std::string& value, Option
             }
             out.alsa_mixer = value;
             break;
+        case Opt::AlsaMixerCurve:
+            if (value != "spec" && value != "cubic") {
+                error = "invalid --alsa-mixer-curve '" + value + "' -- expected spec or cubic";
+                return false;
+            }
+            out.alsa_mixer_curve = value;
+            break;
         case Opt::ReleaseDevice:
             if (!parse_bool(value, out.release_device)) {
                 error = "invalid --release-device '" + value + "' -- expected true or false";
@@ -617,6 +626,7 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
         {"pairing-code", required_argument, nullptr, OPT_PAIRING_CODE},
         {"fixed-volume", no_argument, nullptr, OPT_FIXED_VOLUME},
         {"alsa-mixer", required_argument, nullptr, OPT_ALSA_MIXER},
+        {"alsa-mixer-curve", required_argument, nullptr, OPT_ALSA_MIXER_CURVE},
         {"release-device", no_argument, nullptr, OPT_RELEASE_DEVICE},
         {nullptr, 0, nullptr, 0},
     };
@@ -766,6 +776,9 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
             case OPT_ALSA_MIXER:
                 apply(Opt::AlsaMixer, optarg);
                 break;
+            case OPT_ALSA_MIXER_CURVE:
+                apply(Opt::AlsaMixerCurve, optarg);
+                break;
             case OPT_RELEASE_DEVICE:
                 apply(Opt::ReleaseDevice, "true");
                 break;
@@ -878,6 +891,12 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
         }
     }
 
+    // The curve only describes a mixer; without one it would silently do nothing.
+    if (error.empty() && out.was_given(Opt::AlsaMixerCurve) && !out.was_given(Opt::AlsaMixer)) {
+        fail("--alsa-mixer-curve '" + out.alsa_mixer_curve +
+             "' needs --alsa-mixer -- the curve only describes a hardware mixer");
+    }
+
     // Absolutized before the length check, since the resolved path is what must fit.
     if (error.empty()) {
         // --no-control governs only a daemon; a subcommand still needs the path.
@@ -924,6 +943,7 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
             Opt::OutputDelay,  Opt::HookStart,   Opt::HookStop,    Opt::ClientId,
             Opt::Manufacturer, Opt::ProductName, Opt::AudioFormat, Opt::AllowUnpaired,
             Opt::Input,        Opt::PairingCode, Opt::FixedVolume, Opt::AlsaMixer,
+            Opt::AlsaMixerCurve,
             Opt::ReleaseDevice,
         };
         for (Opt opt : DAEMON_ONLY) {
@@ -1131,9 +1151,15 @@ void print_usage(std::FILE* out, const char* prog) {
     std::fprintf(out, "                Drive this ALSA hardware mixer for volume and mute\n");
     std::fprintf(out, "                instead of scaling the stream in software, e.g.\n");
     std::fprintf(out, "                0:Master. The value is mapped over the control's dB\n");
-    std::fprintf(out, "                range on the spec's curve. ALSA outputs only; a mixer\n");
-    std::fprintf(out, "                that cannot be opened or set falls back to software\n");
-    std::fprintf(out, "                gain\n");
+    std::fprintf(out, "                range on the curve --alsa-mixer-curve selects. ALSA\n");
+    std::fprintf(out, "                outputs only; a mixer that cannot be opened or set\n");
+    std::fprintf(out, "                falls back to software gain\n");
+    std::fprintf(out, "  --alsa-mixer-curve <spec|cubic>\n");
+    std::fprintf(out, "                How volume maps onto the mixer's dB range. 'spec'\n");
+    std::fprintf(out, "                (default) is the perceived-loudness curve; 'cubic'\n");
+    std::fprintf(out, "                is the steeper one whose inverse is alsamixer's\n");
+    std::fprintf(out, "                slider position, so the two track each other. Needs\n");
+    std::fprintf(out, "                --alsa-mixer\n");
     std::fprintf(out, "  --release-device\n");
     std::fprintf(out, "                Close the output device when a stream ends and reopen\n");
     std::fprintf(out, "                it at the next, so other players can share an exclusive\n");

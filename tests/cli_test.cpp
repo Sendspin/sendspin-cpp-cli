@@ -486,6 +486,38 @@ TEST(ParseOptions, AlsaMixerRefusesAnEmptyValue) {
         << parse.diagnostics();
 }
 
+TEST(ParseOptions, AlsaMixerCurveDefaultsToSpec) {
+    Parse parse({"-o", "alsa:default", "--alsa-mixer", "0:Master"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_EQ(parse.options().alsa_mixer_curve, "spec");
+    EXPECT_FALSE(parse.options().was_given(Opt::AlsaMixerCurve));
+}
+
+TEST(ParseOptions, AlsaMixerCurveIsAccepted) {
+    Parse parse({"-o", "alsa:default", "--alsa-mixer", "0:Master", "--alsa-mixer-curve", "cubic"});
+
+    ASSERT_TRUE(parse.ok()) << parse.diagnostics();
+    EXPECT_EQ(parse.options().alsa_mixer_curve, "cubic");
+    EXPECT_TRUE(parse.options().was_given(Opt::AlsaMixerCurve));
+}
+
+TEST(ParseOptions, AlsaMixerCurveRefusesAnUnknownName) {
+    Parse parse({"-o", "alsa:default", "--alsa-mixer", "0:Master", "--alsa-mixer-curve", "linear"});
+
+    EXPECT_FALSE(parse.ok());
+    EXPECT_NE(parse.diagnostics().find("expected spec or cubic"), std::string::npos)
+        << parse.diagnostics();
+}
+
+TEST(ParseOptions, AlsaMixerCurveNeedsAMixer) {
+    Parse parse({"-o", "alsa:default", "--alsa-mixer-curve", "cubic"});
+
+    EXPECT_FALSE(parse.ok());
+    EXPECT_NE(parse.diagnostics().find("needs --alsa-mixer"), std::string::npos)
+        << parse.diagnostics();
+}
+
 TEST(ParseOptions, ReleaseDeviceIsOffUnlessAsked) {
     Parse off({});
     Parse on({"--release-device"});

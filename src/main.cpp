@@ -749,8 +749,8 @@ int main(int argc, char* argv[]) {
     }
 
     std::string sink_error;
-    std::unique_ptr<AudioSink> sink =
-        make_audio_sink(opts.device, opts.buffer_ms, opts.alsa_mixer, sink_error);
+    std::unique_ptr<AudioSink> sink = make_audio_sink(opts.device, opts.buffer_ms, opts.alsa_mixer,
+                                                      opts.alsa_mixer_curve, sink_error);
     if (!sink) {
         log_fatal(LOG_TAG_AUDIO, "%s", sink_error.c_str());
         return 1;
@@ -958,7 +958,10 @@ int main(int argc, char* argv[]) {
         // hardware value is what a controller should show until the server sends its own.
         bool mixer_muted = false;
         if (!opts.alsa_mixer.empty()) {
-            const int mixer_volume = AlsaAudioSink::read_mixer_volume(opts.alsa_mixer, mixer_muted);
+            MixerCurve mixer_curve = MixerCurve::kSpec;
+            parse_mixer_curve(opts.alsa_mixer_curve, mixer_curve);
+            const int mixer_volume =
+                AlsaAudioSink::read_mixer_volume(opts.alsa_mixer, mixer_muted, mixer_curve);
             if (mixer_volume >= 0) {
                 volume = static_cast<uint8_t>(mixer_volume);
                 muted = mixer_muted;

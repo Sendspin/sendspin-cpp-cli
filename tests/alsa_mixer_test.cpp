@@ -62,6 +62,39 @@ TEST(MixerVolumeCurve, InverseClampsAtBothEnds) {
     EXPECT_EQ(volume_for_mixer_dB(MIN_DB, MAX_DB, MAX_DB + 100), 100);
 }
 
+TEST(MixerVolumeCurve, CubicFollowsTheSixtyLogSlope) {
+    // The cubic (Snapcast) curve is twice the spec slope in dB: -18.06 dB at 50 on a 60 dB range.
+    EXPECT_EQ(mixer_dB_for_volume(MIN_DB, MAX_DB, 50, MixerCurve::kCubic), -1806);
+}
+
+TEST(MixerVolumeCurve, CubicLandsWhereAlsamixerPutsTheSlider) {
+    // alsamixer's slider position is 100*10^(dB/60) (alsa-utils volume_mapping.c), which is
+    // exactly the cubic curve's inverse: volume 25 stands at -36.12 dB, and 10 at -60 dB.
+    EXPECT_EQ(mixer_dB_for_volume(MIN_DB, MAX_DB, 25, MixerCurve::kCubic), -3612);
+    EXPECT_EQ(mixer_dB_for_volume(MIN_DB, MAX_DB, 10, MixerCurve::kCubic), -6000);
+}
+
+TEST(MixerVolumeCurve, EveryCurveRoundTripsThroughItsInverse) {
+    // 20 is the lowest sample: below it the cubic curve clamps to a 60 dB floor.
+    for (MixerCurve curve : {MixerCurve::kSpec, MixerCurve::kCubic}) {
+        for (uint8_t volume : {20, 25, 50, 75, 99, 100}) {
+            const long dB = mixer_dB_for_volume(MIN_DB, MAX_DB, volume, curve);
+            EXPECT_EQ(volume_for_mixer_dB(MIN_DB, MAX_DB, dB, curve), volume)
+                << "volume " << int{volume};
+        }
+    }
+}
+
+TEST(MixerVolumeCurve, ParsesTheCurveNames) {
+    MixerCurve curve = MixerCurve::kCubic;
+    EXPECT_TRUE(parse_mixer_curve("spec", curve));
+    EXPECT_EQ(curve, MixerCurve::kSpec);
+    EXPECT_TRUE(parse_mixer_curve("cubic", curve));
+    EXPECT_EQ(curve, MixerCurve::kCubic);
+    EXPECT_FALSE(parse_mixer_curve("bogus", curve));
+    EXPECT_FALSE(parse_mixer_curve("linear", curve));
+}
+
 }  // namespace
 }  // namespace sendspin_cli
 
