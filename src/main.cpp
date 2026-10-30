@@ -14,6 +14,9 @@
 
 /// sendspin-cli: a headless Sendspin player, and its own control-socket client.
 
+#ifdef SENDSPIN_CLI_HAVE_ALSA
+#include "alsa_sink.h"
+#endif
 #include "audio_sink.h"
 #include "audio_source.h"
 #include "cli.h"
@@ -746,7 +749,8 @@ int main(int argc, char* argv[]) {
     }
 
     std::string sink_error;
-    std::unique_ptr<AudioSink> sink = make_audio_sink(opts.device, opts.buffer_ms, sink_error);
+    std::unique_ptr<AudioSink> sink = make_audio_sink(opts.device, opts.buffer_ms, opts.alsa_mixer,
+                                                      opts.alsa_mixer_curve, sink_error);
     if (!sink) {
         log_fatal(LOG_TAG_AUDIO, "%s", sink_error.c_str());
         return 1;
@@ -912,6 +916,11 @@ int main(int argc, char* argv[]) {
     PairingListener pairing_listener;
     HostNetworkProvider network_provider;
 
+    // A hardware mixer turned by hand reaches the server through the listener's own pair.
+    sink->on_local_volume_changed = [&player_listener](uint8_t volume, bool muted) {
+        player_listener.on_sink_volume_changed(volume, muted);
+    };
+
     client.set_listener(&pairing_listener);
 
     player.set_listener(&player_listener);
@@ -942,12 +951,39 @@ int main(int argc, char* argv[]) {
         player_listener.fix_volume();
         volume = DEFAULT_SINK_VOLUME;
         muted = false;
-    } else if (remembered) {
-        // Only when something was remembered, since restore_volume() marks the pair as restored.
-        player_listener.restore_volume(volume, muted);
-        log_line(LogLevel::INFO, LOG_TAG_PLAYER, "Restored volume %u%s from %s",
-                 static_cast<unsigned>(volume), muted ? " (muted)" : "",
-                 state_store.path().c_str());
+    } else {
+        bool seeded_from_mixer = false;
+#ifdef SENDSPIN_CLI_HAVE_ALSA
+        // The mixer is the truth about the level: it wins over a remembered volume, and the
+        // hardware value is what a controller should show until the server sends its own.
+        bool mixer_muted = false;
+        if (!opts.alsa_mixer.empty()) {
+            MixerCurve mixer_curve = MixerCurve::kSpec;
+            parse_mixer_curve(opts.alsa_mixer_curve, mixer_curve);
+            const int mixer_volume =
+                AlsaAudioSink::read_mixer_volume(opts.alsa_mixer, mixer_muted, mixer_curve);
+            if (mixer_volume >= 0) {
+                volume = static_cast<uint8_t>(mixer_volume);
+                muted = mixer_muted;
+                player_listener.seed_volume(volume, muted);
+                seeded_from_mixer = true;
+                log_line(LogLevel::INFO, LOG_TAG_PLAYER, "Volume %u%s from ALSA mixer '%s'",
+                         static_cast<unsigned>(volume), muted ? " (muted)" : "",
+                         opts.alsa_mixer.c_str());
+            } else {
+                log_line(LogLevel::WARN, LOG_TAG_PLAYER,
+                         "Could not read volume from ALSA mixer '%s'", opts.alsa_mixer.c_str());
+            }
+        }
+#endif
+        // Only when something was remembered and the mixer did not already seed the pair, since
+        // restore_volume() marks the pair as restored.
+        if (remembered && !seeded_from_mixer) {
+            player_listener.restore_volume(volume, muted);
+            log_line(LogLevel::INFO, LOG_TAG_PLAYER, "Restored volume %u%s from %s",
+                     static_cast<unsigned>(volume), muted ? " (muted)" : "",
+                     state_store.path().c_str());
+        }
     }
     player.update_volume(volume);
     player.update_muted(muted);

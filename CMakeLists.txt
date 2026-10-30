@@ -488,6 +488,7 @@ if(SENDSPIN_CLI_BUILD_TESTS)
     include(GoogleTest)
 
     add_executable(sendspin-cli-tests
+        tests/alsa_mixer_test.cpp
         tests/audio_source_test.cpp
         tests/cli_test.cpp
         tests/config_file_test.cpp
