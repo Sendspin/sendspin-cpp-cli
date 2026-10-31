@@ -294,6 +294,7 @@ add_library(sendspin-cli-core STATIC
     src/null_sink.cpp
     src/null_source.cpp
     src/outbound.cpp
+    src/pairing_endpoint.cpp
     src/pcm_ring.cpp
     src/pcm_volume.cpp
     src/player_listener.cpp
@@ -500,6 +501,7 @@ if(SENDSPIN_CLI_BUILD_TESTS)
         tests/discovery_test.cpp
         tests/hooks_test.cpp
         tests/null_sink_test.cpp
+        tests/pairing_endpoint_test.cpp
         tests/pcm_ring_test.cpp
         tests/pcm_volume_test.cpp
         tests/pipewire_sink_test.cpp
