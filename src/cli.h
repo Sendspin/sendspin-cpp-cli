@@ -84,6 +84,8 @@ enum class Opt : unsigned {
     Input,          ///< --input
     PairingCode,    ///< --pairing-code
     FixedVolume,    ///< --fixed-volume
+    AlsaMixer,      ///< --alsa-mixer
+    AlsaMixerCurve, ///< --alsa-mixer-curve
     ReleaseDevice,  ///< --release-device
 };
 
@@ -121,6 +123,14 @@ struct Options {
 
     /// --fixed-volume: play at full gain, unmuted, and withhold volume and mute from the server.
     bool fixed_volume{false};
+
+    /// --alsa-mixer <card:control>: drive this hardware mixer instead of scaling the PCM.
+    /// ALSA only; empty scales the stream in software.
+    std::string alsa_mixer;
+
+    /// --alsa-mixer-curve <spec|cubic>: how volume maps onto the mixer's dB range. Only used
+    /// with --alsa-mixer. Defaults to spec.
+    std::string alsa_mixer_curve{"spec"};
 
     /// --release-device: close the output device at stream end instead of holding it.
     bool release_device{false};

@@ -303,6 +303,8 @@ void warn_if_shadowing_an_alsa_pcm([[maybe_unused]] const std::string& spec,
 // buffer_ms is unused on a build with no device-backed backend.
 std::unique_ptr<AudioSink> make_audio_sink(const std::string& device,
                                            [[maybe_unused]] uint32_t buffer_ms,
+                                           const std::string& alsa_mixer,
+                                           [[maybe_unused]] const std::string& alsa_mixer_curve,
                                            std::string& error) {
     DeviceSpec spec;
     if (!resolve_device_spec(device, spec, error)) {
@@ -315,16 +317,23 @@ std::unique_ptr<AudioSink> make_audio_sink(const std::string& device,
             return std::make_unique<NullAudioSink>(NullSinkOutput::Discard);
         case SinkBackend::Stdout:
             return std::make_unique<NullAudioSink>(NullSinkOutput::Stdout);
-        case SinkBackend::Alsa:
+        case SinkBackend::Alsa: {
 #ifdef SENDSPIN_CLI_HAVE_ALSA
             // Probed now so a typo fails at startup, not at the first stream.
             if (!AlsaAudioSink::probe(spec.device, error)) {
                 return nullptr;
             }
-            return std::make_unique<AlsaAudioSink>(spec.device, buffer_ms);
+            if (!alsa_mixer.empty() && !AlsaAudioSink::probe_mixer(alsa_mixer, error)) {
+                return nullptr;
+            }
+            // The parser already rejected an unknown name, so this cannot fail here.
+            MixerCurve curve = MixerCurve::kSpec;
+            parse_mixer_curve(alsa_mixer_curve, curve);
+            return std::make_unique<AlsaAudioSink>(spec.device, buffer_ms, alsa_mixer, curve);
 #else
             break;  // unreachable: resolve_device_spec() never yields Alsa without the backend
 #endif
+        }
         case SinkBackend::CoreAudio:
 #ifdef SENDSPIN_CLI_HAVE_COREAUDIO
             // Probed now so a typo fails at startup, not at the first stream.

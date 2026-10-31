@@ -56,6 +56,7 @@ enum class VolumeSource {
     Restored,     ///< read back from the state store at startup
     Server,       ///< a server sent a volume or mute command this run
     Fixed,        ///< --fixed-volume: full gain, unmuted, and no server may change it
+    Hardware,     ///< --alsa-mixer: read from the hardware mixer at startup
 };
 
 /// The parameters configure() takes, as one value.
@@ -117,6 +118,10 @@ public:
     /// Assign before start() and never after: backends read it from their audio thread.
     std::function<void(uint32_t frames, int64_t timestamp)> on_frames_played;
 
+    /// Reports a level changed outside the sink, e.g. through a hardware mixer. Fired on the main
+    /// loop from poll(); a sink that has no such control never calls it.
+    std::function<void(uint8_t volume, bool muted)> on_local_volume_changed;
+
 protected:
     AudioSink() = default;
 };
@@ -157,9 +162,12 @@ void print_sink_capabilities(std::FILE* out, const SinkCapabilities& caps,
 
 /// Builds the sink named by -o.
 /// @param buffer_ms Already range-checked by the parser.
+/// @param alsa_mixer `card:control` naming a hardware mixer; ignored off the ALSA backend.
+/// @param alsa_mixer_curve How volume maps onto the mixer's dB range; ignored without a mixer.
 /// @return The sink, or nullptr with `error` set.
 std::unique_ptr<AudioSink> make_audio_sink(const std::string& device, uint32_t buffer_ms,
-                                           std::string& error);
+                                           const std::string& alsa_mixer,
+                                           const std::string& alsa_mixer_curve, std::string& error);
 
 /// Prints the device specs make_audio_sink() accepts, for -l.
 void print_audio_devices(std::FILE* out);
