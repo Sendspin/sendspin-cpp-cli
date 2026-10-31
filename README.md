@@ -108,6 +108,7 @@ sendspin-cli -n den --input default
 | `--fixed-volume` | Play at full volume, unmuted, and let the server set neither — for a line-out into an amplifier whose level is set there. |
 | `--release-device` | Close the output device when a stream ends and reopen it when the next one starts, so other players can take turns on an exclusive device such as an ALSA `hw:` DAC. Off by default: between streams another app can take the device, and the next stream is then discarded. ALSA and PortAudio only. |
 | `--pairing-code <8 digits>` | A fixed code a server can pair with, confirmed with `sendspin-cli pair confirm`. Without it the player shows a fresh 6-digit code per attempt. |
+| `--pairing-token-endpoint <address>:<port>` | Serve the pairing token over HTTP on one internal address, e.g. `172.30.32.1:8930` on Home Assistant OS, so a server on the same host pairs without a copied token. The address is required and may not be a wildcard; anything that can reach it can pair. Off by default. See [Pairing with a server on the same host](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Advanced-Usage#pairing-with-a-server-on-the-same-host). |
 | `-s, --server <host[:port]>` | Connect out to a server rather than waiting to be discovered, or `mdns:[<name>]` to discover one over mDNS. Turns off the mDNS advertisement. |
 
 Common local controls are available from the same host:
