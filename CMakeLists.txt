@@ -36,7 +36,7 @@ endif()
 
 # sendspin-cpp
 
-set(SENDSPIN_GIT_TAG "b0fcf5bb369b470ddc4987280c19f0919e9a9084" CACHE STRING
+set(SENDSPIN_GIT_TAG "aa80411ed8edecf921be78128f1fcc31ec0d412f" CACHE STRING
     "sendspin-cpp git tag or commit to build against")
 
 # player, metadata, controller (group transport verbs) and source; no FORCE, so -D overrides still win.
