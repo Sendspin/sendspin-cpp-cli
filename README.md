@@ -123,8 +123,15 @@ sendspin-cli vol 40
 curl -fsSL https://raw.githubusercontent.com/Sendspin/sendspin-cpp-cli/main/scripts/uninstall_linux.sh | bash
 ```
 
-It removes the service and the installed files, and keeps your config and the player's
-remembered state unless you pass `--purge`.
+On Windows:
+
+```powershell
+Invoke-WebRequest https://raw.githubusercontent.com/Sendspin/sendspin-cpp-cli/main/scripts/uninstall_windows.ps1 -OutFile uninstall_windows.ps1
+powershell -ExecutionPolicy Bypass -File .\uninstall_windows.ps1
+```
+
+Each removes the service and the installed files, and keeps your config and the player's
+remembered state unless you pass `--purge` (`-Purge` on Windows).
 
 ## Need more help?
 
