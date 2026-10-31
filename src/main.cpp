@@ -660,6 +660,13 @@ int main(int argc, char* argv[]) {
         log_fatal(LOG_TAG_AUDIO, "%s", sink_error.c_str());
         return 1;
     }
+    if (opts.keep_output_alive_s != 0 && opts.release_device) {
+        // --release-device closes the output at every stream end: nothing is left to keep alive.
+        log_line(LogLevel::INFO, LOG_TAG_AUDIO,
+                 "--keep-output-alive is ignored with --release-device");
+    } else {
+        sink->set_keep_alive(opts.keep_output_alive_s);
+    }
 
     // Opened once here so a bad or busy --input stops the run before anything is advertised.
     std::unique_ptr<AudioSource> source;

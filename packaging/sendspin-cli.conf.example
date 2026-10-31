@@ -53,6 +53,11 @@
 # is reported to the server, and volume 0 silences the stream. ALSA outputs only; a mixer that
 # cannot be opened or set falls back to software gain. Contradicts fixed-volume.
 #alsa-mixer = 0:Master
+# Keep an ALSA output running on silence for this many seconds after the last audio, for an
+# HDMI/S/PDIF receiver that re-locks (and swallows the start of the next stream) whenever the
+# digital signal stops. A few seconds bridge a switch between streams; after that the output
+# stops, so the receiver can still go to standby. 0-3600, 0 (default) is off.
+#keep-output-alive = 10
 
 # A static pairing code: exactly 8 digits, chosen at random for this player. Every attempt
 # with it waits for 'sendspin-cli pair confirm'. Unset, the player shows a fresh 6-digit code.
