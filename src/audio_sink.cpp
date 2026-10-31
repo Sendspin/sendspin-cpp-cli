@@ -488,14 +488,18 @@ void print_audio_devices(std::FILE* out) {
 #endif
 
 #ifdef SENDSPIN_CLI_HAVE_PORTAUDIO
-    std::fprintf(out, "\nPortAudio output devices on this host (-o portaudio:<index|name>):\n");
+    std::fprintf(out, "\nPortAudio output devices on this host "
+                      "(-o portaudio:<index|name|host API:name>):\n");
     PortAudioSink::list_devices(out);
     std::fprintf(out,
                  "\nThe name is the form worth writing down. PortAudio numbers devices as it\n"
                  "walks each host API, so an index shifts as devices come and go; a name is\n"
                  "matched in full and case-insensitively, and one that matches more than one\n"
-                 "device is refused rather than guessed at. -o portaudio with no device at all\n"
-                 "follows this host's default output, resolved afresh at every stream.\n"
+                 "device is refused rather than guessed at. Where a device is listed under\n"
+                 "several host APIs, as every one is on Windows, put the host API column in\n"
+                 "front of the name, e.g. -o portaudio:directsound:<name>. -o portaudio with no\n"
+                 "device at all follows this host's default output, resolved afresh at every\n"
+                 "stream.\n"
                  "\nInput-only devices are left out, since -o cannot play through them. The\n"
                  "rate on the device's own line is its default; the rates below it are what it\n"
                  "will actually take, asked for the same way a stream would ask. Only the four\n"

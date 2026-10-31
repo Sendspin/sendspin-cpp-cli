@@ -48,6 +48,10 @@ pair split on the first colon (`coreaudio:2`, `portaudio:2`, `pulse:<sink>`,
 `pipewire:<node>`), or an ALSA PCM name such as `hw:1,0`, `plughw:1,0`, or `default`. `plughw:` lets ALSA convert
 rate and format for a device that refuses the stream as it arrives.
 
+A PortAudio name listed under several host APIs, as every device is on Windows, is refused
+on its own; put `-l`'s host API column in front of it, e.g.
+`portaudio:directsound:Speakers (USB DAC)`.
+
 `default` follows the host's normal audio configuration. Under a system service, name
 a hardware device such as `hw:1,0` instead; the service does not have a logged-in
 desktop audio session.
@@ -88,7 +92,9 @@ argument the way `-o` does:
 - On macOS, `coreaudio` for the system default input, which is followed if it moves, or
   `coreaudio:<index|name>` for one device from `-l`'s list.
 - `portaudio` for PortAudio's default input as of startup, or `portaudio:<index|name>`
-  for one device from `-l`'s list, in a build with the PortAudio backend.
+  for one device from `-l`'s list, in a build with the PortAudio backend. A name listed
+  under several host APIs takes the one from `-l`'s host API column in front of it:
+  `portaudio:directsound:<name>`.
 - `loopback` or `loopback:<sink>` for what this host plays; see
   [Stream what this host plays](#stream-what-this-host-plays).
 - `tone` and `null`, which need no sound card: `tone` streams a 440 Hz test tone, which
