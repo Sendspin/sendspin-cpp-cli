@@ -302,6 +302,41 @@ $ journalctl -u sendspin-cli | grep 'Pairing token'
 It stops being logged once a server is paired, and it works whichever code method the player
 offers.
 
+### Pairing with a server on the same host
+
+`--pairing-token-endpoint <address>:<port>` (or `pairing-token-endpoint =`) serves the token
+over HTTP so a server on the same host can fetch it and pair without anyone copying it. On
+Home Assistant OS that address is the hassio network's `172.30.32.1`:
+
+```
+pairing-token-endpoint = 172.30.32.1:8930
+```
+
+The player answers `GET /pairing-token` with its client id and token:
+
+```json
+{"client_id":"H5-aoQOpCc_f_…","pairing_token":"SP:0TNMH6…"}
+```
+
+and lists the role `_ohf_local_pairing@v1`, with `{"port": 8930}`, in its `client/hello` so a
+server knows the endpoint is there and which port to ask. The role name is provisional.
+Without the option nothing listens and no such role is advertised.
+
+How it stays local:
+
+- **It listens on one address only.** The address is required and must be a numeric IP; a
+  wildcard (`0.0.0.0`, `::`) or a bare port is refused at startup. Pick an address only the
+  server's host can reach, never the LAN address.
+- **Anything that reaches it can pair.** On Home Assistant OS that is every app on the
+  hassio network, so turn the option on only where those are trusted.
+- **The server decides where to fetch from.** It acts only for an unpaired player connected
+  from its own host, fetches from the internal address it knows rather than one the player
+  names, and checks that the token's client id matches the connection.
+- **The token stays out of the log.** Requests are logged at `debug` without it, and the
+  startup line that otherwise prints it points at `sendspin-cli pair-token` instead.
+
+If the address cannot be bound the player exits rather than advertising a port nobody serves.
+
 ## Stream hooks
 
 `--hook-start` and `--hook-stop` run a shell command when a stream starts or stops,
