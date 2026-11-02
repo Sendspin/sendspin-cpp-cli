@@ -12,10 +12,6 @@ It runs on Linux (including Raspberry Pi), Apple-silicon macOS and Windows 10 18
 
 ## Download
 
-sendspin-cli turns a Linux box, a Raspberry Pi, a Mac or a Windows PC into a Sendspin speaker.
-It runs in the background without a window, and a Sendspin server such as
-[Music Assistant](https://www.music-assistant.io/) plays to it in sync with your other speakers.
-
 **[Download the latest release](https://github.com/Sendspin/sendspin-cpp-cli/releases/latest)**
 and pick the file for your platform. On Linux and Windows, the [guided installer](#installation)
 is easier: it picks the right file, verifies it and starts the player for you.
