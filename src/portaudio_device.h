@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <vector>
 
 namespace sendspin_cli {
 
@@ -69,8 +70,26 @@ bool pa_format_for(uint8_t bits_per_sample, PaSampleFormat& format);
 /// True if the device has channels on that side.
 bool pa_has_channels(const PaDeviceInfo* info, PaDirection direction);
 
-/// Resolves a PortAudio device spec: empty is the default, digits an index, else a unique name.
-/// PortAudio must be initialized.
+/// The prefix a device spec names a host API by, e.g. "wasapi"; nullptr for one it cannot name.
+const char* pa_host_api_prefix(PaHostApiTypeId type);
+
+/// The host API column -l prints: its prefix, else PortAudio's own name for it.
+const char* pa_host_api_label(PaHostApiIndex host_api);
+
+/// One device as the name lookup sees it.
+struct PaDeviceEntry {
+    PaDeviceIndex index;
+    std::string name;
+    const char* host_api;  ///< pa_host_api_prefix() of its host API, or nullptr
+};
+
+/// Picks the one device `device` names, whole or as <host api>:<name>, out of the devices on
+/// that side.
+bool match_pa_device_name(const std::string& device, const std::vector<PaDeviceEntry>& entries,
+                          PaDirection direction, PaDeviceIndex& out, std::string& error);
+
+/// Resolves a PortAudio device spec: empty is the default, digits an index, else a unique name,
+/// optionally behind its host API prefix. PortAudio must be initialized.
 bool resolve_pa_device(const std::string& device, PaDirection direction, PaDeviceIndex& out,
                        std::string& error);
 

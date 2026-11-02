@@ -10,6 +10,7 @@ name: living-room
 client id: fLNgT-h015The-sALW0IVza7J0FThgDU1leu1MLDww4
 server: Music Assistant (connected)
 trust: paired
+paired servers: 1
 pairing: none
 state: playing
 stream: receiving
@@ -56,7 +57,8 @@ is also what lets `seek-rel -5000` be an offset rather than a flag cluster.
 
 Twelve of those go out to the server as `controller@v1` commands. Four never leave the host:
 `status`, formatted from the daemon's own view, `delay`, which drives this endpoint's own
-player role, and `pair-token` and `pair`, which are [Pairing a Player](Pairing-a-Player).
+player role, `pair`, which is [Pairing a Player](Pairing-a-Player), and `pair-token`, which is
+[Pairing from another system](Advanced-Usage#pairing-from-another-system).
 
 ## Three that are easy to misread
 

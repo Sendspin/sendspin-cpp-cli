@@ -1,14 +1,18 @@
 # sendspin-cli
 
-`sendspin-cli` is a headless audio player for the
-[Sendspin](https://github.com/Sendspin/spec) protocol. It appears on your network, a
-Sendspin server finds it, and it plays synchronized audio with the rest of your group.
+[![GitHub Release](https://img.shields.io/github/v/release/Sendspin/sendspin-cpp-cli)](https://github.com/Sendspin/sendspin-cpp-cli/releases)
 
-It runs on Linux, Apple-silicon macOS and Windows 10 1809 or later.
+A headless [Sendspin](https://www.sendspin-audio.com) player that turns this machine into a
+synchronized multi-room audio target. It speaks the [Sendspin protocol](https://github.com/Sendspin/spec):
+it appears on your network, a Sendspin server finds it, and it plays in sync with the rest of your group.
 
-## Quick start
+It runs on Linux (including Raspberry Pi), Apple-silicon macOS and Windows 10 1809 or later.
 
-### Linux and Raspberry Pi
+[![A project from the Open Home Foundation](https://www.openhomefoundation.org/badges/ohf-project.png)](https://www.openhomefoundation.org/)
+
+## Installation
+
+**Linux and Raspberry Pi (guided):**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Sendspin/sendspin-cpp-cli/main/scripts/get_started_linux.sh | bash
@@ -32,14 +36,14 @@ PulseAudio. The [Linux guide](https://github.com/Sendspin/sendspin-cpp-cli/wiki/
 and the [Raspberry Pi guide](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Getting-Started-on-a-Raspberry-Pi)
 have the full walkthrough.
 
-### macOS
+**macOS:**
 
 Download the Apple-silicon `.pkg` installer or tarball from
 [Releases](https://github.com/Sendspin/sendspin-cpp-cli/releases), then follow the
 [installation guide](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Installation#macos)
 and start a player from a terminal with `sendspin-cli -n living-room`.
 
-### Windows
+**Windows (guided):**
 
 The guided Windows installer needs no administrator rights:
 
@@ -53,71 +57,171 @@ It verifies the release, installs it for your user and starts it whenever you lo
 [Getting Started on Windows](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Getting-Started-on-Windows)
 for the walkthrough, including the firewall rule a server needs to reach it.
 
-### Pair it with your server
+## Updating
+
+**Linux and Windows:** re-run the guided installer from [Installation](#installation). It stops
+the running player, replaces the binary and starts it again. Your config, the player's
+identity and its pairings are kept.
+
+**macOS:** install the newer `.pkg` or tarball from
+[Releases](https://github.com/Sendspin/sendspin-cpp-cli/releases).
+
+> **Note:** You don't need to uninstall first.
+
+## Pairing
 
 The player advertises itself on the local network and a Sendspin server finds it.
 Connections are encrypted, and a server must pair with the player before it can play.
-Print the token to paste into the server:
+Pair it from the server, and the player shows a six-digit code to type in. Read it from
+`status`:
 
 ```bash
 # Linux service, as installed above
-sudo sendspin-cli pair-token --control-socket /run/sendspin-cli/control.sock
+sudo sendspin-cli status --control-socket /run/sendspin-cli/control.sock
 
 # --user-service, macOS, Windows, or a player started from your own shell
-sendspin-cli pair-token
+sendspin-cli status
 ```
 
-[Pairing a player](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Pairing-a-Player)
-covers that and the two code-based ways. `--allow-unpaired` lets any server on the network
-play without pairing.
+`--pairing-code <8 digits>` sets a fixed code instead, confirmed with
+`sendspin-cli pair confirm`. `--allow-unpaired` lets any server on the network play
+without pairing. See [Pairing a Player](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Pairing-a-Player).
 
-## Everyday use
+## Configuration
 
-The service reads its options from a
-[config file](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Configuration); the same
-options are flags when you run the player yourself:
+The service reads its options from a config file: `/etc/sendspin-cli.conf` for the system
+service, `~/.config/sendspin-cli/config` for a user service or your own shell, and
+`%APPDATA%\sendspin-cli\config` on Windows. Keys are the long flag names without their dashes:
+
+```ini
+name = kitchen
+output = hw:1,0
+```
+
+Every key is also a flag for a player you run yourself, and a flag wins over the file:
 
 ```bash
 sendspin-cli -n living-room
 ```
 
-The options most people need beyond a name:
+Edit the file, then restart the player. See
+[Configuration](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Configuration) for every key
+and where the file is looked for.
+
+### Server connection
+
+By default the player advertises itself over mDNS and waits for a server to connect. To
+connect out to a known server instead, which turns the advertisement off:
 
 ```bash
-# Pick a sound card -- run `sendspin-cli -l` to list what this host has
-sendspin-cli -n living-room -o hw:1,0
-
-# Prefer formats, in order -- the server uses the first one it can encode
-sendspin-cli -n living-room --audio-format flac:48000:24:2,pcm:48000:24:2
-
-# Connect out to a specific server, instead of waiting to be found
-sendspin-cli -n living-room -s music.local
-
-# Also stream this host's microphone or line-in to the server
-sendspin-cli -n den --input default
+sendspin-cli -n living-room -s music.local          # port defaults to 8927
+sendspin-cli -n living-room -s music.local:9000
+sendspin-cli -n living-room -s "mdns:Music Assistant"  # discover one by name
 ```
 
-| Option | What it does |
-|---|---|
-| `-n, --name <name>` | The friendly name a server displays. Defaults to this host's name. |
-| `-o, --output <device>` | Which sound card to play through. `-l` lists this host's devices and what they accept. |
-| `--audio-format <codec:rate:depth:channels>[,...]` | Formats to offer first, in priority order, e.g. `flac:48000:24:2,pcm:48000:24:2`. Everything else the player normally offers still follows, and a server uses the first format it can encode, so it can still fall back to a later one. This sets a preference, not a restriction. |
-| `--input <device>` | Audio to stream to the server: a microphone or line-in, e.g. `default`, `hw:1,0`, `pulse`, `pipewire:<node>` or `portaudio`, or `coreaudio` on macOS; or `loopback` for what this host plays (on macOS without the player's own playback, on Linux with it). `-l` lists them. Off unless given. See [Stream a microphone or line-in](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Advanced-Usage#stream-a-microphone-or-line-in) and [Stream what this host plays](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Advanced-Usage#stream-what-this-host-plays). |
-| `--allow-unpaired` | Let a server play without pairing with this player first. Off by default. |
-| `--fixed-volume` | Play at full volume, unmuted, and let the server set neither — for a line-out into an amplifier whose level is set there. |
-| `--alsa-mixer <card:control>` | Drive an ALSA hardware mixer for volume and mute instead of scaling the stream in software, e.g. `0:Master`, mapped over the control's dB range on the curve `--alsa-mixer-curve` selects. The level the mixer is at when the player starts is what it reports and keeps until a server sends its own, and a change made outside the player (alsamixer, `amixer`, a hardware knob) is reported to the server. Volume 0 silences the stream even when the control's floor is not silent. ALSA outputs only; a mixer that cannot be opened or set falls back to software gain. Contradicts `--fixed-volume`. |
-| `--alsa-mixer-curve <spec\|cubic>` | How volume maps onto the mixer's dB range. `spec` (default) is the perceived-loudness curve; `cubic` is the steeper one whose inverse is alsamixer's slider position, so the two track each other. Needs `--alsa-mixer`. |
-| `--release-device` | Close the output device when a stream ends and reopen it when the next one starts, so other players can take turns on an exclusive device such as an ALSA `hw:` DAC. Off by default: between streams another app can take the device, and the next stream is then discarded. ALSA and PortAudio only. |
-| `--pairing-code <8 digits>` | A fixed code a server can pair with, confirmed with `sendspin-cli pair confirm`. Without it the player shows a fresh 6-digit code per attempt. |
-| `-s, --server <host[:port]>` | Connect out to a server rather than waiting to be discovered, or `mdns:[<name>]` to discover one over mDNS. Turns off the mDNS advertisement. |
+See [Connection modes](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Advanced-Usage#connection-modes).
 
-Common local controls are available from the same host:
+### Audio output device
+
+```bash
+sendspin-cli -l                          # list devices and what they accept
+sendspin-cli -n living-room -o hw:1,0    # play through one of them
+```
+
+`--release-device` closes the device when a stream ends and reopens it for the next one, so
+other players can share an exclusive device such as an ALSA `hw:` DAC. ALSA and PortAudio only.
+See [Choosing an output](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Advanced-Usage#choosing-an-output).
+
+### Preferred audio format
+
+```bash
+sendspin-cli -n living-room --audio-format flac:48000:24:2,pcm:48000:24:2
+```
+
+Each entry is `codec:rate:depth:channels`:
+
+- `codec`: `flac`, `pcm` or `opus` (`opus` only at `48000:16`, at most 2 channels)
+- `rate`: sample rate in Hz, e.g. `48000`
+- `depth`: bits per sample, e.g. `16` or `24`
+- `channels`: channel count, e.g. `2`
+
+Entries go first, in order; the rest of the player's formats still follow, so this is a
+preference, not a restriction. See
+[Buffering and audio format](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Advanced-Usage#buffering-and-audio-format).
+
+### Volume
+
+```bash
+sendspin-cli -n living-room --fixed-volume
+```
+
+Plays at full volume, unmuted, and lets the server set neither: for a line-out into an
+amplifier whose level is set there. To drive a hardware mixer for volume and mute instead of
+scaling the stream in software, see `--alsa-mixer` in
+[Configuration](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Configuration#every-key).
+
+### Streaming input
+
+```bash
+sendspin-cli -n den --input default      # a microphone or line-in
+sendspin-cli -n den --input loopback     # what this host plays
+```
+
+Off unless given. `-l` lists capture devices too. See
+[Stream a microphone or line-in](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Advanced-Usage#stream-a-microphone-or-line-in)
+and [Stream what this host plays](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Advanced-Usage#stream-what-this-host-plays).
+
+### Hooks
+
+Run a shell command when a stream starts or stops, e.g. to switch an amplifier:
+
+```bash
+sendspin-cli -o hw:1,0 \
+  --hook-start 'amixer -c 1 set Master unmute' \
+  --hook-stop  'amixer -c 1 set Master mute'
+```
+
+The hook gets `SENDSPIN_EVENT` (`start` or `stop`) and, where known, `SENDSPIN_SERVER_ID`,
+`SENDSPIN_SERVER_NAME`, `SENDSPIN_SERVER_URL`, `SENDSPIN_CLIENT_ID` and `SENDSPIN_CLIENT_NAME`.
+Hooks never block playback. See
+[Stream hooks](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Controlling-the-Player#the-player-driving-your-hardware-stream-hooks).
+
+### Debugging & troubleshooting
+
+```bash
+sendspin-cli -n living-room -d debug     # none, error, warn, info, debug, verbose
+```
+
+Or set `log-level = debug` in the config. See
+[Troubleshooting](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Troubleshooting).
+
+## Controlling the player
+
+The same binary drives a running player on its own host:
 
 ```bash
 sendspin-cli status
 sendspin-cli pause
 sendspin-cli vol 40
 ```
+
+Against the Linux system service, add `sudo` and `--control-socket` as in [Pairing](#pairing).
+See [Controlling the Player](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Controlling-the-Player)
+for every subcommand.
+
+## Running as a service (systemd, Linux)
+
+The guided installer sets this up. To manage it:
+
+```bash
+sudo systemctl start sendspin-cli
+sudo systemctl stop sendspin-cli
+systemctl status sendspin-cli
+journalctl -u sendspin-cli -f
+```
+
+For a `--user-service` install, use `systemctl --user` and `journalctl --user -u sendspin-cli`.
+See [Running as a Service](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Running-as-a-Service).
 
 ## Uninstall
 
@@ -126,7 +230,8 @@ curl -fsSL https://raw.githubusercontent.com/Sendspin/sendspin-cpp-cli/main/scri
 ```
 
 It removes the service and the installed files, and keeps your config and the player's
-remembered state unless you pass `--purge`.
+remembered state unless you pass `--purge`. For Windows, see
+[Uninstalling](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Getting-Started-on-Windows#uninstalling).
 
 ## Need more help?
 

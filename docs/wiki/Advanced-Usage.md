@@ -48,6 +48,10 @@ pair split on the first colon (`coreaudio:2`, `portaudio:2`, `pulse:<sink>`,
 `pipewire:<node>`), or an ALSA PCM name such as `hw:1,0`, `plughw:1,0`, or `default`. `plughw:` lets ALSA convert
 rate and format for a device that refuses the stream as it arrives.
 
+A PortAudio name listed under several host APIs, as every device is on Windows, is refused
+on its own; put `-l`'s host API column in front of it, e.g.
+`portaudio:directsound:Speakers (USB DAC)`.
+
 `default` follows the host's normal audio configuration. Under a system service, name
 a hardware device such as `hw:1,0` instead; the service does not have a logged-in
 desktop audio session.
@@ -88,7 +92,9 @@ argument the way `-o` does:
 - On macOS, `coreaudio` for the system default input, which is followed if it moves, or
   `coreaudio:<index|name>` for one device from `-l`'s list.
 - `portaudio` for PortAudio's default input as of startup, or `portaudio:<index|name>`
-  for one device from `-l`'s list, in a build with the PortAudio backend.
+  for one device from `-l`'s list, in a build with the PortAudio backend. A name listed
+  under several host APIs takes the one from `-l`'s host API column in front of it:
+  `portaudio:directsound:<name>`.
 - `loopback` or `loopback:<sink>` for what this host plays; see
   [Stream what this host plays](#stream-what-this-host-plays).
 - `tone` and `null`, which need no sound card: `tone` streams a 440 Hz test tone, which
@@ -253,7 +259,7 @@ product that embeds this player and should be listed as itself.
 Every connection is encrypted, and a server has to **pair** with the player before it may
 play on it. A server that has not paired can still connect, but stays idle; the `trust` line
 of `sendspin-cli status` reads `paired` or `unpaired` for the server connected now.
-[Pairing a Player](Pairing-a-Player) walks through the three ways to pair.
+[Pairing a Player](Pairing-a-Player) walks through the two ways to pair.
 
 `--allow-unpaired` (or `allow-unpaired = true`) lets any server on the network play without
 pairing. It is off by default, and the player says so once at startup:
@@ -261,6 +267,40 @@ pairing. It is off by default, and the player says so once at startup:
 ```
 I cli: A server must pair with this player before it can play -- pass --allow-unpaired to let any server play
 ```
+
+### Pairing from another system
+
+The pairing token is for a system that pairs the player on your behalf, such as a script or
+a platform that sets players up through a server's API. To pair by hand, use
+[a code](Pairing-a-Player) instead.
+
+The token carries this player's identity and a pairing secret in one `SP:…` string. Print
+it on the player's host:
+
+```console
+$ sendspin-cli pair-token
+SP:0TNMH6…
+```
+
+A server given the token connects and pairs with no further step on the player:
+
+```
+I cli: Pairing started with server lhYYqOOH80zi…
+I cli: Paired with server lhYYqOOH80zi…
+I cli: Connected server is paired
+```
+
+The token is the same every time, across restarts, for as long as the
+[state file](Configuration#the-state-file) is kept. While no server is paired the player
+also logs it once at startup, to the terminal or the journal, never to a `--logfile`:
+
+```console
+$ journalctl -u sendspin-cli | grep 'Pairing token'
+```
+
+**Treat the token like a password.** Anyone who has it can pair a server with this player.
+It stops being logged once a server is paired, and it works whichever code method the player
+offers.
 
 ## Stream hooks
 

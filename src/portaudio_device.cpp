@@ -114,6 +114,107 @@ bool pa_has_channels(const PaDeviceInfo* info, PaDirection direction) {
            0;
 }
 
+const char* pa_host_api_prefix(PaHostApiTypeId type) {
+    switch (type) {
+        case paDirectSound:
+            return "directsound";
+        case paMME:
+            return "mme";
+        case paASIO:
+            return "asio";
+        case paCoreAudio:
+            return "coreaudio";
+        case paOSS:
+            return "oss";
+        case paALSA:
+            return "alsa";
+        case paWDMKS:
+            return "wdmks";
+        case paJACK:
+            return "jack";
+        case paWASAPI:
+            return "wasapi";
+        default:
+            return nullptr;
+    }
+}
+
+const char* pa_host_api_label(PaHostApiIndex host_api) {
+    const PaHostApiInfo* host = Pa_GetHostApiInfo(host_api);
+    if (host == nullptr) {
+        return "(unknown host API)";
+    }
+    const char* prefix = pa_host_api_prefix(host->type);
+    return (prefix != nullptr) ? prefix : host->name;
+}
+
+bool match_pa_device_name(const std::string& device, const std::vector<PaDeviceEntry>& entries,
+                          PaDirection direction, PaDeviceIndex& out, std::string& error) {
+    const std::string flag = flag_of(direction);
+    const std::string spec = flag + " portaudio:" + device;
+    std::vector<const PaDeviceEntry*> matches;
+    for (const PaDeviceEntry& entry : entries) {
+        if (iequals(device, entry.name.c_str())) {
+            matches.push_back(&entry);
+        }
+    }
+
+    // Read as <host api>:<name> only when no device has the whole name, so none that resolved
+    // before resolves differently now.
+    const size_t colon = device.find(':');
+    if (matches.empty() && colon != std::string::npos) {
+        const std::string host_api = device.substr(0, colon);
+        const std::string name = device.substr(colon + 1);
+        for (const PaDeviceEntry& entry : entries) {
+            if (iequals(host_api, entry.host_api) && iequals(name, entry.name.c_str())) {
+                matches.push_back(&entry);
+            }
+        }
+    }
+
+    const std::string noun = noun_of(direction);
+    if (matches.empty()) {
+        error = spec + ": no " + noun + " device by that name -- run with -l to list them";
+        return false;
+    }
+    if (matches.size() > 1) {
+        // A prefix only tells them apart if each sits under a different, nameable host API.
+        bool by_host_api = true;
+        std::string listed;
+        for (size_t i = 0; i < matches.size(); ++i) {
+            const char* host_api = matches[i]->host_api;
+            for (size_t j = 0; j < i; ++j) {
+                const char* earlier = matches[j]->host_api;
+                if (host_api != nullptr && earlier != nullptr &&
+                    std::strcmp(host_api, earlier) == 0) {
+                    by_host_api = false;
+                }
+            }
+            if (host_api == nullptr) {
+                by_host_api = false;
+            }
+            listed += (listed.empty() ? "" : ", ") + std::to_string(matches[i]->index);
+            if (host_api != nullptr) {
+                listed += std::string(" ") + host_api;
+            }
+        }
+        error = spec + ": " + std::to_string(matches.size()) + " " + noun +
+                " devices share that name (" + listed + ") -- ";
+        if (by_host_api) {
+            // Quoted, since device names carry spaces and parentheses.
+            error += "put its host API in front to pick one, e.g. " + flag +
+                     " \"portaudio:" + matches.front()->host_api + ":" + matches.front()->name +
+                     "\"";
+        } else {
+            error += "name the one you mean by index instead";
+        }
+        return false;
+    }
+
+    out = matches.front()->index;
+    return true;
+}
+
 bool resolve_pa_device(const std::string& device, PaDirection direction, PaDeviceIndex& out,
                        std::string& error) {
     const PaDeviceIndex count = Pa_GetDeviceCount();
@@ -162,33 +263,16 @@ bool resolve_pa_device(const std::string& device, PaDirection direction, PaDevic
         return true;
     }
 
-    std::vector<PaDeviceIndex> matches;
+    std::vector<PaDeviceEntry> entries;
     for (PaDeviceIndex i = 0; i < count; ++i) {
         const PaDeviceInfo* info = Pa_GetDeviceInfo(i);
-        if (pa_has_channels(info, direction) && iequals(device, info->name)) {
-            matches.push_back(i);
+        if (pa_has_channels(info, direction) && info->name != nullptr) {
+            const PaHostApiInfo* host = Pa_GetHostApiInfo(info->hostApi);
+            entries.push_back(
+                {i, info->name, (host != nullptr) ? pa_host_api_prefix(host->type) : nullptr});
         }
     }
-    if (matches.empty()) {
-        error = spec + ": no " + noun + " device by that name -- run with -l to list them";
-        return false;
-    }
-    if (matches.size() > 1) {
-        std::string indices;
-        for (const PaDeviceIndex index : matches) {
-            if (!indices.empty()) {
-                indices += ", ";
-            }
-            indices += std::to_string(index);
-        }
-        error = spec + ": " + std::to_string(matches.size()) + " " + noun +
-                " devices share that name (indices " + indices +
-                ") -- name the one you mean by index instead";
-        return false;
-    }
-
-    out = matches.front();
-    return true;
+    return match_pa_device_name(device, entries, direction, out, error);
 }
 
 }  // namespace sendspin_cli

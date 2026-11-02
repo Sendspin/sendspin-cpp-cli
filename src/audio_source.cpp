@@ -565,7 +565,8 @@ void print_capture_devices(std::FILE* out) {
                  "the first time --input opens a device.\n");
 #endif
 #ifdef SENDSPIN_CLI_HAVE_PORTAUDIO
-    std::fprintf(out, "\nPortAudio input devices on this host (--input portaudio:<index|name>):\n");
+    std::fprintf(out, "\nPortAudio input devices on this host "
+                      "(--input portaudio:<index|name|host API:name>):\n");
     PortAudioSource::list_devices(out);
     std::fprintf(out,
                  "\nA capture stream runs at one format for the whole run: 48000 Hz where the\n"
