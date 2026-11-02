@@ -16,9 +16,20 @@ sendspin-cli turns a Linux box, a Raspberry Pi, a Mac or a Windows PC into a Sen
 It runs in the background without a window, and a Sendspin server such as
 [Music Assistant](https://www.music-assistant.io/) plays to it in sync with your other speakers.
 
-**[Download the latest release](https://github.com/Sendspin/sendspin-cpp-cli/releases/latest)**
-and pick the file for your platform. On Linux and Windows, the [guided installer](#installation)
-is easier: it picks the right file, verifies it and starts the player for you.
+Download the latest release for your platform:
+
+| Platform | Download |
+| --- | --- |
+| Linux x86_64 | [tar.gz](https://github.com/Sendspin/sendspin-cpp-cli/releases/latest/download/sendspin-cli-linux-x86_64.tar.gz) |
+| Linux ARM64: Raspberry Pi 3, 4, 5 and Zero 2 W on a 64-bit OS | [tar.gz](https://github.com/Sendspin/sendspin-cpp-cli/releases/latest/download/sendspin-cli-linux-arm64.tar.gz) |
+| Linux ARMv7: Raspberry Pi 2, 3, 4 and 5 on a 32-bit OS | [tar.gz](https://github.com/Sendspin/sendspin-cpp-cli/releases/latest/download/sendspin-cli-linux-armv7.tar.gz) |
+| Linux ARMv6: Raspberry Pi 1, Zero and Zero W | [tar.gz](https://github.com/Sendspin/sendspin-cpp-cli/releases/latest/download/sendspin-cli-linux-armv6.tar.gz) |
+| macOS (Apple silicon) | [Installer](https://github.com/Sendspin/sendspin-cpp-cli/releases/latest/download/sendspin-cli-macos-arm64.pkg), [tar.gz](https://github.com/Sendspin/sendspin-cpp-cli/releases/latest/download/sendspin-cli-macos-arm64.tar.gz) |
+| Windows x64 | [zip](https://github.com/Sendspin/sendspin-cpp-cli/releases/latest/download/sendspin-cli-windows-x86_64.zip) |
+
+[SHA256SUMS](https://github.com/Sendspin/sendspin-cpp-cli/releases/latest/download/SHA256SUMS) has the checksums. On Linux and Windows, the
+[guided installer](#installation) is easier: it picks the right file, verifies it and starts
+the player for you.
 
 ## Installation
 
