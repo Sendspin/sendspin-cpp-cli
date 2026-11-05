@@ -312,10 +312,10 @@ Home Assistant OS that address is the hassio network's `172.30.32.1`:
 pairing-token-endpoint = 172.30.32.1:8930
 ```
 
-The player answers `GET /pairing-token` with its client id and token:
+The player answers `GET /` with its token as plain text:
 
-```json
-{"client_id":"H5-aoQOpCc_f_…","pairing_token":"SP:0TNMH6…"}
+```
+SP:0TNMH6…
 ```
 
 and lists the role `_ohf_local_pairing@v1`, with `{"port": 8930}`, in its `client/hello` so a
@@ -329,9 +329,9 @@ How it stays local:
   server's host can reach, never the LAN address.
 - **Anything that reaches it can pair.** On Home Assistant OS that is every app on the
   hassio network, so turn the option on only where those are trusted.
-- **The server decides where to fetch from.** It acts only for an unpaired player connected
-  from its own host, fetches from the internal address it knows rather than one the player
-  names, and checks that the token's client id matches the connection.
+- **The server decides where to fetch from.** It acts only for an unpaired player on an
+  encrypted connection, fetches from the internal address it knows rather than one the player
+  names, and refuses a token issued for a different client id.
 - **The token stays out of the log.** Requests are logged at `debug` without it, and the
   startup line that otherwise prints it points at `sendspin-cli pair-token` instead.
 

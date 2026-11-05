@@ -30,7 +30,7 @@ namespace sendspin_cli {
 inline constexpr const char* LOCAL_PAIRING_ROLE = "_ohf_local_pairing@v1";
 
 /// The only path the endpoint answers.
-inline constexpr const char* PAIRING_TOKEN_PATH = "/pairing-token";
+inline constexpr const char* PAIRING_TOKEN_PATH = "/";
 
 /// Reads `<address>:<port>`. The address must be a numeric IPv4 or bracketed IPv6 literal and
 /// not a wildcard, so the endpoint can never listen on every interface.
@@ -42,15 +42,15 @@ bool parse_pairing_endpoint(const std::string& value, std::string& host, uint16_
 /// The role's support object: `{"port":N}`.
 std::string local_pairing_support_json(uint16_t port);
 
-/// An HTTP status and JSON body.
+/// An HTTP status and plain-text body.
 struct PairingReply {
     int status;
     std::string body;
 };
 
-/// The answer to one request: the client id and token on `GET /pairing-token`, an error otherwise.
+/// The answer to one request: the token on `GET /`, an error otherwise.
 PairingReply pairing_token_reply(const std::string& method, const std::string& uri,
-                                 const std::string& client_id, const std::string& token);
+                                 const std::string& token);
 
 /// The HTTP listener; stops in its destructor.
 class PairingEndpoint {
@@ -63,8 +63,8 @@ public:
     /// Binds the address. Connections wait in the backlog until start().
     bool listen(std::string& error);
 
-    /// Starts answering with this identity. Call after listen() succeeded.
-    void start(const std::string& client_id, const std::string& token);
+    /// Starts answering with this token. Call after listen() succeeded.
+    void start(const std::string& token);
 
     void stop();
 

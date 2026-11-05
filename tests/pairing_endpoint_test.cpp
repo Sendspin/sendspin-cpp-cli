@@ -26,26 +26,23 @@
 namespace sendspin_cli {
 namespace {
 
-constexpr const char* CLIENT_ID = "wn_sX1iDNhQexampleexampleexampleexampleexam";
 constexpr const char* TOKEN = "SP:EXAMPLETOKEN";
 
 TEST(PairingEndpoint, SupportObjectCarriesThePort) {
     EXPECT_EQ(local_pairing_support_json(8930), "{\"port\":8930}");
 }
 
-TEST(PairingEndpoint, AnswersGetOnItsPathWithTheClientIdAndToken) {
-    const PairingReply reply = pairing_token_reply("GET", "/pairing-token", CLIENT_ID, TOKEN);
+TEST(PairingEndpoint, AnswersGetOnItsPathWithTheToken) {
+    const PairingReply reply = pairing_token_reply("GET", "/", TOKEN);
     EXPECT_EQ(reply.status, 200);
-    EXPECT_EQ(reply.body, std::string("{\"client_id\":\"") + CLIENT_ID + "\",\"pairing_token\":\"" +
-                              TOKEN + "\"}");
-    EXPECT_EQ(pairing_token_reply("GET", "/pairing-token?x=1", CLIENT_ID, TOKEN).status, 200);
+    EXPECT_EQ(reply.body, TOKEN);
+    EXPECT_EQ(pairing_token_reply("GET", "/?x=1", TOKEN).status, 200);
 }
 
 TEST(PairingEndpoint, RefusesOtherPathsAndMethodsWithoutTheToken) {
     for (const PairingReply& reply :
-         {pairing_token_reply("GET", "/", CLIENT_ID, TOKEN),
-          pairing_token_reply("GET", "/pairing-token/", CLIENT_ID, TOKEN),
-          pairing_token_reply("POST", "/pairing-token", CLIENT_ID, TOKEN)}) {
+         {pairing_token_reply("GET", "/pairing-token", TOKEN),
+          pairing_token_reply("GET", "//", TOKEN), pairing_token_reply("POST", "/", TOKEN)}) {
         EXPECT_NE(reply.status, 200);
         EXPECT_EQ(reply.body.find(TOKEN), std::string::npos) << reply.body;
     }
@@ -67,7 +64,7 @@ TEST(PairingEndpoint, ServesTheTokenOverHttp) {
     std::unique_ptr<PairingEndpoint> endpoint;
     const uint16_t port = listen_somewhere(endpoint);
     ASSERT_NE(port, 0U);
-    endpoint->start(CLIENT_ID, TOKEN);
+    endpoint->start(TOKEN);
 
     ix::HttpClient client;
     ix::HttpRequestArgsPtr args = client.createRequest();
@@ -77,11 +74,11 @@ TEST(PairingEndpoint, ServesTheTokenOverHttp) {
 
     const ix::HttpResponsePtr ok = client.get(base + PAIRING_TOKEN_PATH, args);
     ASSERT_EQ(ok->statusCode, 200) << ok->errorMsg;
-    EXPECT_NE(ok->body.find(TOKEN), std::string::npos);
-    EXPECT_NE(ok->body.find(CLIENT_ID), std::string::npos);
+    EXPECT_EQ(ok->body, TOKEN);
+    EXPECT_EQ(ok->headers["Content-Type"], "text/plain");
     EXPECT_EQ(ok->headers["Cache-Control"], "no-store");
 
-    const ix::HttpResponsePtr missing = client.get(base + "/", args);
+    const ix::HttpResponsePtr missing = client.get(base + "/pairing-token", args);
     EXPECT_EQ(missing->statusCode, 404);
     endpoint->stop();
 }
@@ -90,7 +87,7 @@ TEST(PairingEndpoint, ListensOnlyOnItsAddress) {
     std::unique_ptr<PairingEndpoint> endpoint;
     const uint16_t port = listen_somewhere(endpoint);
     ASSERT_NE(port, 0U);
-    endpoint->start(CLIENT_ID, TOKEN);
+    endpoint->start(TOKEN);
 
     // Another loopback address on the same port: bound to 127.0.0.1 only, so nothing answers.
     ix::HttpClient client;

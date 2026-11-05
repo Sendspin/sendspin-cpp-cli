@@ -994,7 +994,7 @@ int main(int argc, char* argv[]) {
             log_fatal(LOG_TAG, "--pairing-token-endpoint: this player has no pairing token");
             return 1;
         }
-        pairing_endpoint->start(client.client_id(), *token);
+        pairing_endpoint->start(*token);
         log_line(LogLevel::INFO, LOG_TAG,
                  "Serving the pairing token on %s -- anything that can reach it can pair with "
                  "this player",

@@ -117,16 +117,15 @@ std::string local_pairing_support_json(uint16_t port) {
 }
 
 PairingReply pairing_token_reply(const std::string& method, const std::string& uri,
-                                 const std::string& client_id, const std::string& token) {
+                                 const std::string& token) {
     const std::string path = uri.substr(0, uri.find('?'));
     if (path != PAIRING_TOKEN_PATH) {
-        return {404, "{\"error\":\"not_found\"}"};
+        return {404, "not found"};
     }
     if (method != "GET") {
-        return {405, "{\"error\":\"method_not_allowed\"}"};
+        return {405, "method not allowed"};
     }
-    // Both are base64url / base32 text, so neither needs JSON escaping.
-    return {200, "{\"client_id\":\"" + client_id + "\",\"pairing_token\":\"" + token + "\"}"};
+    return {200, token};
 }
 
 PairingEndpoint::PairingEndpoint(std::string host, uint16_t port)
@@ -151,7 +150,7 @@ bool PairingEndpoint::listen(std::string& error) {
     return true;
 }
 
-void PairingEndpoint::start(const std::string& client_id, const std::string& token) {
+void PairingEndpoint::start(const std::string& token) {
     if (!this->server_) {
         return;
     }
@@ -163,16 +162,15 @@ void PairingEndpoint::start(const std::string& client_id, const std::string& tok
             socket.close();
         }
     });
-    this->server_->setOnConnectionCallback([client_id, token](
+    this->server_->setOnConnectionCallback([token](
                                                const ix::HttpRequestPtr& request,
                                                const std::shared_ptr<ix::ConnectionState>& state) {
-        const PairingReply reply =
-            pairing_token_reply(request->method, request->uri, client_id, token);
+        const PairingReply reply = pairing_token_reply(request->method, request->uri, token);
         // The URI is the caller's text, so it stays out of the log.
         log_line(sendspin::LogLevel::DEBUG, LOG_TAG, "Pairing token endpoint answered %s with %d",
                  state->getRemoteIp().c_str(), reply.status);
         ix::WebSocketHttpHeaders headers;
-        headers["Content-Type"] = "application/json";
+        headers["Content-Type"] = "text/plain";
         headers["Cache-Control"] = "no-store";
         return std::make_shared<ix::HttpResponse>(reply.status,
                                                   reply.status == 200 ? "OK" : "Error",
