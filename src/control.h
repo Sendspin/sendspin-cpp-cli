@@ -171,8 +171,7 @@ struct StatusSnapshot {
     std::string server_name;  ///< `ServerInformationObject::name`, empty when not known
     std::string server_id;    ///< `ServerInformationObject::server_id`
 
-    /// The connection's trust; absent before its handshake reports one.
-    std::optional<sendspin::ConnectionTrust> trust{};
+    bool paired{false};        ///< the connection is a paired session
     size_t paired_servers{0};  ///< servers with a stored pairing, connected or not
 
     std::string pairing_server_id;    ///< the server a pairing is in progress with, else empty
