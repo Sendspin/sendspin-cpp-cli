@@ -149,14 +149,21 @@ const char* pair_abort_reason(sendspin::SendspinPairAbortReason reason) {
     return "the exchange broke down";
 }
 
-/// Logs trust and pairing progress, and caches both for `status`. Main loop only.
+/// Logs session and pairing progress, and caches pairing progress for `status`. Main loop only.
 struct PairingListener : sendspin::SendspinClientListener {
-    void on_trust_changed(sendspin::ConnectionTrust trust) override {
-        this->trust_ = trust;
-        // A new handshake: an attempt the last connection dropped never reported its end.
-        this->server_id_.clear();
-        log_line(LogLevel::INFO, LOG_TAG, "Connected server is %s",
-                 trust == sendspin::ConnectionTrust::USER ? "paired" : "not paired");
+    /// One main-loop tick: logs a session that is new, or re-keyed onto a different PSK.
+    void tick(const sendspin::SendspinClient& client) {
+        // is_paired() first: a true is_connected() after it means that session is activated.
+        const bool paired = client.is_paired();
+        const bool connected = client.is_connected();
+        if (connected && (!this->connected_ || paired != this->paired_)) {
+            // A new handshake: an attempt the last connection dropped never reported its end.
+            this->server_id_.clear();
+            log_line(LogLevel::INFO, LOG_TAG, "Connected server is %s",
+                     paired ? "paired" : "not paired");
+        }
+        this->connected_ = connected;
+        this->paired_ = paired;
     }
 
     void on_pairing_started(const std::string& server_id) override {
@@ -204,11 +211,6 @@ struct PairingListener : sendspin::SendspinClientListener {
         log_line(LogLevel::INFO, LOG_TAG, "No longer waiting for 'pair confirm'");
     }
 
-    /// The last trust reported; describes the connection only while one is up.
-    const std::optional<sendspin::ConnectionTrust>& trust() const {
-        return this->trust_;
-    }
-
     /// The server a pairing is in progress with, or empty.
     const std::string& server_id() const {
         return this->server_id_;
@@ -224,7 +226,8 @@ struct PairingListener : sendspin::SendspinClientListener {
     }
 
 private:
-    std::optional<sendspin::ConnectionTrust> trust_;
+    bool connected_{false};
+    bool paired_{false};
     std::string server_id_;
     std::string code_;
     bool window_open_{false};
@@ -495,8 +498,9 @@ private:
         StatusSnapshot snapshot;
         snapshot.name = this->opts_.name;
         snapshot.client_id = this->client_.client_id();
+        // Before is_connected(), so a connected snapshot's paired describes an activated session.
+        snapshot.paired = this->client_.is_paired();
         snapshot.connected = this->client_.is_connected();
-        snapshot.trust = this->pairing_listener_.trust();
         snapshot.paired_servers = this->state_store_.pairing_record_count();
         // A dropped connection ends its attempt without a callback.
         if (snapshot.connected) {
@@ -1036,6 +1040,7 @@ int main(int argc, char* argv[]) {
     while (g_running.load()) {
         const int64_t now_ms = monotonic_ms();
         client.loop();
+        pairing_listener.tick(client);
         // All three need their callbacks on the main loop.
         mdns.poll(now_ms);
         control_socket.poll(now_ms, control_dispatcher);
