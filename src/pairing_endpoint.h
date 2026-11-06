@@ -20,10 +20,6 @@
 #include <memory>
 #include <string>
 
-namespace ix {
-class HttpServer;
-}
-
 namespace sendspin_cli {
 
 /// The application-specific role that advertises the endpoint in `client/hello`. Provisional.
@@ -31,6 +27,9 @@ inline constexpr const char* LOCAL_PAIRING_ROLE = "_ohf_local_pairing@v1";
 
 /// The only path the endpoint answers.
 inline constexpr const char* PAIRING_TOKEN_PATH = "/";
+
+/// Connections served at once; a further one is closed as soon as it is accepted.
+inline constexpr int PAIRING_ENDPOINT_MAX_CONNECTIONS = 4;
 
 /// Reads `<address>:<port>`. The address must be a numeric IPv4 or bracketed IPv6 literal and
 /// not a wildcard, so the endpoint can never listen on every interface.
@@ -49,8 +48,14 @@ struct PairingReply {
 };
 
 /// The answer to one request: the token on `GET /`, an error otherwise.
+/// @param host The request's Host header. It must name the endpoint itself, so a page that
+///     rebinds its own hostname to the address gets no token.
+/// @param address The listening address, bracketed if IPv6.
 PairingReply pairing_token_reply(const std::string& method, const std::string& uri,
+                                 const std::string& host, const std::string& address, uint16_t port,
                                  const std::string& token);
+
+class PairingServer;
 
 /// The HTTP listener; stops in its destructor.
 class PairingEndpoint {
@@ -71,7 +76,7 @@ public:
 private:
     std::string host_;
     uint16_t port_;
-    std::unique_ptr<ix::HttpServer> server_;
+    std::unique_ptr<PairingServer> server_;
 };
 
 }  // namespace sendspin_cli

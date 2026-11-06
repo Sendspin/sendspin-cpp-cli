@@ -16,8 +16,11 @@
 
 #include "log.h"
 
-#include <ixwebsocket/IXHttpServer.h>
+#include <ixwebsocket/IXConnectionState.h>
+#include <ixwebsocket/IXHttp.h>
 #include <ixwebsocket/IXNetSystem.h>
+#include <ixwebsocket/IXSocket.h>
+#include <ixwebsocket/IXSocketServer.h>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -28,8 +31,12 @@
 #include <sys/socket.h>
 #endif
 
+#include <algorithm>
 #include <array>
+#include <atomic>
+#include <cctype>
 #include <cstdlib>
+#include <functional>
 #include <utility>
 
 namespace sendspin_cli {
@@ -38,7 +45,6 @@ namespace {
 
 static constexpr const char* LOG_TAG = LOG_TAG_CLI;
 
-constexpr int MAX_CONNECTIONS = 4;
 constexpr int TIMEOUT_SECS = 5;
 
 /// `::`, or `::ffff:0.0.0.0`, the IPv4 wildcard in mapped form.
@@ -48,7 +54,80 @@ bool is_ipv6_wildcard(const std::array<unsigned char, 16>& addr) {
     return addr == std::array<unsigned char, 16>{} || addr == MAPPED_ANY;
 }
 
+bool equals_ignoring_case(const std::string& a, const std::string& b) {
+    return std::equal(a.begin(), a.end(), b.begin(), b.end(), [](char x, char y) {
+        return std::tolower(static_cast<unsigned char>(x)) ==
+               std::tolower(static_cast<unsigned char>(y));
+    });
+}
+
+/// Counts itself in `live` from its accept until its worker thread is reaped.
+class CountedConnection : public ix::ConnectionState {
+public:
+    explicit CountedConnection(std::shared_ptr<std::atomic<size_t>> live) : live_(std::move(live)) {
+        ++*this->live_;
+    }
+    ~CountedConnection() override {
+        --*this->live_;
+    }
+    CountedConnection(const CountedConnection&) = delete;
+    CountedConnection& operator=(const CountedConnection&) = delete;
+
+private:
+    std::shared_ptr<std::atomic<size_t>> live_;
+};
+
 }  // namespace
+
+/// One request per connection, each on its own worker thread.
+///
+/// Not ix::HttpServer: that counts only upgraded WebSocket clients against its connection limit,
+/// so plain HTTP requests would each get a thread with no cap. This counts every connection.
+class PairingServer final : public ix::SocketServer {
+public:
+    using Handler =
+        std::function<ix::HttpResponsePtr(const ix::HttpRequestPtr&, const std::string& remote_ip)>;
+
+    PairingServer(int port, const std::string& host, int family)
+        : ix::SocketServer(port, host, kDefaultTcpBacklog, PAIRING_ENDPOINT_MAX_CONNECTIONS,
+                           family) {
+        // The factory runs on the accept thread before the next admission check, so a burst of
+        // connections cannot slip past the limit before their workers start.
+        this->setConnectionStateFactory(
+            [live = this->live_] { return std::make_shared<CountedConnection>(live); });
+    }
+
+    // Joins the workers while handler_ is still alive; the base destructor would be too late.
+    ~PairingServer() override {
+        this->stop();
+    }
+
+    PairingServer(const PairingServer&) = delete;
+    PairingServer& operator=(const PairingServer&) = delete;
+
+    /// Call before start().
+    void set_handler(Handler handler) {
+        this->handler_ = std::move(handler);
+    }
+
+private:
+    void handleConnection(std::unique_ptr<ix::Socket> socket,
+                          std::shared_ptr<ix::ConnectionState> state) override {
+        const auto parsed = ix::Http::parseRequest(socket, TIMEOUT_SECS);
+        if (std::get<0>(parsed)) {
+            ix::Http::sendResponse(this->handler_(std::get<2>(parsed), state->getRemoteIp()),
+                                   socket);
+        }
+        state->setTerminated();
+    }
+
+    size_t getConnectedClientsCount() override {
+        return *this->live_;
+    }
+
+    std::shared_ptr<std::atomic<size_t>> live_ = std::make_shared<std::atomic<size_t>>(0);
+    Handler handler_;
+};
 
 bool parse_pairing_endpoint(const std::string& value, std::string& host, uint16_t& port,
                             std::string& error) {
@@ -117,7 +196,14 @@ std::string local_pairing_support_json(uint16_t port) {
 }
 
 PairingReply pairing_token_reply(const std::string& method, const std::string& uri,
+                                 const std::string& host, const std::string& address, uint16_t port,
                                  const std::string& token) {
+    // A client leaves the port out of Host only when it is the scheme's default.
+    const bool names_endpoint = equals_ignoring_case(host, address + ":" + std::to_string(port)) ||
+                                (port == 80 && equals_ignoring_case(host, address));
+    if (!names_endpoint) {
+        return {421, "misdirected request"};
+    }
     const std::string path = uri.substr(0, uri.find('?'));
     if (path != PAIRING_TOKEN_PATH) {
         return {404, "not found"};
@@ -138,9 +224,7 @@ PairingEndpoint::~PairingEndpoint() {
 bool PairingEndpoint::listen(std::string& error) {
     ix::initNetSystem();
     const int family = this->host_.find(':') != std::string::npos ? AF_INET6 : AF_INET;
-    this->server_ = std::make_unique<ix::HttpServer>(this->port_, this->host_,
-                                                     ix::SocketServer::kDefaultTcpBacklog,
-                                                     MAX_CONNECTIONS, family, TIMEOUT_SECS);
+    this->server_ = std::make_unique<PairingServer>(this->port_, this->host_, family);
     const std::pair<bool, std::string> result = this->server_->listen();
     if (!result.first) {
         error = result.second;
@@ -154,28 +238,25 @@ void PairingEndpoint::start(const std::string& token) {
     if (!this->server_) {
         return;
     }
-    // A WebSocket upgrade bypasses the HTTP callback; without a handler ix logs an error.
-    this->server_->setOnClientMessageCallback([](const std::shared_ptr<ix::ConnectionState>&,
-                                                 ix::WebSocket& socket,
-                                                 const ix::WebSocketMessagePtr& msg) {
-        if (msg->type == ix::WebSocketMessageType::Open) {
-            socket.close();
-        }
-    });
-    this->server_->setOnConnectionCallback([token](
-                                               const ix::HttpRequestPtr& request,
-                                               const std::shared_ptr<ix::ConnectionState>& state) {
-        const PairingReply reply = pairing_token_reply(request->method, request->uri, token);
-        // The URI is the caller's text, so it stays out of the log.
-        log_line(sendspin::LogLevel::DEBUG, LOG_TAG, "Pairing token endpoint answered %s with %d",
-                 state->getRemoteIp().c_str(), reply.status);
-        ix::WebSocketHttpHeaders headers;
-        headers["Content-Type"] = "text/plain";
-        headers["Cache-Control"] = "no-store";
-        return std::make_shared<ix::HttpResponse>(reply.status,
-                                                  reply.status == 200 ? "OK" : "Error",
-                                                  ix::HttpErrorCode::Ok, headers, reply.body);
-    });
+    const std::string address =
+        this->host_.find(':') != std::string::npos ? "[" + this->host_ + "]" : this->host_;
+    const uint16_t port = this->port_;
+    this->server_->set_handler(
+        [token, address, port](const ix::HttpRequestPtr& request, const std::string& remote_ip) {
+            const auto host = request->headers.find("Host");
+            const PairingReply reply = pairing_token_reply(
+                request->method, request->uri, host == request->headers.end() ? "" : host->second,
+                address, port, token);
+            // The URI and Host are the caller's text, so they stay out of the log.
+            log_line(sendspin::LogLevel::DEBUG, LOG_TAG,
+                     "Pairing token endpoint answered %s with %d", remote_ip.c_str(), reply.status);
+            ix::WebSocketHttpHeaders headers;
+            headers["Content-Type"] = "text/plain";
+            headers["Cache-Control"] = "no-store";
+            return std::make_shared<ix::HttpResponse>(reply.status,
+                                                      reply.status == 200 ? "OK" : "Error",
+                                                      ix::HttpErrorCode::Ok, headers, reply.body);
+        });
     this->server_->start();
 }
 

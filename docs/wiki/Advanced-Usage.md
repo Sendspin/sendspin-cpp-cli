@@ -329,6 +329,9 @@ How it stays local:
   server's host can reach, never the LAN address.
 - **Anything that reaches it can pair.** On Home Assistant OS that is every app on the
   hassio network, so turn the option on only where those are trusted.
+- **A request must name it.** The `Host` header has to be the endpoint's own address and
+  port, so a web page that rebinds its hostname to that address gets no token. It serves at
+  most four connections at once and closes any beyond them.
 - **The server decides where to fetch from.** It acts only for an unpaired player on an
   encrypted connection, fetches from the internal address it knows rather than one the player
   names, and refuses a token issued for a different client id.
