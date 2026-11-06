@@ -23,6 +23,7 @@
 #include "log.h"
 #include "mdns.h"
 #include "outbound.h"
+#include "pairing_listener.h"
 #include "player_listener.h"
 #include "state_store.h"
 #include "supported_formats.h"
@@ -128,109 +129,6 @@ public:
 
 private:
     StateStore& store_;
-};
-
-/// Why a pairing attempt ended, for the log.
-const char* pair_abort_reason(sendspin::SendspinPairAbortReason reason) {
-    switch (reason) {
-        case sendspin::SendspinPairAbortReason::ATTEMPT_TIMEOUT:
-            return "the server did not finish in time";
-        case sendspin::SendspinPairAbortReason::CONCURRENT_ATTEMPT:
-            return "another pairing attempt was already in progress";
-        case sendspin::SendspinPairAbortReason::METHOD_NOT_SUPPORTED:
-            return "the server chose a pairing method this player does not offer";
-        case sendspin::SendspinPairAbortReason::PAIRING_CODE_MISMATCH:
-            return "the pairing code did not match";
-        case sendspin::SendspinPairAbortReason::USER_CANCELLED:
-            return "it was cancelled";
-        case sendspin::SendspinPairAbortReason::UNKNOWN:
-            break;
-    }
-    return "the exchange broke down";
-}
-
-/// Logs session and pairing progress, and caches pairing progress for `status`. Main loop only.
-struct PairingListener : sendspin::SendspinClientListener {
-    /// One main-loop tick: logs a session that is new, or re-keyed onto a different PSK.
-    void tick(const sendspin::SendspinClient& client) {
-        // is_paired() first: a true is_connected() after it means that session is activated.
-        const bool paired = client.is_paired();
-        const bool connected = client.is_connected();
-        if (connected && (!this->connected_ || paired != this->paired_)) {
-            // A new handshake: an attempt the last connection dropped never reported its end.
-            this->server_id_.clear();
-            log_line(LogLevel::INFO, LOG_TAG, "Connected server is %s",
-                     paired ? "paired" : "not paired");
-        }
-        this->connected_ = connected;
-        this->paired_ = paired;
-    }
-
-    void on_pairing_started(const std::string& server_id) override {
-        this->server_id_ = server_id;
-        log_line(LogLevel::INFO, LOG_TAG, "Pairing started with server %s", server_id.c_str());
-    }
-
-    void on_pairing_succeeded(const std::string& server_id) override {
-        this->server_id_.clear();
-        log_line(LogLevel::INFO, LOG_TAG, "Paired with server %s", server_id.c_str());
-    }
-
-    void on_pairing_failed(const std::string& server_id,
-                           sendspin::SendspinPairAbortReason reason) override {
-        this->server_id_.clear();
-        log_line(LogLevel::WARN, LOG_TAG, "Pairing with server %s failed: %s", server_id.c_str(),
-                 pair_abort_reason(reason));
-    }
-
-    void on_display_pairing_code(const std::string& code,
-                                 sendspin::SendspinPairingCodeFormat /*format*/) override {
-        this->code_ = code;
-        log_line(LogLevel::INFO, LOG_TAG,
-                 "*** Pairing code: %s *** -- type it into the server to pair", code.c_str());
-    }
-
-    void on_clear_pairing_code() override {
-        // Also how an attempt the server abandoned ends: neither outcome callback fires for it.
-        this->server_id_.clear();
-        this->code_.clear();
-        log_line(LogLevel::INFO, LOG_TAG, "Pairing code withdrawn");
-    }
-
-    void on_open_pairing_window() override {
-        this->window_open_ = true;
-        log_line(LogLevel::INFO, LOG_TAG,
-                 "A server is waiting to pair -- run 'sendspin-cli pair confirm' to let it, or "
-                 "'sendspin-cli pair cancel' to refuse");
-    }
-
-    void on_close_pairing_window() override {
-        // Fires when the attempt concludes, like on_clear_pairing_code().
-        this->server_id_.clear();
-        this->window_open_ = false;
-        log_line(LogLevel::INFO, LOG_TAG, "No longer waiting for 'pair confirm'");
-    }
-
-    /// The server a pairing is in progress with, or empty.
-    const std::string& server_id() const {
-        return this->server_id_;
-    }
-
-    /// The dynamic code on show, or empty.
-    const std::string& code() const {
-        return this->code_;
-    }
-
-    bool window_open() const {
-        return this->window_open_;
-    }
-
-private:
-    bool connected_{false};
-    bool paired_{false};
-    std::string server_id_;
-    std::string code_;
-    bool window_open_{false};
 };
 
 /// Logs server metadata and caches the latest for `status`. Main loop only.
@@ -1040,7 +938,9 @@ int main(int argc, char* argv[]) {
     while (g_running.load()) {
         const int64_t now_ms = monotonic_ms();
         client.loop();
-        pairing_listener.tick(client);
+        // is_paired() first: a true is_connected() after it means that session is activated.
+        const bool paired = client.is_paired();
+        pairing_listener.tick(client.is_connected(), paired);
         // All three need their callbacks on the main loop.
         mdns.poll(now_ms);
         control_socket.poll(now_ms, control_dispatcher);
