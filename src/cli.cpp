@@ -937,14 +937,13 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
     // A subcommand starts no player: warn that daemon-only flags do nothing.
     if (!out.subcommand.empty()) {
         static constexpr Opt DAEMON_ONLY[] = {
-            Opt::Device,       Opt::Name,        Opt::Server,      Opt::Daemonize,
-            Opt::Pidfile,      Opt::Logfile,     Opt::LogLevel,    Opt::BufferMs,
-            Opt::NoMdns,       Opt::MdnsName,    Opt::NoControl,   Opt::StateDir,
-            Opt::OutputDelay,  Opt::HookStart,   Opt::HookStop,    Opt::ClientId,
-            Opt::Manufacturer, Opt::ProductName, Opt::AudioFormat, Opt::AllowUnpaired,
-            Opt::Input,        Opt::PairingCode, Opt::FixedVolume, Opt::AlsaMixer,
-            Opt::AlsaMixerCurve,
-            Opt::ReleaseDevice,
+            Opt::Device,         Opt::Name,          Opt::Server,      Opt::Daemonize,
+            Opt::Pidfile,        Opt::Logfile,       Opt::LogLevel,    Opt::BufferMs,
+            Opt::NoMdns,         Opt::MdnsName,      Opt::NoControl,   Opt::StateDir,
+            Opt::OutputDelay,    Opt::HookStart,     Opt::HookStop,    Opt::ClientId,
+            Opt::Manufacturer,   Opt::ProductName,   Opt::AudioFormat, Opt::AllowUnpaired,
+            Opt::Input,          Opt::PairingCode,   Opt::FixedVolume, Opt::AlsaMixer,
+            Opt::AlsaMixerCurve, Opt::ReleaseDevice,
         };
         for (Opt opt : DAEMON_ONLY) {
             if (out.was_given(opt)) {

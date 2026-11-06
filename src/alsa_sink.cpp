@@ -209,7 +209,9 @@ void install_alsa_error_handler() {
 
 AlsaAudioSink::AlsaAudioSink(std::string device, uint32_t buffer_ms, std::string mixer_spec,
                              MixerCurve curve)
-    : device_(std::move(device)), buffer_ms_(buffer_ms), mixer_spec_(std::move(mixer_spec)),
+    : device_(std::move(device)),
+      buffer_ms_(buffer_ms),
+      mixer_spec_(std::move(mixer_spec)),
       mixer_curve_(curve) {
     if (!this->mixer_spec_.empty()) {
         install_alsa_error_handler();
@@ -740,9 +742,8 @@ void AlsaAudioSink::set_volume(uint8_t volume) {
     // what the mixer cannot, so it is recomputed from both fields rather than forced to unity.
     if (this->mixer_elem_ != nullptr) {
         // A refused write hands the level back to the software gain; the ramp reports success.
-        this->mixer_carries_volume_ = start_mixer_ramp_(
-            mixer_dB_for_volume(this->mixer_dB_min_, this->mixer_dB_max_, this->volume_.load(),
-                                this->mixer_curve_));
+        this->mixer_carries_volume_ = start_mixer_ramp_(mixer_dB_for_volume(
+            this->mixer_dB_min_, this->mixer_dB_max_, this->volume_.load(), this->mixer_curve_));
     }
     this->update_target_multiplier_();
     cli_log(LogLevel::DEBUG, "alsa: volume now %u", this->volume_.load());
@@ -1073,8 +1074,8 @@ bool AlsaAudioSink::start_mixer_ramp_(long target_dB) {
     // mute sentinel, well below the repaired floor, so an unclamped start would leave every
     // intermediate step pinned at the mute level and then jump to the target. The reported value
     // itself is left alone, since it is what recognizes an echoed event.
-    this->mixer_ramp_from_dB_ = std::clamp(this->mixer_reported_dB_, this->mixer_dB_min_,
-                                           this->mixer_dB_max_);
+    this->mixer_ramp_from_dB_ =
+        std::clamp(this->mixer_reported_dB_, this->mixer_dB_min_, this->mixer_dB_max_);
     this->mixer_ramp_target_dB_ = target_dB;
     this->mixer_ramp_step_ = 0;
     this->mixer_ramp_next_ms_ = mixer_now_ms();
@@ -1118,8 +1119,8 @@ void AlsaAudioSink::report_mixer_change_() {
     uint8_t volume = this->volume_.load();
     if (dB_changed) {
         this->mixer_reported_dB_ = dB;
-        volume = volume_for_mixer_dB(this->mixer_dB_min_, this->mixer_dB_max_, dB,
-                                     this->mixer_curve_);
+        volume =
+            volume_for_mixer_dB(this->mixer_dB_min_, this->mixer_dB_max_, dB, this->mixer_curve_);
         // An outside change read back is proof the control holds the level; a control that had
         // fallen back to software gain is used again.
         this->mixer_carries_volume_ = true;

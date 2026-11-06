@@ -197,8 +197,7 @@ private:
 /// Maps a 0-100 volume onto a hardware mixer's dB range on the given curve.
 /// The spec curve is amplitude (v/100)^1.5, i.e. 30*log10(v/100) dB below max; the cubic curve
 /// is twice that. Clamped to the control's floor.
-long mixer_dB_for_volume(long min, long max, uint8_t volume,
-                         MixerCurve curve = MixerCurve::kSpec);
+long mixer_dB_for_volume(long min, long max, uint8_t volume, MixerCurve curve = MixerCurve::kSpec);
 
 /// The inverse of mixer_dB_for_volume(): the 0-100 volume a mixer dB reading stands for.
 uint8_t volume_for_mixer_dB(long min, long max, long dB, MixerCurve curve = MixerCurve::kSpec);

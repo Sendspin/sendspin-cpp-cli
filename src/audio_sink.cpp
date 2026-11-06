@@ -303,7 +303,7 @@ void warn_if_shadowing_an_alsa_pcm([[maybe_unused]] const std::string& spec,
 // buffer_ms is unused on a build with no device-backed backend.
 std::unique_ptr<AudioSink> make_audio_sink(const std::string& device,
                                            [[maybe_unused]] uint32_t buffer_ms,
-                                           const std::string& alsa_mixer,
+                                           [[maybe_unused]] const std::string& alsa_mixer,
                                            [[maybe_unused]] const std::string& alsa_mixer_curve,
                                            std::string& error) {
     DeviceSpec spec;

@@ -57,36 +57,36 @@ inline constexpr uint32_t MAX_BUFFER_MS = 2000;
 
 /// Every option whose provenance the parser tracks, so a config file can layer under argv.
 enum class Opt : unsigned {
-    Device,         ///< -o, --output
-    ListDevices,    ///< -l
-    Name,           ///< -n, --name
-    Server,         ///< -s, --server
-    Daemonize,      ///< -z
-    Pidfile,        ///< -P, --pidfile
-    Logfile,        ///< -f, --logfile
-    LogLevel,       ///< -d, --log-level
-    Port,           ///< --port
-    BufferMs,       ///< --buffer-ms
-    OutputDelay,    ///< --output-delay
-    NoMdns,         ///< --no-mdns
-    MdnsName,       ///< --mdns-name
-    ControlSocket,  ///< --control-socket
-    NoControl,      ///< --no-control
-    StateDir,       ///< --state-dir
-    Config,         ///< --config
-    HookStart,      ///< --hook-start
-    HookStop,       ///< --hook-stop
-    ClientId,       ///< --id, refused: the id is the device's public key
-    Manufacturer,   ///< --manufacturer
-    ProductName,    ///< --product-name
-    AudioFormat,    ///< --audio-format
-    AllowUnpaired,  ///< --allow-unpaired
-    Input,          ///< --input
-    PairingCode,    ///< --pairing-code
-    FixedVolume,    ///< --fixed-volume
-    AlsaMixer,      ///< --alsa-mixer
-    AlsaMixerCurve, ///< --alsa-mixer-curve
-    ReleaseDevice,  ///< --release-device
+    Device,          ///< -o, --output
+    ListDevices,     ///< -l
+    Name,            ///< -n, --name
+    Server,          ///< -s, --server
+    Daemonize,       ///< -z
+    Pidfile,         ///< -P, --pidfile
+    Logfile,         ///< -f, --logfile
+    LogLevel,        ///< -d, --log-level
+    Port,            ///< --port
+    BufferMs,        ///< --buffer-ms
+    OutputDelay,     ///< --output-delay
+    NoMdns,          ///< --no-mdns
+    MdnsName,        ///< --mdns-name
+    ControlSocket,   ///< --control-socket
+    NoControl,       ///< --no-control
+    StateDir,        ///< --state-dir
+    Config,          ///< --config
+    HookStart,       ///< --hook-start
+    HookStop,        ///< --hook-stop
+    ClientId,        ///< --id, refused: the id is the device's public key
+    Manufacturer,    ///< --manufacturer
+    ProductName,     ///< --product-name
+    AudioFormat,     ///< --audio-format
+    AllowUnpaired,   ///< --allow-unpaired
+    Input,           ///< --input
+    PairingCode,     ///< --pairing-code
+    FixedVolume,     ///< --fixed-volume
+    AlsaMixer,       ///< --alsa-mixer
+    AlsaMixerCurve,  ///< --alsa-mixer-curve
+    ReleaseDevice,   ///< --release-device
 };
 
 /// Everything the flag surface configures.
