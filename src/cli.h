@@ -85,6 +85,7 @@ enum class Opt : unsigned {
     PairingCode,    ///< --pairing-code
     FixedVolume,    ///< --fixed-volume
     ReleaseDevice,  ///< --release-device
+    TokenEndpoint,  ///< --pairing-token-endpoint
 };
 
 /// Everything the flag surface configures.
@@ -124,6 +125,10 @@ struct Options {
 
     /// --release-device: close the output device at stream end instead of holding it.
     bool release_device{false};
+
+    /// --pairing-token-endpoint <address>:<port>: serve the pairing token there; port 0 is off.
+    std::string pairing_endpoint_host;
+    uint16_t pairing_endpoint_port{0};
 
     /// --no-mdns: do not advertise `_sendspin._tcp`.
     bool no_mdns{false};

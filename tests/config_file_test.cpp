@@ -285,6 +285,18 @@ TEST(ConfigPrecedence, TheLastDelayKeyWinsWhicheverSpellingItUses) {
     EXPECT_EQ(second.options().output_delay_ms, 375U);
 }
 
+TEST(ConfigPrecedence, PairingTokenEndpointIsSettable) {
+    ScratchDir scratch;
+    ASSERT_TRUE(scratch.created());
+    const std::string config =
+        scratch.write("config", "pairing-token-endpoint = 172.30.32.1:8930\n");
+
+    Parse from_file({}, config);
+    ASSERT_TRUE(from_file.ok()) << from_file.diagnostics();
+    EXPECT_EQ(from_file.options().pairing_endpoint_host, "172.30.32.1");
+    EXPECT_EQ(from_file.options().pairing_endpoint_port, 8930U);
+}
+
 TEST(ConfigPrecedence, AllowUnpairedIsSettableAndOffByDefault) {
     ScratchDir scratch;
     ASSERT_TRUE(scratch.created());
@@ -493,6 +505,7 @@ TEST(ConfigRefusals, ABadValueGetsTheFlagsOwnMessagePrefixedWithTheLine) {
              {"pairing-code = 1234567", "invalid --pairing-code -- expected exactly 8 digits"},
              {"pairing-code = 12345678x", "invalid --pairing-code -- expected exactly 8 digits"},
              {"pairing-code =", "invalid --pairing-code -- expected exactly 8 digits"},
+             {"pairing-token-endpoint = 0.0.0.0:8930", "invalid --pairing-token-endpoint"},
              {"id = kitchen-left", "--id is no longer supported"},
          }) {
         ScratchDir scratch;
