@@ -71,8 +71,15 @@ public:
     /// Seeds the sink from the state store without marking it server-set. Call before connecting.
     void restore_volume(uint8_t volume, bool muted);
 
+    /// Seeds the sink from the hardware mixer, marking the pair hardware-sourced.
+    void seed_volume(uint8_t volume, bool muted);
+
     /// Pins the sink at full gain, unmuted, and ignores volume and mute from then on.
     void fix_volume();
+
+    /// Records volume and mute the sink applied on its own, e.g. a hardware mixer turned by hand,
+    /// and publishes them so the server sees the change. Main loop only.
+    void on_sink_volume_changed(uint8_t volume, bool muted);
 
     /// Closes the sink's device at each stream end, so other players can open it between streams.
     void release_device_between_streams() {
