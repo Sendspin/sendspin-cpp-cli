@@ -193,6 +193,11 @@ TEST(TuiModel, ReattachingResetsThePairingBaseline) {
     snapshot.last_pairing = {1, SERVER_ID, PairingOutcome::Failed, "timed out"};
     model.on_status(ok(snapshot), 2000);
     EXPECT_EQ(model.screen(2000), TuiScreen::Main);
+
+    // Its attempt 2 is news, though still below the old player's 5.
+    snapshot.last_pairing = {2, SERVER_ID, PairingOutcome::Failed, "timed out"};
+    model.on_status(ok(snapshot), 3000);
+    EXPECT_EQ(model.screen(3000), TuiScreen::PairingOutcome);
 }
 
 TEST(TuiModel, SpacePausesWhilePlayingAndPlaysOtherwise) {
@@ -207,6 +212,11 @@ TEST(TuiModel, SpacePausesWhilePlayingAndPlaysOtherwise) {
     snapshot.playback_speed.reset();
     model.on_status(ok(snapshot), 2000);
     EXPECT_EQ(model.request_for(TuiKey::Space)->command, ControlCommand::Play);
+
+    // Half speed reads as `playing (speed 500/1000)`, and is still playing.
+    snapshot.playback_speed = 500;
+    model.on_status(ok(snapshot), 3000);
+    EXPECT_EQ(model.request_for(TuiKey::Space)->command, ControlCommand::Pause);
 }
 
 TEST(TuiModel, VolumeKeysClampAtTheEnds) {
@@ -307,8 +317,7 @@ TEST(TuiModel, AnUnsupportedCommandLeavesANotice) {
     TuiModel model = model_with(attached_snapshot());
     EXPECT_EQ(model.notice(0), "");
 
-    model.on_command_reply(refused(ControlStatus::Unsupported, "server does not offer that"),
-                           1000);
+    model.on_command_reply(refused(ControlStatus::Unsupported, "server does not offer that"), 1000);
     EXPECT_EQ(model.notice(1000), "The server doesn't offer that");
     EXPECT_EQ(model.notice(1000 + 3001), "");
 
@@ -334,6 +343,10 @@ TEST(TuiModel, ThePositionAdvancesOnlyWhilePlaying) {
     snapshot.duration_ms = 0;  // live: nothing to cap at
     model.on_status(ok(snapshot), 2000);
     EXPECT_EQ(model.position_ms(9000), std::optional<uint32_t>(132000));
+
+    snapshot.playback_speed = 500;  // not 1x, but still playing
+    model.on_status(ok(snapshot), 2000);
+    EXPECT_GT(model.position_ms(9000).value_or(0), 125000u);
 
     snapshot.playback_speed = 0;
     model.on_status(ok(snapshot), 3000);

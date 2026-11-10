@@ -68,6 +68,11 @@ sendspin::SendspinRepeatMode next_repeat(const std::string& repeat) {
     return sendspin::SendspinRepeatMode::ALL;
 }
 
+/// `status_state` says `playing (speed N/1000)` away from 1x; that is playing too.
+bool is_playing(const PlayerView& view) {
+    return view.state.rfind("playing", 0) == 0;
+}
+
 ControlRequest make_request(ControlCommand command) {
     ControlRequest request;
     request.command = command;
@@ -183,8 +188,7 @@ std::optional<ControlRequest> TuiModel::request_for(TuiKey key) const {
     ControlRequest request;
     switch (key) {
         case TuiKey::Space:
-            return make_request(view.state == "playing" ? ControlCommand::Pause
-                                                        : ControlCommand::Play);
+            return make_request(is_playing(view) ? ControlCommand::Pause : ControlCommand::Play);
         case TuiKey::Left:
             return make_request(ControlCommand::Previous);
         case TuiKey::Right:
@@ -273,7 +277,7 @@ const PlayerView& TuiModel::view() const {
 
 std::optional<uint32_t> TuiModel::position_ms(int64_t now_ms) const {
     const std::optional<uint32_t>& position = this->view_.position_ms;
-    if (!position.has_value() || this->view_.state != "playing") {
+    if (!position.has_value() || !is_playing(this->view_)) {
         return position;
     }
     const int64_t moved =
