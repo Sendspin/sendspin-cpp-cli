@@ -18,6 +18,11 @@ pairing: none
 `trust` is about the server connected right now; `paired servers` counts the servers this
 player holds a pairing for, connected or not. An unpaired server drops out of it.
 
+`last pairing` says how the most recent attempt ended, and is `none` until one has:
+`paired with <server id>`, `failed with <server id> -- <reason>`, or
+`abandoned by <server id>`. It stays until the next attempt, so it answers "did that work?"
+after the code is gone.
+
 | Method | You carry to the server | Player setup | Use it when |
 |---|---|---|---|
 | [Dynamic code](#1-dynamic-code) | 6 digits, fresh each attempt | none | you can read the player's log or run `status` while pairing. This is the default |
@@ -46,6 +51,10 @@ the server.
    ```
 
 3. Type it into the server.
+
+**The easiest way to read the code is the [TUI](Using-the-TUI#pairing).** With
+`sendspin-cli tui` open on the player's host, the code takes over the screen in large digits
+the moment you start pairing, and the outcome follows it.
 
 The code is withdrawn when the attempt ends, whichever way it ends. After repeated wrong
 codes the player holds further attempts back until you run `sendspin-cli pair confirm` (see
