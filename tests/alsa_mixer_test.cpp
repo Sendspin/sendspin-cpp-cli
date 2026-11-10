@@ -62,6 +62,11 @@ TEST(MixerVolumeCurve, InverseClampsAtBothEnds) {
     EXPECT_EQ(volume_for_mixer_dB(MIN_DB, MAX_DB, MAX_DB + 100), 100);
 }
 
+TEST(MixerVolumeCurve, AnAudibleLevelBelowTheCurveReadsAsOne) {
+    // On a 103.5 dB control the spec curve ends at -60 dB; -80 dB still plays, so it is not 0.
+    EXPECT_EQ(volume_for_mixer_dB(-10350, MAX_DB, -8000), 1);
+}
+
 TEST(MixerVolumeCurve, CubicFollowsTheSixtyLogSlope) {
     // The cubic (Snapcast) curve is twice the spec slope in dB: -18.06 dB at 50 on a 60 dB range.
     EXPECT_EQ(mixer_dB_for_volume(MIN_DB, MAX_DB, 50, MixerCurve::kCubic), -1806);

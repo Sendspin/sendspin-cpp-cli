@@ -34,9 +34,7 @@ namespace sendspin_cli {
 /// How a 0-100 volume maps onto a hardware mixer control's dB range.
 enum class MixerCurve {
     kSpec,   ///< The spec's perceived-loudness curve: amplitude (v/100)^1.5, 30*log10 dB.
-    kCubic,  ///< Amplitude (v/100)^3, the steeper curve Snapcast uses for hardware volume.
-             ///< Its inverse, 100*10^(dB/60), is alsamixer's slider position, so the two track
-             ///< each other on a control with more than 24 dB of range.
+    kCubic,  ///< Amplitude (v/100)^3, as Snapcast; its inverse is alsamixer's slider position.
 };
 
 /// Parses a curve name ("spec", "cubic"). @return false when unrecognized.
@@ -47,9 +45,7 @@ bool parse_mixer_curve(const std::string& name, MixerCurve& curve);
 class AlsaAudioSink final : public AudioSink {
 public:
     /// @param buffer_ms Ring size request, already range-checked; ALSA rounds it to the card.
-    /// @param mixer_spec `card:control` naming the hardware mixer to drive, e.g. `1:Digital`;
-    ///                   empty keeps the software volume. Only the ALSA backend takes one.
-    /// @param curve How volume maps onto the mixer's dB range; ignored without a mixer.
+    /// @param mixer_spec `card:control` of a hardware mixer, e.g. `1:Digital`; empty for software.
     AlsaAudioSink(std::string device, uint32_t buffer_ms, std::string mixer_spec = {},
                   MixerCurve curve = MixerCurve::kSpec);
     ~AlsaAudioSink() override;
@@ -77,7 +73,6 @@ public:
 
     /// Reads the mixer's current volume and mute; -1 volume when the mixer cannot be read.
     /// @param muted Set from the control's playback switch; false without one.
-    /// @param curve How volume maps onto the mixer's dB range.
     static int read_mixer_volume(const std::string& mixer_spec, bool& muted,
                                  MixerCurve curve = MixerCurve::kSpec);
 
@@ -111,18 +106,15 @@ private:
     bool mixer_open_();
     /// Closes the persistent mixer handle. Idempotent.
     void mixer_close_();
-    /// Records the control's current dB and switch as our own, so a later event reads as an echo.
-    void sync_mixer_reported_();
-    /// Writes `dB` to the persistent element, recording the read-back as our own value.
-    /// @return false when there is no control, or ALSA refused the write.
+    /// Takes the control's current level as the sink's volume and mute, without writing it back.
+    void adopt_mixer_level_();
+    /// Writes `dB`, recording the read-back as our own; false without a control or when refused.
     bool write_mixer_dB_(long dB);
-    /// @return true when the control took the mute; false when it has no switch, leaving the
-    ///         caller on software mute.
+    /// Sets the playback switch; false without one or when refused, leaving mute to software.
     bool set_mixer_mute_(bool muted);
     /// Begins a short stepped write toward `target_dB`; false when the first step was refused.
     bool start_mixer_ramp_(long target_dB);
-    /// Writes one ramp step; a no-op outside a ramp.
-    /// @return false when the step was refused, which abandons the ramp where it stands.
+    /// Writes one ramp step, a no-op outside a ramp; false when the step was refused.
     bool step_mixer_ramp_();
     /// Records the mixer's current volume and mute, unless it is an echo of our own write.
     void report_mixer_change_();
@@ -166,8 +158,7 @@ private:
     /// Q32 gain being applied, walked toward target_multiplier_; guarded by device_mutex_.
     std::uint64_t current_multiplier_{Q32_ONE};
 
-    /// The persistent mixer handle and element; both null when --alsa-mixer opened nothing.
-    /// Touched only from the main loop after construction, so no lock guards them.
+    /// Null when --alsa-mixer opened nothing. Main loop only, so no lock guards the mixer fields.
     snd_mixer_t* mixer_{nullptr};
     snd_mixer_elem_t* mixer_elem_{nullptr};
     /// The control's playback dB range; valid only while mixer_elem_ is set.
@@ -175,12 +166,9 @@ private:
     long mixer_dB_max_{0};
     /// True when the control has a playback switch, so mute is hardware rather than software.
     bool mixer_has_switch_{false};
-    /// True while the control is carrying the level. A refused volume write clears it, handing the
-    /// level to the software gain; a write that succeeds sets it again. Tracked apart from the
-    /// mute so a failed switch write does not also drop the level into software, scaling it twice.
+    /// False after a refused volume write, which hands the level to the software gain.
     bool mixer_carries_volume_{false};
-    /// True while the switch is carrying the mute. Only meaningful with a switch; a control
-    /// without one, or one whose switch write was refused, leaves the mute to the software gain.
+    /// False when the mute is on the software gain: no switch, or a refused switch write.
     bool mixer_carries_mute_{false};
     /// The switch state we last set or read; an event holding it is our own echo.
     bool mixer_reported_muted_{false};
@@ -194,12 +182,10 @@ private:
     int64_t mixer_ramp_next_ms_{0};
 };
 
-/// Maps a 0-100 volume onto a hardware mixer's dB range on the given curve.
-/// The spec curve is amplitude (v/100)^1.5, i.e. 30*log10(v/100) dB below max; the cubic curve
-/// is twice that. Clamped to the control's floor.
+/// Maps a 0-100 volume onto a hardware mixer's dB range on `curve`, clamped to its floor.
 long mixer_dB_for_volume(long min, long max, uint8_t volume, MixerCurve curve = MixerCurve::kSpec);
 
-/// The inverse of mixer_dB_for_volume(): the 0-100 volume a mixer dB reading stands for.
+/// The inverse of mixer_dB_for_volume(); only the floor itself reads as volume 0.
 uint8_t volume_for_mixer_dB(long min, long max, long dB, MixerCurve curve = MixerCurve::kSpec);
 
 /// Routes libasound's diagnostics to our logger; call before any snd_* that can fail.

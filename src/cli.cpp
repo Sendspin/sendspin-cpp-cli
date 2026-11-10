@@ -876,8 +876,7 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
              "' contradict each other -- drop one");
     }
 
-    // The mixer spec names an ALSA control; no other backend has one. An unresolvable -o is
-    // left to make_audio_sink(), which names the device problem.
+    // An unresolvable -o is left to make_audio_sink(), which names the device problem.
     if (error.empty() && out.was_given(Opt::AlsaMixer)) {
         DeviceSpec spec;
         std::string reason;

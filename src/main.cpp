@@ -958,8 +958,7 @@ int main(int argc, char* argv[]) {
     } else {
         bool seeded_from_mixer = false;
 #ifdef SENDSPIN_CLI_HAVE_ALSA
-        // The mixer is the truth about the level: it wins over a remembered volume, and the
-        // hardware value is what a controller should show until the server sends its own.
+        // The mixer's level wins over a remembered one.
         bool mixer_muted = false;
         if (!opts.alsa_mixer.empty()) {
             MixerCurve mixer_curve = MixerCurve::kSpec;
@@ -980,8 +979,7 @@ int main(int argc, char* argv[]) {
             }
         }
 #endif
-        // Only when something was remembered and the mixer did not already seed the pair, since
-        // restore_volume() marks the pair as restored.
+        // Only when remembered and not seeded, since restore_volume() marks the pair as restored.
         if (remembered && !seeded_from_mixer) {
             player_listener.restore_volume(volume, muted);
             log_line(LogLevel::INFO, LOG_TAG_PLAYER, "Restored volume %u%s from %s",

@@ -136,8 +136,7 @@ void PlayerListener::restore_volume(uint8_t volume, bool muted) {
 }
 
 void PlayerListener::seed_volume(uint8_t volume, bool muted) {
-    this->sink_.set_volume(volume);
-    this->sink_.set_muted(muted);
+    // The sink already holds this level; setting it again would write a rounded value back.
     this->applied_volume_ = volume;
     this->applied_muted_ = muted;
     this->volume_source_ = VolumeSource::Hardware;
@@ -159,8 +158,7 @@ void PlayerListener::on_sink_volume_changed(uint8_t volume, bool muted) {
     this->applied_volume_ = volume;
     this->applied_muted_ = muted;
     this->volume_source_ = VolumeSource::Hardware;
-    // Through the role, not the sink: the sink already applied it, and this is what sends
-    // client/state out so a controller sees the new level.
+    // Through the role, not the sink, which already applied it: this sends client/state.
     this->player_.update_volume(volume);
     this->player_.update_muted(muted);
     this->persist_volume();
