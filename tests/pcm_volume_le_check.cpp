@@ -12,13 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-/// Checks apply_volume() against little-endian bytes; standalone so it cross-compiles for a
-/// big-endian target without GoogleTest. Exits non-zero on any mismatch.
+/// Checks apply_volume() and pcm_le_native_swap() against little-endian bytes; standalone so it
+/// cross-compiles for a big-endian target without GoogleTest. Exits non-zero on any mismatch.
 
 #include "pcm_volume.h"
 
+#include "pcm_endian.h"
+
+#include <bit>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <vector>
 
 namespace {
@@ -70,6 +74,50 @@ int mismatches(uint8_t width, uint64_t gain) {
     return bad;
 }
 
+/// The sample at `p` as this host reads `width` native-endian bytes; packed 24-bit included.
+int32_t get_native(const uint8_t* p, uint8_t width) {
+    if (width == 2) {
+        int16_t value = 0;
+        std::memcpy(&value, p, sizeof(value));
+        return value;
+    }
+    if (width == 4) {
+        int32_t value = 0;
+        std::memcpy(&value, p, sizeof(value));
+        return value;
+    }
+    // No 24-bit type to memcpy into: most significant byte first on a big-endian host.
+    uint8_t le[3] = {p[0], p[1], p[2]};
+    if constexpr (std::endian::native == std::endian::big) {
+        le[0] = p[2];
+        le[2] = p[0];
+    }
+    return get_le(le, width);
+}
+
+/// @return The number of samples pcm_le_native_swap() got wrong at this width, either way.
+int swap_mismatches(uint8_t width) {
+    const std::vector<int32_t> samples{0x123456, -0x123456, 0x7F, -2, 1, 0};
+    std::vector<uint8_t> data(samples.size() * width);
+    for (size_t i = 0; i < samples.size(); ++i) {
+        put_le(&data[i * width], width, samples[i]);
+    }
+    const std::vector<uint8_t> original = data;
+
+    int bad = 0;
+    sendspin_cli::pcm_le_native_swap(data.data(), data.size(), width);
+    for (size_t i = 0; i < samples.size(); ++i) {
+        if (get_native(&data[i * width], width) != get_le(&original[i * width], width)) {
+            ++bad;
+        }
+    }
+    sendspin_cli::pcm_le_native_swap(data.data(), data.size(), width);
+    if (data != original) {
+        ++bad;
+    }
+    return bad;
+}
+
 }  // namespace
 
 int main() {
@@ -82,6 +130,12 @@ int main() {
                         bad == 0 ? "ok" : "FAIL", bad);
             failed += bad;
         }
+    }
+    for (const uint8_t width : {2, 3, 4}) {
+        const int bad = swap_mismatches(width);
+        std::printf("%u-bit little-endian to native and back: %s (%d wrong)\n", 8U * width,
+                    bad == 0 ? "ok" : "FAIL", bad);
+        failed += bad;
     }
     return failed == 0 ? 0 : 1;
 }

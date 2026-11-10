@@ -64,7 +64,7 @@ enum class PaDirection { Output, Input };
 inline constexpr std::array<PaSampleFormat, PROBE_BIT_DEPTHS.size()> PA_FORMATS{paInt8, paInt16,
                                                                                 paInt24, paInt32};
 
-/// Maps a bit depth onto the interleaved little-endian PCM format PortAudio takes.
+/// Maps a bit depth onto PortAudio's interleaved integer format, which is native-endian.
 bool pa_format_for(uint8_t bits_per_sample, PaSampleFormat& format);
 
 /// True if the device has channels on that side.
