@@ -80,9 +80,9 @@ public:
     const PlayerView& view() const;
 
     std::optional<uint32_t> position_ms(int64_t now_ms) const;  ///< interpolated while playing
-    std::string notice(int64_t now_ms) const;                  ///< empty when none is current
-    std::string outcome_text() const;                          ///< for PairingOutcome
-    std::string no_player_reason() const;                      ///< for NoPlayer and Denied
+    std::string notice(int64_t now_ms) const;                   ///< empty when none is current
+    std::string outcome_text() const;                           ///< for PairingOutcome
+    std::string no_player_reason() const;                       ///< for NoPlayer and Denied
 
 private:
     /// What the last status poll found on the socket.
