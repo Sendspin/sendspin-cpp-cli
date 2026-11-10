@@ -694,7 +694,7 @@ check_output_delay() {
     await_child "$pid" "$EXIT_TIMEOUT_S" >/dev/null 2>&1 || true
 }
 
-# `player-vol` and `player-mute` act on this player alone with no server, `status-kv`
+# `player-vol` and `player-mute` act on this player alone with no server and log it, `status-kv`
 # leads with its version, and --fixed-volume refuses a local volume.
 check_player_controls() {
     local log="$WORK_DIR/player.log"
@@ -721,13 +721,17 @@ check_player_controls() {
     XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" status --port "$PORT_PLAYER" "${NO_CONFIG[@]}"         >"$out" 2>&1 || fail "status exited $? after player-vol. Output: $(cat "$out")"
     grep -q '^player volume: 30 (set on this player)$' "$out" ||
         fail "player-vol 30 did not reach this player: $(cat "$out")"
-    pass "player-vol sets this player's volume with no server, and status shows it"
+    wait_for_line "$log" "Player volume set to 30 locally" 5 ||
+        fail "player-vol 30 was not logged. Log: $(cat "$log")"
+    pass "player-vol sets this player's volume with no server, logs it, and status shows it"
 
     XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" player-mute on --port "$PORT_PLAYER" "${NO_CONFIG[@]}"         >/dev/null 2>&1 || fail "player-mute on exited $? against a player with no server"
     XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" status --port "$PORT_PLAYER" "${NO_CONFIG[@]}"         >"$out" 2>&1 || fail "status exited $? after player-mute. Output: $(cat "$out")"
     grep -q '^player volume: 30 (muted) (set on this player)$' "$out" ||
         fail "player-mute on did not mute this player: $(cat "$out")"
-    pass "player-mute mutes this player with no server, and status shows it"
+    wait_for_line "$log" "Player muted locally" 5 ||
+        fail "player-mute on was not logged. Log: $(cat "$log")"
+    pass "player-mute mutes this player with no server, logs it, and status shows it"
 
     kill -TERM "$pid"
     await_child "$pid" "$EXIT_TIMEOUT_S" >/dev/null 2>&1 || true

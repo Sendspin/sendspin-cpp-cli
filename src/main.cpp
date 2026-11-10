@@ -500,6 +500,14 @@ public:
                 return encode_control_reply(ControlStatus::Usage,
                                             "--fixed-volume pins this player's volume at 100", "");
             }
+            // As for `delay`: nothing else logs a level set here.
+            if (request.command == ControlCommand::PlayerVolume) {
+                log_line(LogLevel::INFO, LOG_TAG_PLAYER, "Player volume set to %u locally",
+                         static_cast<unsigned>(request.volume.value_or(DEFAULT_SINK_VOLUME)));
+            } else {
+                log_line(LogLevel::INFO, LOG_TAG_PLAYER, "Player %s locally",
+                         request.flag.value_or(false) ? "muted" : "unmuted");
+            }
             return encode_control_reply(ControlStatus::Ok, "", "");
         }
 

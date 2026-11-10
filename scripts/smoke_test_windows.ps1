@@ -101,11 +101,13 @@ try {
     $status = @(Invoke-Native { & $Binary status --port $port --config NUL })
     Check ($code -eq 0 -and ($status -join "`n") -match '(?m)^player volume: 30 \(set on this player\)$') `
         'player-vol sets this player''s volume with no server, and status shows it' "exit $code / $($status -join ' / ')"
+    Check (Wait-For { (Read-Log $log) -match 'Player volume set to 30 locally' } 5) 'and player-vol is logged' (Read-Log $log)
     Invoke-Native { & $Binary player-mute on --port $port --config NUL } | Out-Null
     $code = $LASTEXITCODE
     $status = @(Invoke-Native { & $Binary status --port $port --config NUL })
     Check ($code -eq 0 -and ($status -join "`n") -match '(?m)^player volume: 30 \(muted\) \(set on this player\)$') `
         'player-mute mutes this player with no server, and status shows it' "exit $code / $($status -join ' / ')"
+    Check (Wait-For { (Read-Log $log) -match 'Player muted locally' } 5) 'and player-mute is logged' (Read-Log $log)
 
     & taskkill.exe /PID $player.Id | Out-Null
     Check ($player.WaitForExit(10000)) 'taskkill (no /F) stops it'
