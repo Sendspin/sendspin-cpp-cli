@@ -34,6 +34,7 @@ readonly PORT_CONFIG=39287
 readonly PORT_DELAY=39288
 readonly PORT_REDACTION=39289
 readonly PORT_INPUT=39291
+readonly PORT_PLAYER=39292
 
 # Not a phase port: the address the redaction check dials, chosen so nothing answers it.
 readonly PORT_NO_SERVER=39290
@@ -693,6 +694,61 @@ check_output_delay() {
     await_child "$pid" "$EXIT_TIMEOUT_S" >/dev/null 2>&1 || true
 }
 
+# `player-vol` and `player-mute` act on this player alone with no server, `status-kv`
+# leads with its version, and --fixed-volume refuses a local volume.
+check_player_controls() {
+    local log="$WORK_DIR/player.log"
+    local fixed_log="$WORK_DIR/player-fixed.log"
+    local socket="$CONTROL_DIR/sendspin-cli-$PORT_PLAYER.sock"
+    local out="$WORK_DIR/player-status.out"
+    local -a player=(--no-mdns -o null --port "$PORT_PLAYER" --state-dir "$WORK_DIR/player-state")
+
+    mkdir -p "$WORK_DIR/player-state"
+    XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" "${player[@]}" "${NO_CONFIG[@]}" >"$log" 2>&1 &
+    local pid=$!
+    STARTED_PIDS+=("$pid")
+    wait_for_line "$log" "listening on port $PORT_PLAYER" "$BOOT_TIMEOUT_S" ||
+        fail "no ready log within ${BOOT_TIMEOUT_S}s. Log: $(cat "$log")"
+    wait_for_socket "$socket" "$BOOT_TIMEOUT_S" ||
+        fail "no control socket at $socket within ${BOOT_TIMEOUT_S}s. Log: $(cat "$log")"
+
+    XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" status-kv --port "$PORT_PLAYER" "${NO_CONFIG[@]}"         >"$out" 2>&1 || fail "status-kv exited $?. Output: $(cat "$out")"
+    [ "$(head -n 1 "$out")" = "version=1" ] ||
+        fail "status-kv did not lead with version=1: $(cat "$out")"
+    pass "status-kv leads with version=1"
+
+    XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" player-vol 30 --port "$PORT_PLAYER" "${NO_CONFIG[@]}"         >/dev/null 2>&1 || fail "player-vol 30 exited $? against a player with no server"
+    XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" status --port "$PORT_PLAYER" "${NO_CONFIG[@]}"         >"$out" 2>&1 || fail "status exited $? after player-vol. Output: $(cat "$out")"
+    grep -q '^player volume: 30 (set on this player)$' "$out" ||
+        fail "player-vol 30 did not reach this player: $(cat "$out")"
+    pass "player-vol sets this player's volume with no server, and status shows it"
+
+    XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" player-mute on --port "$PORT_PLAYER" "${NO_CONFIG[@]}"         >/dev/null 2>&1 || fail "player-mute on exited $? against a player with no server"
+    XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" status --port "$PORT_PLAYER" "${NO_CONFIG[@]}"         >"$out" 2>&1 || fail "status exited $? after player-mute. Output: $(cat "$out")"
+    grep -q '^player volume: 30 (muted) (set on this player)$' "$out" ||
+        fail "player-mute on did not mute this player: $(cat "$out")"
+    pass "player-mute mutes this player with no server, and status shows it"
+
+    kill -TERM "$pid"
+    await_child "$pid" "$EXIT_TIMEOUT_S" >/dev/null 2>&1 || true
+    wait_for_absent "$socket" "$EXIT_TIMEOUT_S" || fail "the player exited but left $socket behind"
+
+    XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" "${player[@]}" --fixed-volume "${NO_CONFIG[@]}"         >"$fixed_log" 2>&1 &
+    pid=$!
+    STARTED_PIDS+=("$pid")
+    wait_for_line "$fixed_log" "listening on port $PORT_PLAYER" "$BOOT_TIMEOUT_S" ||
+        fail "the --fixed-volume player never came up. Log: $(cat "$fixed_log")"
+    wait_for_socket "$socket" "$BOOT_TIMEOUT_S" ||
+        fail "the --fixed-volume player bound no control socket"
+    local code=0
+    XDG_RUNTIME_DIR="$CONTROL_DIR" "$BIN" player-vol 30 --port "$PORT_PLAYER" "${NO_CONFIG[@]}"         >/dev/null 2>"$out" || code=$?
+    [ "$code" -eq 2 ] || fail "player-vol under --fixed-volume exited $code, not 2: $(cat "$out")"
+    pass "player-vol under --fixed-volume is refused with exit 2"
+
+    kill -TERM "$pid" 2>/dev/null || true
+    await_child "$pid" "$EXIT_TIMEOUT_S" >/dev/null 2>&1 || true
+}
+
 # A -s URL carrying credentials is logged with them masked, and no line of ours prints them.
 # The library's own `sendspin.*` lines are excluded: v0.7.0+ logs the dialled URL through a bare
 # fprintf with no sink hook, so nothing here can redact them -- see docs/ROADMAP.md.
@@ -776,6 +832,7 @@ main() {
     check_no_control
     check_missing_runtime_dir
     check_output_delay
+    check_player_controls
     check_config_file
     check_credential_redaction
     check_input
