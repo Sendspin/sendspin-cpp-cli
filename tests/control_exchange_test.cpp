@@ -24,6 +24,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <future>
 #include <string>
 #include <thread>
 
@@ -161,6 +162,36 @@ TEST(ControlExchange, AnErrorReplyCarriesItsReason) {
     EXPECT_EQ(result.status, ControlStatus::Unsupported);
     EXPECT_EQ(result.reason, "nope");
     EXPECT_TRUE(result.payload.empty());
+}
+
+TEST(ControlExchange, APlayerThatNeverAnswersTimesOut) {
+    const ScratchDir dir;
+    ASSERT_TRUE(dir.created());
+    // Bound but never pumped: the connection waits in the backlog and nothing ever replies.
+    ControlSocket socket;
+    std::string error;
+    ASSERT_EQ(socket.open(dir.socket_path(), error), ControlSocketStatus::Ok) << error;
+
+    std::promise<ControlExchange> promise;
+    std::future<ControlExchange> future = promise.get_future();
+    const auto start = std::chrono::steady_clock::now();
+    std::thread client([&promise, &dir] {
+        promise.set_value(exchange_control_request(ControlRequest{}, dir.socket_path(), ""));
+    });
+    const bool answered = future.wait_for(std::chrono::seconds(6)) == std::future_status::ready;
+    if (!answered) {
+        // Closing the listener resets the waiting connection, so the client returns and joins.
+        socket.close();
+    }
+    client.join();
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+
+    ASSERT_TRUE(answered) << "the exchange was still waiting after 6 s";
+    const ControlExchange result = future.get();
+    EXPECT_EQ(result.status, ControlStatus::Failed);
+    EXPECT_EQ(result.reason, "the player did not answer within 3 s");
+    EXPECT_GE(elapsed, std::chrono::milliseconds(2500));
+    EXPECT_LT(elapsed, std::chrono::milliseconds(4500));
 }
 
 }  // namespace

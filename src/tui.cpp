@@ -95,7 +95,8 @@ public:
           state_(state),
           path_(std::move(path)),
           absent_reason_(std::move(absent_reason)),
-          thread_([this] { this->run_(); }) {}
+          thread_([this] { this->run_(); }),
+          ticker_([this] { this->tick_(); }) {}
 
     ~Worker() {
         this->stop();
@@ -122,7 +123,12 @@ public:
             const std::lock_guard<std::mutex> lock(this->mutex_);
             this->stopping_ = true;
             this->wake_.notify_one();
+            this->tick_wake_.notify_one();
         }
+        if (this->ticker_.joinable()) {
+            this->ticker_.join();
+        }
+        // At worst this waits out one exchange's 3 s bound.
         if (this->thread_.joinable()) {
             this->thread_.join();
         }
@@ -145,10 +151,9 @@ private:
     void run_() {
         using Clock = std::chrono::steady_clock;
         Clock::time_point next_poll = Clock::now();
-        Clock::time_point next_tick = next_poll;
         std::unique_lock<std::mutex> lock(this->mutex_);
         while (true) {
-            this->wake_.wait_until(lock, std::min(next_poll, next_tick), [this] {
+            this->wake_.wait_until(lock, next_poll, [this] {
                 return this->stopping_ || !this->requests_.empty() ||
                        this->token_press_.has_value();
             });
@@ -186,12 +191,16 @@ private:
                 this->post_([reply, at](TuiState& state) { state.model.on_status(reply, at); });
                 next_poll = Clock::now() + POLL_INTERVAL;
             }
-
-            if (Clock::now() >= next_tick) {
-                this->screen_.PostEvent(ftxui::Event::Custom);
-                next_tick = Clock::now() + TICK_INTERVAL;
-            }
             lock.lock();
+        }
+    }
+
+    /// Moves the progress bar. Its own thread, so a slow exchange never freezes the bar.
+    void tick_() {
+        const auto stopping = [this] { return this->stopping_; };
+        std::unique_lock<std::mutex> lock(this->mutex_);
+        while (!this->tick_wake_.wait_for(lock, TICK_INTERVAL, stopping)) {
+            this->screen_.PostEvent(ftxui::Event::Custom);
         }
     }
 
@@ -202,11 +211,13 @@ private:
 
     std::mutex mutex_;
     std::condition_variable wake_;
+    std::condition_variable tick_wake_;  ///< apart from wake_, so a key never wakes the ticker
     std::deque<ControlRequest> requests_;
     std::optional<uint64_t> token_press_;
     bool stopping_{false};
 
     std::thread thread_;  ///< last, so it starts after everything it reads
+    std::thread ticker_;
 };
 
 std::optional<TuiKey> key_for(const ftxui::Event& event) {

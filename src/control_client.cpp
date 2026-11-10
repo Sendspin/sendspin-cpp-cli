@@ -34,6 +34,10 @@ namespace {
 /// The longest reply this will read, in bytes.
 constexpr size_t MAX_REPLY_BYTES = 64 * 1024;
 
+/// How long one send or receive may wait, so a wedged player cannot hang the caller.
+constexpr unsigned ANSWER_TIMEOUT_MS = 3000;
+constexpr const char* ANSWER_TIMEOUT_REASON = "the player did not answer within 3 s";
+
 /// Everything up to the first newline, and everything after it.
 void split_first_line(const std::string& reply, std::string& first, std::string& rest) {
     const size_t newline = reply.find('\n');
@@ -106,7 +110,8 @@ socket_t connect_to_socket(const std::string& path, std::string& error, bool& de
 }
 
 /// Writes the whole of `text`, or says why it could not.
-bool write_all(socket_t fd, const std::string& text, std::string& error) {
+/// @param timed_out Set when the player stopped taking the request.
+bool write_all(socket_t fd, const std::string& text, std::string& error, bool& timed_out) {
     size_t written = 0;
     while (written < text.size()) {
         const long wrote = send_bytes(fd, text.data() + written, text.size() - written);
@@ -114,8 +119,14 @@ bool write_all(socket_t fd, const std::string& text, std::string& error) {
             written += static_cast<size_t>(wrote);
             continue;
         }
-        if (wrote < 0 && socket_interrupted(socket_error())) {
+        const int reason = wrote < 0 ? socket_error() : 0;
+        if (wrote < 0 && socket_interrupted(reason)) {
             continue;
+        }
+        if (wrote < 0 && socket_timed_out(reason)) {
+            timed_out = true;
+            error = ANSWER_TIMEOUT_REASON;
+            return false;
         }
         error = "cannot send the request: " +
                 (wrote < 0 ? socket_error_text(socket_error()) : std::string("short write"));
@@ -144,6 +155,10 @@ bool read_reply(socket_t fd, std::string& reply, std::string& error) {
         const int reason = socket_error();
         if (socket_interrupted(reason)) {
             continue;
+        }
+        if (socket_timed_out(reason)) {
+            error = ANSWER_TIMEOUT_REASON;
+            return false;
         }
         error = "cannot read the reply: " + socket_error_text(reason);
         return false;
@@ -177,7 +192,23 @@ ControlExchange exchange_control_request(const ControlRequest& request, const st
         return result;
     }
 
-    const bool sent = write_all(fd, encode_control_request(request) + "\n", error);
+    if (!set_io_timeout(fd, ANSWER_TIMEOUT_MS)) {
+        result.status = ControlStatus::Failed;
+        result.reason =
+            "cannot bound the wait for the player: " + socket_error_text(socket_error());
+        close_socket(fd);
+        return result;
+    }
+
+    bool timed_out = false;
+    const bool sent = write_all(fd, encode_control_request(request) + "\n", error, timed_out);
+    if (timed_out) {
+        // Reading too would wait out a second bound for the same silent player.
+        close_socket(fd);
+        result.status = ControlStatus::Failed;
+        result.reason = error;
+        return result;
+    }
 
     std::string reply;
     // Read even after a failed write: the daemon's `error` reply beats our guess.

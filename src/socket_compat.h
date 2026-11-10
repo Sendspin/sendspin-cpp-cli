@@ -25,6 +25,7 @@
 #else
 #include <fcntl.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -77,6 +78,24 @@ inline bool set_nonblocking(socket_t socket) {
 #endif
 }
 
+/// Bounds each send and receive on a blocking socket; one that runs out fails, and
+/// socket_timed_out() recognises its error.
+/// @return false with socket_error() set when the bound could not be set.
+inline bool set_io_timeout(socket_t socket, unsigned timeout_ms) {
+#ifdef _WIN32
+    const DWORD timeout = timeout_ms;
+    const char* value = reinterpret_cast<const char*>(&timeout);
+    return ::setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, value, sizeof(timeout)) == 0 &&
+           ::setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO, value, sizeof(timeout)) == 0;
+#else
+    timeval timeout{};
+    timeout.tv_sec = static_cast<time_t>(timeout_ms / 1000U);
+    timeout.tv_usec = static_cast<suseconds_t>((timeout_ms % 1000U) * 1000U);
+    return ::setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) == 0 &&
+           ::setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) == 0;
+#endif
+}
+
 /// Bytes read, 0 at end of stream, negative on error.
 inline long receive_bytes(socket_t socket, char* buffer, size_t length) {
 #ifdef _WIN32
@@ -115,6 +134,15 @@ inline bool socket_interrupted(int error) {
 inline bool socket_would_block(int error) {
 #ifdef _WIN32
     return error == WSAEWOULDBLOCK;
+#else
+    return error == EAGAIN || error == EWOULDBLOCK;
+#endif
+}
+
+/// A blocking call that ran out of the time set_io_timeout() gave it.
+inline bool socket_timed_out(int error) {
+#ifdef _WIN32
+    return error == WSAETIMEDOUT;
 #else
     return error == EAGAIN || error == EWOULDBLOCK;
 #endif
