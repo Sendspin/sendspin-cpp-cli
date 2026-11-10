@@ -79,12 +79,15 @@ ControlRequest make_request(ControlCommand command) {
     return request;
 }
 
-std::string outcome_text_for(const PlayerView& view) {
+/// @param name The paired server's name, or empty when unknown.
+std::string outcome_text_for(const PlayerView& view, const std::string& name) {
     if (view.last_pairing_outcome == "paired") {
-        if (view.last_pairing_server_id == view.server_id) {
-            return "Paired with " + view.server_name;
+        if (!name.empty()) {
+            return "Paired with " + name;
         }
-        return "Paired with " + view.last_pairing_server_id.substr(0, SHOWN_ID_CHARS) + "...";
+        const std::string& id = view.last_pairing_server_id;
+        return "Paired with " +
+               (id.size() > SHOWN_ID_CHARS ? id.substr(0, SHOWN_ID_CHARS) + "..." : id);
     }
     if (view.last_pairing_outcome == "failed") {
         return "Pairing failed: " + view.last_pairing_reason;
@@ -123,6 +126,12 @@ void TuiModel::on_status(const ControlExchange& reply, int64_t now_ms) {
         return;
     }
 
+    if (!view.pairing_server_id.empty() && view.pairing_server_id == view.server_id &&
+        !view.server_name.empty()) {
+        this->pairing_id_seen_ = view.pairing_server_id;
+        this->pairing_name_seen_ = view.server_name;
+    }
+
     // Back on the same player, whose counter went on: what ended while away is still news.
     const bool resumed =
         this->link_ == Link::Attached ||
@@ -132,9 +141,15 @@ void TuiModel::on_status(const ControlExchange& reply, int64_t now_ms) {
         // Whatever ended before this attach is history, not news.
         this->pairing_baseline_ = view.last_pairing_attempt;
     } else if (view.last_pairing_attempt > this->pairing_baseline_) {
+        std::string name;
+        if (view.last_pairing_server_id == view.server_id && !view.server_name.empty()) {
+            name = view.server_name;
+        } else if (view.last_pairing_server_id == this->pairing_id_seen_) {
+            name = this->pairing_name_seen_;
+        }
         this->pairing_baseline_ = view.last_pairing_attempt;
         this->outcome_since_ms_ = now_ms;
-        this->outcome_text_ = outcome_text_for(view);
+        this->outcome_text_ = outcome_text_for(view, name);
     }
     // The window stays open until the attempt concludes, so the allow holds until then.
     if (this->allowed_after_.has_value() &&
@@ -287,13 +302,17 @@ void TuiModel::note_sent(const ControlRequest& request) {
     }
 }
 
-void TuiModel::toggle_token() {
+bool TuiModel::toggle_token(int64_t now_ms) {
+    if (this->screen(now_ms) != TuiScreen::Main) {
+        return false;
+    }
     this->token_shown_ = !this->token_shown_;
     if (!this->token_shown_) {
         // It is a password: forget it once hidden, and fetch it afresh when shown again.
         this->token_fetched_ = false;
         this->token_.reset();
     }
+    return true;
 }
 
 bool TuiModel::wants_token() const {

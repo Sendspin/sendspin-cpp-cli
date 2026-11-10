@@ -66,7 +66,8 @@ group keys do nothing until the server has sent the group's state. A key the pla
 refuses shows as a notice rather than an error.
 
 **`p` shows the pairing token, so treat it like a password.** It is fetched when you show it
-and forgotten when you hide it again.
+and forgotten when you hide it again. It works on the main screen only, the one with the
+footer it shows in; on a pairing screen or a screen with no player, `p` does nothing.
 
 ## Pairing
 
@@ -86,7 +87,7 @@ over so the code cannot be missed:
   `Pairing failed: <reason>`, or `The server stopped pairing`, and then the main screen
   returns. An attempt that ended before you opened the TUI is not replayed.
 
-While a pairing screen is up, only `y` and `n` (when asked), `p` and `q` do anything; the
+While a pairing screen is up, only `y` and `n` (when asked) and `q` do anything; the
 playback keys wait until it is over.
 
 ## When there is no player to show

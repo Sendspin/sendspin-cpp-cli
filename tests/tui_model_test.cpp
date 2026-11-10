@@ -235,6 +235,37 @@ TEST(TuiModel, APairingNamesTheServerOrItsId) {
     EXPECT_EQ(model.outcome_text(), "The server stopped pairing");
 }
 
+TEST(TuiModel, AnUnnamedServerIsShownByItsIdCutOnlyWhenLong) {
+    StatusSnapshot snapshot = attached_snapshot();
+    snapshot.server_name.clear();
+    TuiModel model = model_with(snapshot);
+
+    snapshot.last_pairing = {1, SERVER_ID, PairingOutcome::Paired, ""};
+    model.on_status(ok(snapshot), 1000);
+    EXPECT_EQ(model.outcome_text(), "Paired with OraobU4lq7Zx...");
+
+    snapshot.last_pairing = {2, "abc123", PairingOutcome::Paired, ""};
+    model.on_status(ok(snapshot), 2000);
+    EXPECT_EQ(model.outcome_text(), "Paired with abc123");
+}
+
+TEST(TuiModel, APairingKeepsTheNameSeenDuringTheAttempt) {
+    StatusSnapshot snapshot = attached_snapshot();
+    snapshot.pairing_server_id = SERVER_ID;
+    snapshot.pairing_code = "042735";
+    TuiModel model = model_with(snapshot);
+
+    // Right after success the re-handshake can leave the server unknown for a poll.
+    snapshot.pairing_server_id.clear();
+    snapshot.pairing_code.clear();
+    snapshot.server_id.clear();
+    snapshot.server_name.clear();
+    snapshot.last_pairing = {1, SERVER_ID, PairingOutcome::Paired, ""};
+    model.on_status(ok(snapshot), 1000);
+    EXPECT_EQ(model.screen(1000), TuiScreen::PairingOutcome);
+    EXPECT_EQ(model.outcome_text(), "Paired with Music Assistant");
+}
+
 TEST(TuiModel, ReattachingResetsThePairingBaseline) {
     StatusSnapshot snapshot = attached_snapshot();
     snapshot.last_pairing = {5, SERVER_ID, PairingOutcome::Paired, ""};
@@ -467,7 +498,7 @@ TEST(TuiModel, TheTokenIsFetchedOnceWhileShown) {
     TuiModel model = model_with(attached_snapshot());
     EXPECT_FALSE(model.wants_token());
 
-    model.toggle_token();
+    EXPECT_TRUE(model.toggle_token(0));
     EXPECT_TRUE(model.wants_token());
     ControlExchange reply;
     reply.status = ControlStatus::Ok;
@@ -477,10 +508,32 @@ TEST(TuiModel, TheTokenIsFetchedOnceWhileShown) {
     EXPECT_EQ(model.token(), std::optional<std::string>("s3cret"));
 
     // Hiding forgets it; showing again asks again.
-    model.toggle_token();
+    model.toggle_token(0);
     EXPECT_FALSE(model.token().has_value());
     EXPECT_FALSE(model.wants_token());
-    model.toggle_token();
+    model.toggle_token(0);
+    EXPECT_TRUE(model.wants_token());
+}
+
+TEST(TuiModel, TheTokenKeyWorksOnlyOnTheMainScreen) {
+    // With no player, a fetch could only fail, and its "unavailable" would outlast the attach.
+    TuiModel model;
+    model.on_status(refused(ControlStatus::NoDaemon, "connect: no such file"), 0);
+    EXPECT_FALSE(model.toggle_token(0));
+    EXPECT_FALSE(model.wants_token());
+
+    // A takeover hides the footer the token shows in.
+    StatusSnapshot snapshot = attached_snapshot();
+    snapshot.pairing_server_id = SERVER_ID;
+    snapshot.pairing_code = "042735";
+    model.on_status(ok(snapshot), 1000);
+    EXPECT_FALSE(model.toggle_token(1000));
+    EXPECT_FALSE(model.wants_token());
+
+    snapshot.pairing_server_id.clear();
+    snapshot.pairing_code.clear();
+    model.on_status(ok(snapshot), 2000);
+    EXPECT_TRUE(model.toggle_token(2000));
     EXPECT_TRUE(model.wants_token());
 }
 

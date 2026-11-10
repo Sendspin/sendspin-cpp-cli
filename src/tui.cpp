@@ -543,19 +543,21 @@ int run_tui(const std::string& path, const std::string& absent_reason) {
             screen.Exit();
             return true;
         }
-        const TuiScreen shown = state.model.screen(now_ms());
-        // A takeover answers only y/n (when asked), p and q; nothing behind it moves.
+        const int64_t now = now_ms();
+        const TuiScreen shown = state.model.screen(now);
+        // A takeover answers only y/n (when asked) and q; nothing behind it moves.
         const bool answers = *key == TuiKey::Yes || *key == TuiKey::No;
-        if (is_takeover(shown) && *key != TuiKey::Token &&
-            !(shown == TuiScreen::PairingConfirm && answers)) {
+        if (is_takeover(shown) && !(shown == TuiScreen::PairingConfirm && answers)) {
             return true;
         }
         if (*key == TuiKey::Token) {
-            state.model.toggle_token();
-            state.token_shown = !state.token_shown;
-            state.token_presses++;
-            if (state.model.wants_token()) {
-                worker.fetch_token(state.token_presses);
+            // Only the main screen has the footer the token shows in.
+            if (state.model.toggle_token(now)) {
+                state.token_shown = !state.token_shown;
+                state.token_presses++;
+                if (state.model.wants_token()) {
+                    worker.fetch_token(state.token_presses);
+                }
             }
             return true;
         }

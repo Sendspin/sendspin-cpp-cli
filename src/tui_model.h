@@ -76,7 +76,10 @@ public:
     /// Tell the model a request went out, so an allowed attempt is not offered again.
     void note_sent(const ControlRequest& request);
 
-    void toggle_token();       ///< `p`: show or hide; the view asks for it once
+    /// `p`: show or hide; the view asks for it once. Only the main screen has the footer that
+    /// shows it, so elsewhere this does nothing.
+    /// @return whether it toggled.
+    bool toggle_token(int64_t now_ms);
     bool wants_token() const;  ///< shown and not yet fetched
     const std::optional<std::string>& token() const;
 
@@ -103,6 +106,10 @@ private:
     uint32_t pairing_baseline_{0};
     /// The last attached player's client id, kept across a detach to recognise it coming back.
     std::string attached_client_id_;
+    /// The server a pairing was last under way with, and its name then: right after success the
+    /// re-handshake can leave the connected server unknown for a poll.
+    std::string pairing_id_seen_;
+    std::string pairing_name_seen_;
     /// Set when `y` went out, to the attempt counter then; cleared when that attempt ends.
     std::optional<uint32_t> allowed_after_{};
     std::optional<int64_t> outcome_since_ms_{};
