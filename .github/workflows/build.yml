@@ -79,7 +79,7 @@ jobs:
 
           # Sound-server backends pinned off: brew could pull libpulse in without a commit.
           - name: macos-arm64
-            runner: macos-14
+            runner: macos-15
             arm32: ''
             with_mdns: 'ON'
             with_portaudio: 'OFF'
