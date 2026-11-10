@@ -62,6 +62,7 @@ private:
 
     PaStream* stream_{nullptr};
     uint32_t rate_{0};
+    uint8_t bytes_per_sample_{0};
     size_t bytes_per_frame_{0};
 
     /// The callback is the producer, read() the consumer.

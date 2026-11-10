@@ -15,6 +15,7 @@
 #include "portaudio_source.h"
 
 #include "log.h"
+#include "pcm_endian.h"
 
 #ifdef SENDSPIN_CLI_HAVE_COREAUDIO
 #include "coreaudio_permission.h"
@@ -212,8 +213,8 @@ bool PortAudioSource::open(const StreamFormat& format) {
 
     // Everything the callback reads is set before the stream starts.
     this->rate_ = format.sample_rate;
-    this->bytes_per_frame_ =
-        static_cast<size_t>(format.channels) * (static_cast<size_t>(format.bit_depth) / 8U);
+    this->bytes_per_sample_ = static_cast<uint8_t>(format.bit_depth / 8U);
+    this->bytes_per_frame_ = static_cast<size_t>(format.channels) * this->bytes_per_sample_;
     this->frames_captured_ = 0;
     this->frames_read_ = 0;
     this->epoch_us_.store(0);
@@ -303,6 +304,8 @@ int PortAudioSource::read(uint8_t* data, size_t length, uint32_t timeout_ms,
     // Loaded before the read: the callback publishes it before the frames it covers.
     const int64_t epoch_us = this->epoch_us_.load();
     this->ring_.read(data, bytes);
+    // PortAudio captured native-endian; the player sends little-endian.
+    pcm_le_native_swap(data, bytes, this->bytes_per_sample_);
     capture_time_us = (epoch_us == 0) ? 0
                                       : epoch_us + static_cast<int64_t>(this->frames_read_) *
                                                        US_PER_S / this->rate_;
