@@ -21,6 +21,17 @@
 #include <gtest/gtest.h>
 #include <sys/stat.h>
 
+#ifndef _WIN32
+#include <fcntl.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
+
+#include <cerrno>
+#include <cstring>
+#include <vector>
+#endif
+
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -193,6 +204,63 @@ TEST(ControlExchange, APlayerThatNeverAnswersTimesOut) {
     EXPECT_GE(elapsed, std::chrono::milliseconds(2500));
     EXPECT_LT(elapsed, std::chrono::milliseconds(4500));
 }
+
+#ifndef _WIN32
+// Not on Windows, whose AF_UNIX refuses a connect to a full backlog at once. Linux instead waits
+// for room, bounded only by SO_SNDTIMEO.
+TEST(ControlExchange, AFullBacklogTimesOutTheConnect) {
+    const ScratchDir dir;
+    ASSERT_TRUE(dir.created());
+    // Bound but never pumped, so nothing ever leaves the accept backlog.
+    ControlSocket socket;
+    std::string error;
+    ASSERT_EQ(socket.open(dir.socket_path(), error), ControlSocketStatus::Ok) << error;
+
+    sockaddr_un address = {};
+    address.sun_family = AF_UNIX;
+    std::strncpy(address.sun_path, dir.socket_path().c_str(), sizeof(address.sun_path) - 1);
+    std::vector<int> fillers;
+    bool full = false;
+    while (!full && fillers.size() < 64) {
+        const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+        ASSERT_GE(fd, 0);
+        ASSERT_EQ(::fcntl(fd, F_SETFL, ::fcntl(fd, F_GETFL, 0) | O_NONBLOCK), 0);
+        if (::connect(fd, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == 0) {
+            fillers.push_back(fd);
+            continue;
+        }
+        const int reason = errno;
+        ::close(fd);
+        ASSERT_TRUE(reason == EAGAIN || reason == EWOULDBLOCK) << std::strerror(reason);
+        full = true;
+    }
+    ASSERT_TRUE(full) << "the backlog never filled";
+
+    std::promise<ControlExchange> promise;
+    std::future<ControlExchange> future = promise.get_future();
+    const auto start = std::chrono::steady_clock::now();
+    std::thread client([&promise, &dir] {
+        promise.set_value(exchange_control_request(ControlRequest{}, dir.socket_path(), ""));
+    });
+    const bool answered = future.wait_for(std::chrono::seconds(6)) == std::future_status::ready;
+    if (!answered) {
+        // Closing the listener wakes the waiting connect, so the client returns and joins.
+        socket.close();
+    }
+    client.join();
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+    for (const int fd : fillers) {
+        ::close(fd);
+    }
+
+    ASSERT_TRUE(answered) << "the connect was still waiting after 6 s";
+    const ControlExchange result = future.get();
+    EXPECT_EQ(result.status, ControlStatus::Failed);
+    EXPECT_EQ(result.reason, "the player did not answer within 3 s");
+    EXPECT_GE(elapsed, std::chrono::milliseconds(2500));
+    EXPECT_LT(elapsed, std::chrono::milliseconds(4500));
+}
+#endif
 
 }  // namespace
 }  // namespace sendspin_cli

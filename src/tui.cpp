@@ -31,6 +31,7 @@
 #endif
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <condition_variable>
@@ -128,7 +129,7 @@ public:
         if (this->ticker_.joinable()) {
             this->ticker_.join();
         }
-        // At worst this waits out one exchange's 3 s bound.
+        // At worst this waits out the one exchange in flight, bounded at 3 s.
         if (this->thread_.joinable()) {
             this->thread_.join();
         }
@@ -165,7 +166,11 @@ private:
             const std::optional<uint64_t> token_press = std::exchange(this->token_press_, {});
             lock.unlock();
 
+            // Checked before every exchange, so a quit waits out at most the one in flight.
             for (const ControlRequest& request : requests) {
+                if (this->stopping_) {
+                    return;
+                }
                 const ControlExchange reply =
                     exchange_control_request(request, this->path_, this->absent_reason_);
                 const int64_t at = now_ms();
@@ -175,6 +180,9 @@ private:
                 next_poll = Clock::now();
             }
 
+            if (this->stopping_) {
+                return;
+            }
             if (token_press.has_value()) {
                 const ControlExchange reply = this->exchange_(ControlCommand::PairToken);
                 this->post_([reply, press = *token_press](TuiState& state) {
@@ -185,6 +193,9 @@ private:
                 });
             }
 
+            if (this->stopping_) {
+                return;
+            }
             if (Clock::now() >= next_poll) {
                 const ControlExchange reply = this->exchange_(ControlCommand::StatusKv);
                 const int64_t at = now_ms();
@@ -197,7 +208,7 @@ private:
 
     /// Moves the progress bar. Its own thread, so a slow exchange never freezes the bar.
     void tick_() {
-        const auto stopping = [this] { return this->stopping_; };
+        const auto stopping = [this] { return this->stopping_.load(); };
         std::unique_lock<std::mutex> lock(this->mutex_);
         while (!this->tick_wake_.wait_for(lock, TICK_INTERVAL, stopping)) {
             this->screen_.PostEvent(ftxui::Event::Custom);
@@ -214,7 +225,8 @@ private:
     std::condition_variable tick_wake_;  ///< apart from wake_, so a key never wakes the ticker
     std::deque<ControlRequest> requests_;
     std::optional<uint64_t> token_press_;
-    bool stopping_{false};
+    /// Set under `mutex_` for the waits; atomic so run_() can check it between exchanges.
+    std::atomic<bool> stopping_{false};
 
     std::thread thread_;  ///< last, so it starts after everything it reads
     std::thread ticker_;

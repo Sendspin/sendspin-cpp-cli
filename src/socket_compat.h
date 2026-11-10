@@ -168,9 +168,10 @@ inline std::string socket_error_text(int error) {
 
 /// Why connect() failed, as the subcommand explains it.
 enum class ConnectFailure {
-    Missing,  ///< no socket file at the path
-    Refused,  ///< a file, but nothing accepting
-    Denied,   ///< not this user's to connect to
+    Missing,   ///< no socket file at the path
+    Refused,   ///< a file, but nothing accepting
+    Denied,    ///< not this user's to connect to
+    TimedOut,  ///< nothing made room within set_io_timeout()'s bound
     Other,
 };
 
@@ -182,6 +183,8 @@ inline ConnectFailure classify_connect_error(int error) {
             return ConnectFailure::Refused;
         case WSAEACCES:
             return ConnectFailure::Denied;
+        case WSAETIMEDOUT:
+            return ConnectFailure::TimedOut;
         default:
             return ConnectFailure::Other;
     }
@@ -194,6 +197,13 @@ inline ConnectFailure classify_connect_error(int error) {
         case EACCES:
         case EPERM:
             return ConnectFailure::Denied;
+        // A blocking connect() to a full backlog waits out SO_SNDTIMEO, then says EAGAIN.
+        case EAGAIN:
+#if EWOULDBLOCK != EAGAIN
+        case EWOULDBLOCK:
+#endif
+        case ETIMEDOUT:
+            return ConnectFailure::TimedOut;
         default:
             return ConnectFailure::Other;
     }

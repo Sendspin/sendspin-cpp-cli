@@ -50,9 +50,12 @@ void split_first_line(const std::string& reply, std::string& first, std::string&
     rest = reply.substr(newline + 1);
 }
 
-/// Connects to `path`, or explains why not: no socket, nothing accepting, or no permission.
-socket_t connect_to_socket(const std::string& path, std::string& error, bool& denied) {
-    denied = false;
+/// Connects to `path`, or explains why not in `result`: NoDaemon for no socket, nothing
+/// accepting or no permission, Failed for a player that would not make room in time.
+socket_t connect_to_socket(const std::string& path, ControlExchange& result) {
+    result.status = ControlStatus::NoDaemon;
+    result.denied = false;
+    std::string& error = result.reason;
     // Re-checked because a memcpy into sun_path follows.
     if (!control_socket_path_fits(path)) {
         error = "control socket path '" + path + "' does not fit a Unix socket address (" +
@@ -68,6 +71,15 @@ socket_t connect_to_socket(const std::string& path, std::string& error, bool& de
     const socket_t fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd == INVALID_SOCKET_HANDLE) {
         error = "cannot create a socket: " + socket_error_text(socket_error());
+        return INVALID_SOCKET_HANDLE;
+    }
+
+    // Before connect(): on Linux, a wedged player's full backlog would otherwise block it forever.
+    // Windows refuses a full backlog at once, and its connect() takes no bound from this.
+    if (!set_io_timeout(fd, ANSWER_TIMEOUT_MS)) {
+        result.status = ControlStatus::Failed;
+        error = "cannot bound the wait for the player: " + socket_error_text(socket_error());
+        close_socket(fd);
         return INVALID_SOCKET_HANDLE;
     }
 
@@ -88,7 +100,10 @@ socket_t connect_to_socket(const std::string& path, std::string& error, bool& de
         failure = ConnectFailure::Missing;
     }
 #endif
-    if (failure == ConnectFailure::Missing) {
+    if (failure == ConnectFailure::TimedOut) {
+        result.status = ControlStatus::Failed;
+        error = ANSWER_TIMEOUT_REASON;
+    } else if (failure == ConnectFailure::Missing) {
         error = "no sendspin-cli is listening on " + path +
                 ". Start one, or point this at the right socket with --control-socket -- and "
                 "note that a non-default --port moves the default path, so the same --port has "
@@ -102,7 +117,7 @@ socket_t connect_to_socket(const std::string& path, std::string& error, bool& de
         error = "not allowed to connect to " + path +
                 ": the socket is 0600, so only the user running the player can drive it "
                 "-- under the system service, run it with sudo";
-        denied = true;
+        result.denied = true;
     } else {
         error = "cannot connect to " + path + ": " + socket_error_text(reason);
     }
@@ -184,22 +199,13 @@ ControlExchange exchange_control_request(const ControlRequest& request, const st
         return result;
     }
 
-    std::string error;
-    const socket_t fd = connect_to_socket(path, error, result.denied);
+    const socket_t fd = connect_to_socket(path, result);
     if (fd == INVALID_SOCKET_HANDLE) {
-        result.status = ControlStatus::NoDaemon;
-        result.reason = error;
         return result;
     }
+    result.reason.clear();
 
-    if (!set_io_timeout(fd, ANSWER_TIMEOUT_MS)) {
-        result.status = ControlStatus::Failed;
-        result.reason =
-            "cannot bound the wait for the player: " + socket_error_text(socket_error());
-        close_socket(fd);
-        return result;
-    }
-
+    std::string error;
     bool timed_out = false;
     const bool sent = write_all(fd, encode_control_request(request) + "\n", error, timed_out);
     if (timed_out) {
