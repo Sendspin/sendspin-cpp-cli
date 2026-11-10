@@ -320,7 +320,8 @@ TEST(ConfigPrecedence, FixedVolumeIsSettableAndOffByDefault) {
 TEST(ConfigPrecedence, AlsaMixerIsSettableAndLosesToTheCommandLine) {
     ScratchDir scratch;
     ASSERT_TRUE(scratch.created());
-    const std::string file = scratch.write("mixer", "alsa-mixer = 1:Digital\n");
+    const std::string file =
+        scratch.write("mixer", "output = alsa:default\nalsa-mixer = 1:Digital\n");
 
     Parse from_file({}, file);
     ASSERT_TRUE(from_file.ok()) << from_file.diagnostics();
@@ -335,8 +336,8 @@ TEST(ConfigPrecedence, AlsaMixerIsSettableAndLosesToTheCommandLine) {
 TEST(ConfigPrecedence, AlsaMixerCurveIsSettableAndLosesToTheCommandLine) {
     ScratchDir scratch;
     ASSERT_TRUE(scratch.created());
-    const std::string file =
-        scratch.write("mixer", "alsa-mixer = 1:Digital\nalsa-mixer-curve = cubic\n");
+    const std::string file = scratch.write(
+        "mixer", "output = alsa:default\nalsa-mixer = 1:Digital\nalsa-mixer-curve = cubic\n");
 
     Parse from_file({}, file);
     ASSERT_TRUE(from_file.ok()) << from_file.diagnostics();
