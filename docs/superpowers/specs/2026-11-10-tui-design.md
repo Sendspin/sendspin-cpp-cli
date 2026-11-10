@@ -1,6 +1,6 @@
 # `sendspin-cli tui`: a terminal remote for the running player
 
-Status: draft design. Roadmap item 9, "Interactive TUI mode".
+Status: approved design (2026-11-10). Roadmap item 9, "Interactive TUI mode".
 
 ## Why
 
