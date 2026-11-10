@@ -71,6 +71,9 @@ enum class ControlCommand : uint8_t {
     PairToken,  ///< answered locally: this player's pairing token
     Pair,       ///< answered locally: confirm or cancel the pairing window
 
+    PlayerVolume,  ///< answered locally: this player's own volume, not the group's
+    PlayerMute,    ///< answered locally: this player's own mute, not the group's
+
     /// Answered locally: this endpoint's own output delay.
     /// Keep last: EveryCommandInTheEnumHasARow walks the enum up to here.
     Delay,

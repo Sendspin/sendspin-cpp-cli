@@ -415,10 +415,9 @@ public:
     ControlDispatcher(const Options& opts, sendspin::SendspinClient& client,
                       sendspin::ControllerRole& controller, sendspin::MetadataRole& metadata,
                       const MetadataLogger& metadata_logger,
-                      const PairingListener& pairing_listener,
-                      const PlayerListener& player_listener, sendspin::PlayerRole& player,
-                      const AudioSink& sink, const SourceCapture* capture,
-                      const StateStore& state_store)
+                      const PairingListener& pairing_listener, PlayerListener& player_listener,
+                      sendspin::PlayerRole& player, const AudioSink& sink,
+                      const SourceCapture* capture, const StateStore& state_store)
         : opts_(opts),
           client_(client),
           controller_(controller),
@@ -473,6 +472,21 @@ public:
             }
             log_line(LogLevel::INFO, LOG_TAG, "Pairing window %s locally",
                      confirm ? "confirmed" : "cancelled");
+            return encode_control_reply(ControlStatus::Ok, "", "");
+        }
+
+        // Handled locally: the listener applies, publishes and persists the level.
+        if (request.command == ControlCommand::PlayerVolume ||
+            request.command == ControlCommand::PlayerMute) {
+            const bool applied =
+                request.command == ControlCommand::PlayerVolume
+                    ? this->player_listener_.set_local_volume(
+                          request.volume.value_or(DEFAULT_SINK_VOLUME))
+                    : this->player_listener_.set_local_muted(request.flag.value_or(false));
+            if (!applied) {
+                return encode_control_reply(ControlStatus::Usage,
+                                            "--fixed-volume pins this player's volume at 100", "");
+            }
             return encode_control_reply(ControlStatus::Ok, "", "");
         }
 
@@ -579,7 +593,8 @@ private:
     sendspin::MetadataRole& metadata_;
     const MetadataLogger& metadata_logger_;
     const PairingListener& pairing_listener_;
-    const PlayerListener& player_listener_;
+    /// Non-const only for `player-vol` and `player-mute`.
+    PlayerListener& player_listener_;
     /// Non-const only for `delay`.
     sendspin::PlayerRole& player_;
     const AudioSink& sink_;

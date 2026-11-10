@@ -56,11 +56,13 @@ is also what lets `seek-rel -5000` be an offset rather than a flag cluster.
 | `switch` | | move this player through the groups available to it |
 | `pair-token` | | print this player's pairing token — **answered locally** |
 | `pair` | `confirm\|cancel` | allow or refuse a pairing attempt that is waiting — **answered locally** |
+| `player-vol` | `<0-100>` | this player's **own** volume — **answered locally** |
+| `player-mute` | `on\|off` | mute or unmute this player alone — **answered locally** |
 | `delay` | `<0-5000>` | this endpoint's output delay — **answered locally** |
 
-Twelve of those go out to the server as `controller@v1` commands. Four never leave the host:
-`status`, formatted from the daemon's own view, `delay`, which drives this endpoint's own
-player role, `pair`, which is [Pairing a Player](Pairing-a-Player), and `pair-token`, which is
+Twelve of those go out to the server as `controller@v1` commands. Six never leave the host:
+`status`, formatted from the daemon's own view, `player-vol` and `player-mute`, which set this
+player's own level, `delay`, which drives this endpoint's own player role, `pair`, which is [Pairing a Player](Pairing-a-Player), and `pair-token`, which is
 [Pairing from another system](Advanced-Usage#pairing-from-another-system).
 
 ## Three that are easy to misread
@@ -68,7 +70,10 @@ player role, `pair`, which is [Pairing a Player](Pairing-a-Player), and `pair-to
 **`vol` is the *group* volume, not this box's output level.** It goes to the server, which
 spreads it across every player in the group and clamps it per player. It does not change
 only this box, which is why `status` prints `group volume` and `player volume` as two named
-lines rather than one ambiguous `volume:`.
+lines rather than one ambiguous `volume:`. `player-vol` is this box's own level: it is applied
+here, published to the server, remembered across restarts, and `status` then reads
+`player volume: 30 (set on this player)`. `player-mute` does the same for mute. Under
+`--fixed-volume` both are refused with exit status `2`.
 
 **`switch` is not a source selector.** Per the spec's switch cycle it re-homes this client
 between the groups available to it. It sits next to `play` and `pause` and means something
@@ -167,7 +172,7 @@ world-writable, and a socket there would let any local user pause your music.
 
 | Status | Means |
 |---|---|
-| `0` | sent, or answered locally (`status`, `delay`, `pair-token`, `pair`) |
+| `0` | sent, or answered locally (`status`, `player-vol`, `player-mute`, `delay`, `pair-token`, `pair`) |
 | `1` | the command line did not parse (`vol 500`, `delay 5001`) |
 | `2` | the player refused the argument (a `seek` past the server's `seek_max_ms`) |
 | `3` | **nothing is listening on that socket** — no player, or the wrong `--port` |
@@ -181,7 +186,7 @@ and `5` especially — a dropped connection *empties* the server's advertised co
 collapsing them would answer "pause is not supported" when the truth is that nothing is
 connected.
 
-`status`, `delay`, `pair-token` and `pair` are never refused by any of them: nothing about
+`status`, `player-vol`, `player-mute`, `delay`, `pair-token` and `pair` are never refused by any of them: nothing about
 them is sent, so a missing connection is no obstacle. A disconnected player is exactly when reading `status` is
 worth doing.
 

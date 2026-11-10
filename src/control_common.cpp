@@ -184,6 +184,8 @@ const char* volume_source_note(VolumeSource source) {
             return " (fixed; the server cannot set it)";
         case VolumeSource::Hardware:
             return " (read from the hardware mixer at startup)";
+        case VolumeSource::Local:
+            return " (set on this player)";
         case VolumeSource::SinkDefault:
             break;
     }
@@ -219,6 +221,10 @@ const std::vector<ControlSubcommand>& control_subcommands() {
          "Answer a pairing attempt that is waiting on this player: 'confirm' lets it go ahead "
          "and keeps the pairing window open for 5 minutes, 'cancel' refuses it and closes the "
          "window"},
+        {"player-vol", ControlCommand::PlayerVolume, 1, "<0-100>",
+         "Set *this* player's own volume -- answered locally, published to the server, "
+         "remembered across restarts. Not the group volume"},
+        {"player-mute", ControlCommand::PlayerMute, 1, ON_OFF, "Mute or unmute this player alone"},
         {"delay", ControlCommand::Delay, 1, "<0-5000>",
          "Tell *this* endpoint how much latency its hardware adds after the audio port -- an "
          "amplifier, an external speaker. The player then hands audio over that much earlier, so "
@@ -305,7 +311,8 @@ bool parse_control_request(const std::string& name, const std::vector<std::strin
     };
 
     switch (subcommand->command) {
-        case ControlCommand::Volume: {
+        case ControlCommand::Volume:
+        case ControlCommand::PlayerVolume: {
             uint64_t volume = 0;
             if (!parse_unsigned(value, 100, volume)) {
                 return reject("a volume from 0 to 100");
@@ -324,6 +331,7 @@ bool parse_control_request(const std::string& name, const std::vector<std::strin
             return true;
         }
         case ControlCommand::Mute:
+        case ControlCommand::PlayerMute:
         case ControlCommand::Shuffle: {
             bool flag = false;
             if (!parse_on_off(value, flag)) {
@@ -429,6 +437,10 @@ std::optional<SendspinControllerCommand> protocol_command(const ControlRequest& 
         case ControlCommand::Status:
         case ControlCommand::PairToken:
         case ControlCommand::Pair:
+            return std::nullopt;
+        case ControlCommand::PlayerVolume:
+        case ControlCommand::PlayerMute:
+            // Set on this player's own sink and role, never sent to the server as a command.
             return std::nullopt;
         case ControlCommand::Delay:
             // Set on the player role, which republishes client/state itself.

@@ -80,6 +80,11 @@ public:
     /// Records and publishes a level the sink applied itself, e.g. a mixer knob. Main loop only.
     void on_sink_volume_changed(uint8_t volume, bool muted);
 
+    /// Applies a level asked for on this player, publishes it, and persists it. Main loop only.
+    /// @return false under --fixed-volume, changing nothing.
+    bool set_local_volume(uint8_t volume);
+    bool set_local_muted(bool muted);
+
     /// Closes the sink's device at each stream end, so other players can open it between streams.
     void release_device_between_streams() {
         this->release_device_ = true;

@@ -300,6 +300,24 @@ TEST(ParseControlRequest, VolumeRejectsOutOfRangeNamingTheRange) {
     }
 }
 
+TEST(ParseControlRequest, PlayerVolIsRangeChecked) {
+    EXPECT_EQ(parsed("player-vol", {"40"}).volume, 40);
+    EXPECT_EQ(parsed("player-vol", {"0"}).volume, 0);
+    EXPECT_EQ(parsed("player-vol", {"100"}).volume, 100);
+    ControlRequest request;
+    std::string error;
+    EXPECT_FALSE(parse_control_request("player-vol", {"101"}, request, error));
+    EXPECT_NE(error.find("0 to 100"), std::string::npos) << error;
+}
+
+TEST(ParseControlRequest, PlayerMuteTakesOnOff) {
+    EXPECT_EQ(parsed("player-mute", {"on"}).flag, true);
+    EXPECT_EQ(parsed("player-mute", {"off"}).flag, false);
+    ControlRequest request;
+    std::string error;
+    EXPECT_FALSE(parse_control_request("player-mute", {"maybe"}, request, error));
+}
+
 TEST(ParseControlRequest, DelayTakesZeroToTheSpecsMaximum) {
     EXPECT_EQ(parsed("delay", {"0"}).delay_ms, 0);
     EXPECT_EQ(parsed("delay", {"250"}).delay_ms, 250);
@@ -501,6 +519,25 @@ TEST(ControlRequestWire, EveryRequestSurvivesARoundTrip) {
     }
 }
 
+TEST(ControlRequestWire, PlayerCommandsRoundTrip) {
+    const std::vector<std::pair<std::string, std::vector<std::string>>> cases = {
+        {"player-vol", {"0"}},
+        {"player-vol", {"40"}},
+        {"player-mute", {"on"}},
+        {"player-mute", {"off"}},
+    };
+    for (const auto& [name, args] : cases) {
+        const ControlRequest original = parsed(name, args);
+        std::string name_back;
+        std::vector<std::string> args_back;
+        ASSERT_TRUE(split_control_line(encode_control_request(original), name_back, args_back));
+        const ControlRequest back = parsed(name_back, args_back);
+        EXPECT_EQ(back.command, original.command) << name;
+        EXPECT_EQ(back.volume, original.volume) << name;
+        EXPECT_EQ(back.flag, original.flag) << name;
+    }
+}
+
 TEST(ControlRequestWire, ZeroValuedArgumentsSurvive) {
     // A set field holding 0 must still be encoded.
     EXPECT_EQ(encode_control_request(parsed("vol", {"0"})), "vol 0");
@@ -598,6 +635,16 @@ TEST(ControlRefusal, StatusIsNeverRefused) {
     std::string reason;
     EXPECT_FALSE(control_refusal(parsed("status", {}), disconnected, status, reason));
     EXPECT_FALSE(control_refusal(parsed("status", {}), everything_supported(), status, reason));
+}
+
+TEST(ControlRefusal, PlayerCommandsWorkWithNoServer) {
+    ControllerSnapshot disconnected;
+    ControlStatus status = ControlStatus::Failed;
+    std::string reason;
+    EXPECT_FALSE(control_refusal(parsed("player-vol", {"40"}), disconnected, status, reason));
+    EXPECT_FALSE(control_refusal(parsed("player-mute", {"on"}), disconnected, status, reason));
+    EXPECT_FALSE(protocol_command(parsed("player-vol", {"40"})).has_value());
+    EXPECT_FALSE(protocol_command(parsed("player-mute", {"on"})).has_value());
 }
 
 TEST(ControlRefusal, DelayIsNeverRefusedEither) {

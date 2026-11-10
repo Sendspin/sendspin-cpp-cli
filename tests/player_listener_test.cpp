@@ -173,6 +173,45 @@ TEST(PlayerListener, AFixedVolumeIgnoresServerCommandsAndLeavesTheStateFileAlone
     EXPECT_EQ(remembered.contents(), before);
 }
 
+TEST(PlayerListener, ALocalVolumeIsAppliedPublishedAndPersisted) {
+    RememberedVolume remembered;
+    ASSERT_TRUE(remembered.created());
+    StateStore store(remembered.path());
+    size_t malformed = 0;
+    ASSERT_EQ(store.load(malformed), StateLoadResult::Loaded);
+    Harness harness(&store);
+
+    EXPECT_TRUE(harness.listener.set_local_volume(30));
+    EXPECT_TRUE(harness.listener.set_local_muted(false));
+
+    EXPECT_EQ(harness.listener.applied_volume(), 30U);
+    EXPECT_FALSE(harness.listener.applied_muted());
+    EXPECT_EQ(harness.listener.volume_source(), VolumeSource::Local);
+    EXPECT_EQ(store.volume(), 30U);
+    EXPECT_EQ(store.muted(), false);
+    EXPECT_EQ(harness.player.get_volume(), 30U);
+    EXPECT_FALSE(harness.player.get_muted());
+}
+
+TEST(PlayerListener, AFixedVolumeRefusesALocalChange) {
+    RememberedVolume remembered;
+    ASSERT_TRUE(remembered.created());
+    StateStore store(remembered.path());
+    size_t malformed = 0;
+    ASSERT_EQ(store.load(malformed), StateLoadResult::Loaded);
+    const std::string before = remembered.contents();
+    Harness harness(&store);
+
+    harness.listener.fix_volume();
+
+    EXPECT_FALSE(harness.listener.set_local_volume(30));
+    EXPECT_FALSE(harness.listener.set_local_muted(true));
+    EXPECT_EQ(harness.listener.applied_volume(), DEFAULT_SINK_VOLUME);
+    EXPECT_FALSE(harness.listener.applied_muted());
+    EXPECT_EQ(harness.listener.volume_source(), VolumeSource::Fixed);
+    EXPECT_EQ(remembered.contents(), before);
+}
+
 TEST(PlayerListener, AnEndWithNoStartFiresNoStopEvent) {
     Harness harness;
 

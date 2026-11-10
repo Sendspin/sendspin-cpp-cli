@@ -164,6 +164,31 @@ void PlayerListener::on_sink_volume_changed(uint8_t volume, bool muted) {
     this->persist_volume();
 }
 
+bool PlayerListener::set_local_volume(uint8_t volume) {
+    if (this->volume_source_ == VolumeSource::Fixed) {
+        return false;
+    }
+    this->sink_.set_volume(volume);
+    this->applied_volume_ = volume;
+    this->volume_source_ = VolumeSource::Local;
+    // Through the role so client/state is sent; the sink was told directly above.
+    this->player_.update_volume(volume);
+    this->persist_volume();
+    return true;
+}
+
+bool PlayerListener::set_local_muted(bool muted) {
+    if (this->volume_source_ == VolumeSource::Fixed) {
+        return false;
+    }
+    this->sink_.set_muted(muted);
+    this->applied_muted_ = muted;
+    this->volume_source_ = VolumeSource::Local;
+    this->player_.update_muted(muted);
+    this->persist_volume();
+    return true;
+}
+
 void PlayerListener::persist_volume() const {
     if (this->store_ == nullptr) {
         return;
