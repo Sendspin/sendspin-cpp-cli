@@ -14,9 +14,12 @@ paired servers: 1
 pairing: none
 state: playing
 stream: receiving
+codec: flac
 track: Nils Frahm - Says
+album: Spaces
 position: 2:05 / 9:03 (estimated)
 group volume: 55
+group: Living room
 repeat: off
 shuffle: off
 player volume: 80
@@ -124,6 +127,9 @@ above `output:` says so, and appears whenever a server is connected.
   loses it while the group plays on. A `stream: receiving` line with **no format after the
   device name** means the device refused the stream's format and its audio is being
   discarded; the log says so loudly at the same moment.
+- **`album`, `group` and `codec` appear only when known.** `album` follows `track`, `group`
+  is the name the server gave the group, and `codec` (`flac`, `opus` or `pcm`) is shown only
+  while `stream` is `receiving`.
 - **`input` appears only with `--input`.** It names the capture device and its format, then
   `streaming` while the server has the source started and `idle` otherwise.
 

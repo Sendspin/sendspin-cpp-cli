@@ -692,6 +692,30 @@ TEST(FormatStatus, EveryFieldIsPresentAndLabelled) {
     EXPECT_EQ(block.back(), '\n');
 }
 
+TEST(FormatStatus, TheAlbumFollowsTheTrack) {
+    StatusSnapshot snapshot = playing_snapshot();
+    snapshot.album = "Spaces";
+    EXPECT_EQ(field(format_status(snapshot), "album"), "Spaces");
+    snapshot.album.clear();
+    EXPECT_EQ(format_status(snapshot).find("\nalbum:"), std::string::npos);
+}
+
+TEST(FormatStatus, TheGroupIsNamedWhenKnown) {
+    StatusSnapshot snapshot = playing_snapshot();
+    snapshot.group_name = "Living room";
+    EXPECT_EQ(field(format_status(snapshot), "group"), "Living room");
+    snapshot.group_name.clear();
+    EXPECT_EQ(format_status(snapshot).find("\ngroup:"), std::string::npos);
+}
+
+TEST(FormatStatus, TheCodecShowsWhileStreaming) {
+    StatusSnapshot snapshot = playing_snapshot();
+    snapshot.codec = sendspin::SendspinCodecFormat::FLAC;
+    EXPECT_EQ(field(format_status(snapshot), "codec"), "flac");
+    snapshot.codec.reset();
+    EXPECT_EQ(format_status(snapshot).find("\ncodec:"), std::string::npos);
+}
+
 TEST(FormatStatus, GroupAndPlayerVolumeAreSeparateLines) {
     // Group and player volume are separate lines.
     StatusSnapshot snapshot = playing_snapshot();

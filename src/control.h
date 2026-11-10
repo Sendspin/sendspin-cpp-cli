@@ -19,6 +19,7 @@
 #include "audio_sink.h"
 #include "pairing_tracker.h"
 
+#include <sendspin/config.h>
 #include <sendspin/controller_role.h>
 #include <sendspin/types.h>
 
@@ -188,8 +189,12 @@ struct StatusSnapshot {
     bool streaming{false};
     std::optional<StreamFormat> format{};  ///< what the sink was configured for
 
+    /// The codec the server is sending; set only while streaming.
+    std::optional<sendspin::SendspinCodecFormat> codec{};
+
     std::string artist;  ///< empty when unknown
     std::string title;
+    std::string album;  ///< empty when unknown
 
     /// Absent without metadata progress; a duration of 0 is a live stream.
     std::optional<uint32_t> progress_ms{};
@@ -199,6 +204,7 @@ struct StatusSnapshot {
     bool group_state_known{false};
     uint8_t group_volume{0};
     bool group_muted{false};
+    std::string group_name;  ///< empty when unknown
 
     /// Last values the server published; a server that omits them reads as OFF/false.
     sendspin::SendspinRepeatMode group_repeat{sendspin::SendspinRepeatMode::OFF};
@@ -219,6 +225,9 @@ struct StatusSnapshot {
     StreamFormat input_format{};
     bool input_streaming{false};  ///< the server has the input stream open
 };
+
+/// How `status` names a codec: `flac`, `opus`, `pcm` or `unsupported`.
+const char* codec_name(sendspin::SendspinCodecFormat codec);
 
 /// Formats a snapshot as `key: value` lines, newline-terminated.
 std::string format_status(const StatusSnapshot& snapshot);

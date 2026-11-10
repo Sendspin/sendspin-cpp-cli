@@ -530,6 +530,7 @@ private:
         if (metadata.has_value()) {
             snapshot.artist = metadata->artist.value_or("");
             snapshot.title = metadata->title.value_or("");
+            snapshot.album = metadata->album.value_or("");
             if (metadata->progress.has_value()) {
                 // Only a progress object makes transport state and position knowable.
                 snapshot.playback_speed = metadata->progress->playback_speed;
@@ -541,6 +542,9 @@ private:
         // Read separately: a refused format is still streaming.
         snapshot.streaming = this->player_listener_.streaming();
         snapshot.format = this->player_listener_.stream_format();
+        if (snapshot.streaming) {
+            snapshot.codec = this->player_.get_current_stream_params().codec;
+        }
 
         const sendspin::ServerStateControllerObject& controller =
             this->controller_.get_controller_state();
@@ -550,6 +554,9 @@ private:
         snapshot.group_muted = controller.muted;
         snapshot.group_repeat = controller.repeat;
         snapshot.group_shuffle = controller.shuffle;
+        if (snapshot.connected) {
+            snapshot.group_name = this->client_.get_group_state().group_name.value_or("");
+        }
 
         // From the listener, the only thing that knows what the sink was told.
         snapshot.player_volume = this->player_listener_.applied_volume();

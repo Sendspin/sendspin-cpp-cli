@@ -526,6 +526,20 @@ bool control_refusal(const ControlRequest& request, const ControllerSnapshot& sn
     return false;
 }
 
+const char* codec_name(sendspin::SendspinCodecFormat codec) {
+    switch (codec) {
+        case sendspin::SendspinCodecFormat::FLAC:
+            return "flac";
+        case sendspin::SendspinCodecFormat::OPUS:
+            return "opus";
+        case sendspin::SendspinCodecFormat::PCM:
+            return "pcm";
+        case sendspin::SendspinCodecFormat::UNSUPPORTED:
+            break;
+    }
+    return "unsupported";
+}
+
 std::string format_status(const StatusSnapshot& snapshot) {
     std::string out;
 
@@ -597,6 +611,9 @@ std::string format_status(const StatusSnapshot& snapshot) {
 
     // Whether audio arrives here, separate from the group's transport state.
     append_line(out, "stream", snapshot.streaming ? "receiving" : "idle");
+    if (snapshot.codec.has_value()) {
+        append_line(out, "codec", codec_name(*snapshot.codec));
+    }
 
     if (snapshot.title.empty() && snapshot.artist.empty()) {
         append_line(out, "track", "unknown");
@@ -606,6 +623,10 @@ std::string format_status(const StatusSnapshot& snapshot) {
         append_line(out, "track", snapshot.artist);
     } else {
         append_line(out, "track", snapshot.artist + " - " + snapshot.title);
+    }
+
+    if (!snapshot.album.empty()) {
+        append_line(out, "album", snapshot.album);
     }
 
     if (!snapshot.progress_ms.has_value()) {
@@ -626,6 +647,9 @@ std::string format_status(const StatusSnapshot& snapshot) {
     append_line(
         out, "group volume",
         format_volume(snapshot.group_state_known, snapshot.group_volume, snapshot.group_muted));
+    if (!snapshot.group_name.empty()) {
+        append_line(out, "group", snapshot.group_name);
+    }
     append_line(out, "repeat",
                 snapshot.group_state_known ? repeat_mode_name(snapshot.group_repeat) : "unknown");
     append_line(out, "shuffle",
