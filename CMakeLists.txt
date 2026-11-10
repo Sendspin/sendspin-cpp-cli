@@ -302,6 +302,7 @@ add_library(sendspin-cli-core STATIC
     src/status_kv.cpp
     src/state_store.cpp
     src/supported_formats.cpp
+    src/tui_model.cpp
 )
 
 # Windows has no fork(), flock() or /bin/sh, so -z, locks and hooks have their own implementation.
@@ -514,6 +515,7 @@ if(SENDSPIN_CLI_BUILD_TESTS)
         tests/state_store_test.cpp
         tests/status_kv_test.cpp
         tests/supported_formats_test.cpp
+        tests/tui_model_test.cpp
     )
     target_link_libraries(sendspin-cli-tests PRIVATE sendspin-cli-core GTest::gtest_main)
     target_compile_options(sendspin-cli-tests PRIVATE ${SENDSPIN_CLI_WARNING_FLAGS})
