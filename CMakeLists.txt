@@ -497,6 +497,7 @@ if(SENDSPIN_CLI_BUILD_TESTS)
         tests/audio_source_test.cpp
         tests/cli_test.cpp
         tests/config_file_test.cpp
+        tests/control_exchange_test.cpp
         tests/control_test.cpp
         tests/daemon_test.cpp
         tests/device_spec_test.cpp

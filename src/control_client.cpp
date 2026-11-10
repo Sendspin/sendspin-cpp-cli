@@ -47,7 +47,8 @@ void split_first_line(const std::string& reply, std::string& first, std::string&
 }
 
 /// Connects to `path`, or explains why not: no socket, nothing accepting, or no permission.
-socket_t connect_to_socket(const std::string& path, std::string& error) {
+socket_t connect_to_socket(const std::string& path, std::string& error, bool& denied) {
+    denied = false;
     // Re-checked because a memcpy into sun_path follows.
     if (!control_socket_path_fits(path)) {
         error = "control socket path '" + path + "' does not fit a Unix socket address (" +
@@ -95,7 +96,9 @@ socket_t connect_to_socket(const std::string& path, std::string& error) {
                 "open as it will take. Try again, and if it keeps failing, restart the player";
     } else if (failure == ConnectFailure::Denied) {
         error = "not allowed to connect to " + path +
-                ": the socket is 0600, so only the user running the player can drive it";
+                ": the socket is 0600, so only the user running the player can drive it "
+                "-- under the system service, run it with sudo";
+        denied = true;
     } else {
         error = "cannot connect to " + path + ": " + socket_error_text(reason);
     }
@@ -149,27 +152,29 @@ bool read_reply(socket_t fd, std::string& reply, std::string& error) {
 
 }  // namespace
 
-ControlStatus run_control_subcommand(const ControlRequest& request, const std::string& path,
-                                     const std::string& absent_reason, std::FILE* out) {
+ControlExchange exchange_control_request(const ControlRequest& request, const std::string& path,
+                                         const std::string& absent_reason) {
 #ifndef _WIN32
     // A daemon closing before our write would raise SIGPIPE; ignore it and report EPIPE.
     std::signal(SIGPIPE, SIG_IGN);
 #endif
 
+    ControlExchange result;
     if (path.empty()) {
-        std::fprintf(stderr, "error: %s\n",
-                     absent_reason.empty()
-                         ? "there is no control socket to talk to: this player was started with "
-                           "--no-control, or --control-socket was not given"
-                         : absent_reason.c_str());
-        return ControlStatus::NoDaemon;
+        result.status = ControlStatus::NoDaemon;
+        result.reason = absent_reason.empty()
+                            ? "there is no control socket to talk to: this player was started with "
+                              "--no-control, or --control-socket was not given"
+                            : absent_reason;
+        return result;
     }
 
     std::string error;
-    const socket_t fd = connect_to_socket(path, error);
+    const socket_t fd = connect_to_socket(path, error, result.denied);
     if (fd == INVALID_SOCKET_HANDLE) {
-        std::fprintf(stderr, "error: %s\n", error.c_str());
-        return ControlStatus::NoDaemon;
+        result.status = ControlStatus::NoDaemon;
+        result.reason = error;
+        return result;
     }
 
     const bool sent = write_all(fd, encode_control_request(request) + "\n", error);
@@ -179,36 +184,47 @@ ControlStatus run_control_subcommand(const ControlRequest& request, const std::s
     const bool received = read_reply(fd, reply, error);
     close_socket(fd);
 
+    result.status = ControlStatus::Failed;
     if (!sent && reply.empty()) {
-        std::fprintf(stderr, "error: %s\n", error.c_str());
-        return ControlStatus::Failed;
+        result.reason = error;
+        return result;
     }
     if (!received) {
-        std::fprintf(stderr, "error: %s\n", error.c_str());
-        return ControlStatus::Failed;
+        result.reason = error;
+        return result;
     }
     if (reply.empty()) {
-        std::fprintf(stderr, "error: the daemon closed the connection without answering\n");
-        return ControlStatus::Failed;
+        result.reason = "the daemon closed the connection without answering";
+        return result;
     }
 
     std::string first_line;
-    std::string payload;
-    split_first_line(reply, first_line, payload);
+    split_first_line(reply, first_line, result.payload);
 
     ControlStatus status = ControlStatus::Ok;
     std::string reason;
     if (!decode_control_reply(first_line, status, reason)) {
-        std::fprintf(stderr, "error: %s answered '%s', which is not a sendspin-cli reply\n",
-                     path.c_str(), first_line.c_str());
-        return ControlStatus::Failed;
+        result.payload.clear();
+        result.reason = path + " answered '" + first_line + "', which is not a sendspin-cli reply";
+        return result;
     }
 
+    result.status = status;
+    result.reason = reason;
     if (status != ControlStatus::Ok) {
-        std::fprintf(stderr, "error: %s\n", reason.c_str());
-        return status;
+        result.payload.clear();
     }
-    std::fwrite(payload.data(), 1, payload.size(), out);
+    return result;
+}
+
+ControlStatus run_control_subcommand(const ControlRequest& request, const std::string& path,
+                                     const std::string& absent_reason, std::FILE* out) {
+    const ControlExchange result = exchange_control_request(request, path, absent_reason);
+    if (result.status != ControlStatus::Ok) {
+        std::fprintf(stderr, "error: %s\n", result.reason.c_str());
+        return result.status;
+    }
+    std::fwrite(result.payload.data(), 1, result.payload.size(), out);
     return ControlStatus::Ok;
 }
 

@@ -359,6 +359,20 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
+/// The outcome of one request to the daemon's control socket.
+struct ControlExchange {
+    ControlStatus status{ControlStatus::Failed};
+    std::string reason;   ///< the error text, empty on Ok
+    std::string payload;  ///< what followed `ok`
+    /// NoDaemon because the socket refused this user, not because none is running.
+    bool denied{false};
+};
+
+/// One request, one reply, no printing. Safe to call from any one thread at a time.
+/// @param absent_reason Why `path` is empty, when it is.
+ControlExchange exchange_control_request(const ControlRequest& request, const std::string& path,
+                                         const std::string& absent_reason);
+
 /// Runs one subcommand against the daemon's socket and prints the reply.
 /// @param absent_reason Why `path` is empty, when it is.
 /// @return The status to exit with.
