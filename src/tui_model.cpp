@@ -122,6 +122,12 @@ void TuiModel::on_status(const ControlExchange& reply, int64_t now_ms) {
         this->outcome_since_ms_ = now_ms;
         this->outcome_text_ = outcome_text_for(view);
     }
+    // The window stays open until the attempt concludes, so the allow holds until then.
+    if (this->allowed_after_.has_value() &&
+        (!view.pairing_window || view.pairing_server_id.empty() ||
+         view.last_pairing_attempt != *this->allowed_after_)) {
+        this->allowed_after_.reset();
+    }
     this->link_ = Link::Attached;
     this->no_player_reason_.clear();
     this->view_ = std::move(view);
@@ -168,10 +174,14 @@ TuiScreen TuiModel::screen(int64_t now_ms) const {
         case Link::Attached:
             break;
     }
+    // A code first: an attempt let past the window shows its code while the window stays open.
+    if (!this->view_.pairing_code.empty()) {
+        return TuiScreen::PairingCode;
+    }
     if (this->view_.pairing_window) {
         return TuiScreen::PairingConfirm;
     }
-    if (!this->view_.pairing_code.empty() || !this->view_.pairing_server_id.empty()) {
+    if (!this->view_.pairing_server_id.empty()) {
         return TuiScreen::PairingCode;
     }
     if (this->outcome_since_ms_.has_value() && now_ms - *this->outcome_since_ms_ < MESSAGE_MS) {
@@ -213,7 +223,9 @@ std::optional<ControlRequest> TuiModel::request_for(TuiKey key) const {
             return request;
         case TuiKey::Yes:
         case TuiKey::No:
-            if (!view.pairing_window) {
+            // Asked only on PairingConfirm, and only until the user has allowed the attempt.
+            if (!view.pairing_window || !view.pairing_code.empty() ||
+                this->allowed_after_.has_value()) {
                 return std::nullopt;
             }
             request.command = ControlCommand::Pair;
@@ -251,6 +263,12 @@ std::optional<ControlRequest> TuiModel::request_for(TuiKey key) const {
             return request;
         default:
             return std::nullopt;
+    }
+}
+
+void TuiModel::note_sent(const ControlRequest& request) {
+    if (request.command == ControlCommand::Pair && request.confirm == std::optional<bool>(true)) {
+        this->allowed_after_ = this->view_.last_pairing_attempt;
     }
 }
 
@@ -296,6 +314,11 @@ std::string TuiModel::outcome_text() const {
     return this->outcome_text_;
 }
 
+std::string TuiModel::confirm_text() const {
+    return this->allowed_after_.has_value() ? "Allowed -- waiting for the server..."
+                                            : "A server wants to pair. Y to allow, N to refuse";
+}
+
 std::string TuiModel::no_player_reason() const {
     return this->no_player_reason_;
 }
@@ -304,6 +327,7 @@ void TuiModel::detach_(Link link, const std::string& reason) {
     this->link_ = link;
     this->no_player_reason_ = reason;
     this->view_ = PlayerView{};
+    this->allowed_after_.reset();
 }
 
 std::vector<std::string> pairing_code_lines(const std::string& code, int width) {

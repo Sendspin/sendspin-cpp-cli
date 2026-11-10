@@ -138,6 +138,60 @@ TEST(TuiModel, AWaitingConfirmAsksYesOrNo) {
     EXPECT_EQ(no->confirm, std::optional<bool>(false));
 }
 
+TEST(TuiModel, ACodeOutranksTheOpenWindow) {
+    // A dynamic attempt held back by the round limit keeps the window open once its code is out.
+    StatusSnapshot snapshot = attached_snapshot();
+    snapshot.pairing_server_id = SERVER_ID;
+    snapshot.pairing_window_open = true;
+    snapshot.pairing_code = "042735";
+    const TuiModel model = model_with(snapshot);
+    EXPECT_EQ(model.screen(0), TuiScreen::PairingCode);
+    EXPECT_FALSE(model.request_for(TuiKey::Yes).has_value());
+    EXPECT_FALSE(model.request_for(TuiKey::No).has_value());
+}
+
+TEST(TuiModel, AnAllowedAttemptWaitsInsteadOfAskingAgain) {
+    StatusSnapshot snapshot = attached_snapshot();
+    snapshot.pairing_server_id = SERVER_ID;
+    snapshot.pairing_window_open = true;
+    TuiModel model = model_with(snapshot);
+    EXPECT_EQ(model.confirm_text(), "A server wants to pair. Y to allow, N to refuse");
+
+    const std::optional<ControlRequest> yes = model.request_for(TuiKey::Yes);
+    ASSERT_TRUE(yes.has_value());
+    model.note_sent(*yes);
+
+    // The window stays open until the attempt concludes; a stray `n` must not cancel it.
+    model.on_status(ok(snapshot), 1000);
+    EXPECT_EQ(model.screen(1000), TuiScreen::PairingConfirm);
+    EXPECT_EQ(model.confirm_text(), "Allowed -- waiting for the server...");
+    EXPECT_FALSE(model.request_for(TuiKey::Yes).has_value());
+    EXPECT_FALSE(model.request_for(TuiKey::No).has_value());
+
+    // The attempt ends; the next one asks again.
+    snapshot.pairing_server_id.clear();
+    snapshot.pairing_window_open = false;
+    snapshot.last_pairing = {1, SERVER_ID, PairingOutcome::Paired, ""};
+    model.on_status(ok(snapshot), 2000);
+    snapshot.pairing_server_id = SERVER_ID;
+    snapshot.pairing_window_open = true;
+    model.on_status(ok(snapshot), 6000);
+    EXPECT_EQ(model.screen(6000), TuiScreen::PairingConfirm);
+    EXPECT_EQ(model.confirm_text(), "A server wants to pair. Y to allow, N to refuse");
+    EXPECT_TRUE(model.request_for(TuiKey::No).has_value());
+}
+
+TEST(TuiModel, RefusingIsNotRememberedAsAllowing) {
+    StatusSnapshot snapshot = attached_snapshot();
+    snapshot.pairing_server_id = SERVER_ID;
+    snapshot.pairing_window_open = true;
+    TuiModel model = model_with(snapshot);
+    model.note_sent(*model.request_for(TuiKey::No));
+    model.on_status(ok(snapshot), 1000);
+    EXPECT_EQ(model.confirm_text(), "A server wants to pair. Y to allow, N to refuse");
+    EXPECT_TRUE(model.request_for(TuiKey::Yes).has_value());
+}
+
 TEST(TuiModel, AnOutcomeFromBeforeLaunchIsNotReplayed) {
     StatusSnapshot snapshot = attached_snapshot();
     snapshot.last_pairing = {3, SERVER_ID, PairingOutcome::Paired, ""};

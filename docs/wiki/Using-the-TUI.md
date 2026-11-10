@@ -76,9 +76,12 @@ over so the code cannot be missed:
 - **A dynamic code** fills the screen in large digits, with the server's name above it.
   Type it into the server. On a terminal too narrow for the large digits, or too short, it is
   the same code as plain spaced digits.
-- **A static code waiting for you** shows `A server wants to pair. Y to allow, N to refuse`.
-  `y` is `pair confirm` and `n` is `pair cancel`; see
-  [the pairing window](Pairing-a-Player#the-pairing-window).
+- **A pairing attempt waiting for you to allow it** shows
+  `A server wants to pair. Y to allow, N to refuse`. That is every static-code attempt, and a
+  dynamic one the player holds back after repeated wrong codes. `y` is `pair confirm` and `n`
+  is `pair cancel`; see [the pairing window](Pairing-a-Player#the-pairing-window). After `y`
+  the screen says `Allowed -- waiting for the server...` until the attempt moves on (a
+  dynamic attempt shows its code next), and `y` and `n` do nothing more.
 - **The outcome** takes over the screen for 3 seconds: `Paired with <server>`,
   `Pairing failed: <reason>`, or `The server stopped pairing`, and then the main screen
   returns. An attempt that ended before you opened the TUI is not replayed.

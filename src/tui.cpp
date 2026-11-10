@@ -497,9 +497,7 @@ ftxui::Element render(const TuiState& state, const std::string& path) {
         case TuiScreen::PairingCode:
             return pairing_code_screen(model.view(), size.dimx, size.dimy);
         case TuiScreen::PairingConfirm:
-            return takeover(
-                {ftxui::text("A server wants to pair. Y to allow, N to refuse") | ftxui::bold},
-                notice);
+            return takeover({ftxui::text(model.confirm_text()) | ftxui::bold}, notice);
         case TuiScreen::PairingOutcome:
             return takeover({ftxui::text(model.outcome_text()) | ftxui::bold}, notice);
     }
@@ -551,6 +549,7 @@ int run_tui(const std::string& path, const std::string& absent_reason) {
         }
         if (const std::optional<ControlRequest> request = state.model.request_for(*key)) {
             worker.send(*request);
+            state.model.note_sent(*request);
         }
         return true;
     });

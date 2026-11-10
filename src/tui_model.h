@@ -73,6 +73,9 @@ public:
     /// The request a key sends, or nullopt (Quit, Token, and keys that make no sense now).
     std::optional<ControlRequest> request_for(TuiKey key) const;
 
+    /// Tell the model a request went out, so an allowed attempt is not offered again.
+    void note_sent(const ControlRequest& request);
+
     void toggle_token();       ///< `p`: show or hide; the view asks for it once
     bool wants_token() const;  ///< shown and not yet fetched
     const std::optional<std::string>& token() const;
@@ -82,6 +85,7 @@ public:
     std::optional<uint32_t> position_ms(int64_t now_ms) const;  ///< interpolated while playing
     std::string notice(int64_t now_ms) const;                   ///< empty when none is current
     std::string outcome_text() const;                           ///< for PairingOutcome
+    std::string confirm_text() const;                           ///< for PairingConfirm
     std::string no_player_reason() const;                       ///< for NoPlayer and Denied
 
 private:
@@ -97,6 +101,8 @@ private:
 
     /// Attempts at or below this ended before we attached, so are never shown.
     uint32_t pairing_baseline_{0};
+    /// Set when `y` went out, to the attempt counter then; cleared when that attempt ends.
+    std::optional<uint32_t> allowed_after_{};
     std::optional<int64_t> outcome_since_ms_{};
     std::string outcome_text_;
 
