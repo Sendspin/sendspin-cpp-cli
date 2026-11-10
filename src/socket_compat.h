@@ -24,6 +24,7 @@
 // clang-format on
 #else
 #include <fcntl.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/un.h>
@@ -93,6 +94,27 @@ inline bool set_io_timeout(socket_t socket, unsigned timeout_ms) {
     timeout.tv_usec = static_cast<suseconds_t>((timeout_ms % 1000U) * 1000U);
     return ::setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) == 0 &&
            ::setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) == 0;
+#endif
+}
+
+/// Waits up to `timeout_ms` for `socket` to have data or its end of stream to read.
+/// @return Positive when readable, 0 when the time ran out, negative with socket_error() set.
+inline int wait_readable(socket_t socket, int timeout_ms) {
+#ifdef _WIN32
+    // Not a blocking recv(): on an AF_UNIX socket one already waiting can miss the peer's close
+    // and wait forever, while select() reports that end of stream at once.
+    fd_set readable;
+    FD_ZERO(&readable);
+    FD_SET(socket, &readable);
+    timeval timeout{};
+    timeout.tv_sec = timeout_ms / 1000;
+    timeout.tv_usec = (timeout_ms % 1000) * 1000;
+    return ::select(0, &readable, nullptr, nullptr, &timeout);
+#else
+    pollfd entry{};
+    entry.fd = socket;
+    entry.events = POLLIN;
+    return ::poll(&entry, 1, timeout_ms);
 #endif
 }
 

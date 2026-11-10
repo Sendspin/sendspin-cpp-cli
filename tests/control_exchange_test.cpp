@@ -205,9 +205,9 @@ TEST(ControlExchange, APlayerThatNeverAnswersTimesOut) {
     EXPECT_LT(elapsed, std::chrono::milliseconds(4500));
 }
 
-#ifndef _WIN32
-// Not on Windows, whose AF_UNIX refuses a connect to a full backlog at once. Linux instead waits
-// for room, bounded only by SO_SNDTIMEO.
+#ifdef __linux__
+// Linux only: there a connect to a full backlog waits for room, bounded only by SO_SNDTIMEO.
+// Windows and macOS refuse it at once, so nothing can hang there.
 TEST(ControlExchange, AFullBacklogTimesOutTheConnect) {
     const ScratchDir dir;
     ASSERT_TRUE(dir.created());

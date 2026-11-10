@@ -18,7 +18,10 @@
 
 #include "socket_compat.h"
 
+#include <algorithm>
+#include <chrono>
 #include <csignal>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -150,10 +153,28 @@ bool write_all(socket_t fd, const std::string& text, std::string& error, bool& t
     return true;
 }
 
-/// Reads until the daemon closes, which is its end-of-reply marker.
+/// Reads until the daemon closes, which is its end-of-reply marker, within ANSWER_TIMEOUT_MS.
 bool read_reply(socket_t fd, std::string& reply, std::string& error) {
     char buffer[4096];
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(ANSWER_TIMEOUT_MS);
     while (true) {
+        // Wait first, so the read never blocks: see wait_readable() for why that matters.
+        const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - std::chrono::steady_clock::now());
+        const int ready = wait_readable(fd, static_cast<int>(std::max<int64_t>(left.count(), 0)));
+        if (ready == 0) {
+            error = ANSWER_TIMEOUT_REASON;
+            return false;
+        }
+        if (ready < 0) {
+            const int reason = socket_error();
+            if (socket_interrupted(reason)) {
+                continue;
+            }
+            error = "cannot read the reply: " + socket_error_text(reason);
+            return false;
+        }
         const long read_bytes = receive_bytes(fd, buffer, sizeof(buffer));
         if (read_bytes > 0) {
             if (reply.size() + static_cast<size_t>(read_bytes) > MAX_REPLY_BYTES) {
