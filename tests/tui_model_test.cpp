@@ -254,6 +254,58 @@ TEST(TuiModel, ReattachingResetsThePairingBaseline) {
     EXPECT_EQ(model.screen(3000), TuiScreen::PairingOutcome);
 }
 
+TEST(TuiModel, AMissedPollKeepsTheScreenAndItsBaseline) {
+    StatusSnapshot snapshot = attached_snapshot();
+    snapshot.last_pairing = {3, SERVER_ID, PairingOutcome::Paired, ""};
+    TuiModel model = model_with(snapshot, 0);
+
+    model.on_status(refused(ControlStatus::Failed, "the player did not answer within 3 s"), 1000);
+    EXPECT_EQ(model.screen(1000), TuiScreen::Main);
+    EXPECT_EQ(model.view().title, "Says");
+    EXPECT_EQ(model.notice(1000), "The player did not answer -- retrying");
+
+    // The attempt that ended meanwhile is still news.
+    snapshot.last_pairing = {4, SERVER_ID, PairingOutcome::Failed,
+                             "the pairing code did not match"};
+    model.on_status(ok(snapshot), 2000);
+    EXPECT_EQ(model.screen(2000), TuiScreen::PairingOutcome);
+    EXPECT_EQ(model.outcome_text(), "Pairing failed: the pairing code did not match");
+
+    // So is an unreadable reply.
+    ControlExchange unreadable;
+    unreadable.status = ControlStatus::Ok;
+    unreadable.payload = "version=2\n";
+    model.on_status(unreadable, 6000);
+    EXPECT_EQ(model.screen(6000), TuiScreen::Main);
+    EXPECT_FALSE(model.notice(6000).empty());
+
+    // With nothing attached yet, a failure is all there is to show.
+    TuiModel fresh;
+    fresh.on_status(refused(ControlStatus::Failed, "the player did not answer within 3 s"), 0);
+    EXPECT_EQ(fresh.screen(0), TuiScreen::NoPlayer);
+    EXPECT_EQ(fresh.no_player_reason(), "the player did not answer within 3 s");
+}
+
+TEST(TuiModel, AnOutcomeFromTheSamePlayerWhileDetachedIsShown) {
+    StatusSnapshot snapshot = attached_snapshot();
+    snapshot.client_id = "client-a";
+    snapshot.last_pairing = {3, SERVER_ID, PairingOutcome::Paired, ""};
+    TuiModel model = model_with(snapshot, 0);
+
+    model.on_status(refused(ControlStatus::NoDaemon, "connect: connection refused"), 1000);
+    snapshot.last_pairing = {4, SERVER_ID, PairingOutcome::Failed, "timed out"};
+    model.on_status(ok(snapshot), 2000);
+    EXPECT_EQ(model.screen(2000), TuiScreen::PairingOutcome);
+    EXPECT_EQ(model.outcome_text(), "Pairing failed: timed out");
+
+    // A different player's history is not news.
+    model.on_status(refused(ControlStatus::NoDaemon, "connect: connection refused"), 6000);
+    snapshot.client_id = "client-b";
+    snapshot.last_pairing = {9, SERVER_ID, PairingOutcome::Failed, "timed out"};
+    model.on_status(ok(snapshot), 7000);
+    EXPECT_EQ(model.screen(7000), TuiScreen::Main);
+}
+
 TEST(TuiModel, SpacePausesWhilePlayingAndPlaysOtherwise) {
     StatusSnapshot snapshot = attached_snapshot();
     TuiModel model = model_with(snapshot);

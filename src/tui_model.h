@@ -101,6 +101,8 @@ private:
 
     /// Attempts at or below this ended before we attached, so are never shown.
     uint32_t pairing_baseline_{0};
+    /// The last attached player's client id, kept across a detach to recognise it coming back.
+    std::string attached_client_id_;
     /// Set when `y` went out, to the attempt counter then; cleared when that attempt ends.
     std::optional<uint32_t> allowed_after_{};
     std::optional<int64_t> outcome_since_ms_{};

@@ -98,6 +98,10 @@ screen up by itself. `q` still quits.
   socket, the port is not the player's, or the player took longer than 3 seconds to answer,
   which counts as not answering. The line below the heading says which. Start the player, or
   pass the same `--port` or `--control-socket` it uses.
+
+  Once the TUI has reached the player, a poll that goes unanswered does not bring this screen
+  up: the last screen stays, with the notice `The player did not answer -- retrying`, until
+  the player answers again or its socket goes away.
 - **A sendspin-cli player is running, but this user may not connect to it.** The socket
   refused you, which is the normal case under the system service. The screen prints the
   command to run, `sudo sendspin-cli tui --control-socket <the path it tried>`.

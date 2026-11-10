@@ -104,17 +104,31 @@ void TuiModel::on_status(const ControlExchange& reply, int64_t now_ms) {
         this->detach_(Link::TooOld, reply.reason);
         return;
     }
-    if (reply.status != ControlStatus::Ok) {
-        this->detach_(Link::NoPlayer, reply.reason);
-        return;
-    }
     PlayerView view;
-    if (!parse_status_kv(reply.payload, view)) {
-        this->detach_(Link::NoPlayer, "the player's status-kv reply is not a version this reads");
+    const bool parsed = reply.status == ControlStatus::Ok && parse_status_kv(reply.payload, view);
+    if (!parsed) {
+        const std::string reason = reply.status != ControlStatus::Ok
+                                       ? reply.reason
+                                       : "the player's status-kv reply is not a version this reads";
+        if (this->link_ == Link::Attached) {
+            // One poll that went wrong is not a player gone: keep the screen and the baseline,
+            // so an attempt that ends meanwhile is still shown.
+            this->notice_ = reply.status != ControlStatus::Ok
+                                ? "The player did not answer -- retrying"
+                                : reason;
+            this->notice_until_ms_ = now_ms + MESSAGE_MS;
+            return;
+        }
+        this->detach_(Link::NoPlayer, reason);
         return;
     }
 
-    if (this->link_ != Link::Attached) {
+    // Back on the same player, whose counter went on: what ended while away is still news.
+    const bool resumed =
+        this->link_ == Link::Attached ||
+        (!this->attached_client_id_.empty() && view.client_id == this->attached_client_id_ &&
+         view.last_pairing_attempt >= this->pairing_baseline_);
+    if (!resumed) {
         // Whatever ended before this attach is history, not news.
         this->pairing_baseline_ = view.last_pairing_attempt;
     } else if (view.last_pairing_attempt > this->pairing_baseline_) {
@@ -129,6 +143,7 @@ void TuiModel::on_status(const ControlExchange& reply, int64_t now_ms) {
         this->allowed_after_.reset();
     }
     this->link_ = Link::Attached;
+    this->attached_client_id_ = view.client_id;
     this->no_player_reason_.clear();
     this->view_ = std::move(view);
     this->received_ms_ = now_ms;
