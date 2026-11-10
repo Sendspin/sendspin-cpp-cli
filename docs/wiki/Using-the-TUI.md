@@ -16,7 +16,9 @@ It finds the player exactly as `sendspin-cli status` does: the same `--port`,
 `--control-socket` and config file. A player on another port needs the same flag here, and
 the rules are in [Finding the socket](Controlling-the-Player#finding-the-socket).
 
-**Under the Linux system service the socket is root-only**, so:
+**Under the Linux system service the socket belongs to the `sendspin-cli` service account**,
+mode `0600`, so only that account and root, which ignores the mode, can open it. Run the TUI
+as root:
 
 ```console
 $ sudo sendspin-cli tui --control-socket /run/sendspin-cli/control.sock
@@ -115,4 +117,4 @@ screen up by itself. `q` still quits.
   `status-kv`
 - [Pairing a Player](Pairing-a-Player)
 - [Troubleshooting](Troubleshooting) -- what exit `3` usually means
-- [Running as a Service](Running-as-a-Service) -- why the socket is root-only there
+- [Running as a Service](Running-as-a-Service) -- who owns the socket there

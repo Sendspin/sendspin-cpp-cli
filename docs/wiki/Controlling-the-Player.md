@@ -43,6 +43,7 @@ is also what lets `seek-rel -5000` be an offset rather than a flag cluster.
 |---|---|---|
 | `status` | | what this player and its group are doing — **answered locally** |
 | `status-kv` | | `status` as `key=value` lines, for scripts and the TUI — **answered locally** |
+| `tui` | | the [terminal remote](Using-the-TUI); it runs in your terminal, not over the socket |
 | `play` | | resume or start playback |
 | `pause` | | pause playback |
 | `stop` | | stop playback |
@@ -62,9 +63,11 @@ is also what lets `seek-rel -5000` be an offset rather than a flag cluster.
 | `delay` | `<0-5000>` | this endpoint's output delay — **answered locally** |
 
 Twelve of those go out to the server as `controller@v1` commands. Seven never leave the host:
-`status` and `status-kv`, formatted from the daemon's own view, `player-vol` and `player-mute`, which set this
-player's own level, `delay`, which drives this endpoint's own player role, `pair`, which is [Pairing a Player](Pairing-a-Player), and `pair-token`, which is
-[Pairing from another system](Advanced-Usage#pairing-from-another-system).
+`status` and `status-kv`, formatted from the daemon's own view, `player-vol` and
+`player-mute`, which set this player's own level, `delay`, which drives this endpoint's own
+player role, `pair`, which is [Pairing a Player](Pairing-a-Player), and `pair-token`, which is
+[Pairing from another system](Advanced-Usage#pairing-from-another-system). `tui` sends
+nothing of its own: it is a screen that sends the others for you.
 
 ## Three that are easy to misread
 
@@ -235,7 +238,7 @@ world-writable, and a socket there would let any local user pause your music.
 
 | Status | Means |
 |---|---|
-| `0` | sent, or answered locally (`status`, `player-vol`, `player-mute`, `delay`, `pair-token`, `pair`) |
+| `0` | sent, or answered locally (`status`, `status-kv`, `player-vol`, `player-mute`, `delay`, `pair-token`, `pair`) |
 | `1` | the command line did not parse (`vol 500`, `delay 5001`) |
 | `2` | the player refused the argument (a `seek` past the server's `seek_max_ms`) |
 | `3` | **nothing is listening on that socket** — no player, or the wrong `--port` |
@@ -249,9 +252,9 @@ and `5` especially — a dropped connection *empties* the server's advertised co
 collapsing them would answer "pause is not supported" when the truth is that nothing is
 connected.
 
-`status`, `player-vol`, `player-mute`, `delay`, `pair-token` and `pair` are never refused by any of them: nothing about
-them is sent, so a missing connection is no obstacle. A disconnected player is exactly when reading `status` is
-worth doing.
+`status`, `player-vol`, `player-mute`, `delay`, `pair-token` and `pair` are never refused by
+any of them: nothing about them is sent, so a missing connection is no obstacle. A
+disconnected player is exactly when reading `status` is worth doing.
 
 ```bash
 if ! sendspin-cli status >/dev/null 2>&1; then
