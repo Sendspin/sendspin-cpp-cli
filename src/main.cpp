@@ -26,6 +26,7 @@
 #include "log.h"
 #include "mdns.h"
 #include "outbound.h"
+#include "pairing_tracker.h"
 #include "player_listener.h"
 #include "state_store.h"
 #include "supported_formats.h"
@@ -157,54 +158,59 @@ struct PairingListener : sendspin::SendspinClientListener {
     void on_trust_changed(sendspin::ConnectionTrust trust) override {
         this->trust_ = trust;
         // A new handshake: an attempt the last connection dropped never reported its end.
-        this->server_id_.clear();
+        this->tracker_.connection_ended();
         log_line(LogLevel::INFO, LOG_TAG, "Connected server is %s",
                  trust == sendspin::ConnectionTrust::USER ? "paired" : "not paired");
     }
 
     void on_pairing_started(const std::string& server_id) override {
-        this->server_id_ = server_id;
+        this->tracker_.started(server_id);
         log_line(LogLevel::INFO, LOG_TAG, "Pairing started with server %s", server_id.c_str());
     }
 
     void on_pairing_succeeded(const std::string& server_id) override {
-        this->server_id_.clear();
+        this->tracker_.succeeded(server_id);
         log_line(LogLevel::INFO, LOG_TAG, "Paired with server %s", server_id.c_str());
     }
 
     void on_pairing_failed(const std::string& server_id,
                            sendspin::SendspinPairAbortReason reason) override {
-        this->server_id_.clear();
+        this->tracker_.failed(server_id, pair_abort_reason(reason));
         log_line(LogLevel::WARN, LOG_TAG, "Pairing with server %s failed: %s", server_id.c_str(),
                  pair_abort_reason(reason));
     }
 
     void on_display_pairing_code(const std::string& code,
                                  sendspin::SendspinPairingCodeFormat /*format*/) override {
-        this->code_ = code;
+        this->tracker_.code_shown(code);
         log_line(LogLevel::INFO, LOG_TAG,
                  "*** Pairing code: %s *** -- type it into the server to pair", code.c_str());
     }
 
     void on_clear_pairing_code() override {
-        // Also how an attempt the server abandoned ends: neither outcome callback fires for it.
-        this->server_id_.clear();
-        this->code_.clear();
+        // Not the end of the attempt: the library clears the code before it reports a success.
+        this->tracker_.code_cleared();
         log_line(LogLevel::INFO, LOG_TAG, "Pairing code withdrawn");
     }
 
     void on_open_pairing_window() override {
-        this->window_open_ = true;
+        this->tracker_.window_opened();
         log_line(LogLevel::INFO, LOG_TAG,
                  "A server is waiting to pair -- run 'sendspin-cli pair confirm' to let it, or "
                  "'sendspin-cli pair cancel' to refuse");
     }
 
     void on_close_pairing_window() override {
-        // Fires when the attempt concludes, like on_clear_pairing_code().
-        this->server_id_.clear();
-        this->window_open_ = false;
+        this->tracker_.window_closed();
         log_line(LogLevel::INFO, LOG_TAG, "No longer waiting for 'pair confirm'");
+    }
+
+    /// A dropped connection ends its attempt without any callback, so watch for the drop.
+    void observe_connected(bool connected) {
+        if (this->was_connected_ && !connected) {
+            this->tracker_.connection_ended();
+        }
+        this->was_connected_ = connected;
     }
 
     /// The last trust reported; describes the connection only while one is up.
@@ -214,23 +220,27 @@ struct PairingListener : sendspin::SendspinClientListener {
 
     /// The server a pairing is in progress with, or empty.
     const std::string& server_id() const {
-        return this->server_id_;
+        return this->tracker_.in_progress_server_id();
     }
 
     /// The dynamic code on show, or empty.
     const std::string& code() const {
-        return this->code_;
+        return this->tracker_.code();
     }
 
     bool window_open() const {
-        return this->window_open_;
+        return this->tracker_.window_open();
+    }
+
+    /// How the last attempt ended; attempt 0 when none has.
+    const PairingAttemptResult& last_pairing() const {
+        return this->tracker_.last();
     }
 
 private:
     std::optional<sendspin::ConnectionTrust> trust_;
-    std::string server_id_;
-    std::string code_;
-    bool window_open_{false};
+    PairingTracker tracker_;
+    bool was_connected_{false};
 };
 
 /// Logs server metadata and caches the latest for `status`. Main loop only.
@@ -507,6 +517,7 @@ private:
         }
         snapshot.pairing_code = this->pairing_listener_.code();
         snapshot.pairing_window_open = this->pairing_listener_.window_open();
+        snapshot.last_pairing = this->pairing_listener_.last_pairing();
         const std::optional<sendspin::ServerInformationObject> info =
             this->client_.get_server_information();
         if (info.has_value()) {
@@ -1079,6 +1090,7 @@ int main(int argc, char* argv[]) {
         }
         // Main-loop work a sink cannot do on the sync task's thread.
         sink->poll(now_ms);
+        pairing_listener.observe_connected(client.is_connected());
         hooks.poll();
         // Not in the SIGHUP handler: the reopen is not async-signal-safe.
         log_reopen_if_requested();

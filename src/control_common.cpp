@@ -566,6 +566,22 @@ std::string format_status(const StatusSnapshot& snapshot) {
                     "open -- run 'sendspin-cli pair confirm' to let the server pair, or "
                     "'sendspin-cli pair cancel' to refuse it");
     }
+    const PairingAttemptResult& last = snapshot.last_pairing;
+    switch (last.outcome) {
+        case PairingOutcome::None:
+            append_line(out, "last pairing", "none");
+            break;
+        case PairingOutcome::Paired:
+            append_line(out, "last pairing", "paired with " + last.server_id);
+            break;
+        case PairingOutcome::Failed:
+            append_line(out, "last pairing",
+                        "failed with " + last.server_id + " -- " + last.reason);
+            break;
+        case PairingOutcome::Abandoned:
+            append_line(out, "last pairing", "abandoned by " + last.server_id);
+            break;
+    }
 
     // playback_speed is per-mille: 1000 is normal, 0 is paused.
     if (!snapshot.playback_speed.has_value()) {

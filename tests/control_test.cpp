@@ -837,6 +837,24 @@ TEST(FormatStatus, AnOpenPairingWindowNamesTheCommandsThatAnswerIt) {
     EXPECT_NE(line.find("pair cancel"), std::string::npos) << line;
 }
 
+TEST(FormatStatus, NoPairingAttemptYetSaysNone) {
+    EXPECT_EQ(field(format_status(playing_snapshot()), "last pairing"), "none");
+}
+
+TEST(FormatStatus, ALastPairingReportsItsOutcome) {
+    StatusSnapshot snapshot = playing_snapshot();
+    snapshot.last_pairing = {1, "OraobU4l", PairingOutcome::Paired, ""};
+    EXPECT_EQ(field(format_status(snapshot), "last pairing"), "paired with OraobU4l");
+
+    snapshot.last_pairing = {2, "OraobU4l", PairingOutcome::Failed,
+                             "the pairing code did not match"};
+    EXPECT_EQ(field(format_status(snapshot), "last pairing"),
+              "failed with OraobU4l -- the pairing code did not match");
+
+    snapshot.last_pairing = {3, "OraobU4l", PairingOutcome::Abandoned, ""};
+    EXPECT_EQ(field(format_status(snapshot), "last pairing"), "abandoned by OraobU4l");
+}
+
 TEST(FormatStatus, TheQueueModesAreReportedSoTheirCommandsAreVisible) {
     StatusSnapshot snapshot = playing_snapshot();
     snapshot.group_state_known = true;

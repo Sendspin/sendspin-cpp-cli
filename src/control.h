@@ -17,6 +17,7 @@
 #pragma once
 
 #include "audio_sink.h"
+#include "pairing_tracker.h"
 
 #include <sendspin/controller_role.h>
 #include <sendspin/types.h>
@@ -175,9 +176,10 @@ struct StatusSnapshot {
     std::optional<sendspin::ConnectionTrust> trust{};
     size_t paired_servers{0};  ///< servers with a stored pairing, connected or not
 
-    std::string pairing_server_id;    ///< the server a pairing is in progress with, else empty
-    std::string pairing_code;         ///< the dynamic code on show, else empty
-    bool pairing_window_open{false};  ///< an attempt is waiting for `pair confirm`
+    std::string pairing_server_id;        ///< the server a pairing is in progress with, else empty
+    std::string pairing_code;             ///< the dynamic code on show, else empty
+    bool pairing_window_open{false};      ///< an attempt is waiting for `pair confirm`
+    PairingAttemptResult last_pairing{};  ///< how the last attempt ended
 
     /// 0 is paused, 1000 is normal speed; absent when no progress has arrived.
     std::optional<uint32_t> playback_speed{};
