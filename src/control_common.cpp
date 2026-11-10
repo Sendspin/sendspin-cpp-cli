@@ -184,6 +184,8 @@ const char* volume_source_note(VolumeSource source) {
             return " (fixed; the server cannot set it)";
         case VolumeSource::Hardware:
             return " (read from the hardware mixer at startup)";
+        case VolumeSource::Local:
+            return " (set on this player)";
         case VolumeSource::SinkDefault:
             break;
     }
@@ -195,6 +197,11 @@ const char* volume_source_note(VolumeSource source) {
 const std::vector<ControlSubcommand>& control_subcommands() {
     static const std::vector<ControlSubcommand> table = {
         {"status", ControlCommand::Status, 0, nullptr, "What this player and its group are doing"},
+        {"status-kv", ControlCommand::StatusKv, 0, nullptr,
+         "Status as key=value lines, for scripts and the TUI"},
+        {"tui", ControlCommand::Tui, 0, nullptr,
+         "Open the terminal UI: what is playing, playback keys, and pairing, attached to the "
+         "running player"},
         {"play", ControlCommand::Play, 0, nullptr, "Resume or start playback"},
         {"pause", ControlCommand::Pause, 0, nullptr, "Pause playback"},
         {"stop", ControlCommand::Stop, 0, nullptr, "Stop playback"},
@@ -219,6 +226,10 @@ const std::vector<ControlSubcommand>& control_subcommands() {
          "Answer a pairing attempt that is waiting on this player: 'confirm' lets it go ahead "
          "and keeps the pairing window open for 5 minutes, 'cancel' refuses it and closes the "
          "window"},
+        {"player-vol", ControlCommand::PlayerVolume, 1, "<0-100>",
+         "Set *this* player's own volume -- answered locally, published to the server, "
+         "remembered across restarts. Not the group volume"},
+        {"player-mute", ControlCommand::PlayerMute, 1, ON_OFF, "Mute or unmute this player alone"},
         {"delay", ControlCommand::Delay, 1, "<0-5000>",
          "Tell *this* endpoint how much latency its hardware adds after the audio port -- an "
          "amplifier, an external speaker. The player then hands audio over that much earlier, so "
@@ -305,7 +316,8 @@ bool parse_control_request(const std::string& name, const std::vector<std::strin
     };
 
     switch (subcommand->command) {
-        case ControlCommand::Volume: {
+        case ControlCommand::Volume:
+        case ControlCommand::PlayerVolume: {
             uint64_t volume = 0;
             if (!parse_unsigned(value, 100, volume)) {
                 return reject("a volume from 0 to 100");
@@ -324,6 +336,7 @@ bool parse_control_request(const std::string& name, const std::vector<std::strin
             return true;
         }
         case ControlCommand::Mute:
+        case ControlCommand::PlayerMute:
         case ControlCommand::Shuffle: {
             bool flag = false;
             if (!parse_on_off(value, flag)) {
@@ -367,6 +380,8 @@ bool parse_control_request(const std::string& name, const std::vector<std::strin
             return true;
         }
         case ControlCommand::Status:
+        case ControlCommand::StatusKv:
+        case ControlCommand::Tui:
         case ControlCommand::Play:
         case ControlCommand::Pause:
         case ControlCommand::Stop:
@@ -427,8 +442,14 @@ bool split_control_line(const std::string& line, std::string& name,
 std::optional<SendspinControllerCommand> protocol_command(const ControlRequest& request) {
     switch (request.command) {
         case ControlCommand::Status:
+        case ControlCommand::StatusKv:
+        case ControlCommand::Tui:
         case ControlCommand::PairToken:
         case ControlCommand::Pair:
+            return std::nullopt;
+        case ControlCommand::PlayerVolume:
+        case ControlCommand::PlayerMute:
+            // Set on this player's own sink and role, never sent to the server as a command.
             return std::nullopt;
         case ControlCommand::Delay:
             // Set on the player role, which republishes client/state itself.
@@ -526,6 +547,34 @@ bool control_refusal(const ControlRequest& request, const ControllerSnapshot& sn
     return false;
 }
 
+const char* codec_name(sendspin::SendspinCodecFormat codec) {
+    switch (codec) {
+        case sendspin::SendspinCodecFormat::FLAC:
+            return "flac";
+        case sendspin::SendspinCodecFormat::OPUS:
+            return "opus";
+        case sendspin::SendspinCodecFormat::PCM:
+            return "pcm";
+        case sendspin::SendspinCodecFormat::UNSUPPORTED:
+            break;
+    }
+    return "unsupported";
+}
+
+std::string status_state(const StatusSnapshot& snapshot) {
+    // playback_speed is per-mille: 1000 is normal, 0 is paused.
+    if (!snapshot.playback_speed.has_value()) {
+        return "unknown";
+    }
+    if (*snapshot.playback_speed == 0) {
+        return "paused";
+    }
+    if (*snapshot.playback_speed == 1000) {
+        return "playing";
+    }
+    return "playing (speed " + std::to_string(*snapshot.playback_speed) + "/1000)";
+}
+
 std::string format_status(const StatusSnapshot& snapshot) {
     std::string out;
 
@@ -566,21 +615,30 @@ std::string format_status(const StatusSnapshot& snapshot) {
                     "open -- run 'sendspin-cli pair confirm' to let the server pair, or "
                     "'sendspin-cli pair cancel' to refuse it");
     }
-
-    // playback_speed is per-mille: 1000 is normal, 0 is paused.
-    if (!snapshot.playback_speed.has_value()) {
-        append_line(out, "state", "unknown");
-    } else if (*snapshot.playback_speed == 0) {
-        append_line(out, "state", "paused");
-    } else if (*snapshot.playback_speed == 1000) {
-        append_line(out, "state", "playing");
-    } else {
-        append_line(out, "state",
-                    "playing (speed " + std::to_string(*snapshot.playback_speed) + "/1000)");
+    const PairingAttemptResult& last = snapshot.last_pairing;
+    switch (last.outcome) {
+        case PairingOutcome::None:
+            append_line(out, "last pairing", "none");
+            break;
+        case PairingOutcome::Paired:
+            append_line(out, "last pairing", "paired with " + last.server_id);
+            break;
+        case PairingOutcome::Failed:
+            append_line(out, "last pairing",
+                        "failed with " + last.server_id + " -- " + last.reason);
+            break;
+        case PairingOutcome::Abandoned:
+            append_line(out, "last pairing", "abandoned by " + last.server_id);
+            break;
     }
+
+    append_line(out, "state", status_state(snapshot));
 
     // Whether audio arrives here, separate from the group's transport state.
     append_line(out, "stream", snapshot.streaming ? "receiving" : "idle");
+    if (snapshot.codec.has_value()) {
+        append_line(out, "codec", codec_name(*snapshot.codec));
+    }
 
     if (snapshot.title.empty() && snapshot.artist.empty()) {
         append_line(out, "track", "unknown");
@@ -590,6 +648,10 @@ std::string format_status(const StatusSnapshot& snapshot) {
         append_line(out, "track", snapshot.artist);
     } else {
         append_line(out, "track", snapshot.artist + " - " + snapshot.title);
+    }
+
+    if (!snapshot.album.empty()) {
+        append_line(out, "album", snapshot.album);
     }
 
     if (!snapshot.progress_ms.has_value()) {
@@ -610,6 +672,9 @@ std::string format_status(const StatusSnapshot& snapshot) {
     append_line(
         out, "group volume",
         format_volume(snapshot.group_state_known, snapshot.group_volume, snapshot.group_muted));
+    if (!snapshot.group_name.empty()) {
+        append_line(out, "group", snapshot.group_name);
+    }
     append_line(out, "repeat",
                 snapshot.group_state_known ? repeat_mode_name(snapshot.group_repeat) : "unknown");
     append_line(out, "shuffle",

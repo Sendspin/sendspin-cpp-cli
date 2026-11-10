@@ -17,7 +17,9 @@
 #pragma once
 
 #include "audio_sink.h"
+#include "pairing_tracker.h"
 
+#include <sendspin/config.h>
 #include <sendspin/controller_role.h>
 #include <sendspin/types.h>
 
@@ -68,6 +70,13 @@ enum class ControlCommand : uint8_t {
     Switch,
     PairToken,  ///< answered locally: this player's pairing token
     Pair,       ///< answered locally: confirm or cancel the pairing window
+
+    PlayerVolume,  ///< answered locally: this player's own volume, not the group's
+    PlayerMute,    ///< answered locally: this player's own mute, not the group's
+
+    StatusKv,  ///< answered locally: `status` as key=value lines for programs
+
+    Tui,  ///< runs in the terminal; the daemon refuses it
 
     /// Answered locally: this endpoint's own output delay.
     /// Keep last: EveryCommandInTheEnumHasARow walks the enum up to here.
@@ -175,9 +184,10 @@ struct StatusSnapshot {
     std::optional<sendspin::ConnectionTrust> trust{};
     size_t paired_servers{0};  ///< servers with a stored pairing, connected or not
 
-    std::string pairing_server_id;    ///< the server a pairing is in progress with, else empty
-    std::string pairing_code;         ///< the dynamic code on show, else empty
-    bool pairing_window_open{false};  ///< an attempt is waiting for `pair confirm`
+    std::string pairing_server_id;        ///< the server a pairing is in progress with, else empty
+    std::string pairing_code;             ///< the dynamic code on show, else empty
+    bool pairing_window_open{false};      ///< an attempt is waiting for `pair confirm`
+    PairingAttemptResult last_pairing{};  ///< how the last attempt ended
 
     /// 0 is paused, 1000 is normal speed; absent when no progress has arrived.
     std::optional<uint32_t> playback_speed{};
@@ -186,8 +196,12 @@ struct StatusSnapshot {
     bool streaming{false};
     std::optional<StreamFormat> format{};  ///< what the sink was configured for
 
+    /// The codec the server is sending; set only while streaming.
+    std::optional<sendspin::SendspinCodecFormat> codec{};
+
     std::string artist;  ///< empty when unknown
     std::string title;
+    std::string album;  ///< empty when unknown
 
     /// Absent without metadata progress; a duration of 0 is a live stream.
     std::optional<uint32_t> progress_ms{};
@@ -197,6 +211,7 @@ struct StatusSnapshot {
     bool group_state_known{false};
     uint8_t group_volume{0};
     bool group_muted{false};
+    std::string group_name;  ///< empty when unknown
 
     /// Last values the server published; a server that omits them reads as OFF/false.
     sendspin::SendspinRepeatMode group_repeat{sendspin::SendspinRepeatMode::OFF};
@@ -217,6 +232,12 @@ struct StatusSnapshot {
     StreamFormat input_format{};
     bool input_streaming{false};  ///< the server has the input stream open
 };
+
+/// How `status` names a codec: `flac`, `opus`, `pcm` or `unsupported`.
+const char* codec_name(sendspin::SendspinCodecFormat codec);
+
+/// The word the `state:` line prints: `playing`, `paused`, `unknown`, or `playing (speed N/1000)`.
+std::string status_state(const StatusSnapshot& snapshot);
 
 /// Formats a snapshot as `key: value` lines, newline-terminated.
 std::string format_status(const StatusSnapshot& snapshot);
@@ -339,6 +360,20 @@ private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
+
+/// The outcome of one request to the daemon's control socket.
+struct ControlExchange {
+    ControlStatus status{ControlStatus::Failed};
+    std::string reason;   ///< the error text, empty on Ok
+    std::string payload;  ///< what followed `ok`
+    /// NoDaemon because the socket refused this user, not because none is running.
+    bool denied{false};
+};
+
+/// One request, one reply, no printing. Safe to call from any one thread at a time.
+/// @param absent_reason Why `path` is empty, when it is.
+ControlExchange exchange_control_request(const ControlRequest& request, const std::string& path,
+                                         const std::string& absent_reason);
 
 /// Runs one subcommand against the daemon's socket and prints the reply.
 /// @param absent_reason Why `path` is empty, when it is.

@@ -201,13 +201,18 @@ The same binary drives a running player on its own host:
 
 ```bash
 sendspin-cli status
+sendspin-cli status-kv   # the same as key=value lines, for scripts
+sendspin-cli tui         # a terminal remote: now playing, keys, pairing codes
 sendspin-cli pause
 sendspin-cli vol 40
+sendspin-cli player-vol 30   # this player's own volume, not the group's
+sendspin-cli player-mute on
 ```
 
 Against the Linux system service, add `sudo` and `--control-socket` as in [Pairing](#pairing).
 See [Controlling the Player](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Controlling-the-Player)
-for every subcommand.
+for every subcommand and [Using the TUI](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Using-the-TUI)
+for the terminal screen.
 
 ## Running as a service (systemd, Linux)
 

@@ -14,7 +14,8 @@
 # limitations under the License.
 #
 # smoke_test.sh's ground on Windows, where its kill/wait handling does not apply: --version,
-# the control socket round trip, a clean stop on taskkill, and -z with its pidfile.
+# the control socket round trip, this player's own volume and mute, a clean stop on taskkill,
+# and -z with its pidfile.
 #
 # Usage: smoke_test_windows.ps1 -Binary <path to sendspin-cli.exe>
 
@@ -92,9 +93,36 @@ try {
     Invoke-Native { & $Binary status --port ($port + 1) --config NUL } | Out-Null
     Check ($LASTEXITCODE -eq 3) 'status with nothing listening exits 3' "exit $LASTEXITCODE"
 
+    # This player's own volume and mute, set locally with no server.
+    $kv = @(Invoke-Native { & $Binary status-kv --port $port --config NUL })
+    Check ($LASTEXITCODE -eq 0 -and $kv[0] -eq 'version=1') 'status-kv leads with version=1' ($kv -join ' / ')
+    Invoke-Native { & $Binary player-vol 30 --port $port --config NUL } | Out-Null
+    $code = $LASTEXITCODE
+    $status = @(Invoke-Native { & $Binary status --port $port --config NUL })
+    Check ($code -eq 0 -and ($status -join "`n") -match '(?m)^player volume: 30 \(set on this player\)$') `
+        'player-vol sets this player''s volume with no server, and status shows it' "exit $code / $($status -join ' / ')"
+    Check (Wait-For { (Read-Log $log) -match 'Player volume set to 30 locally' } 5) 'and player-vol is logged' (Read-Log $log)
+    Invoke-Native { & $Binary player-mute on --port $port --config NUL } | Out-Null
+    $code = $LASTEXITCODE
+    $status = @(Invoke-Native { & $Binary status --port $port --config NUL })
+    Check ($code -eq 0 -and ($status -join "`n") -match '(?m)^player volume: 30 \(muted\) \(set on this player\)$') `
+        'player-mute mutes this player with no server, and status shows it' "exit $code / $($status -join ' / ')"
+    Check (Wait-For { (Read-Log $log) -match 'Player muted locally' } 5) 'and player-mute is logged' (Read-Log $log)
+
     & taskkill.exe /PID $player.Id | Out-Null
     Check ($player.WaitForExit(10000)) 'taskkill (no /F) stops it'
     Check ((Read-Log $log) -match 'Shutting down') 'and it shut down cleanly' (Read-Log $log)
+
+    # --fixed-volume pins this player's volume, so player-vol is refused as a bad argument.
+    $flog = Join-Path $Work 'fixed.log'
+    $fport = 39315
+    $fixed = Start-Process -FilePath $Binary -PassThru -WindowStyle Hidden -ArgumentList (@(
+            '--port', $fport, '-f', "`"$flog`"", '--state-dir', "`"$Work\fstate`"", '--fixed-volume') + $Common)
+    Check (Wait-For { (Read-Log $flog) -match "listening on port $fport" }) 'a --fixed-volume player starts' (Read-Log $flog)
+    Invoke-Native { & $Binary player-vol 30 --port $fport --config NUL } | Out-Null
+    Check ($LASTEXITCODE -eq 2) 'player-vol under --fixed-volume exits 2' "exit $LASTEXITCODE"
+    & taskkill.exe /PID $fixed.Id | Out-Null
+    Check ($fixed.WaitForExit(10000)) 'taskkill stops the --fixed-volume player'
 
     # -z: the parent returns, the pidfile names a live copy, and a second -z is refused.
     $zlog = Join-Path $Work 'daemon.log'

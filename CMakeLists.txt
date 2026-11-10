@@ -260,6 +260,26 @@ if(SENDSPIN_CLI_MDNS_ENABLED AND NOT WIN32)
     unset(CMAKE_REQUIRED_INCLUDES)
 endif()
 
+# Terminal UI
+
+option(SENDSPIN_CLI_WITH_TUI "Build the sendspin-cli tui subcommand (FTXUI)" ON)
+
+if(SENDSPIN_CLI_WITH_TUI)
+    FetchContent_Declare(
+        ftxui
+        GIT_REPOSITORY https://github.com/ArthurSonzogni/FTXUI.git
+        # v7.0.3. No GIT_SHALLOW, as for sendspin-cpp.
+        GIT_TAG        f921fad208912747c17d129a8ef75ec7624b6eec
+    )
+    set(FTXUI_BUILD_EXAMPLES OFF CACHE BOOL "Build FTXUI's examples")
+    set(FTXUI_BUILD_TESTS OFF CACHE BOOL "Build FTXUI's tests")
+    set(FTXUI_BUILD_DOCS OFF CACHE BOOL "Build FTXUI's docs")
+    # Keep FTXUI's install rules out of our payload, as for IXWebSocket.
+    set(FTXUI_ENABLE_INSTALL OFF CACHE BOOL "Install FTXUI alongside our own targets")
+    set(FTXUI_QUIET ON CACHE BOOL "Keep FTXUI's configure banner quiet")
+    FetchContent_MakeAvailable(ftxui)
+endif()
+
 # Warnings
 
 # Off by default for contributors on newer compilers; CI turns it on.
@@ -294,12 +314,15 @@ add_library(sendspin-cli-core STATIC
     src/null_sink.cpp
     src/null_source.cpp
     src/outbound.cpp
+    src/pairing_tracker.cpp
     src/pcm_ring.cpp
     src/pcm_volume.cpp
     src/player_listener.cpp
     src/sink_recovery.cpp
+    src/status_kv.cpp
     src/state_store.cpp
     src/supported_formats.cpp
+    src/tui_model.cpp
 )
 
 # Windows has no fork(), flock() or /bin/sh, so -z, locks and hooks have their own implementation.
@@ -393,6 +416,17 @@ target_compile_definitions(sendspin-cli-core PUBLIC
 add_executable(sendspin-cli src/main.cpp)
 target_link_libraries(sendspin-cli PRIVATE sendspin-cli-core)
 target_compile_options(sendspin-cli PRIVATE ${SENDSPIN_CLI_WARNING_FLAGS})
+
+# The FTXUI view, apart from the core so no FTXUI header reaches the core or the tests.
+if(SENDSPIN_CLI_WITH_TUI)
+    add_library(sendspin-cli-tui STATIC src/tui.cpp)
+    target_link_libraries(sendspin-cli-tui PUBLIC sendspin-cli-core)
+    target_link_libraries(sendspin-cli-tui PRIVATE ftxui::screen ftxui::dom ftxui::component)
+    # Our flags only: FTXUI's own targets build with its defaults, and its headers come in as SYSTEM.
+    target_compile_options(sendspin-cli-tui PRIVATE ${SENDSPIN_CLI_WARNING_FLAGS})
+    target_link_libraries(sendspin-cli PRIVATE sendspin-cli-tui)
+    target_compile_definitions(sendspin-cli PRIVATE SENDSPIN_CLI_HAVE_TUI)
+endif()
 
 if(SENDSPIN_CLI_COREAUDIO_ENABLED)
     # A bare binary has no bundle, so its microphone usage description rides in the binary.
@@ -495,12 +529,14 @@ if(SENDSPIN_CLI_BUILD_TESTS)
         tests/audio_source_test.cpp
         tests/cli_test.cpp
         tests/config_file_test.cpp
+        tests/control_exchange_test.cpp
         tests/control_test.cpp
         tests/daemon_test.cpp
         tests/device_spec_test.cpp
         tests/discovery_test.cpp
         tests/hooks_test.cpp
         tests/null_sink_test.cpp
+        tests/pairing_tracker_test.cpp
         tests/pcm_ring_test.cpp
         tests/pcm_volume_test.cpp
         tests/pipewire_sink_test.cpp
@@ -508,7 +544,9 @@ if(SENDSPIN_CLI_BUILD_TESTS)
         tests/portaudio_device_test.cpp
         tests/sink_recovery_test.cpp
         tests/state_store_test.cpp
+        tests/status_kv_test.cpp
         tests/supported_formats_test.cpp
+        tests/tui_model_test.cpp
     )
     target_link_libraries(sendspin-cli-tests PRIVATE sendspin-cli-core GTest::gtest_main)
     target_compile_options(sendspin-cli-tests PRIVATE ${SENDSPIN_CLI_WARNING_FLAGS})

@@ -91,9 +91,15 @@ reaching for.
 
 ### 9. Interactive TUI mode
 
-Optional, later. Upstream's `examples/tui_client` shows the shape. The control socket is one
-command per connection, so a long-lived subscribing client is a new shape rather than an
-extension of it.
+Done: `sendspin-cli tui`, described in
+[Using the TUI](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Using-the-TUI). What it
+leaves for later:
+
+- **Access without `sudo` under the system service.** A `sendspin-cli` group with a `0660`
+  socket would let its members run the TUI and the other subcommands. The cost is that group
+  members could read the pairing token, so it wants a deliberate decision.
+- **Artwork, the visualizer, album-colour theming and a server picker** (mDNS discovery of
+  servers to connect to).
 
 ### 10. CI and test gaps
 

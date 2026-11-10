@@ -134,6 +134,16 @@ TEST(ControlSubcommands, EveryCommandInTheEnumHasARow) {
     }
 }
 
+TEST(ControlSubcommands, TuiIsARowThatTakesNoArgument) {
+    const ControlSubcommand* tui = find_control_subcommand("tui");
+    ASSERT_NE(tui, nullptr);
+    EXPECT_EQ(tui->command, ControlCommand::Tui);
+    EXPECT_EQ(tui->arity, 0U);
+    EXPECT_EQ(tui->argument, nullptr);
+    EXPECT_STREQ(tui->description, "Open the terminal UI: what is playing, playback keys, and "
+                                   "pairing, attached to the running player");
+}
+
 TEST(ControlSubcommands, ArityAndArgumentAgree) {
     for (const ControlSubcommand& subcommand : control_subcommands()) {
         EXPECT_LE(subcommand.arity, 1U) << subcommand.name;
@@ -280,6 +290,16 @@ TEST(ParseControlRequest, StatusDispatchesNothing) {
     EXPECT_FALSE(protocol_command(parsed("status", {})).has_value());
 }
 
+TEST(ParseControlRequest, TuiTakesNoArgument) {
+    EXPECT_EQ(parsed("tui", {}).command, ControlCommand::Tui);
+    EXPECT_FALSE(protocol_command(parsed("tui", {})).has_value());
+
+    ControlRequest request;
+    std::string error;
+    EXPECT_FALSE(parse_control_request("tui", {"extra"}, request, error));
+    EXPECT_NE(error.find("takes 0 arguments"), std::string::npos) << error;
+}
+
 TEST(ParseControlRequest, VolumeTakesZeroToOneHundred) {
     EXPECT_EQ(parsed("vol", {"0"}).volume, 0);
     EXPECT_EQ(parsed("vol", {"100"}).volume, 100);
@@ -298,6 +318,24 @@ TEST(ParseControlRequest, VolumeRejectsOutOfRangeNamingTheRange) {
         // The rejected value is quoted back, so the message names what was wrong.
         EXPECT_NE(error.find(std::string(value)), std::string::npos) << error;
     }
+}
+
+TEST(ParseControlRequest, PlayerVolIsRangeChecked) {
+    EXPECT_EQ(parsed("player-vol", {"40"}).volume, 40);
+    EXPECT_EQ(parsed("player-vol", {"0"}).volume, 0);
+    EXPECT_EQ(parsed("player-vol", {"100"}).volume, 100);
+    ControlRequest request;
+    std::string error;
+    EXPECT_FALSE(parse_control_request("player-vol", {"101"}, request, error));
+    EXPECT_NE(error.find("0 to 100"), std::string::npos) << error;
+}
+
+TEST(ParseControlRequest, PlayerMuteTakesOnOff) {
+    EXPECT_EQ(parsed("player-mute", {"on"}).flag, true);
+    EXPECT_EQ(parsed("player-mute", {"off"}).flag, false);
+    ControlRequest request;
+    std::string error;
+    EXPECT_FALSE(parse_control_request("player-mute", {"maybe"}, request, error));
 }
 
 TEST(ParseControlRequest, DelayTakesZeroToTheSpecsMaximum) {
@@ -501,6 +539,25 @@ TEST(ControlRequestWire, EveryRequestSurvivesARoundTrip) {
     }
 }
 
+TEST(ControlRequestWire, PlayerCommandsRoundTrip) {
+    const std::vector<std::pair<std::string, std::vector<std::string>>> cases = {
+        {"player-vol", {"0"}},
+        {"player-vol", {"40"}},
+        {"player-mute", {"on"}},
+        {"player-mute", {"off"}},
+    };
+    for (const auto& [name, args] : cases) {
+        const ControlRequest original = parsed(name, args);
+        std::string name_back;
+        std::vector<std::string> args_back;
+        ASSERT_TRUE(split_control_line(encode_control_request(original), name_back, args_back));
+        const ControlRequest back = parsed(name_back, args_back);
+        EXPECT_EQ(back.command, original.command) << name;
+        EXPECT_EQ(back.volume, original.volume) << name;
+        EXPECT_EQ(back.flag, original.flag) << name;
+    }
+}
+
 TEST(ControlRequestWire, ZeroValuedArgumentsSurvive) {
     // A set field holding 0 must still be encoded.
     EXPECT_EQ(encode_control_request(parsed("vol", {"0"})), "vol 0");
@@ -600,6 +657,16 @@ TEST(ControlRefusal, StatusIsNeverRefused) {
     EXPECT_FALSE(control_refusal(parsed("status", {}), everything_supported(), status, reason));
 }
 
+TEST(ControlRefusal, PlayerCommandsWorkWithNoServer) {
+    ControllerSnapshot disconnected;
+    ControlStatus status = ControlStatus::Failed;
+    std::string reason;
+    EXPECT_FALSE(control_refusal(parsed("player-vol", {"40"}), disconnected, status, reason));
+    EXPECT_FALSE(control_refusal(parsed("player-mute", {"on"}), disconnected, status, reason));
+    EXPECT_FALSE(protocol_command(parsed("player-vol", {"40"})).has_value());
+    EXPECT_FALSE(protocol_command(parsed("player-mute", {"on"})).has_value());
+}
+
 TEST(ControlRefusal, DelayIsNeverRefusedEither) {
     // `delay` is exempt too, through protocol_command() rather than by name.
     ControllerSnapshot disconnected;
@@ -690,6 +757,30 @@ TEST(FormatStatus, EveryFieldIsPresentAndLabelled) {
     EXPECT_EQ(field(block, "output"), "portaudio (48000 Hz / 2 ch / 16-bit)");
     // Every line is `key: value`, so `cut -d: -f2` and `grep` both reach a field.
     EXPECT_EQ(block.back(), '\n');
+}
+
+TEST(FormatStatus, TheAlbumFollowsTheTrack) {
+    StatusSnapshot snapshot = playing_snapshot();
+    snapshot.album = "Spaces";
+    EXPECT_EQ(field(format_status(snapshot), "album"), "Spaces");
+    snapshot.album.clear();
+    EXPECT_EQ(format_status(snapshot).find("\nalbum:"), std::string::npos);
+}
+
+TEST(FormatStatus, TheGroupIsNamedWhenKnown) {
+    StatusSnapshot snapshot = playing_snapshot();
+    snapshot.group_name = "Living room";
+    EXPECT_EQ(field(format_status(snapshot), "group"), "Living room");
+    snapshot.group_name.clear();
+    EXPECT_EQ(format_status(snapshot).find("\ngroup:"), std::string::npos);
+}
+
+TEST(FormatStatus, TheCodecShowsWhileStreaming) {
+    StatusSnapshot snapshot = playing_snapshot();
+    snapshot.codec = sendspin::SendspinCodecFormat::FLAC;
+    EXPECT_EQ(field(format_status(snapshot), "codec"), "flac");
+    snapshot.codec.reset();
+    EXPECT_EQ(format_status(snapshot).find("\ncodec:"), std::string::npos);
 }
 
 TEST(FormatStatus, GroupAndPlayerVolumeAreSeparateLines) {
@@ -835,6 +926,24 @@ TEST(FormatStatus, AnOpenPairingWindowNamesTheCommandsThatAnswerIt) {
     EXPECT_EQ(line.compare(0, 4, "open"), 0) << line;
     EXPECT_NE(line.find("pair confirm"), std::string::npos) << line;
     EXPECT_NE(line.find("pair cancel"), std::string::npos) << line;
+}
+
+TEST(FormatStatus, NoPairingAttemptYetSaysNone) {
+    EXPECT_EQ(field(format_status(playing_snapshot()), "last pairing"), "none");
+}
+
+TEST(FormatStatus, ALastPairingReportsItsOutcome) {
+    StatusSnapshot snapshot = playing_snapshot();
+    snapshot.last_pairing = {1, "OraobU4l", PairingOutcome::Paired, ""};
+    EXPECT_EQ(field(format_status(snapshot), "last pairing"), "paired with OraobU4l");
+
+    snapshot.last_pairing = {2, "OraobU4l", PairingOutcome::Failed,
+                             "the pairing code did not match"};
+    EXPECT_EQ(field(format_status(snapshot), "last pairing"),
+              "failed with OraobU4l -- the pairing code did not match");
+
+    snapshot.last_pairing = {3, "OraobU4l", PairingOutcome::Abandoned, ""};
+    EXPECT_EQ(field(format_status(snapshot), "last pairing"), "abandoned by OraobU4l");
 }
 
 TEST(FormatStatus, TheQueueModesAreReportedSoTheirCommandsAreVisible) {

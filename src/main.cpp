@@ -26,9 +26,14 @@
 #include "log.h"
 #include "mdns.h"
 #include "outbound.h"
+#include "pairing_tracker.h"
 #include "player_listener.h"
 #include "state_store.h"
+#include "status_kv.h"
 #include "supported_formats.h"
+#ifdef SENDSPIN_CLI_HAVE_TUI
+#include "tui.h"
+#endif
 
 #include <sendspin/client.h>
 #include <sendspin/config.h>
@@ -157,54 +162,59 @@ struct PairingListener : sendspin::SendspinClientListener {
     void on_trust_changed(sendspin::ConnectionTrust trust) override {
         this->trust_ = trust;
         // A new handshake: an attempt the last connection dropped never reported its end.
-        this->server_id_.clear();
+        this->tracker_.connection_ended();
         log_line(LogLevel::INFO, LOG_TAG, "Connected server is %s",
                  trust == sendspin::ConnectionTrust::USER ? "paired" : "not paired");
     }
 
     void on_pairing_started(const std::string& server_id) override {
-        this->server_id_ = server_id;
+        this->tracker_.started(server_id);
         log_line(LogLevel::INFO, LOG_TAG, "Pairing started with server %s", server_id.c_str());
     }
 
     void on_pairing_succeeded(const std::string& server_id) override {
-        this->server_id_.clear();
+        this->tracker_.succeeded(server_id);
         log_line(LogLevel::INFO, LOG_TAG, "Paired with server %s", server_id.c_str());
     }
 
     void on_pairing_failed(const std::string& server_id,
                            sendspin::SendspinPairAbortReason reason) override {
-        this->server_id_.clear();
+        this->tracker_.failed(server_id, pair_abort_reason(reason));
         log_line(LogLevel::WARN, LOG_TAG, "Pairing with server %s failed: %s", server_id.c_str(),
                  pair_abort_reason(reason));
     }
 
     void on_display_pairing_code(const std::string& code,
                                  sendspin::SendspinPairingCodeFormat /*format*/) override {
-        this->code_ = code;
+        this->tracker_.code_shown(code);
         log_line(LogLevel::INFO, LOG_TAG,
                  "*** Pairing code: %s *** -- type it into the server to pair", code.c_str());
     }
 
     void on_clear_pairing_code() override {
-        // Also how an attempt the server abandoned ends: neither outcome callback fires for it.
-        this->server_id_.clear();
-        this->code_.clear();
+        // Not the end of the attempt: the library clears the code before it reports a success.
+        this->tracker_.code_cleared();
         log_line(LogLevel::INFO, LOG_TAG, "Pairing code withdrawn");
     }
 
     void on_open_pairing_window() override {
-        this->window_open_ = true;
+        this->tracker_.window_opened();
         log_line(LogLevel::INFO, LOG_TAG,
                  "A server is waiting to pair -- run 'sendspin-cli pair confirm' to let it, or "
                  "'sendspin-cli pair cancel' to refuse");
     }
 
     void on_close_pairing_window() override {
-        // Fires when the attempt concludes, like on_clear_pairing_code().
-        this->server_id_.clear();
-        this->window_open_ = false;
+        this->tracker_.window_closed();
         log_line(LogLevel::INFO, LOG_TAG, "No longer waiting for 'pair confirm'");
+    }
+
+    /// A dropped connection ends its attempt without any callback, so watch for the drop.
+    void observe_connected(bool connected) {
+        if (this->was_connected_ && !connected) {
+            this->tracker_.connection_ended();
+        }
+        this->was_connected_ = connected;
     }
 
     /// The last trust reported; describes the connection only while one is up.
@@ -214,23 +224,27 @@ struct PairingListener : sendspin::SendspinClientListener {
 
     /// The server a pairing is in progress with, or empty.
     const std::string& server_id() const {
-        return this->server_id_;
+        return this->tracker_.in_progress_server_id();
     }
 
     /// The dynamic code on show, or empty.
     const std::string& code() const {
-        return this->code_;
+        return this->tracker_.code();
     }
 
     bool window_open() const {
-        return this->window_open_;
+        return this->tracker_.window_open();
+    }
+
+    /// How the last attempt ended; attempt 0 when none has.
+    const PairingAttemptResult& last_pairing() const {
+        return this->tracker_.last();
     }
 
 private:
     std::optional<sendspin::ConnectionTrust> trust_;
-    std::string server_id_;
-    std::string code_;
-    bool window_open_{false};
+    PairingTracker tracker_;
+    bool was_connected_{false};
 };
 
 /// Logs server metadata and caches the latest for `status`. Main loop only.
@@ -405,10 +419,9 @@ public:
     ControlDispatcher(const Options& opts, sendspin::SendspinClient& client,
                       sendspin::ControllerRole& controller, sendspin::MetadataRole& metadata,
                       const MetadataLogger& metadata_logger,
-                      const PairingListener& pairing_listener,
-                      const PlayerListener& player_listener, sendspin::PlayerRole& player,
-                      const AudioSink& sink, const SourceCapture* capture,
-                      const StateStore& state_store)
+                      const PairingListener& pairing_listener, PlayerListener& player_listener,
+                      sendspin::PlayerRole& player, const AudioSink& sink,
+                      const SourceCapture* capture, const StateStore& state_store)
         : opts_(opts),
           client_(client),
           controller_(controller),
@@ -445,6 +458,15 @@ public:
             return encode_control_reply(ControlStatus::Ok, "", format_status(this->status()));
         }
 
+        if (request.command == ControlCommand::StatusKv) {
+            return encode_control_reply(ControlStatus::Ok, "", format_status_kv(this->status()));
+        }
+
+        if (request.command == ControlCommand::Tui) {
+            return encode_control_reply(ControlStatus::Usage,
+                                        "tui runs in your terminal, not over the socket", "");
+        }
+
         if (request.command == ControlCommand::PairToken) {
             const std::optional<std::string> token = this->client_.pairing_token();
             if (!token.has_value()) {
@@ -463,6 +485,29 @@ public:
             }
             log_line(LogLevel::INFO, LOG_TAG, "Pairing window %s locally",
                      confirm ? "confirmed" : "cancelled");
+            return encode_control_reply(ControlStatus::Ok, "", "");
+        }
+
+        // Handled locally: the listener applies, publishes and persists the level.
+        if (request.command == ControlCommand::PlayerVolume ||
+            request.command == ControlCommand::PlayerMute) {
+            const bool applied =
+                request.command == ControlCommand::PlayerVolume
+                    ? this->player_listener_.set_local_volume(
+                          request.volume.value_or(DEFAULT_SINK_VOLUME))
+                    : this->player_listener_.set_local_muted(request.flag.value_or(false));
+            if (!applied) {
+                return encode_control_reply(ControlStatus::Usage,
+                                            "--fixed-volume pins this player's volume at 100", "");
+            }
+            // As for `delay`: nothing else logs a level set here.
+            if (request.command == ControlCommand::PlayerVolume) {
+                log_line(LogLevel::INFO, LOG_TAG_PLAYER, "Player volume set to %u locally",
+                         static_cast<unsigned>(request.volume.value_or(DEFAULT_SINK_VOLUME)));
+            } else {
+                log_line(LogLevel::INFO, LOG_TAG_PLAYER, "Player %s locally",
+                         request.flag.value_or(false) ? "muted" : "unmuted");
+            }
             return encode_control_reply(ControlStatus::Ok, "", "");
         }
 
@@ -507,6 +552,7 @@ private:
         }
         snapshot.pairing_code = this->pairing_listener_.code();
         snapshot.pairing_window_open = this->pairing_listener_.window_open();
+        snapshot.last_pairing = this->pairing_listener_.last_pairing();
         const std::optional<sendspin::ServerInformationObject> info =
             this->client_.get_server_information();
         if (info.has_value()) {
@@ -519,6 +565,7 @@ private:
         if (metadata.has_value()) {
             snapshot.artist = metadata->artist.value_or("");
             snapshot.title = metadata->title.value_or("");
+            snapshot.album = metadata->album.value_or("");
             if (metadata->progress.has_value()) {
                 // Only a progress object makes transport state and position knowable.
                 snapshot.playback_speed = metadata->progress->playback_speed;
@@ -530,6 +577,9 @@ private:
         // Read separately: a refused format is still streaming.
         snapshot.streaming = this->player_listener_.streaming();
         snapshot.format = this->player_listener_.stream_format();
+        if (snapshot.streaming) {
+            snapshot.codec = this->player_.get_current_stream_params().codec;
+        }
 
         const sendspin::ServerStateControllerObject& controller =
             this->controller_.get_controller_state();
@@ -539,6 +589,9 @@ private:
         snapshot.group_muted = controller.muted;
         snapshot.group_repeat = controller.repeat;
         snapshot.group_shuffle = controller.shuffle;
+        if (snapshot.connected) {
+            snapshot.group_name = this->client_.get_group_state().group_name.value_or("");
+        }
 
         // From the listener, the only thing that knows what the sink was told.
         snapshot.player_volume = this->player_listener_.applied_volume();
@@ -561,7 +614,8 @@ private:
     sendspin::MetadataRole& metadata_;
     const MetadataLogger& metadata_logger_;
     const PairingListener& pairing_listener_;
-    const PlayerListener& player_listener_;
+    /// Non-const only for `player-vol` and `player-mute`.
+    PlayerListener& player_listener_;
     /// Non-const only for `delay`.
     sendspin::PlayerRole& player_;
     const AudioSink& sink_;
@@ -667,6 +721,14 @@ int main(int argc, char* argv[]) {
         if (!parse_control_request(opts.subcommand, opts.subcommand_args, request, error)) {
             std::fprintf(stderr, "error: %s\n", error.c_str());
             return static_cast<int>(ControlStatus::Usage);
+        }
+        if (request.command == ControlCommand::Tui) {
+#ifdef SENDSPIN_CLI_HAVE_TUI
+            return run_tui(opts.control_socket, opts.control_absent_reason);
+#else
+            std::fprintf(stderr, "error: this build has no TUI\n");
+            return 1;
+#endif
         }
         return static_cast<int>(run_control_subcommand(request, opts.control_socket,
                                                        opts.control_absent_reason, stdout));
@@ -1079,6 +1141,7 @@ int main(int argc, char* argv[]) {
         }
         // Main-loop work a sink cannot do on the sync task's thread.
         sink->poll(now_ms);
+        pairing_listener.observe_connected(client.is_connected());
         hooks.poll();
         // Not in the SIGHUP handler: the reopen is not async-signal-safe.
         log_reopen_if_requested();
