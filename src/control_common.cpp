@@ -197,6 +197,8 @@ const char* volume_source_note(VolumeSource source) {
 const std::vector<ControlSubcommand>& control_subcommands() {
     static const std::vector<ControlSubcommand> table = {
         {"status", ControlCommand::Status, 0, nullptr, "What this player and its group are doing"},
+        {"status-kv", ControlCommand::StatusKv, 0, nullptr,
+         "Status as key=value lines, for scripts and the TUI"},
         {"play", ControlCommand::Play, 0, nullptr, "Resume or start playback"},
         {"pause", ControlCommand::Pause, 0, nullptr, "Pause playback"},
         {"stop", ControlCommand::Stop, 0, nullptr, "Stop playback"},
@@ -375,6 +377,7 @@ bool parse_control_request(const std::string& name, const std::vector<std::strin
             return true;
         }
         case ControlCommand::Status:
+        case ControlCommand::StatusKv:
         case ControlCommand::Play:
         case ControlCommand::Pause:
         case ControlCommand::Stop:
@@ -435,6 +438,7 @@ bool split_control_line(const std::string& line, std::string& name,
 std::optional<SendspinControllerCommand> protocol_command(const ControlRequest& request) {
     switch (request.command) {
         case ControlCommand::Status:
+        case ControlCommand::StatusKv:
         case ControlCommand::PairToken:
         case ControlCommand::Pair:
             return std::nullopt;
@@ -552,6 +556,20 @@ const char* codec_name(sendspin::SendspinCodecFormat codec) {
     return "unsupported";
 }
 
+std::string status_state(const StatusSnapshot& snapshot) {
+    // playback_speed is per-mille: 1000 is normal, 0 is paused.
+    if (!snapshot.playback_speed.has_value()) {
+        return "unknown";
+    }
+    if (*snapshot.playback_speed == 0) {
+        return "paused";
+    }
+    if (*snapshot.playback_speed == 1000) {
+        return "playing";
+    }
+    return "playing (speed " + std::to_string(*snapshot.playback_speed) + "/1000)";
+}
+
 std::string format_status(const StatusSnapshot& snapshot) {
     std::string out;
 
@@ -609,17 +627,7 @@ std::string format_status(const StatusSnapshot& snapshot) {
             break;
     }
 
-    // playback_speed is per-mille: 1000 is normal, 0 is paused.
-    if (!snapshot.playback_speed.has_value()) {
-        append_line(out, "state", "unknown");
-    } else if (*snapshot.playback_speed == 0) {
-        append_line(out, "state", "paused");
-    } else if (*snapshot.playback_speed == 1000) {
-        append_line(out, "state", "playing");
-    } else {
-        append_line(out, "state",
-                    "playing (speed " + std::to_string(*snapshot.playback_speed) + "/1000)");
-    }
+    append_line(out, "state", status_state(snapshot));
 
     // Whether audio arrives here, separate from the group's transport state.
     append_line(out, "stream", snapshot.streaming ? "receiving" : "idle");

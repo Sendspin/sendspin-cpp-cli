@@ -74,6 +74,8 @@ enum class ControlCommand : uint8_t {
     PlayerVolume,  ///< answered locally: this player's own volume, not the group's
     PlayerMute,    ///< answered locally: this player's own mute, not the group's
 
+    StatusKv,  ///< answered locally: `status` as key=value lines for programs
+
     /// Answered locally: this endpoint's own output delay.
     /// Keep last: EveryCommandInTheEnumHasARow walks the enum up to here.
     Delay,
@@ -231,6 +233,9 @@ struct StatusSnapshot {
 
 /// How `status` names a codec: `flac`, `opus`, `pcm` or `unsupported`.
 const char* codec_name(sendspin::SendspinCodecFormat codec);
+
+/// The word the `state:` line prints: `playing`, `paused`, `unknown`, or `playing (speed N/1000)`.
+std::string status_state(const StatusSnapshot& snapshot);
 
 /// Formats a snapshot as `key: value` lines, newline-terminated.
 std::string format_status(const StatusSnapshot& snapshot);

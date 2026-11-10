@@ -299,6 +299,7 @@ add_library(sendspin-cli-core STATIC
     src/pcm_volume.cpp
     src/player_listener.cpp
     src/sink_recovery.cpp
+    src/status_kv.cpp
     src/state_store.cpp
     src/supported_formats.cpp
 )
@@ -510,6 +511,7 @@ if(SENDSPIN_CLI_BUILD_TESTS)
         tests/portaudio_device_test.cpp
         tests/sink_recovery_test.cpp
         tests/state_store_test.cpp
+        tests/status_kv_test.cpp
         tests/supported_formats_test.cpp
     )
     target_link_libraries(sendspin-cli-tests PRIVATE sendspin-cli-core GTest::gtest_main)

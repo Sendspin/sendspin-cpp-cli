@@ -42,6 +42,7 @@ is also what lets `seek-rel -5000` be an offset rather than a flag cluster.
 | Command | Argument | What it does |
 |---|---|---|
 | `status` | | what this player and its group are doing — **answered locally** |
+| `status-kv` | | `status` as `key=value` lines, for scripts and the TUI — **answered locally** |
 | `play` | | resume or start playback |
 | `pause` | | pause playback |
 | `stop` | | stop playback |
@@ -60,8 +61,8 @@ is also what lets `seek-rel -5000` be an offset rather than a flag cluster.
 | `player-mute` | `on\|off` | mute or unmute this player alone — **answered locally** |
 | `delay` | `<0-5000>` | this endpoint's output delay — **answered locally** |
 
-Twelve of those go out to the server as `controller@v1` commands. Six never leave the host:
-`status`, formatted from the daemon's own view, `player-vol` and `player-mute`, which set this
+Twelve of those go out to the server as `controller@v1` commands. Seven never leave the host:
+`status` and `status-kv`, formatted from the daemon's own view, `player-vol` and `player-mute`, which set this
 player's own level, `delay`, which drives this endpoint's own player role, `pair`, which is [Pairing a Player](Pairing-a-Player), and `pair-token`, which is
 [Pairing from another system](Advanced-Usage#pairing-from-another-system).
 
@@ -137,6 +138,68 @@ above `output:` says so, and appears whenever a server is connected.
   while `stream` is `receiving`.
 - **`input` appears only with `--input`.** It names the capture device and its format, then
   `streaming` while the server has the source started and `idle` otherwise.
+
+## Status for scripts
+
+`status` is written for people. `status-kv` prints the same facts as `key=value` lines for
+programs:
+
+```bash
+sendspin-cli status-kv | grep '^title='
+```
+
+The rules:
+
+- One `key=value` per line, in the fixed order below. The first line is `version=1`.
+- The value runs to the end of the line, so it may contain `=` and spaces. A carriage return
+  or newline inside a value (a track title, say) becomes a space.
+- Booleans are `0` or `1`. An unknown or absent value is empty: `position_ms=` means no
+  position has arrived, which is not the same as `position_ms=0`.
+- There is no timestamp. Time a position from when you received the reply.
+- **Keys are added, never renamed or removed** within a `version`. Ignore keys you do not
+  know. A change that breaks that bumps `version`.
+
+| Key | Value |
+|---|---|
+| `version` | the format version, `1` |
+| `name` | the player's name |
+| `client_id` | the public key servers know this player by |
+| `connected` | `1` with a completed server handshake |
+| `server_name` | the server's name, empty when not known |
+| `server_id` | the server's id |
+| `trust` | `paired`, `unpaired`, or empty while not connected |
+| `paired_servers` | how many servers have a stored pairing |
+| `pairing_server_id` | the server a pairing is in progress with, else empty |
+| `pairing_code` | the dynamic pairing code on show, else empty |
+| `pairing_window` | `1` while an attempt waits for `pair confirm` |
+| `last_pairing_attempt` | the number of the last attempt, `0` for none |
+| `last_pairing_outcome` | empty, `paired`, `failed` or `abandoned` |
+| `last_pairing_server_id` | the server of that attempt |
+| `last_pairing_reason` | why it failed, empty otherwise |
+| `state` | the same word the `state:` line prints: `playing`, `paused`, `unknown`, or `playing (speed N/1000)` |
+| `streaming` | `1` while audio is arriving at this endpoint |
+| `codec` | `flac`, `opus`, `pcm` or `unsupported`; empty when not streaming |
+| `sample_rate` | the output's sample rate in Hz, empty before it is configured |
+| `channels` | the output's channel count, empty before it is configured |
+| `bit_depth` | the output's bit depth, empty before it is configured |
+| `title` | the current track's title |
+| `artist` | the current track's artist |
+| `album` | the current track's album |
+| `position_ms` | the server's last position report; empty when none |
+| `duration_ms` | the track's length; `0` for a live stream, empty when unknown |
+| `group_state_known` | `1` once the server has sent controller state |
+| `group_volume` | the group volume, empty until known |
+| `group_muted` | the group mute, empty until known |
+| `group_name` | the group's name, empty when unknown |
+| `repeat` | `off`, `one` or `all`; empty until known |
+| `shuffle` | the group's shuffle; empty until known |
+| `player_volume` | the gain this endpoint is applying, 0-100 |
+| `player_muted` | `1` when this endpoint is muted |
+| `player_volume_source` | `default`, `restored`, `server`, `fixed`, `hardware` or `local` |
+| `output_delay_ms` | this endpoint's output delay |
+| `output` | the output device's name |
+| `input` | the `--input` device, empty without one |
+| `input_streaming` | `1` while the server has the input stream open |
 
 ## Finding the socket
 

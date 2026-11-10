@@ -201,6 +201,7 @@ The same binary drives a running player on its own host:
 
 ```bash
 sendspin-cli status
+sendspin-cli status-kv   # the same as key=value lines, for scripts
 sendspin-cli pause
 sendspin-cli vol 40
 ```

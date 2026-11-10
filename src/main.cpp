@@ -29,6 +29,7 @@
 #include "pairing_tracker.h"
 #include "player_listener.h"
 #include "state_store.h"
+#include "status_kv.h"
 #include "supported_formats.h"
 
 #include <sendspin/client.h>
@@ -452,6 +453,10 @@ public:
 
         if (request.command == ControlCommand::Status) {
             return encode_control_reply(ControlStatus::Ok, "", format_status(this->status()));
+        }
+
+        if (request.command == ControlCommand::StatusKv) {
+            return encode_control_reply(ControlStatus::Ok, "", format_status_kv(this->status()));
         }
 
         if (request.command == ControlCommand::PairToken) {
