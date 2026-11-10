@@ -134,6 +134,16 @@ TEST(ControlSubcommands, EveryCommandInTheEnumHasARow) {
     }
 }
 
+TEST(ControlSubcommands, TuiIsARowThatTakesNoArgument) {
+    const ControlSubcommand* tui = find_control_subcommand("tui");
+    ASSERT_NE(tui, nullptr);
+    EXPECT_EQ(tui->command, ControlCommand::Tui);
+    EXPECT_EQ(tui->arity, 0U);
+    EXPECT_EQ(tui->argument, nullptr);
+    EXPECT_STREQ(tui->description, "Open the terminal UI: what is playing, playback keys, and "
+                                   "pairing, attached to the running player");
+}
+
 TEST(ControlSubcommands, ArityAndArgumentAgree) {
     for (const ControlSubcommand& subcommand : control_subcommands()) {
         EXPECT_LE(subcommand.arity, 1U) << subcommand.name;
@@ -278,6 +288,16 @@ TEST(ParseControlRequest, NullaryCommandsMapOntoTheirProtocolCommand) {
 
 TEST(ParseControlRequest, StatusDispatchesNothing) {
     EXPECT_FALSE(protocol_command(parsed("status", {})).has_value());
+}
+
+TEST(ParseControlRequest, TuiTakesNoArgument) {
+    EXPECT_EQ(parsed("tui", {}).command, ControlCommand::Tui);
+    EXPECT_FALSE(protocol_command(parsed("tui", {})).has_value());
+
+    ControlRequest request;
+    std::string error;
+    EXPECT_FALSE(parse_control_request("tui", {"extra"}, request, error));
+    EXPECT_NE(error.find("takes 0 arguments"), std::string::npos) << error;
 }
 
 TEST(ParseControlRequest, VolumeTakesZeroToOneHundred) {

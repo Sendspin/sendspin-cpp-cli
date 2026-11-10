@@ -76,6 +76,8 @@ enum class ControlCommand : uint8_t {
 
     StatusKv,  ///< answered locally: `status` as key=value lines for programs
 
+    Tui,  ///< runs in the terminal; the daemon refuses it
+
     /// Answered locally: this endpoint's own output delay.
     /// Keep last: EveryCommandInTheEnumHasARow walks the enum up to here.
     Delay,

@@ -31,6 +31,9 @@
 #include "state_store.h"
 #include "status_kv.h"
 #include "supported_formats.h"
+#ifdef SENDSPIN_CLI_HAVE_TUI
+#include "tui.h"
+#endif
 
 #include <sendspin/client.h>
 #include <sendspin/config.h>
@@ -459,6 +462,11 @@ public:
             return encode_control_reply(ControlStatus::Ok, "", format_status_kv(this->status()));
         }
 
+        if (request.command == ControlCommand::Tui) {
+            return encode_control_reply(ControlStatus::Usage,
+                                        "tui runs in your terminal, not over the socket", "");
+        }
+
         if (request.command == ControlCommand::PairToken) {
             const std::optional<std::string> token = this->client_.pairing_token();
             if (!token.has_value()) {
@@ -705,6 +713,14 @@ int main(int argc, char* argv[]) {
         if (!parse_control_request(opts.subcommand, opts.subcommand_args, request, error)) {
             std::fprintf(stderr, "error: %s\n", error.c_str());
             return static_cast<int>(ControlStatus::Usage);
+        }
+        if (request.command == ControlCommand::Tui) {
+#ifdef SENDSPIN_CLI_HAVE_TUI
+            return run_tui(opts.control_socket, opts.control_absent_reason);
+#else
+            std::fprintf(stderr, "error: this build has no TUI\n");
+            return 1;
+#endif
         }
         return static_cast<int>(run_control_subcommand(request, opts.control_socket,
                                                        opts.control_absent_reason, stdout));

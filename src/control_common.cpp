@@ -199,6 +199,9 @@ const std::vector<ControlSubcommand>& control_subcommands() {
         {"status", ControlCommand::Status, 0, nullptr, "What this player and its group are doing"},
         {"status-kv", ControlCommand::StatusKv, 0, nullptr,
          "Status as key=value lines, for scripts and the TUI"},
+        {"tui", ControlCommand::Tui, 0, nullptr,
+         "Open the terminal UI: what is playing, playback keys, and pairing, attached to the "
+         "running player"},
         {"play", ControlCommand::Play, 0, nullptr, "Resume or start playback"},
         {"pause", ControlCommand::Pause, 0, nullptr, "Pause playback"},
         {"stop", ControlCommand::Stop, 0, nullptr, "Stop playback"},
@@ -378,6 +381,7 @@ bool parse_control_request(const std::string& name, const std::vector<std::strin
         }
         case ControlCommand::Status:
         case ControlCommand::StatusKv:
+        case ControlCommand::Tui:
         case ControlCommand::Play:
         case ControlCommand::Pause:
         case ControlCommand::Stop:
@@ -439,6 +443,7 @@ std::optional<SendspinControllerCommand> protocol_command(const ControlRequest& 
     switch (request.command) {
         case ControlCommand::Status:
         case ControlCommand::StatusKv:
+        case ControlCommand::Tui:
         case ControlCommand::PairToken:
         case ControlCommand::Pair:
             return std::nullopt;
