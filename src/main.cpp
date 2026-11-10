@@ -798,7 +798,8 @@ int main(int argc, char* argv[]) {
     }
 
     // Loaded before the client, since its values must be in place before anything is published.
-    StateStore state_store(state_store_path(opts.state_dir));
+    // The XDG default may not exist yet on a fresh system; an explicit --state-dir must.
+    StateStore state_store(state_store_path(opts.state_dir), opts.state_dir.empty());
     if (state_store.path().empty()) {
         log_line(
             LogLevel::WARN, LOG_TAG,
