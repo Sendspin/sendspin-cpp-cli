@@ -951,7 +951,7 @@ int main(int argc, char* argv[]) {
         client.loop();
         // is_paired() first: a true is_connected() after it means that session is activated.
         const bool paired = client.is_paired();
-        pairing_listener.tick(client.is_connected(), paired);
+        pairing_listener.tick(client.is_connected(), paired, now_ms);
         // All three need their callbacks on the main loop.
         mdns.poll(now_ms);
         control_socket.poll(now_ms, control_dispatcher);

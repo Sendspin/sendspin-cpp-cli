@@ -18,18 +18,23 @@
 
 #include <sendspin/client.h>
 
+#include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 
 namespace sendspin_cli {
 
+/// The library's 120 s attempt timeout plus margin: an attempt with no prompt is over by then.
+inline constexpr int64_t UNPROMPTED_ATTEMPT_LIMIT_MS = 150000;
+
 /// Logs session and pairing progress, and caches pairing progress for `status`. Main loop only.
 class PairingListener final : public sendspin::SendspinClientListener {
 public:
-    /// One main-loop tick, after client.loop(): logs a session that is new, or re-keyed onto a
-    /// different PSK, and forgets an attempt whose connection dropped.
-    /// Read client.is_paired() before client.is_connected(), as the library asks.
-    void tick(bool connected, bool paired);
+    /// One main-loop tick, after client.loop(): logs a new or re-keyed session, and forgets an
+    /// attempt that ended without a callback. Read is_paired() before is_connected().
+    /// @param now_ms A monotonic clock, in milliseconds.
+    void tick(bool connected, bool paired, int64_t now_ms);
 
     void on_pairing_attempt(std::string_view server_id) override;
     void on_paired(std::string_view server_id) override;
@@ -56,9 +61,15 @@ public:
     }
 
 private:
+    void forget_attempt();
+
     bool connected_{false};
     bool paired_{false};
     std::string server_id_;
+    /// When a tick first saw the attempt; unset until one has.
+    std::optional<int64_t> attempt_seen_ms_;
+    /// Whether the attempt showed a code or window, whose withdrawal ends it with a callback.
+    bool attempt_prompted_{false};
     std::string code_;
     bool window_open_{false};
 };
