@@ -302,6 +302,55 @@ $ journalctl -u sendspin-cli | grep 'Pairing token'
 It stops being logged once a server is paired, and it works whichever code method the player
 offers.
 
+### Pairing with a server on the same host
+
+`--pairing-token-endpoint <address>:<port>` (or `pairing-token-endpoint =`) serves the token
+over HTTP so a server on the same host can fetch it and pair without anyone copying it. On
+Home Assistant OS that address is the hassio network's `172.30.32.1`:
+
+```
+pairing-token-endpoint = 172.30.32.1:8930
+```
+
+The player answers `GET /` with its token as plain text:
+
+```
+SP:0TNMH6…
+```
+
+and lists the role `_ohf_local_pairing@v1`, with `{"port": 8930}`, in its `client/hello` so a
+server knows the endpoint is there and which port to ask. The role name is provisional.
+Without the option nothing listens and no such role is advertised.
+
+How it stays local:
+
+- **It listens on one address only.** The address is required and must be a numeric IP; a
+  wildcard (`0.0.0.0`, `::`) or a bare port is refused at startup. Pick an address only the
+  server's host can reach, never the LAN address.
+- **It answers only that address's own subnet.** The player looks up the network interface
+  that holds the address and refuses, with `403`, any peer outside its subnet:
+  `172.30.32.0/23` for Home Assistant OS's `172.30.32.1`, `127.0.0.0/8` for `127.0.0.1`. A
+  machine on the LAN that routes packets to the address is refused.
+- **It serves only until a server pairs.** Once a pairing record exists the endpoint closes,
+  and a player that is already paired at startup neither listens nor advertises the role. To
+  pair a further server, use `sendspin-cli pair-token`.
+- **Anything on that subnet can pair while it serves.** On Home Assistant OS that is every app
+  on the hassio network; on a loopback address it is every process on the host, other users'
+  included, which `pair-token`'s owner-only control socket would not allow. Turn the option on
+  only where those are trusted.
+- **A request must name it.** The `Host` header has to be the endpoint's own address and
+  port, compared as an address, so a web page that rebinds its hostname to that address gets
+  no token. It reads at most 4 KiB of request head and never a body, and serves at most four
+  connections at once, closing any beyond them.
+- **The server decides where to fetch from.** It acts only for an unpaired player on an
+  encrypted connection, fetches from the internal address it knows rather than one the player
+  names, and refuses a token issued for a different client id.
+- **The token stays out of the log.** Requests are logged at `debug` without it, and the
+  startup line that otherwise prints it points at `sendspin-cli pair-token` instead.
+
+If the address cannot be bound, or no interface holds it, the player exits rather than
+advertising a port nobody serves.
+
 ## Stream hooks
 
 `--hook-start` and `--hook-stop` run a shell command when a stream starts or stops,

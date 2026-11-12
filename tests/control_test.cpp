@@ -783,18 +783,14 @@ TEST(FormatStatus, TheClientIdIsReportedEvenWhileDisconnected) {
 
 TEST(FormatStatus, TrustFollowsTheConnection) {
     StatusSnapshot snapshot = playing_snapshot();
-    snapshot.trust = sendspin::ConnectionTrust::USER;
+    snapshot.paired = true;
     EXPECT_EQ(field(format_status(snapshot), "trust"), "paired");
 
-    snapshot.trust = sendspin::ConnectionTrust::NONE;
+    snapshot.paired = false;
     EXPECT_EQ(field(format_status(snapshot), "trust"), "unpaired");
 
-    // Before the handshake reports one.
-    snapshot.trust.reset();
-    EXPECT_EQ(field(format_status(snapshot), "trust"), "unknown");
-
-    // A stale trust says nothing once the connection is gone.
-    snapshot.trust = sendspin::ConnectionTrust::USER;
+    // A stale session says nothing once the connection is gone.
+    snapshot.paired = true;
     snapshot.connected = false;
     EXPECT_EQ(field(format_status(snapshot), "trust"), "not connected");
 }

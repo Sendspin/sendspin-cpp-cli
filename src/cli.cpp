@@ -20,6 +20,7 @@
 #include "control.h"
 #include "log.h"
 #include "mdns.h"
+#include "pairing_endpoint.h"
 #include "supported_formats.h"
 
 #ifdef _WIN32
@@ -82,6 +83,7 @@ enum LongOnly {
     OPT_ALSA_MIXER,
     OPT_ALSA_MIXER_CURVE,
     OPT_RELEASE_DEVICE,
+    OPT_PAIRING_TOKEN_ENDPOINT,
 };
 
 /// An option a config file may set: its key (the long flag name) and how diagnostics name it.
@@ -125,6 +127,7 @@ const std::vector<SettableOption>& settable_options() {
         {Opt::AlsaMixer, "alsa-mixer", "--alsa-mixer"},
         {Opt::AlsaMixerCurve, "alsa-mixer-curve", "--alsa-mixer-curve"},
         {Opt::ReleaseDevice, "release-device", "--release-device"},
+        {Opt::TokenEndpoint, "pairing-token-endpoint", "--pairing-token-endpoint"},
     };
     return table;
 }
@@ -456,6 +459,15 @@ bool apply_option(const SettableOption& option, const std::string& value, Option
             }
             out.pairing_code = value;
             break;
+        case Opt::TokenEndpoint: {
+            std::string reason;
+            if (!parse_pairing_endpoint(value, out.pairing_endpoint_host, out.pairing_endpoint_port,
+                                        reason)) {
+                error = "invalid --pairing-token-endpoint '" + value + "': " + reason;
+                return false;
+            }
+            break;
+        }
         case Opt::NoControl:
             if (!parse_bool(value, out.no_control)) {
                 error = "invalid --no-control '" + value + "' -- expected true or false";
@@ -628,6 +640,7 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
         {"alsa-mixer", required_argument, nullptr, OPT_ALSA_MIXER},
         {"alsa-mixer-curve", required_argument, nullptr, OPT_ALSA_MIXER_CURVE},
         {"release-device", no_argument, nullptr, OPT_RELEASE_DEVICE},
+        {"pairing-token-endpoint", required_argument, nullptr, OPT_PAIRING_TOKEN_ENDPOINT},
         {nullptr, 0, nullptr, 0},
     };
 
@@ -781,6 +794,9 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
                 break;
             case OPT_RELEASE_DEVICE:
                 apply(Opt::ReleaseDevice, "true");
+                break;
+            case OPT_PAIRING_TOKEN_ENDPOINT:
+                apply(Opt::TokenEndpoint, optarg);
                 break;
             case OPT_MANUFACTURER:
                 apply(Opt::Manufacturer, optarg);
@@ -1176,6 +1192,14 @@ void print_usage(std::FILE* out, const char* prog) {
     std::fprintf(out, "                code the player otherwise logs when a server asks to\n");
     std::fprintf(out, "                pair. Prefer 'pairing-code =' in the config file: a\n");
     std::fprintf(out, "                flag is visible to every local user in 'ps'\n");
+    std::fprintf(out, "  --pairing-token-endpoint <address>:<port>\n");
+    std::fprintf(out, "                Serve this player's pairing token over HTTP on one\n");
+    std::fprintf(out, "                internal address, e.g. 172.30.32.1:8930 on Home\n");
+    std::fprintf(out, "                Assistant OS, and advertise the port so a server on\n");
+    std::fprintf(out, "                the same host can pair without a copied token. The\n");
+    std::fprintf(out, "                address is required and may not be a wildcard. Only\n");
+    std::fprintf(out, "                peers on that address's subnet are answered, and only\n");
+    std::fprintf(out, "                until a server pairs; any of them can pair meanwhile\n");
     std::fprintf(out, "  --no-mdns     Do not advertise over mDNS (no effect with -s, which\n");
     std::fprintf(out, "                already suppresses it)\n");
     std::fprintf(out, "  --mdns-name <name>\n");

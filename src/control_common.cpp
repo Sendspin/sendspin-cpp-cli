@@ -546,11 +546,8 @@ std::string format_status(const StatusSnapshot& snapshot) {
 
     if (!snapshot.connected) {
         append_line(out, "trust", "not connected");
-    } else if (!snapshot.trust.has_value()) {
-        append_line(out, "trust", "unknown");
     } else {
-        append_line(out, "trust",
-                    *snapshot.trust == sendspin::ConnectionTrust::USER ? "paired" : "unpaired");
+        append_line(out, "trust", snapshot.paired ? "paired" : "unpaired");
     }
     append_line(out, "paired servers", std::to_string(snapshot.paired_servers));
 
