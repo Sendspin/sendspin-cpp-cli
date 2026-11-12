@@ -68,6 +68,9 @@ using sendspin::LogLevel;
 /// Sleep between client.loop() calls; bounds main-loop reaction time only.
 constexpr int LOOP_INTERVAL_MS = 10;
 
+/// How often the main loop asks whether a server has paired, while the token endpoint runs.
+constexpr int64_t PAIRING_RECORD_CHECK_MS = 1000;
+
 std::atomic<bool> g_running{true};
 
 void handle_signal(int /*sig*/) {
@@ -751,7 +754,10 @@ int main(int argc, char* argv[]) {
         // The library offers one code method, and the dynamic one wins if both are set.
         config.static_pairing_code = opts.pairing_code;
     }
-    if (opts.pairing_endpoint_port != 0) {
+    // A paired player serves no token, so it does not advertise the endpoint either.
+    const bool serve_pairing_token =
+        opts.pairing_endpoint_port != 0 && !state_store.has_pairing_record();
+    if (serve_pairing_token) {
         config.application_roles.push_back(
             {LOCAL_PAIRING_ROLE, local_pairing_support_json(opts.pairing_endpoint_port)});
     }
@@ -912,12 +918,13 @@ int main(int argc, char* argv[]) {
 
     // Bound before start(), so the port is open by the time client/hello advertises it.
     std::unique_ptr<PairingEndpoint> pairing_endpoint;
-    std::string pairing_endpoint_url;
-    if (opts.pairing_endpoint_port != 0) {
-        const bool ipv6 = opts.pairing_endpoint_host.find(':') != std::string::npos;
-        pairing_endpoint_url = std::string("http://") + (ipv6 ? "[" : "") +
-                               opts.pairing_endpoint_host + (ipv6 ? "]" : "") + ":" +
-                               std::to_string(opts.pairing_endpoint_port) + PAIRING_TOKEN_PATH;
+    const std::string pairing_endpoint_url = "http://" + bracketed(opts.pairing_endpoint_host) +
+                                             ":" + std::to_string(opts.pairing_endpoint_port) +
+                                             PAIRING_TOKEN_PATH;
+    if (opts.pairing_endpoint_port != 0 && !serve_pairing_token) {
+        log_line(LogLevel::INFO, LOG_TAG,
+                 "A server is already paired, so --pairing-token-endpoint serves nothing");
+    } else if (serve_pairing_token) {
         pairing_endpoint = std::make_unique<PairingEndpoint>(opts.pairing_endpoint_host,
                                                              opts.pairing_endpoint_port);
         std::string error;
@@ -941,8 +948,8 @@ int main(int argc, char* argv[]) {
         }
         pairing_endpoint->start(std::string(token->data(), token->size()));
         log_line(LogLevel::INFO, LOG_TAG,
-                 "Serving the pairing token on %s -- anything that can reach it can pair with "
-                 "this player",
+                 "Serving the pairing token on %s until a server pairs -- anything on that "
+                 "address's subnet can fetch it and pair",
                  pairing_endpoint_url.c_str());
     }
 
@@ -1018,12 +1025,24 @@ int main(int argc, char* argv[]) {
         };
     }
 
+    int64_t next_pairing_record_check_ms = 0;
     while (g_running.load()) {
         const int64_t now_ms = monotonic_ms();
         client.loop();
         // is_paired() first: a true is_connected() after it means that session is activated.
         const bool paired = client.is_paired();
         pairing_listener.tick(client.is_connected(), paired, now_ms);
+        // Once a server has paired, the token has done its job.
+        if (pairing_endpoint && now_ms >= next_pairing_record_check_ms) {
+            next_pairing_record_check_ms = now_ms + PAIRING_RECORD_CHECK_MS;
+            if (state_store.has_pairing_record()) {
+                pairing_endpoint->stop();
+                pairing_endpoint.reset();
+                log_line(LogLevel::INFO, LOG_TAG,
+                         "A server paired -- stopped serving the token on %s",
+                         pairing_endpoint_url.c_str());
+            }
+        }
         // All three need their callbacks on the main loop.
         mdns.poll(now_ms);
         control_socket.poll(now_ms, control_dispatcher);

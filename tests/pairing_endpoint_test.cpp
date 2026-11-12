@@ -65,7 +65,7 @@ TEST(PairingEndpoint, RefusesOtherPathsAndMethodsWithoutTheToken) {
 TEST(PairingEndpoint, RefusesAHostThatDoesNotNameIt) {
     // A rebound page sends its own hostname; the address alone is only right on port 80.
     for (const char* host : {"evil.example:8930", "evil.example", "", "127.0.0.1:8931", "127.0.0.1",
-                             "127.0.0.2:8930"}) {
+                             "127.0.0.2:8930", "127.0.0.1:", "[::1]:8930", "127.0.0.1:+8930"}) {
         const PairingReply reply = reply_to("GET", "/", host);
         EXPECT_EQ(reply.status, 421) << host;
         expect_refused(reply);
@@ -73,10 +73,95 @@ TEST(PairingEndpoint, RefusesAHostThatDoesNotNameIt) {
 }
 
 TEST(PairingEndpoint, MatchesHostLikeAnAddress) {
-    EXPECT_EQ(pairing_token_reply("GET", "/", "[FD00::1]:8930", "[fd00::1]", 8930, TOKEN).status,
-              200);
+    // Compared as addresses, so any spelling of the same one names the endpoint.
+    for (const char* host : {"[FD00::1]:8930", "[fd00:0::1]:8930", "[fd00:0:0:0:0:0:0:1]:8930"}) {
+        EXPECT_EQ(pairing_token_reply("GET", "/", host, "fd00::1", 8930, TOKEN).status, 200)
+            << host;
+    }
+    EXPECT_EQ(pairing_token_reply("GET", "/", "[fd00::1]", "fd00::1", 80, TOKEN).status, 200);
     EXPECT_EQ(pairing_token_reply("GET", "/", "127.0.0.1", "127.0.0.1", 80, TOKEN).status, 200);
     EXPECT_EQ(pairing_token_reply("GET", "/", "127.0.0.1:80", "127.0.0.1", 80, TOKEN).status, 200);
+}
+
+TEST(PairingEndpoint, BracketsOnlyAnIpv6Address) {
+    EXPECT_EQ(bracketed("fd00::1"), "[fd00::1]");
+    EXPECT_EQ(bracketed("172.30.32.1"), "172.30.32.1");
+}
+
+TEST(PairingEndpoint, ReadsARequestHead) {
+    std::string method;
+    std::string uri;
+    std::string host;
+    ASSERT_TRUE(parse_request_head(
+        "GET /?x=1 HTTP/1.1\r\nhOsT:  127.0.0.1:8930 \r\nAccept: */*\r\n\r\n", method, uri, host));
+    EXPECT_EQ(method, "GET");
+    EXPECT_EQ(uri, "/?x=1");
+    EXPECT_EQ(host, "127.0.0.1:8930");
+
+    ASSERT_TRUE(parse_request_head("GET / HTTP/1.0\r\n\r\n", method, uri, host));
+    EXPECT_EQ(host, "");
+}
+
+TEST(PairingEndpoint, RefusesAHeadThatIsNotARequest) {
+    std::string method;
+    std::string uri;
+    std::string host;
+    for (const char* head :
+         {"GET /\r\n\r\n", "GET / HTTP/1.1 extra\r\n\r\n", "GET  / HTTP/1.1\r\n\r\n",
+          "GET / FTP/1.1\r\n\r\n", "GET / HTTP/1.1\r\nno colon\r\n\r\n",
+          "GET / HTTP/1.1\r\nHost: a\r\nHost: b\r\n\r\n", "no line ending"}) {
+        EXPECT_FALSE(parse_request_head(head, method, uri, host)) << head;
+    }
+}
+
+/// `text`/`prefix`, read as a subnet.
+IpSubnet subnet_of(const std::string& text, int prefix) {
+    IpSubnet subnet;
+    EXPECT_TRUE(parse_ip(text, subnet.family, subnet.address)) << text;
+    subnet.prefix = prefix;
+    return subnet;
+}
+
+TEST(PairingEndpoint, KnowsWhichPeersShareASubnet) {
+    // Home Assistant OS's internal network.
+    const IpSubnet hassio = subnet_of("172.30.32.1", 23);
+    EXPECT_TRUE(subnet_contains(hassio, "172.30.32.1"));
+    EXPECT_TRUE(subnet_contains(hassio, "172.30.33.254"));
+    EXPECT_FALSE(subnet_contains(hassio, "172.30.34.1"));
+    EXPECT_FALSE(subnet_contains(hassio, "192.168.1.20"));
+
+    const IpSubnet loopback = subnet_of("127.0.0.1", 8);
+    EXPECT_TRUE(subnet_contains(loopback, "127.0.0.1"));
+    EXPECT_TRUE(subnet_contains(loopback, "127.9.9.9"));
+    EXPECT_FALSE(subnet_contains(loopback, "10.0.0.1"));
+
+    const IpSubnet ula = subnet_of("fd00::1", 64);
+    EXPECT_TRUE(subnet_contains(ula, "fd00::abcd"));
+    EXPECT_FALSE(subnet_contains(ula, "fd00:0:0:1::1"));
+    EXPECT_TRUE(subnet_contains(subnet_of("::1", 128), "::1"));
+
+    // Another family, or not an address at all, is never inside.
+    EXPECT_FALSE(subnet_contains(loopback, "::1"));
+    EXPECT_FALSE(subnet_contains(ula, "127.0.0.1"));
+    EXPECT_FALSE(subnet_contains(loopback, "localhost"));
+    EXPECT_FALSE(subnet_contains(loopback, ""));
+}
+
+TEST(PairingEndpoint, FindsTheLoopbackSubnet) {
+    IpSubnet subnet;
+    std::string error;
+    ASSERT_TRUE(local_subnet_of("127.0.0.1", subnet, error)) << error;
+    EXPECT_EQ(subnet.prefix, 8);
+    EXPECT_TRUE(subnet_contains(subnet, "127.0.0.1"));
+    EXPECT_FALSE(subnet_contains(subnet, "10.0.0.1"));
+}
+
+TEST(PairingEndpoint, RefusesAnAddressNoInterfaceHolds) {
+    // TEST-NET-1, reserved for documentation, so no machine running this test holds it.
+    IpSubnet subnet;
+    std::string error;
+    EXPECT_FALSE(local_subnet_of("192.0.2.1", subnet, error));
+    EXPECT_NE(error.find("192.0.2.1"), std::string::npos) << error;
 }
 
 /// Listens on the first free port from a fixed range; 0 when none was.
@@ -115,6 +200,9 @@ TEST(PairingEndpoint, ServesTheTokenOverHttp) {
 }
 
 TEST(PairingEndpoint, ListensOnlyOnItsAddress) {
+#ifdef __APPLE__
+    GTEST_SKIP() << "macOS configures only 127.0.0.1, so nothing could answer on 127.0.0.2 anyway";
+#endif
     std::unique_ptr<PairingEndpoint> endpoint;
     const uint16_t port = listen_somewhere(endpoint);
     ASSERT_NE(port, 0U);
@@ -144,16 +232,16 @@ std::unique_ptr<ix::Socket> open_connection(uint16_t port) {
     return socket;
 }
 
-/// Sends a request on a raw connection, for headers ix::HttpClient will not send. Returns the
-/// status line and the body, or "" when the connection closed before answering.
-std::string raw_exchange(uint16_t port, const std::string& host) {
+/// Sends raw request bytes, for requests ix::HttpClient will not send. Returns the status line
+/// and the body, or "" when the connection closed before answering.
+std::string raw_send(uint16_t port, const std::string& request) {
     std::unique_ptr<ix::Socket> socket = open_connection(port);
     if (!socket) {
         return "";
     }
     std::atomic<bool> cancel{false};
     const auto deadline = ix::makeCancellationRequestWithTimeout(2, cancel);
-    if (!socket->writeBytes("GET / HTTP/1.1\r\nHost: " + host + "\r\n\r\n", deadline)) {
+    if (!socket->writeBytes(request, deadline)) {
         return "";
     }
     // The endpoint closes after its one response, so this reads to the end. The body has no line
@@ -166,6 +254,11 @@ std::string raw_exchange(uint16_t port, const std::string& host) {
             return response;
         }
     }
+}
+
+/// A plain GET with the given Host header, sent raw.
+std::string raw_exchange(uint16_t port, const std::string& host) {
+    return raw_send(port, "GET / HTTP/1.1\r\nHost: " + host + "\r\n\r\n");
 }
 
 TEST(PairingEndpoint, RefusesARebindingHostOverHttp) {
@@ -205,6 +298,54 @@ TEST(PairingEndpoint, ClosesAConnectionBeyondItsLimit) {
     }
     EXPECT_NE(response.find(TOKEN), std::string::npos) << response;
     endpoint->stop();
+}
+
+TEST(PairingEndpoint, RefusesAnOversizedRequestHead) {
+    std::unique_ptr<PairingEndpoint> endpoint;
+    const uint16_t port = listen_somewhere(endpoint);
+    ASSERT_NE(port, 0U);
+    endpoint->start(TOKEN);
+
+    const std::string padding(PAIRING_REQUEST_HEAD_LIMIT, 'a');
+    const std::string response = raw_send(
+        port, "GET / HTTP/1.1\r\nHost: 127.0.0.1:" + std::to_string(port) + "\r\nX: " + padding);
+    EXPECT_NE(response.find(" 431 "), std::string::npos) << response.substr(0, 80);
+    EXPECT_EQ(response.find(TOKEN), std::string::npos);
+    endpoint->stop();
+}
+
+TEST(PairingEndpoint, NeverReadsARequestBody) {
+    // A body it read would be buffered; it answers from the head and closes instead.
+    std::unique_ptr<PairingEndpoint> endpoint;
+    const uint16_t port = listen_somewhere(endpoint);
+    ASSERT_NE(port, 0U);
+    endpoint->start(TOKEN);
+
+    const auto started = std::chrono::steady_clock::now();
+    const std::string response =
+        raw_send(port, "GET / HTTP/1.1\r\nHost: 127.0.0.1:" + std::to_string(port) +
+                           "\r\nContent-Length: 2147483647\r\n\r\npartial body");
+    EXPECT_NE(response.find(TOKEN), std::string::npos) << response;
+    EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(2));
+    endpoint->stop();
+}
+
+TEST(PairingEndpoint, StopDoesNotWaitOutAStalledRequest) {
+    std::unique_ptr<PairingEndpoint> endpoint;
+    const uint16_t port = listen_somewhere(endpoint);
+    ASSERT_NE(port, 0U);
+    endpoint->start(TOKEN);
+
+    // Half a request line, then nothing: its worker waits on a 5 s read deadline.
+    std::unique_ptr<ix::Socket> stalled = open_connection(port);
+    ASSERT_NE(stalled, nullptr);
+    std::atomic<bool> cancel{false};
+    ASSERT_TRUE(stalled->writeBytes("GET / HT", ix::makeCancellationRequestWithTimeout(2, cancel)));
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    const auto started = std::chrono::steady_clock::now();
+    endpoint->stop();
+    EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(2));
 }
 
 }  // namespace

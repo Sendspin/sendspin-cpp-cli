@@ -310,7 +310,7 @@ if(WIN32)
     # POSIX names (open, close, unlink, ...) without the CRT's deprecation warnings.
     target_compile_definitions(sendspin-cli-core PUBLIC
         NOMINMAX WIN32_LEAN_AND_MEAN NOGDI _CRT_NONSTDC_NO_WARNINGS _CRT_SECURE_NO_WARNINGS)
-    target_link_libraries(sendspin-cli-core PUBLIC ws2_32 advapi32 shell32 ole32)
+    target_link_libraries(sendspin-cli-core PUBLIC ws2_32 advapi32 shell32 ole32 iphlpapi)
 else()
     target_sources(sendspin-cli-core PRIVATE src/daemon.cpp src/hooks_posix.cpp)
 endif()

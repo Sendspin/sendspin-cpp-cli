@@ -87,6 +87,11 @@ sendspin-cli status
 `sendspin-cli pair confirm`. `--allow-unpaired` lets any server on the network play
 without pairing. See [Pairing a Player](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Pairing-a-Player).
 
+For a server on the same host, such as Music Assistant on Home Assistant OS,
+`--pairing-token-endpoint 172.30.32.1:8930` lets it fetch the pairing token and pair on its
+own. The player answers only that address's subnet and stops once a server pairs. See
+[Pairing with a server on the same host](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Advanced-Usage#pairing-with-a-server-on-the-same-host).
+
 ## Configuration
 
 The service reads its options from a config file: `/etc/sendspin-cli.conf` for the system

@@ -1197,8 +1197,9 @@ void print_usage(std::FILE* out, const char* prog) {
     std::fprintf(out, "                internal address, e.g. 172.30.32.1:8930 on Home\n");
     std::fprintf(out, "                Assistant OS, and advertise the port so a server on\n");
     std::fprintf(out, "                the same host can pair without a copied token. The\n");
-    std::fprintf(out, "                address is required and may not be a wildcard. Anyone\n");
-    std::fprintf(out, "                who can reach it can pair with this player\n");
+    std::fprintf(out, "                address is required and may not be a wildcard. Only\n");
+    std::fprintf(out, "                peers on that address's subnet are answered, and only\n");
+    std::fprintf(out, "                until a server pairs; any of them can pair meanwhile\n");
     std::fprintf(out, "  --no-mdns     Do not advertise over mDNS (no effect with -s, which\n");
     std::fprintf(out, "                already suppresses it)\n");
     std::fprintf(out, "  --mdns-name <name>\n");
