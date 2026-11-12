@@ -49,7 +49,7 @@ $ sendspin-cli vol 40
 | macOS | Apple silicon (`arm64`) | Release tarball or installer `.pkg` |
 | Raspberry Pi | `arm64`, or `armv7`/`armv6` on a 32-bit OS | The Linux tarball, same as any other Linux host |
 
-The macOS builds are made on the `macos-14` CI runner and declare no minimum OS version;
+The macOS builds are made on the `macos-15` CI runner and declare no minimum OS version;
 what the installer `.pkg` does check is the architecture, read off the binary with `lipo` at
 build time, so it turns an Intel Mac away rather than reporting success.
 

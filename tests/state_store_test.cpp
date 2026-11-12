@@ -54,9 +54,12 @@ public:
         const std::string temporary_suffix = ".tmp." + std::to_string(getpid());
         for (const std::string& leaf : {std::string("state"), "state" + temporary_suffix}) {
             std::remove((this->path_ + "/nested/" + leaf).c_str());
+            std::remove((this->path_ + "/a/b/" + leaf).c_str());
             std::remove((this->path_ + "/" + leaf).c_str());
         }
         ::rmdir((this->path_ + "/nested").c_str());
+        ::rmdir((this->path_ + "/a/b").c_str());
+        ::rmdir((this->path_ + "/a").c_str());
         ::rmdir(this->path_.c_str());
     }
 
@@ -71,6 +74,11 @@ public:
     /// A path one directory deeper, whose parent the store has to create.
     std::string nested_file() const {
         return this->path_ + "/nested/state";
+    }
+
+    /// A path two directories deeper, so the leaf's parent is missing too.
+    std::string deep_file() const {
+        return this->path_ + "/a/b/state";
     }
 
     const std::string& path() const {
@@ -260,9 +268,27 @@ TEST(StateStore, AMissingParentDirectoryFails) {
     const ScratchDir scratch;
     ASSERT_TRUE(scratch.created());
 
-    // Only the leaf directory is ever created.
-    StateStore store(scratch.path() + "/a/b/state");
+    // Only the leaf directory is created unless the store is asked for more.
+    StateStore store(scratch.deep_file());
     EXPECT_FALSE(store.set_last_server("srv-abc123"));
+}
+
+TEST(StateStore, CreatesMissingAncestorsWhenAsked) {
+    const ScratchDir scratch;
+    ASSERT_TRUE(scratch.created());
+
+    StateStore store(scratch.deep_file(), true);
+    ASSERT_TRUE(store.set_last_server("srv-abc123"));
+    EXPECT_EQ(loaded(scratch.deep_file()).last_server(), "srv-abc123");
+
+#ifndef _WIN32
+    // 0700 per the XDG base directory spec, for the ancestor as well as the leaf.
+    for (const std::string& directory : {scratch.path() + "/a", scratch.path() + "/a/b"}) {
+        struct stat info = {};
+        ASSERT_EQ(::stat(directory.c_str(), &info), 0) << directory;
+        EXPECT_EQ(info.st_mode & 0777, 0700U) << directory;
+    }
+#endif
 }
 
 TEST(StateStore, AnUnwritableDirectoryFails) {

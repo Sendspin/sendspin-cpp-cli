@@ -156,7 +156,8 @@ sendspin-cli -n living-room --fixed-volume
 ```
 
 Plays at full volume, unmuted, and lets the server set neither: for a line-out into an
-amplifier whose level is set there. See
+amplifier whose level is set there. To drive a hardware mixer for volume and mute instead of
+scaling the stream in software, see `--alsa-mixer` in
 [Configuration](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Configuration#every-key).
 
 ### Streaming input
