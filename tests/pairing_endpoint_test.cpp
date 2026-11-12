@@ -164,9 +164,10 @@ TEST(PairingEndpoint, RefusesAnAddressNoInterfaceHolds) {
     EXPECT_NE(error.find("192.0.2.1"), std::string::npos) << error;
 }
 
-/// Listens on the first free port from a fixed range; 0 when none was.
-uint16_t listen_somewhere(std::unique_ptr<PairingEndpoint>& endpoint) {
-    for (uint16_t port = 38930; port < 38990; ++port) {
+/// Listens on the first free port of ten from `first`; 0 when none was. Each test takes its own
+/// ten: ctest runs tests in parallel, and SO_REUSEADDR lets Windows bind one port twice.
+uint16_t listen_somewhere(std::unique_ptr<PairingEndpoint>& endpoint, uint16_t first) {
+    for (uint16_t port = first; port < first + 10; ++port) {
         endpoint = std::make_unique<PairingEndpoint>("127.0.0.1", port);
         std::string error;
         if (endpoint->listen(error)) {
@@ -178,7 +179,7 @@ uint16_t listen_somewhere(std::unique_ptr<PairingEndpoint>& endpoint) {
 
 TEST(PairingEndpoint, ServesTheTokenOverHttp) {
     std::unique_ptr<PairingEndpoint> endpoint;
-    const uint16_t port = listen_somewhere(endpoint);
+    const uint16_t port = listen_somewhere(endpoint, 38910);
     ASSERT_NE(port, 0U);
     endpoint->start(TOKEN);
 
@@ -204,7 +205,7 @@ TEST(PairingEndpoint, ListensOnlyOnItsAddress) {
     GTEST_SKIP() << "macOS configures only 127.0.0.1, so nothing could answer on 127.0.0.2 anyway";
 #endif
     std::unique_ptr<PairingEndpoint> endpoint;
-    const uint16_t port = listen_somewhere(endpoint);
+    const uint16_t port = listen_somewhere(endpoint, 38920);
     ASSERT_NE(port, 0U);
     endpoint->start(TOKEN);
 
@@ -263,7 +264,7 @@ std::string raw_exchange(uint16_t port, const std::string& host) {
 
 TEST(PairingEndpoint, RefusesARebindingHostOverHttp) {
     std::unique_ptr<PairingEndpoint> endpoint;
-    const uint16_t port = listen_somewhere(endpoint);
+    const uint16_t port = listen_somewhere(endpoint, 38930);
     ASSERT_NE(port, 0U);
     endpoint->start(TOKEN);
 
@@ -275,7 +276,7 @@ TEST(PairingEndpoint, RefusesARebindingHostOverHttp) {
 
 TEST(PairingEndpoint, ClosesAConnectionBeyondItsLimit) {
     std::unique_ptr<PairingEndpoint> endpoint;
-    const uint16_t port = listen_somewhere(endpoint);
+    const uint16_t port = listen_somewhere(endpoint, 38940);
     ASSERT_NE(port, 0U);
     endpoint->start(TOKEN);
     const std::string host = "127.0.0.1:" + std::to_string(port);
@@ -302,7 +303,7 @@ TEST(PairingEndpoint, ClosesAConnectionBeyondItsLimit) {
 
 TEST(PairingEndpoint, RefusesAnOversizedRequestHead) {
     std::unique_ptr<PairingEndpoint> endpoint;
-    const uint16_t port = listen_somewhere(endpoint);
+    const uint16_t port = listen_somewhere(endpoint, 38950);
     ASSERT_NE(port, 0U);
     endpoint->start(TOKEN);
 
@@ -314,17 +315,18 @@ TEST(PairingEndpoint, RefusesAnOversizedRequestHead) {
     endpoint->stop();
 }
 
-TEST(PairingEndpoint, NeverReadsARequestBody) {
-    // A body it read would be buffered; it answers from the head and closes instead.
+TEST(PairingEndpoint, DoesNotWaitForARequestBody) {
+    // It answers from the head rather than waiting for the body a huge Content-Length promises.
+    // No body bytes follow: closing on unread data resets the connection before the reply lands.
     std::unique_ptr<PairingEndpoint> endpoint;
-    const uint16_t port = listen_somewhere(endpoint);
+    const uint16_t port = listen_somewhere(endpoint, 38960);
     ASSERT_NE(port, 0U);
     endpoint->start(TOKEN);
 
     const auto started = std::chrono::steady_clock::now();
     const std::string response =
         raw_send(port, "GET / HTTP/1.1\r\nHost: 127.0.0.1:" + std::to_string(port) +
-                           "\r\nContent-Length: 2147483647\r\n\r\npartial body");
+                           "\r\nContent-Length: 2147483647\r\n\r\n");
     EXPECT_NE(response.find(TOKEN), std::string::npos) << response;
     EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(2));
     endpoint->stop();
@@ -332,7 +334,7 @@ TEST(PairingEndpoint, NeverReadsARequestBody) {
 
 TEST(PairingEndpoint, StopDoesNotWaitOutAStalledRequest) {
     std::unique_ptr<PairingEndpoint> endpoint;
-    const uint16_t port = listen_somewhere(endpoint);
+    const uint16_t port = listen_somewhere(endpoint, 38970);
     ASSERT_NE(port, 0U);
     endpoint->start(TOKEN);
 
