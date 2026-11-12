@@ -90,10 +90,34 @@ std::optional<std::vector<uint8_t>> from_hex(const std::string& text) {
     return bytes;
 }
 
-/// Everything up to the last '/', or empty when there is none.
+/// Everything up to the last separator, or empty when there is none.
 std::string parent_directory(const std::string& path) {
+#ifdef _WIN32
+    const size_t slash = path.find_last_of("/\\");
+#else
     const size_t slash = path.find_last_of('/');
+#endif
     return slash == std::string::npos ? std::string() : path.substr(0, slash);
+}
+
+/// Creates `directory` at 0700 unless it exists; with `create_parents`, missing ancestors too.
+/// Existing directories are never touched, so their permissions stay as they are.
+bool make_directory(const std::string& directory, bool create_parents) {
+#ifdef _WIN32
+    // Inherits its parent's ACL; the state file is owner-only either way.
+    if (_mkdir(directory.c_str()) == 0 || errno == EEXIST) {
+        return true;
+    }
+#else
+    if (mkdir(directory.c_str(), 0700) == 0 || errno == EEXIST) {
+        return true;
+    }
+#endif
+    if (!create_parents || errno != ENOENT) {
+        return false;
+    }
+    const std::string parent = parent_directory(directory);
+    return !parent.empty() && make_directory(parent, true) && make_directory(directory, false);
 }
 
 }  // namespace
@@ -118,7 +142,8 @@ std::string state_store_path(const std::string& state_dir) {
     return base + "/" + STATE_SUBDIR + "/" + STATE_FILE;
 }
 
-StateStore::StateStore(std::string path) : path_(std::move(path)) {}
+StateStore::StateStore(std::string path, bool create_parents)
+    : path_(std::move(path)), create_parents_(create_parents) {}
 
 StateLoadResult StateStore::load(size_t& malformed_line) {
     this->values_.clear();
@@ -282,18 +307,11 @@ bool StateStore::write() const {
         return false;
     }
 
-    // Only the leaf directory is created; a mistyped parent should fail visibly.
+    // Without create_parents_ only the leaf is created, so a mistyped --state-dir fails visibly.
     const std::string directory = parent_directory(this->path_);
-#ifdef _WIN32
-    // Inherits its parent's ACL; the file below is owner-only either way.
-    if (!directory.empty() && _mkdir(directory.c_str()) != 0 && errno != EEXIST) {
+    if (!directory.empty() && !make_directory(directory, this->create_parents_)) {
         return false;
     }
-#else
-    if (!directory.empty() && mkdir(directory.c_str(), 0700) != 0 && errno != EEXIST) {
-        return false;
-    }
-#endif
 
     // Pid in the name, so two players sharing a state dir cannot rename each other's temp file.
     const std::string temporary = this->path_ + ".tmp." + std::to_string(getpid());

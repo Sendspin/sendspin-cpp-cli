@@ -43,7 +43,8 @@ std::string state_store_path(const std::string& state_dir);
 class StateStore {
 public:
     /// @param path From state_store_path(); empty means this run remembers nothing.
-    explicit StateStore(std::string path);
+    /// @param create_parents Also create missing ancestors, for a default path nobody typed.
+    explicit StateStore(std::string path, bool create_parents = false);
 
     /// Reads the file, replacing anything held. Never fatal, but callers should report `Corrupt`.
     /// @param malformed_line Set to the 1-based line at fault when `Corrupt` comes back.
@@ -91,6 +92,7 @@ private:
     void migrate_legacy_keys();
 
     std::string path_;
+    bool create_parents_;
     std::map<std::string, std::string> values_;
 };
 

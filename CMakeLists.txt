@@ -36,7 +36,7 @@ endif()
 
 # sendspin-cpp
 
-set(SENDSPIN_GIT_TAG "3a3722a8d2771526e68be3cccf5b99712c36ae91" CACHE STRING
+set(SENDSPIN_GIT_TAG "78b13d5edcd38b9c95295722884edb60d7a3284d" CACHE STRING
     "sendspin-cpp git tag or commit to build against")
 
 # player, metadata, controller (group transport verbs) and source; no FORCE, so -D overrides still win.
@@ -295,6 +295,7 @@ add_library(sendspin-cli-core STATIC
     src/null_source.cpp
     src/outbound.cpp
     src/pairing_endpoint.cpp
+    src/pairing_listener.cpp
     src/pcm_ring.cpp
     src/pcm_volume.cpp
     src/player_listener.cpp
@@ -492,6 +493,7 @@ if(SENDSPIN_CLI_BUILD_TESTS)
     include(GoogleTest)
 
     add_executable(sendspin-cli-tests
+        tests/alsa_mixer_test.cpp
         tests/audio_source_test.cpp
         tests/cli_test.cpp
         tests/config_file_test.cpp
@@ -502,6 +504,7 @@ if(SENDSPIN_CLI_BUILD_TESTS)
         tests/hooks_test.cpp
         tests/null_sink_test.cpp
         tests/pairing_endpoint_test.cpp
+        tests/pairing_listener_test.cpp
         tests/pcm_ring_test.cpp
         tests/pcm_volume_test.cpp
         tests/pipewire_sink_test.cpp

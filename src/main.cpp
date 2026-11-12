@@ -14,6 +14,9 @@
 
 /// sendspin-cli: a headless Sendspin player, and its own control-socket client.
 
+#ifdef SENDSPIN_CLI_HAVE_ALSA
+#include "alsa_sink.h"
+#endif
 #include "audio_sink.h"
 #include "audio_source.h"
 #include "cli.h"
@@ -24,6 +27,7 @@
 #include "mdns.h"
 #include "outbound.h"
 #include "pairing_endpoint.h"
+#include "pairing_listener.h"
 #include "player_listener.h"
 #include "state_store.h"
 #include "supported_formats.h"
@@ -50,6 +54,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -131,118 +136,28 @@ private:
     StateStore& store_;
 };
 
-/// Why a pairing attempt ended, for the log.
-const char* pair_abort_reason(sendspin::SendspinPairAbortReason reason) {
-    switch (reason) {
-        case sendspin::SendspinPairAbortReason::ATTEMPT_TIMEOUT:
-            return "the server did not finish in time";
-        case sendspin::SendspinPairAbortReason::CONCURRENT_ATTEMPT:
-            return "another pairing attempt was already in progress";
-        case sendspin::SendspinPairAbortReason::METHOD_NOT_SUPPORTED:
-            return "the server chose a pairing method this player does not offer";
-        case sendspin::SendspinPairAbortReason::PAIRING_CODE_MISMATCH:
-            return "the pairing code did not match";
-        case sendspin::SendspinPairAbortReason::USER_CANCELLED:
-            return "it was cancelled";
-        case sendspin::SendspinPairAbortReason::UNKNOWN:
-            break;
-    }
-    return "the exchange broke down";
-}
-
-/// Logs session and pairing progress, and caches pairing progress for `status`. Main loop only.
-struct PairingListener : sendspin::SendspinClientListener {
-    /// One main-loop tick: logs a session that is new, or re-keyed onto a different PSK.
-    void tick(const sendspin::SendspinClient& client) {
-        // is_paired() first: a true is_connected() after it means that session is activated.
-        const bool paired = client.is_paired();
-        const bool connected = client.is_connected();
-        if (connected && (!this->connected_ || paired != this->paired_)) {
-            // A new handshake: an attempt the last connection dropped never reported its end.
-            this->server_id_.clear();
-            log_line(LogLevel::INFO, LOG_TAG, "Connected server is %s",
-                     paired ? "paired" : "not paired");
-        }
-        this->connected_ = connected;
-        this->paired_ = paired;
-    }
-
-    void on_pairing_started(const std::string& server_id) override {
-        this->server_id_ = server_id;
-        log_line(LogLevel::INFO, LOG_TAG, "Pairing started with server %s", server_id.c_str());
-    }
-
-    void on_pairing_succeeded(const std::string& server_id) override {
-        this->server_id_.clear();
-        log_line(LogLevel::INFO, LOG_TAG, "Paired with server %s", server_id.c_str());
-    }
-
-    void on_pairing_failed(const std::string& server_id,
-                           sendspin::SendspinPairAbortReason reason) override {
-        this->server_id_.clear();
-        log_line(LogLevel::WARN, LOG_TAG, "Pairing with server %s failed: %s", server_id.c_str(),
-                 pair_abort_reason(reason));
-    }
-
-    void on_display_pairing_code(const std::string& code,
-                                 sendspin::SendspinPairingCodeFormat /*format*/) override {
-        this->code_ = code;
-        log_line(LogLevel::INFO, LOG_TAG,
-                 "*** Pairing code: %s *** -- type it into the server to pair", code.c_str());
-    }
-
-    void on_clear_pairing_code() override {
-        // Also how an attempt the server abandoned ends: neither outcome callback fires for it.
-        this->server_id_.clear();
-        this->code_.clear();
-        log_line(LogLevel::INFO, LOG_TAG, "Pairing code withdrawn");
-    }
-
-    void on_open_pairing_window() override {
-        this->window_open_ = true;
-        log_line(LogLevel::INFO, LOG_TAG,
-                 "A server is waiting to pair -- run 'sendspin-cli pair confirm' to let it, or "
-                 "'sendspin-cli pair cancel' to refuse");
-    }
-
-    void on_close_pairing_window() override {
-        // Fires when the attempt concludes, like on_clear_pairing_code().
-        this->server_id_.clear();
-        this->window_open_ = false;
-        log_line(LogLevel::INFO, LOG_TAG, "No longer waiting for 'pair confirm'");
-    }
-
-    /// The server a pairing is in progress with, or empty.
-    const std::string& server_id() const {
-        return this->server_id_;
-    }
-
-    /// The dynamic code on show, or empty.
-    const std::string& code() const {
-        return this->code_;
-    }
-
-    bool window_open() const {
-        return this->window_open_;
-    }
-
-private:
-    bool connected_{false};
-    bool paired_{false};
-    std::string server_id_;
-    std::string code_;
-    bool window_open_{false};
+/// What `status` reports of the server's metadata, copied out of the library's views.
+struct TrackState {
+    std::optional<std::string> artist;
+    std::optional<std::string> title;
+    std::optional<sendspin::MetadataProgressObject> progress;
 };
+
+/// A view the library hands a callback, copied so it outlives the callback.
+std::optional<std::string> owned(const std::optional<std::string_view>& view) {
+    return view.has_value() ? std::optional<std::string>(std::string(*view)) : std::nullopt;
+}
 
 /// Logs server metadata and caches the latest for `status`. Main loop only.
 struct MetadataLogger : sendspin::MetadataRoleListener {
-    void on_metadata(const sendspin::ServerMetadataStateObject& metadata) override {
-        this->state_ = metadata;
-        if (!metadata.title.has_value()) {
+    void on_track_metadata(const sendspin::TrackMetadata& metadata) override {
+        this->state_ = TrackState{owned(metadata.artist), owned(metadata.title), metadata.progress};
+        if (!this->state_->title.has_value()) {
             return;
         }
         log_line(LogLevel::INFO, LOG_TAG_METADATA, "Now playing: %s - %s",
-                 metadata.artist.value_or("Unknown artist").c_str(), metadata.title->c_str());
+                 this->state_->artist.value_or("Unknown artist").c_str(),
+                 this->state_->title->c_str());
     }
 
     void on_metadata_clear() override {
@@ -256,12 +171,12 @@ struct MetadataLogger : sendspin::MetadataRoleListener {
     }
 
     /// The last metadata the server sent, or nothing since the last clear.
-    const std::optional<sendspin::ServerMetadataStateObject>& state() const {
+    const std::optional<TrackState>& state() const {
         return this->state_;
     }
 
 private:
-    std::optional<sendspin::ServerMetadataStateObject> state_;
+    std::optional<TrackState> state_;
 };
 
 /// The formats to advertise for `sink`, derived from its device and logged.
@@ -370,8 +285,7 @@ private:
         if (this->remembered_this_connection_) {
             return;
         }
-        const std::optional<sendspin::ServerInformationObject> info =
-            client.get_server_information();
+        const std::optional<sendspin::ServerInformation> info = client.server_information();
         if (!info.has_value() || info->server_id.empty() || info->server_id == this->remembered_) {
             return;
         }
@@ -447,12 +361,13 @@ public:
         }
 
         if (request.command == ControlCommand::PairToken) {
-            const std::optional<std::string> token = this->client_.pairing_token();
+            const auto token = this->client_.client_pairing_token();
             if (!token.has_value()) {
                 return encode_control_reply(ControlStatus::Failed,
                                             "this player has no pairing token", "");
             }
-            return encode_control_reply(ControlStatus::Ok, "", *token + "\n");
+            return encode_control_reply(ControlStatus::Ok, "",
+                                        std::string(token->data(), token->size()) + "\n");
         }
 
         if (request.command == ControlCommand::Pair) {
@@ -509,15 +424,13 @@ private:
         }
         snapshot.pairing_code = this->pairing_listener_.code();
         snapshot.pairing_window_open = this->pairing_listener_.window_open();
-        const std::optional<sendspin::ServerInformationObject> info =
-            this->client_.get_server_information();
+        const std::optional<sendspin::ServerInformation> info = this->client_.server_information();
         if (info.has_value()) {
-            snapshot.server_id = info->server_id;
-            snapshot.server_name = info->name;
+            snapshot.server_id = std::string(info->server_id);
+            snapshot.server_name = std::string(info->name);
         }
 
-        const std::optional<sendspin::ServerMetadataStateObject>& metadata =
-            this->metadata_logger_.state();
+        const std::optional<TrackState>& metadata = this->metadata_logger_.state();
         if (metadata.has_value()) {
             snapshot.artist = metadata->artist.value_or("");
             snapshot.title = metadata->title.value_or("");
@@ -755,7 +668,8 @@ int main(int argc, char* argv[]) {
     }
 
     std::string sink_error;
-    std::unique_ptr<AudioSink> sink = make_audio_sink(opts.device, opts.buffer_ms, sink_error);
+    std::unique_ptr<AudioSink> sink = make_audio_sink(opts.device, opts.buffer_ms, opts.alsa_mixer,
+                                                      opts.alsa_mixer_curve, sink_error);
     if (!sink) {
         log_fatal(LOG_TAG_AUDIO, "%s", sink_error.c_str());
         return 1;
@@ -799,7 +713,8 @@ int main(int argc, char* argv[]) {
     }
 
     // Loaded before the client, since its values must be in place before anything is published.
-    StateStore state_store(state_store_path(opts.state_dir));
+    // The XDG default may not exist yet on a fresh system; an explicit --state-dir must.
+    StateStore state_store(state_store_path(opts.state_dir), opts.state_dir.empty());
     if (state_store.path().empty()) {
         log_line(
             LogLevel::WARN, LOG_TAG,
@@ -925,6 +840,11 @@ int main(int argc, char* argv[]) {
     PairingListener pairing_listener;
     HostNetworkProvider network_provider;
 
+    // A hardware mixer turned by hand reaches the server through the listener's own pair.
+    sink->on_local_volume_changed = [&player_listener](uint8_t volume, bool muted) {
+        player_listener.on_sink_volume_changed(volume, muted);
+    };
+
     client.set_listener(&pairing_listener);
 
     player.set_listener(&player_listener);
@@ -955,12 +875,37 @@ int main(int argc, char* argv[]) {
         player_listener.fix_volume();
         volume = DEFAULT_SINK_VOLUME;
         muted = false;
-    } else if (remembered) {
-        // Only when something was remembered, since restore_volume() marks the pair as restored.
-        player_listener.restore_volume(volume, muted);
-        log_line(LogLevel::INFO, LOG_TAG_PLAYER, "Restored volume %u%s from %s",
-                 static_cast<unsigned>(volume), muted ? " (muted)" : "",
-                 state_store.path().c_str());
+    } else {
+        bool seeded_from_mixer = false;
+#ifdef SENDSPIN_CLI_HAVE_ALSA
+        // The mixer's level wins over a remembered one.
+        bool mixer_muted = false;
+        if (!opts.alsa_mixer.empty()) {
+            MixerCurve mixer_curve = MixerCurve::kSpec;
+            parse_mixer_curve(opts.alsa_mixer_curve, mixer_curve);
+            const int mixer_volume =
+                AlsaAudioSink::read_mixer_volume(opts.alsa_mixer, mixer_muted, mixer_curve);
+            if (mixer_volume >= 0) {
+                volume = static_cast<uint8_t>(mixer_volume);
+                muted = mixer_muted;
+                player_listener.seed_volume(volume, muted);
+                seeded_from_mixer = true;
+                log_line(LogLevel::INFO, LOG_TAG_PLAYER, "Volume %u%s from ALSA mixer '%s'",
+                         static_cast<unsigned>(volume), muted ? " (muted)" : "",
+                         opts.alsa_mixer.c_str());
+            } else {
+                log_line(LogLevel::WARN, LOG_TAG_PLAYER,
+                         "Could not read volume from ALSA mixer '%s'", opts.alsa_mixer.c_str());
+            }
+        }
+#endif
+        // Only when remembered and not seeded, since restore_volume() marks the pair as restored.
+        if (remembered && !seeded_from_mixer) {
+            player_listener.restore_volume(volume, muted);
+            log_line(LogLevel::INFO, LOG_TAG_PLAYER, "Restored volume %u%s from %s",
+                     static_cast<unsigned>(volume), muted ? " (muted)" : "",
+                     state_store.path().c_str());
+        }
     }
     player.update_volume(volume);
     player.update_muted(muted);
@@ -989,12 +934,12 @@ int main(int argc, char* argv[]) {
     }
 
     if (pairing_endpoint) {
-        const std::optional<std::string> token = client.pairing_token();
+        const auto token = client.client_pairing_token();
         if (!token.has_value()) {
             log_fatal(LOG_TAG, "--pairing-token-endpoint: this player has no pairing token");
             return 1;
         }
-        pairing_endpoint->start(*token);
+        pairing_endpoint->start(std::string(token->data(), token->size()));
         log_line(LogLevel::INFO, LOG_TAG,
                  "Serving the pairing token on %s -- anything that can reach it can pair with "
                  "this player",
@@ -1006,7 +951,7 @@ int main(int argc, char* argv[]) {
             mdns_backend_name().c_str());
 
     if (!state_store.has_pairing_record()) {
-        const std::optional<std::string> token = client.pairing_token();
+        const auto token = client.client_pairing_token();
         // The logfile is world-readable, so the token only goes to the terminal or journal.
         // Add-on logs are readable from the UI; the endpoint makes copying the token unnecessary.
         if (!opts.logfile.empty() || pairing_endpoint) {
@@ -1016,8 +961,8 @@ int main(int argc, char* argv[]) {
         } else if (token.has_value()) {
             log_line(LogLevel::INFO, LOG_TAG,
                      "No server is paired yet. Pairing token, to paste into a server (keep it "
-                     "private -- 'sendspin-cli pair-token' prints it again): %s",
-                     token->c_str());
+                     "private -- 'sendspin-cli pair-token' prints it again): %.*s",
+                     static_cast<int>(token->size()), token->data());
         }
     }
 
@@ -1056,11 +1001,10 @@ int main(int argc, char* argv[]) {
                 stream_context = HookContext{};
                 stream_context.client_id = client.client_id();
                 stream_context.client_name = opts.name;
-                const std::optional<sendspin::ServerInformationObject> info =
-                    client.get_server_information();
+                const std::optional<sendspin::ServerInformation> info = client.server_information();
                 if (info.has_value()) {
-                    stream_context.server_id = info->server_id;
-                    stream_context.server_name = info->name;
+                    stream_context.server_id = std::string(info->server_id);
+                    stream_context.server_name = std::string(info->name);
                 }
                 if (outbound) {
                     stream_context.server_url = outbound->url_for(stream_context.server_id);
@@ -1077,7 +1021,9 @@ int main(int argc, char* argv[]) {
     while (g_running.load()) {
         const int64_t now_ms = monotonic_ms();
         client.loop();
-        pairing_listener.tick(client);
+        // is_paired() first: a true is_connected() after it means that session is activated.
+        const bool paired = client.is_paired();
+        pairing_listener.tick(client.is_connected(), paired, now_ms);
         // All three need their callbacks on the main loop.
         mdns.poll(now_ms);
         control_socket.poll(now_ms, control_dispatcher);

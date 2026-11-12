@@ -15,6 +15,7 @@
 #include "portaudio_sink.h"
 
 #include "log.h"
+#include "pcm_endian.h"
 #include "pcm_volume.h"
 
 #include <sendspin/client.h>
@@ -734,6 +735,8 @@ int PortAudioSink::pa_callback(const void* /*input*/, void* output, unsigned lon
             apply_volume_ramp(out, bytes_requested, self->bits_ / 8U, self->channels_, current,
                               target, self->ramp_step_);
     }
+    // After the volume, which works on little-endian; paInt16/24/32 are native-endian.
+    pcm_le_native_swap(out, bytes_requested, self->bits_ / 8U);
 
     // Notified without the mutex, keeping the callback lock-free; a missed wakeup is bounded.
     self->space_available_.notify_one();
