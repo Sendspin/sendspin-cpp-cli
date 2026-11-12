@@ -50,6 +50,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -131,15 +132,28 @@ private:
     StateStore& store_;
 };
 
+/// What `status` reports of the server's metadata, copied out of the library's views.
+struct TrackState {
+    std::optional<std::string> artist;
+    std::optional<std::string> title;
+    std::optional<sendspin::MetadataProgressObject> progress;
+};
+
+/// A view the library hands a callback, copied so it outlives the callback.
+std::optional<std::string> owned(const std::optional<std::string_view>& view) {
+    return view.has_value() ? std::optional<std::string>(std::string(*view)) : std::nullopt;
+}
+
 /// Logs server metadata and caches the latest for `status`. Main loop only.
 struct MetadataLogger : sendspin::MetadataRoleListener {
-    void on_metadata(const sendspin::ServerMetadataStateObject& metadata) override {
-        this->state_ = metadata;
-        if (!metadata.title.has_value()) {
+    void on_track_metadata(const sendspin::TrackMetadata& metadata) override {
+        this->state_ = TrackState{owned(metadata.artist), owned(metadata.title), metadata.progress};
+        if (!this->state_->title.has_value()) {
             return;
         }
         log_line(LogLevel::INFO, LOG_TAG_METADATA, "Now playing: %s - %s",
-                 metadata.artist.value_or("Unknown artist").c_str(), metadata.title->c_str());
+                 this->state_->artist.value_or("Unknown artist").c_str(),
+                 this->state_->title->c_str());
     }
 
     void on_metadata_clear() override {
@@ -153,12 +167,12 @@ struct MetadataLogger : sendspin::MetadataRoleListener {
     }
 
     /// The last metadata the server sent, or nothing since the last clear.
-    const std::optional<sendspin::ServerMetadataStateObject>& state() const {
+    const std::optional<TrackState>& state() const {
         return this->state_;
     }
 
 private:
-    std::optional<sendspin::ServerMetadataStateObject> state_;
+    std::optional<TrackState> state_;
 };
 
 /// The formats to advertise for `sink`, derived from its device and logged.
@@ -267,8 +281,7 @@ private:
         if (this->remembered_this_connection_) {
             return;
         }
-        const std::optional<sendspin::ServerInformationObject> info =
-            client.get_server_information();
+        const std::optional<sendspin::ServerInformation> info = client.server_information();
         if (!info.has_value() || info->server_id.empty() || info->server_id == this->remembered_) {
             return;
         }
@@ -344,12 +357,13 @@ public:
         }
 
         if (request.command == ControlCommand::PairToken) {
-            const std::optional<std::string> token = this->client_.pairing_token();
+            const auto token = this->client_.client_pairing_token();
             if (!token.has_value()) {
                 return encode_control_reply(ControlStatus::Failed,
                                             "this player has no pairing token", "");
             }
-            return encode_control_reply(ControlStatus::Ok, "", *token + "\n");
+            return encode_control_reply(ControlStatus::Ok, "",
+                                        std::string(token->data(), token->size()) + "\n");
         }
 
         if (request.command == ControlCommand::Pair) {
@@ -406,15 +420,13 @@ private:
         }
         snapshot.pairing_code = this->pairing_listener_.code();
         snapshot.pairing_window_open = this->pairing_listener_.window_open();
-        const std::optional<sendspin::ServerInformationObject> info =
-            this->client_.get_server_information();
+        const std::optional<sendspin::ServerInformation> info = this->client_.server_information();
         if (info.has_value()) {
-            snapshot.server_id = info->server_id;
-            snapshot.server_name = info->name;
+            snapshot.server_id = std::string(info->server_id);
+            snapshot.server_name = std::string(info->name);
         }
 
-        const std::optional<sendspin::ServerMetadataStateObject>& metadata =
-            this->metadata_logger_.state();
+        const std::optional<TrackState>& metadata = this->metadata_logger_.state();
         if (metadata.has_value()) {
             snapshot.artist = metadata->artist.value_or("");
             snapshot.title = metadata->title.value_or("");
@@ -868,7 +880,7 @@ int main(int argc, char* argv[]) {
             mdns_backend_name().c_str());
 
     if (!state_store.has_pairing_record()) {
-        const std::optional<std::string> token = client.pairing_token();
+        const auto token = client.client_pairing_token();
         // The logfile is world-readable, so the token only goes to the terminal or journal.
         if (!opts.logfile.empty()) {
             log_line(LogLevel::INFO, LOG_TAG,
@@ -877,8 +889,8 @@ int main(int argc, char* argv[]) {
         } else if (token.has_value()) {
             log_line(LogLevel::INFO, LOG_TAG,
                      "No server is paired yet. Pairing token, to paste into a server (keep it "
-                     "private -- 'sendspin-cli pair-token' prints it again): %s",
-                     token->c_str());
+                     "private -- 'sendspin-cli pair-token' prints it again): %.*s",
+                     static_cast<int>(token->size()), token->data());
         }
     }
 
@@ -917,11 +929,10 @@ int main(int argc, char* argv[]) {
                 stream_context = HookContext{};
                 stream_context.client_id = client.client_id();
                 stream_context.client_name = opts.name;
-                const std::optional<sendspin::ServerInformationObject> info =
-                    client.get_server_information();
+                const std::optional<sendspin::ServerInformation> info = client.server_information();
                 if (info.has_value()) {
-                    stream_context.server_id = info->server_id;
-                    stream_context.server_name = info->name;
+                    stream_context.server_id = std::string(info->server_id);
+                    stream_context.server_name = std::string(info->name);
                 }
                 if (outbound) {
                     stream_context.server_url = outbound->url_for(stream_context.server_id);

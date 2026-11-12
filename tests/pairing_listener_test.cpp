@@ -28,7 +28,7 @@ TEST(PairingListener, KeepsAnAttemptStartedBeforeTheSessionReadsConnected) {
     // after it sees is_connected() true.
     PairingListener listener;
     listener.tick(false, false);
-    listener.on_pairing_started(SERVER);
+    listener.on_pairing_attempt(SERVER);
     listener.tick(true, false);
     EXPECT_EQ(listener.server_id(), SERVER);
 }
@@ -36,7 +36,7 @@ TEST(PairingListener, KeepsAnAttemptStartedBeforeTheSessionReadsConnected) {
 TEST(PairingListener, KeepsAnAttemptWhileTheConnectionStays) {
     PairingListener listener;
     listener.tick(true, false);
-    listener.on_pairing_started(SERVER);
+    listener.on_pairing_attempt(SERVER);
     listener.tick(true, false);
     listener.tick(true, false);
     EXPECT_EQ(listener.server_id(), SERVER);
@@ -46,7 +46,7 @@ TEST(PairingListener, ForgetsAnAttemptWhoseConnectionDropped) {
     // A dropped connection ends its attempt without a callback.
     PairingListener listener;
     listener.tick(true, false);
-    listener.on_pairing_started(SERVER);
+    listener.on_pairing_attempt(SERVER);
     listener.tick(false, false);
     EXPECT_EQ(listener.server_id(), "");
     listener.tick(true, false);
@@ -56,12 +56,12 @@ TEST(PairingListener, ForgetsAnAttemptWhoseConnectionDropped) {
 TEST(PairingListener, AnOutcomeEndsTheAttempt) {
     PairingListener listener;
     listener.tick(true, false);
-    listener.on_pairing_started(SERVER);
-    listener.on_pairing_succeeded(SERVER);
+    listener.on_pairing_attempt(SERVER);
+    listener.on_paired(SERVER);
     EXPECT_EQ(listener.server_id(), "");
 
-    listener.on_pairing_started(SERVER);
-    listener.on_pairing_failed(SERVER, sendspin::SendspinPairAbortReason::USER_CANCELLED);
+    listener.on_pairing_attempt(SERVER);
+    listener.on_pairing_aborted(SERVER, sendspin::SendspinPairAbortReason::USER_CANCELLED);
     EXPECT_EQ(listener.server_id(), "");
 }
 

@@ -168,8 +168,8 @@ struct StatusSnapshot {
     std::string client_id;  ///< the public key servers know this player by
 
     bool connected{false};
-    std::string server_name;  ///< `ServerInformationObject::name`, empty when not known
-    std::string server_id;    ///< `ServerInformationObject::server_id`
+    std::string server_name;  ///< `ServerInformation::name`, empty when not known
+    std::string server_id;    ///< `ServerInformation::server_id`
 
     bool paired{false};        ///< the connection is a paired session
     size_t paired_servers{0};  ///< servers with a stored pairing, connected or not

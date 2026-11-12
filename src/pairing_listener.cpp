@@ -60,28 +60,33 @@ void PairingListener::tick(bool connected, bool paired) {
     this->paired_ = paired;
 }
 
-void PairingListener::on_pairing_started(const std::string& server_id) {
-    this->server_id_ = server_id;
-    log_line(LogLevel::INFO, LOG_TAG, "Pairing started with server %s", server_id.c_str());
+// The views are valid only for the callback, and not NUL-terminated: copied, and printed by length.
+
+void PairingListener::on_pairing_attempt(std::string_view server_id) {
+    this->server_id_ = std::string(server_id);
+    log_line(LogLevel::INFO, LOG_TAG, "Pairing started with server %.*s",
+             static_cast<int>(server_id.size()), server_id.data());
 }
 
-void PairingListener::on_pairing_succeeded(const std::string& server_id) {
+void PairingListener::on_paired(std::string_view server_id) {
     this->server_id_.clear();
-    log_line(LogLevel::INFO, LOG_TAG, "Paired with server %s", server_id.c_str());
+    log_line(LogLevel::INFO, LOG_TAG, "Paired with server %.*s", static_cast<int>(server_id.size()),
+             server_id.data());
 }
 
-void PairingListener::on_pairing_failed(const std::string& server_id,
-                                        sendspin::SendspinPairAbortReason reason) {
+void PairingListener::on_pairing_aborted(std::string_view server_id,
+                                         sendspin::SendspinPairAbortReason reason) {
     this->server_id_.clear();
-    log_line(LogLevel::WARN, LOG_TAG, "Pairing with server %s failed: %s", server_id.c_str(),
-             pair_abort_reason(reason));
+    log_line(LogLevel::WARN, LOG_TAG, "Pairing with server %.*s failed: %s",
+             static_cast<int>(server_id.size()), server_id.data(), pair_abort_reason(reason));
 }
 
-void PairingListener::on_display_pairing_code(const std::string& code,
-                                              sendspin::SendspinPairingCodeFormat /*format*/) {
-    this->code_ = code;
-    log_line(LogLevel::INFO, LOG_TAG, "*** Pairing code: %s *** -- type it into the server to pair",
-             code.c_str());
+void PairingListener::on_pairing_code(std::string_view code,
+                                      sendspin::SendspinPairingCodeFormat /*format*/) {
+    this->code_ = std::string(code);
+    log_line(LogLevel::INFO, LOG_TAG,
+             "*** Pairing code: %.*s *** -- type it into the server to pair",
+             static_cast<int>(code.size()), code.data());
 }
 
 void PairingListener::on_clear_pairing_code() {

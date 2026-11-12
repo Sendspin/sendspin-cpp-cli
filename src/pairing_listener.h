@@ -19,6 +19,7 @@
 #include <sendspin/client.h>
 
 #include <string>
+#include <string_view>
 
 namespace sendspin_cli {
 
@@ -30,12 +31,12 @@ public:
     /// Read client.is_paired() before client.is_connected(), as the library asks.
     void tick(bool connected, bool paired);
 
-    void on_pairing_started(const std::string& server_id) override;
-    void on_pairing_succeeded(const std::string& server_id) override;
-    void on_pairing_failed(const std::string& server_id,
-                           sendspin::SendspinPairAbortReason reason) override;
-    void on_display_pairing_code(const std::string& code,
-                                 sendspin::SendspinPairingCodeFormat format) override;
+    void on_pairing_attempt(std::string_view server_id) override;
+    void on_paired(std::string_view server_id) override;
+    void on_pairing_aborted(std::string_view server_id,
+                            sendspin::SendspinPairAbortReason reason) override;
+    void on_pairing_code(std::string_view code,
+                         sendspin::SendspinPairingCodeFormat format) override;
     void on_clear_pairing_code() override;
     void on_open_pairing_window() override;
     void on_close_pairing_window() override;
