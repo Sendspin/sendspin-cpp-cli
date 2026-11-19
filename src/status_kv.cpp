@@ -89,14 +89,17 @@ const char* repeat_name(sendspin::SendspinRepeatMode mode) {
 }
 
 /// Reads an unsigned decimal that fits T; anything else leaves `out` as it was.
+/// @return whether it read one.
 template <typename T>
-void parse_number(const std::string& value, T& out) {
+bool parse_number(const std::string& value, T& out) {
     uint32_t parsed = 0;
     const char* end = value.data() + value.size();
     const auto [stop, error] = std::from_chars(value.data(), end, parsed);
     if (error == std::errc() && stop == end && parsed <= std::numeric_limits<T>::max()) {
         out = static_cast<T>(parsed);
+        return true;
     }
+    return false;
 }
 
 }  // namespace
@@ -162,16 +165,12 @@ bool parse_status_kv(const std::string& payload, PlayerView& out) {
             parse_number(value, view.*member);
         };
     };
-    // Empty is "unknown", which is not the same as 0.
+    // Empty or unreadable is "unknown", which is not the same as 0.
     const auto optional_integer = [](std::optional<uint32_t> PlayerView::* member) -> Setter {
         return [member](PlayerView& view, const std::string& value) {
-            std::optional<uint32_t> parsed;
-            if (!value.empty()) {
-                uint32_t number = 0;
-                parse_number(value, number);
-                parsed = number;
-            }
-            view.*member = parsed;
+            uint32_t number = 0;
+            view.*member =
+                parse_number(value, number) ? std::optional<uint32_t>(number) : std::nullopt;
         };
     };
 

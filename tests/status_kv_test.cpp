@@ -152,4 +152,13 @@ TEST(StatusKv, AWrongVersionIsRefused) {
     EXPECT_FALSE(parse_status_kv("title=T\n", view));
 }
 
+TEST(StatusKv, AnUnreadableOptionalNumberIsUnknownNotZero) {
+    PlayerView view;
+    ASSERT_TRUE(parse_status_kv("version=1\nposition_ms=abc\nduration_ms=99999999999\n", view));
+    EXPECT_FALSE(view.position_ms.has_value());
+    EXPECT_FALSE(view.duration_ms.has_value());
+    ASSERT_TRUE(parse_status_kv("version=1\nduration_ms=0\n", view));
+    EXPECT_EQ(view.duration_ms, std::optional<uint32_t>(0));
+}
+
 }  // namespace sendspin_cli
