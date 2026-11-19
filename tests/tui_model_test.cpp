@@ -159,7 +159,8 @@ TEST(TuiModel, AnAllowedAttemptWaitsInsteadOfAskingAgain) {
 
     const std::optional<ControlRequest> yes = model.request_for(TuiKey::Yes);
     ASSERT_TRUE(yes.has_value());
-    model.note_sent(*yes);
+    const uint64_t id = model.note_sent(*yes);
+    model.on_command_reply(id, ok(snapshot), 500);
 
     // The window stays open until the attempt concludes; a stray `n` must not cancel it.
     model.on_status(ok(snapshot), 1000);
@@ -186,7 +187,8 @@ TEST(TuiModel, RefusingIsNotRememberedAsAllowing) {
     snapshot.pairing_server_id = SERVER_ID;
     snapshot.pairing_window_open = true;
     TuiModel model = model_with(snapshot);
-    model.note_sent(*model.request_for(TuiKey::No));
+    const uint64_t id = model.note_sent(*model.request_for(TuiKey::No));
+    model.on_command_reply(id, ok(snapshot), 500);
     model.on_status(ok(snapshot), 1000);
     EXPECT_EQ(model.confirm_text(), "A server wants to pair. Y to allow, N to refuse");
     EXPECT_TRUE(model.request_for(TuiKey::Yes).has_value());
@@ -454,18 +456,19 @@ TEST(TuiModel, AnUnsupportedCommandLeavesANotice) {
     TuiModel model = model_with(attached_snapshot());
     EXPECT_EQ(model.notice(0), "");
 
-    model.on_command_reply(refused(ControlStatus::Unsupported, "server does not offer that"), 1000);
+    model.on_command_reply(0, refused(ControlStatus::Unsupported, "server does not offer that"),
+                           1000);
     EXPECT_EQ(model.notice(1000), "The server doesn't offer that");
     EXPECT_EQ(model.notice(1000 + 3001), "");
 
-    model.on_command_reply(refused(ControlStatus::NotConnected, "not connected"), 5000);
+    model.on_command_reply(0, refused(ControlStatus::NotConnected, "not connected"), 5000);
     EXPECT_EQ(model.notice(5000), "No server is connected");
 
-    model.on_command_reply(refused(ControlStatus::Usage, "volume must be 0-100"), 6000);
+    model.on_command_reply(0, refused(ControlStatus::Usage, "volume must be 0-100"), 6000);
     EXPECT_EQ(model.notice(6000), "volume must be 0-100");
 
     TuiModel quiet = model_with(attached_snapshot());
-    quiet.on_command_reply(ok(attached_snapshot()), 1000);
+    quiet.on_command_reply(0, ok(attached_snapshot()), 1000);
     EXPECT_EQ(quiet.notice(1000), "");
 }
 
@@ -481,9 +484,13 @@ TEST(TuiModel, ThePositionAdvancesOnlyWhilePlaying) {
     model.on_status(ok(snapshot), 2000);
     EXPECT_EQ(model.position_ms(9000), std::optional<uint32_t>(132000));
 
-    snapshot.playback_speed = 500;  // not 1x, but still playing
+    // Away from 1x the position moves at the reported speed.
+    snapshot.playback_speed = 500;
     model.on_status(ok(snapshot), 2000);
-    EXPECT_GT(model.position_ms(9000).value_or(0), 125000u);
+    EXPECT_EQ(model.position_ms(9000), std::optional<uint32_t>(128500));
+    snapshot.playback_speed = 2000;
+    model.on_status(ok(snapshot), 2000);
+    EXPECT_EQ(model.position_ms(9000), std::optional<uint32_t>(139000));
 
     snapshot.playback_speed = 0;
     model.on_status(ok(snapshot), 3000);
@@ -492,6 +499,196 @@ TEST(TuiModel, ThePositionAdvancesOnlyWhilePlaying) {
     snapshot.progress_ms.reset();
     model.on_status(ok(snapshot), 4000);
     EXPECT_FALSE(model.position_ms(9000).has_value());
+}
+
+namespace {
+
+/// Presses `key` and notes the request as sent, as the view does.
+uint64_t press(TuiModel& model, TuiKey key) {
+    const std::optional<ControlRequest> request = model.request_for(key);
+    EXPECT_TRUE(request.has_value());
+    return request.has_value() ? model.note_sent(*request) : 0;
+}
+
+/// The model's request for `key`, which must be one.
+ControlRequest request(const TuiModel& model, TuiKey key) {
+    const std::optional<ControlRequest> request = model.request_for(key);
+    EXPECT_TRUE(request.has_value());
+    return request.value_or(ControlRequest{});
+}
+
+ControlExchange timed_out() {
+    return refused(ControlStatus::Failed, "the player did not answer within 3 s");
+}
+
+ControlExchange answered(ControlStatus status, const std::string& reason) {
+    ControlExchange reply = refused(status, reason);
+    reply.answered = true;
+    return reply;
+}
+
+}  // namespace
+
+TEST(TuiModel, RepeatedKeysBuildOnTheTargetsAlreadySent) {
+    StatusSnapshot snapshot = attached_snapshot();
+    snapshot.player_volume = 80;
+    snapshot.group_volume = 55;
+    snapshot.output_delay_ms = 100;
+    TuiModel model = model_with(snapshot);
+
+    press(model, TuiKey::Up);
+    EXPECT_EQ(request(model, TuiKey::Up).volume, std::optional<uint8_t>(90));
+    EXPECT_EQ(model.view().player_volume, 85);
+
+    press(model, TuiKey::RightBracket);
+    EXPECT_EQ(request(model, TuiKey::RightBracket).volume, std::optional<uint8_t>(65));
+
+    press(model, TuiKey::DelayUp);
+    EXPECT_EQ(request(model, TuiKey::DelayUp).delay_ms, std::optional<uint16_t>(120));
+
+    press(model, TuiKey::MuteSelf);
+    EXPECT_EQ(request(model, TuiKey::MuteSelf).flag, std::optional<bool>(false));
+    press(model, TuiKey::MuteGroup);
+    EXPECT_EQ(request(model, TuiKey::MuteGroup).flag, std::optional<bool>(false));
+    press(model, TuiKey::Shuffle);
+    EXPECT_EQ(request(model, TuiKey::Shuffle).flag, std::optional<bool>(false));
+
+    press(model, TuiKey::Repeat);
+    EXPECT_EQ(request(model, TuiKey::Repeat).repeat,
+              std::optional(sendspin::SendspinRepeatMode::ONE));
+
+    // A poll from before the presses landed does not undo them.
+    model.on_status(ok(snapshot), 100);
+    EXPECT_EQ(request(model, TuiKey::Up).volume, std::optional<uint8_t>(90));
+}
+
+TEST(TuiModel, APendingTargetGivesWayToAPollAFailureOrTime) {
+    StatusSnapshot snapshot = attached_snapshot();
+    snapshot.player_volume = 80;
+    TuiModel model = model_with(snapshot);
+
+    // Shown by a poll: the poll is the truth again, even if it later moves elsewhere.
+    const uint64_t first = press(model, TuiKey::Up);
+    model.on_command_reply(first, ok(snapshot), 100);
+    snapshot.player_volume = 85;
+    model.on_status(ok(snapshot), 200);
+    snapshot.player_volume = 40;
+    model.on_status(ok(snapshot), 300);
+    EXPECT_EQ(request(model, TuiKey::Up).volume, std::optional<uint8_t>(45));
+
+    // Refused: back to what the player reports.
+    const uint64_t refused_id = press(model, TuiKey::Up);
+    model.on_command_reply(refused_id, answered(ControlStatus::Usage, "no"), 400);
+    EXPECT_EQ(model.view().player_volume, 40);
+    EXPECT_EQ(request(model, TuiKey::Up).volume, std::optional<uint8_t>(45));
+
+    // Answered but never shown: given up once the grace has passed.
+    const uint64_t unseen = press(model, TuiKey::Up);
+    model.on_command_reply(unseen, ok(snapshot), 500);
+    model.on_status(ok(snapshot), 1000);
+    EXPECT_EQ(model.view().player_volume, 45);
+    model.on_status(ok(snapshot), 2500);
+    EXPECT_EQ(model.view().player_volume, 40);
+
+    // A failed earlier request leaves a later target alone.
+    const uint64_t earlier = press(model, TuiKey::Up);
+    press(model, TuiKey::Up);
+    model.on_command_reply(earlier, timed_out(), 2600);
+    EXPECT_EQ(model.view().player_volume, 50);
+}
+
+TEST(TuiModel, AnAllowIsLatchedOnlyOnceThePlayerTakesIt) {
+    StatusSnapshot snapshot = attached_snapshot();
+    snapshot.pairing_server_id = SERVER_ID;
+    snapshot.pairing_window_open = true;
+    TuiModel model = model_with(snapshot);
+
+    const uint64_t id = press(model, TuiKey::Yes);
+    // In flight: neither key, so a second press cannot race the first.
+    EXPECT_FALSE(model.request_for(TuiKey::Yes).has_value());
+    EXPECT_FALSE(model.request_for(TuiKey::No).has_value());
+    EXPECT_EQ(model.confirm_text(), "Sending your answer...");
+
+    model.on_command_reply(id, ok(snapshot), 100);
+    EXPECT_EQ(model.confirm_text(), "Allowed -- waiting for the server...");
+}
+
+TEST(TuiModel, ARefusedAllowAsksAgain) {
+    StatusSnapshot snapshot = attached_snapshot();
+    snapshot.pairing_server_id = SERVER_ID;
+    snapshot.pairing_window_open = true;
+    TuiModel model = model_with(snapshot);
+
+    const uint64_t id = press(model, TuiKey::Yes);
+    model.on_command_reply(id, answered(ControlStatus::Failed, "no pairing window is open"), 100);
+    EXPECT_EQ(model.confirm_text(), "A server wants to pair. Y to allow, N to refuse");
+    EXPECT_TRUE(model.request_for(TuiKey::Yes).has_value());
+    EXPECT_TRUE(model.request_for(TuiKey::No).has_value());
+    EXPECT_EQ(model.notice(100), "no pairing window is open");
+
+    // Never reaching the player is as definite.
+    const uint64_t unreached = press(model, TuiKey::Yes);
+    model.on_command_reply(unreached, refused(ControlStatus::NoDaemon, "gone"), 200);
+    EXPECT_TRUE(model.request_for(TuiKey::No).has_value());
+}
+
+TEST(TuiModel, AnUnansweredAllowOffersOnlyARetry) {
+    StatusSnapshot snapshot = attached_snapshot();
+    snapshot.pairing_server_id = SERVER_ID;
+    snapshot.pairing_window_open = true;
+    TuiModel model = model_with(snapshot);
+
+    const uint64_t id = press(model, TuiKey::Yes);
+    model.on_command_reply(id, timed_out(), 3000);
+    model.on_status(ok(snapshot), 3100);
+    EXPECT_EQ(model.screen(3100), TuiScreen::PairingConfirm);
+    EXPECT_EQ(model.confirm_text(), "The player did not confirm. Y to try again");
+    EXPECT_FALSE(model.request_for(TuiKey::No).has_value());
+
+    const uint64_t retry = press(model, TuiKey::Yes);
+    model.on_command_reply(retry, ok(snapshot), 3200);
+    EXPECT_EQ(model.confirm_text(), "Allowed -- waiting for the server...");
+}
+
+TEST(TuiModel, AReplyForAnEndedAttemptIsNotLatched) {
+    StatusSnapshot snapshot = attached_snapshot();
+    snapshot.pairing_server_id = SERVER_ID;
+    snapshot.pairing_window_open = true;
+    TuiModel model = model_with(snapshot);
+
+    const uint64_t id = press(model, TuiKey::Yes);
+    snapshot.pairing_server_id.clear();
+    snapshot.pairing_window_open = false;
+    snapshot.last_pairing = {1, SERVER_ID, PairingOutcome::Abandoned, ""};
+    model.on_status(ok(snapshot), 100);
+    model.on_command_reply(id, ok(snapshot), 200);
+
+    snapshot.pairing_server_id = SERVER_ID;
+    snapshot.pairing_window_open = true;
+    model.on_status(ok(snapshot), 5000);
+    EXPECT_EQ(model.confirm_text(), "A server wants to pair. Y to allow, N to refuse");
+}
+
+TEST(TuiModel, ARestartSeenWhileAttachedResetsThePairingBaseline) {
+    StatusSnapshot snapshot = attached_snapshot();
+    snapshot.client_id = "client-a";
+    snapshot.last_pairing = {5, SERVER_ID, PairingOutcome::Paired, ""};
+    TuiModel model = model_with(snapshot, 0);
+
+    // Restarted between two polls: its counter starts over.
+    snapshot.last_pairing = {};
+    model.on_status(ok(snapshot), 1000);
+    EXPECT_EQ(model.screen(1000), TuiScreen::Main);
+
+    snapshot.last_pairing = {1, SERVER_ID, PairingOutcome::Failed, "timed out"};
+    model.on_status(ok(snapshot), 2000);
+    EXPECT_EQ(model.screen(2000), TuiScreen::PairingOutcome);
+
+    // Another player on the same socket: its history is not news.
+    snapshot.client_id = "client-b";
+    snapshot.last_pairing = {7, SERVER_ID, PairingOutcome::Paired, ""};
+    model.on_status(ok(snapshot), 6000);
+    EXPECT_EQ(model.screen(6000), TuiScreen::Main);
 }
 
 TEST(TuiModel, TheTokenIsFetchedOnceWhileShown) {

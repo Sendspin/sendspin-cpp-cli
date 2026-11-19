@@ -278,6 +278,7 @@ ControlExchange exchange_control_request(const ControlRequest& request, const st
         return result;
     }
 
+    result.answered = true;
     result.status = status;
     result.reason = reason;
     if (status != ControlStatus::Ok) {

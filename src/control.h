@@ -367,6 +367,8 @@ struct ControlExchange {
     std::string payload;  ///< what followed `ok`
     /// NoDaemon because the socket refused this user, not because none is running.
     bool denied{false};
+    /// The player replied, so `status` is its verdict; otherwise a Failed request may have landed.
+    bool answered{false};
 };
 
 /// One request, one reply, no printing. Safe to call from any one thread at a time.

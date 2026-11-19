@@ -15,6 +15,8 @@
 #include "tui_model.h"
 
 #include <algorithm>
+#include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <utility>
 
@@ -23,6 +25,10 @@ namespace {
 
 /// How long a pairing outcome or a notice stays on screen.
 constexpr int64_t MESSAGE_MS = 3000;
+
+/// How long an answered target outlives polls that do not show it yet: group changes wait on
+/// the server's echo.
+constexpr int64_t PENDING_GRACE_MS = 2000;
 
 constexpr int VOLUME_STEP = 5;
 constexpr int DELAY_STEP_MS = 10;
@@ -57,20 +63,43 @@ uint16_t step_delay(uint16_t delay_ms, int step) {
         std::clamp(static_cast<int>(delay_ms) + step, 0, static_cast<int>(MAX_OUTPUT_DELAY_MS)));
 }
 
-/// Cycles as the Python TUI does: off, all, one.
-sendspin::SendspinRepeatMode next_repeat(const std::string& repeat) {
-    if (repeat == "all") {
-        return sendspin::SendspinRepeatMode::ONE;
+/// Repeat modes in the order the key cycles them, as the Python TUI does.
+constexpr const char* REPEAT_WORDS[] = {"off", "all", "one"};
+constexpr sendspin::SendspinRepeatMode REPEAT_MODES[] = {sendspin::SendspinRepeatMode::OFF,
+                                                         sendspin::SendspinRepeatMode::ALL,
+                                                         sendspin::SendspinRepeatMode::ONE};
+constexpr int REPEAT_COUNT = 3;
+
+int repeat_index(const std::string& word) {
+    for (int i = 0; i < REPEAT_COUNT; i++) {
+        if (word == REPEAT_WORDS[i]) {
+            return i;
+        }
     }
-    if (repeat == "one") {
-        return sendspin::SendspinRepeatMode::OFF;
+    return 0;
+}
+
+int repeat_index(sendspin::SendspinRepeatMode mode) {
+    for (int i = 0; i < REPEAT_COUNT; i++) {
+        if (mode == REPEAT_MODES[i]) {
+            return i;
+        }
     }
-    return sendspin::SendspinRepeatMode::ALL;
+    return 0;
 }
 
 /// `status_state` says `playing (speed N/1000)` away from 1x; that is playing too.
 bool is_playing(const PlayerView& view) {
     return view.state.rfind("playing", 0) == 0;
+}
+
+/// Per-mille playback speed while playing: 1000 unless the state names another.
+int64_t playing_speed(const PlayerView& view) {
+    constexpr const char* PREFIX = "playing (speed ";
+    if (view.state.rfind(PREFIX, 0) != 0) {
+        return 1000;
+    }
+    return std::strtoll(view.state.c_str() + std::strlen(PREFIX), nullptr, 10);
 }
 
 ControlRequest make_request(ControlCommand command) {
@@ -132,11 +161,11 @@ void TuiModel::on_status(const ControlExchange& reply, int64_t now_ms) {
         this->pairing_name_seen_ = view.server_name;
     }
 
-    // Back on the same player, whose counter went on: what ended while away is still news.
-    const bool resumed =
-        this->link_ == Link::Attached ||
-        (!this->attached_client_id_.empty() && view.client_id == this->attached_client_id_ &&
-         view.last_pairing_attempt >= this->pairing_baseline_);
+    // Still the same player, whose counter went on: what ended meanwhile is news. A new client id
+    // or a lower counter is a restart, attached or not.
+    const bool resumed = (this->link_ == Link::Attached || !this->attached_client_id_.empty()) &&
+                         view.client_id == this->attached_client_id_ &&
+                         view.last_pairing_attempt >= this->pairing_baseline_;
     if (!resumed) {
         // Whatever ended before this attach is history, not news.
         this->pairing_baseline_ = view.last_pairing_attempt;
@@ -151,20 +180,51 @@ void TuiModel::on_status(const ControlExchange& reply, int64_t now_ms) {
         this->outcome_since_ms_ = now_ms;
         this->outcome_text_ = outcome_text_for(view, name);
     }
-    // The window stays open until the attempt concludes, so the allow holds until then.
-    if (this->allowed_after_.has_value() &&
-        (!view.pairing_window || view.pairing_server_id.empty() ||
-         view.last_pairing_attempt != *this->allowed_after_)) {
-        this->allowed_after_.reset();
+    // The window stays open until the attempt concludes, so the answer holds until then.
+    if (this->consent_ != Consent::Ask && (!view.pairing_window || view.pairing_server_id.empty() ||
+                                           view.last_pairing_attempt != this->consent_attempt_)) {
+        this->consent_ = Consent::Ask;
     }
     this->link_ = Link::Attached;
     this->attached_client_id_ = view.client_id;
     this->no_player_reason_.clear();
-    this->view_ = std::move(view);
+    this->reported_ = std::move(view);
     this->received_ms_ = now_ms;
+    for (size_t control = 0; control < COUNT; control++) {
+        std::optional<Pending>& pending = this->pending_[control];
+        if (pending.has_value() &&
+            (value_of_(this->reported_, static_cast<Control>(control)) == pending->value ||
+             (pending->acked_ms.has_value() && now_ms - *pending->acked_ms >= PENDING_GRACE_MS))) {
+            pending.reset();
+        }
+    }
+    this->overlay_();
 }
 
-void TuiModel::on_command_reply(const ControlExchange& reply, int64_t now_ms) {
+void TuiModel::on_command_reply(uint64_t id, const ControlExchange& reply, int64_t now_ms) {
+    for (std::optional<Pending>& pending : this->pending_) {
+        if (pending.has_value() && pending->id == id) {
+            if (reply.status == ControlStatus::Ok) {
+                pending->acked_ms = now_ms;
+            } else {
+                pending.reset();
+            }
+        }
+    }
+    this->overlay_();
+
+    if (this->consent_ == Consent::Sending && id == this->consent_id_) {
+        if (reply.status == ControlStatus::Ok) {
+            this->consent_ = this->consent_allows_ ? Consent::Allowed : Consent::Ask;
+        } else if (this->consent_allows_ && !reply.answered &&
+                   reply.status != ControlStatus::NoDaemon) {
+            // It may have landed: `y` again is harmless, while `n` could cancel an allowed attempt.
+            this->consent_ = Consent::Retry;
+        } else {
+            this->consent_ = Consent::Ask;
+        }
+    }
+
     switch (reply.status) {
         case ControlStatus::Ok:
             return;
@@ -253,9 +313,10 @@ std::optional<ControlRequest> TuiModel::request_for(TuiKey key) const {
             return request;
         case TuiKey::Yes:
         case TuiKey::No:
-            // Asked only on PairingConfirm, and only until the user has allowed the attempt.
+            // Asked only on PairingConfirm, and only while no answer stands or is in flight.
             if (!view.pairing_window || !view.pairing_code.empty() ||
-                this->allowed_after_.has_value()) {
+                !(this->consent_ == Consent::Ask ||
+                  (this->consent_ == Consent::Retry && key == TuiKey::Yes))) {
                 return std::nullopt;
             }
             request.command = ControlCommand::Pair;
@@ -285,7 +346,7 @@ std::optional<ControlRequest> TuiModel::request_for(TuiKey key) const {
             return request;
         case TuiKey::Repeat:
             request.command = ControlCommand::Repeat;
-            request.repeat = next_repeat(view.repeat);
+            request.repeat = REPEAT_MODES[(repeat_index(view.repeat) + 1) % REPEAT_COUNT];
             return request;
         case TuiKey::Shuffle:
             request.command = ControlCommand::Shuffle;
@@ -296,10 +357,45 @@ std::optional<ControlRequest> TuiModel::request_for(TuiKey key) const {
     }
 }
 
-void TuiModel::note_sent(const ControlRequest& request) {
-    if (request.command == ControlCommand::Pair && request.confirm == std::optional<bool>(true)) {
-        this->allowed_after_ = this->view_.last_pairing_attempt;
+uint64_t TuiModel::note_sent(const ControlRequest& request) {
+    const uint64_t id = ++this->last_id_;
+    std::optional<std::pair<Control, int>> target;
+    switch (request.command) {
+        case ControlCommand::Pair:
+            this->consent_ = Consent::Sending;
+            this->consent_allows_ = request.confirm == std::optional<bool>(true);
+            this->consent_id_ = id;
+            this->consent_attempt_ = this->reported_.last_pairing_attempt;
+            break;
+        case ControlCommand::PlayerVolume:
+            target = {PlayerVolume, request.volume.value_or(0)};
+            break;
+        case ControlCommand::PlayerMute:
+            target = {PlayerMute, request.flag.value_or(false) ? 1 : 0};
+            break;
+        case ControlCommand::Delay:
+            target = {Delay, request.delay_ms.value_or(0)};
+            break;
+        case ControlCommand::Volume:
+            target = {GroupVolume, request.volume.value_or(0)};
+            break;
+        case ControlCommand::Mute:
+            target = {GroupMute, request.flag.value_or(false) ? 1 : 0};
+            break;
+        case ControlCommand::Repeat:
+            target = {Repeat, repeat_index(request.repeat.value_or(REPEAT_MODES[0]))};
+            break;
+        case ControlCommand::Shuffle:
+            target = {Shuffle, request.flag.value_or(false) ? 1 : 0};
+            break;
+        default:
+            break;
     }
+    if (target.has_value()) {
+        this->pending_[target->first] = Pending{target->second, id, std::nullopt};
+        this->overlay_();
+    }
+    return id;
 }
 
 bool TuiModel::toggle_token(int64_t now_ms) {
@@ -332,8 +428,9 @@ std::optional<uint32_t> TuiModel::position_ms(int64_t now_ms) const {
     if (!position.has_value() || !is_playing(this->view_)) {
         return position;
     }
+    const int64_t elapsed = std::max<int64_t>(0, now_ms - this->received_ms_);
     const int64_t moved =
-        static_cast<int64_t>(*position) + std::max<int64_t>(0, now_ms - this->received_ms_);
+        static_cast<int64_t>(*position) + elapsed * playing_speed(this->view_) / 1000;
     // A duration of 0 is a live stream, with no end to stop at.
     const uint32_t duration = this->view_.duration_ms.value_or(0);
     const int64_t limit = duration != 0 ? duration : std::numeric_limits<uint32_t>::max();
@@ -349,8 +446,17 @@ std::string TuiModel::outcome_text() const {
 }
 
 std::string TuiModel::confirm_text() const {
-    return this->allowed_after_.has_value() ? "Allowed -- waiting for the server..."
-                                            : "A server wants to pair. Y to allow, N to refuse";
+    switch (this->consent_) {
+        case Consent::Sending:
+            return "Sending your answer...";
+        case Consent::Allowed:
+            return "Allowed -- waiting for the server...";
+        case Consent::Retry:
+            return "The player did not confirm. Y to try again";
+        case Consent::Ask:
+            break;
+    }
+    return "A server wants to pair. Y to allow, N to refuse";
 }
 
 std::string TuiModel::no_player_reason() const {
@@ -360,8 +466,69 @@ std::string TuiModel::no_player_reason() const {
 void TuiModel::detach_(Link link, const std::string& reason) {
     this->link_ = link;
     this->no_player_reason_ = reason;
-    this->view_ = PlayerView{};
-    this->allowed_after_.reset();
+    this->reported_ = PlayerView{};
+    this->pending_ = {};
+    this->overlay_();
+    this->consent_ = Consent::Ask;
+}
+
+int TuiModel::value_of_(const PlayerView& view, Control control) {
+    switch (control) {
+        case PlayerVolume:
+            return view.player_volume;
+        case PlayerMute:
+            return view.player_muted ? 1 : 0;
+        case Delay:
+            return view.output_delay_ms;
+        case GroupVolume:
+            return view.group_volume;
+        case GroupMute:
+            return view.group_muted ? 1 : 0;
+        case Repeat:
+            return repeat_index(view.repeat);
+        case Shuffle:
+            return view.shuffle ? 1 : 0;
+        case COUNT:
+            break;
+    }
+    return 0;
+}
+
+void TuiModel::set_value_(PlayerView& view, Control control, int value) {
+    switch (control) {
+        case PlayerVolume:
+            view.player_volume = static_cast<uint8_t>(value);
+            break;
+        case PlayerMute:
+            view.player_muted = value != 0;
+            break;
+        case Delay:
+            view.output_delay_ms = static_cast<uint16_t>(value);
+            break;
+        case GroupVolume:
+            view.group_volume = static_cast<uint8_t>(value);
+            break;
+        case GroupMute:
+            view.group_muted = value != 0;
+            break;
+        case Repeat:
+            view.repeat = REPEAT_WORDS[value];
+            break;
+        case Shuffle:
+            view.shuffle = value != 0;
+            break;
+        case COUNT:
+            break;
+    }
+}
+
+void TuiModel::overlay_() {
+    this->view_ = this->reported_;
+    for (size_t control = 0; control < COUNT; control++) {
+        if (this->pending_[control].has_value()) {
+            set_value_(this->view_, static_cast<Control>(control), this->pending_[control]->value);
+        }
+    }
 }
 
 std::vector<std::string> pairing_code_lines(const std::string& code, int width) {

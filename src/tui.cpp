@@ -106,9 +106,10 @@ public:
     Worker(const Worker&) = delete;
     Worker& operator=(const Worker&) = delete;
 
-    void send(const ControlRequest& request) {
+    /// @param id The model's id for it, handed back with the reply.
+    void send(uint64_t id, const ControlRequest& request) {
         const std::lock_guard<std::mutex> lock(this->mutex_);
-        this->requests_.push_back(request);
+        this->requests_.emplace_back(id, request);
         this->wake_.notify_one();
     }
 
@@ -161,21 +162,22 @@ private:
             if (this->stopping_) {
                 return;
             }
-            std::deque<ControlRequest> requests;
+            std::deque<std::pair<uint64_t, ControlRequest>> requests;
             requests.swap(this->requests_);
             const std::optional<uint64_t> token_press = std::exchange(this->token_press_, {});
             lock.unlock();
 
             // Checked before every exchange, so a quit waits out at most the one in flight.
-            for (const ControlRequest& request : requests) {
+            for (const auto& [id, request] : requests) {
                 if (this->stopping_) {
                     return;
                 }
                 const ControlExchange reply =
                     exchange_control_request(request, this->path_, this->absent_reason_);
                 const int64_t at = now_ms();
-                this->post_(
-                    [reply, at](TuiState& state) { state.model.on_command_reply(reply, at); });
+                this->post_([id, reply, at](TuiState& state) {
+                    state.model.on_command_reply(id, reply, at);
+                });
                 // Show what the key did now, not at the next poll.
                 next_poll = Clock::now();
             }
@@ -223,7 +225,7 @@ private:
     std::mutex mutex_;
     std::condition_variable wake_;
     std::condition_variable tick_wake_;  ///< apart from wake_, so a key never wakes the ticker
-    std::deque<ControlRequest> requests_;
+    std::deque<std::pair<uint64_t, ControlRequest>> requests_;
     std::optional<uint64_t> token_press_;
     /// Set under `mutex_` for the waits; atomic so run_() can check it between exchanges.
     std::atomic<bool> stopping_{false};
@@ -562,8 +564,7 @@ int run_tui(const std::string& path, const std::string& absent_reason) {
             return true;
         }
         if (const std::optional<ControlRequest> request = state.model.request_for(*key)) {
-            worker.send(*request);
-            state.model.note_sent(*request);
+            worker.send(state.model.note_sent(*request), *request);
         }
         return true;
     });
