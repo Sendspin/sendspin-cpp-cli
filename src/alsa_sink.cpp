@@ -530,7 +530,10 @@ bool AlsaAudioSink::configure(uint32_t sample_rate, uint8_t channels, uint8_t bi
 
     if (this->pcm_ != nullptr && this->rate_ == sample_rate && this->channels_ == channels &&
         this->bits_ == bits_per_sample) {
-        if (this->keep_alive_s_.load() != 0) {
+        const snd_pcm_state_t state = snd_pcm_state(this->pcm_);
+        const bool keepable = state == SND_PCM_STATE_RUNNING || state == SND_PCM_STATE_PREPARED ||
+                              state == SND_PCM_STATE_XRUN;
+        if (this->keep_alive_s_.load() != 0 && keepable) {
             // Keep-alive: flush without stopping, so the receiver keeps its lock.
             this->flush_keeping_alive_();
             cli_log(LogLevel::DEBUG, "alsa: reusing '%s' at %u Hz, %u ch, %u-bit (kept running)",
