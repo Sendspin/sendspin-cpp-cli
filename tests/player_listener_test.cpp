@@ -274,6 +274,26 @@ TEST(PlayerListener, ANewFormatReopensOnlyOnceTheOldAudioHasPlayed) {
     EXPECT_EQ(harness.listener.stream_format()->sample_rate, 96000U);
 }
 
+TEST(PlayerListener, AFinishTimeFromAnEndedStreamDoesNotHoldUpTheNext) {
+    RecordingHarness harness;
+    harness.listener.on_stream_start();
+    const std::vector<uint8_t> audio = pcm(CD, 100);
+    harness.listener.on_audio_output(audio, CD, 0);
+    harness.listener.poll(0);
+    harness.listener.on_audio_output(audio, CD, 0);
+    harness.sink.on_frames_played(100, 2'000'000);
+    harness.listener.on_stream_end();
+
+    harness.listener.on_stream_start();
+    harness.listener.on_audio_output(audio, CD, 0);
+    harness.listener.poll(1000);
+    harness.listener.on_audio_output(audio, HI_RES, 0);
+    harness.log.clear();
+    harness.listener.poll(2000);
+
+    EXPECT_EQ(harness.log, (std::vector<std::string>{"configure 96000/2/24"}));
+}
+
 TEST(PlayerListener, ASinkThatNeverReportsIsReopenedAfterATimeout) {
     RecordingHarness harness;
     harness.listener.on_stream_start();

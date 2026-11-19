@@ -155,6 +155,8 @@ void PlayerListener::reset_format() {
     this->stream_format_.reset();
     this->written_frames_.store(0, std::memory_order_relaxed);
     this->played_frames_.store(0, std::memory_order_relaxed);
+    // The sink is cleared next, so its last finish time no longer means anything.
+    this->playout_end_us_.store(0, std::memory_order_relaxed);
 }
 
 void PlayerListener::on_stream_start() {
