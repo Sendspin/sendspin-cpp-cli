@@ -268,6 +268,10 @@ pairing. It is off by default, and the player says so once at startup:
 I cli: A server must pair with this player before it can play -- pass --allow-unpaired to let any server play
 ```
 
+The Linux and Windows get-started scripts ask, defaulting to yes, and an unattended fresh
+install turns it on. To require pairing again, set `allow-unpaired = false` in the config and
+restart the player.
+
 ### Pairing from another system
 
 The pairing token is for a system that pairs the player on your behalf, such as a script or

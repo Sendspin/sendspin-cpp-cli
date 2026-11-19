@@ -38,8 +38,8 @@
 # Latency added after the audio port, 0-5000 ms. A first-run default: a remembered delay wins.
 #output-delay = 0
 
-# Let a server play without pairing with this player first. Off by default: an unpaired
-# server can connect but not play.
+# Let a server play without pairing with this player first. Off by default, though the
+# get-started scripts turn it on unless told not to: an unpaired server can connect but not play.
 #allow-unpaired = true
 
 # Play at full volume, unmuted, and let the server set neither: for an output whose level is

@@ -22,7 +22,8 @@ bash get_started_linux.sh
 ```
 
 Both behave the same. It installs the release for this machine's architecture, asks for a
-player name and an output device, writes them to the config, and starts the service. Piped
+player name, an output device, and whether any server may play without pairing first, writes
+them to the config, and starts the service. Piped
 into `bash`, its questions are still asked on your terminal. It does not run anything as
 root without printing the exact commands first and waiting for you to say yes:
 
@@ -41,16 +42,22 @@ Run them? [y/N]
 ```
 
 The config it installs is composed in the temporary directory from the annotated example
-plus your two answers, and the lines it sets are printed again just before it is copied.
+plus your answers, and the lines it sets are printed again just before it is copied.
+
+The last question, `Let any server on your network play here without pairing first? [Y/n]`,
+defaults to yes and writes `allow-unpaired = true`. Answer `n` to require each server to
+[pair](Pairing-a-Player) first. None of the three is asked again once the config sets it, so
+running the script again to upgrade leaves them alone.
 
 | Flag | What it does |
 |---|---|
 | `--version v0.3.0` | Install that release instead of the newest. |
 | `--name <name>` | The player's name, instead of being asked. |
 | `--output <device>` | The output device, instead of being asked. |
+| `--allow-unpaired` / `--no-allow-unpaired` | Let any server play without pairing, or require pairing, instead of being asked. |
 | `--user-service` | Run as you rather than as the `sendspin-cli` account — see [below](#as-a-system-service-or-as-you). |
 | `--system-service` | The default; also switches a user-service install back. |
-| `--yes` | Ask nothing: run the root commands as printed, and take the name and output only from the flags. |
+| `--yes` | Ask nothing: run the root commands as printed, and take the name and output only from the flags. On a fresh install it also writes `allow-unpaired = true` unless `--no-allow-unpaired` is passed. |
 
 Piped, flags go after `bash -s --`:
 
