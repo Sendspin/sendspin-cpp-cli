@@ -335,7 +335,7 @@ ftxui::Element volume_panel(const PlayerView& view) {
                   ftxui::filler(), hint("up/dn player  m mute"), hint("[/] group     M mute")});
 }
 
-ftxui::Element progress_panel(const TuiModel& model, int64_t now) {
+ftxui::Element progress_line(const TuiModel& model, int64_t now) {
     const std::optional<uint32_t> position = model.position_ms(now);
     const std::optional<uint32_t> duration = model.view().duration_ms;
     float fraction = 0.0F;
@@ -347,8 +347,11 @@ ftxui::Element progress_panel(const TuiModel& model, int64_t now) {
     } else if (duration.has_value()) {
         label += " (live)";
     }
-    return panel("Progress",
-                 {ftxui::hbox({ftxui::gauge(fraction) | ftxui::flex, ftxui::text("  " + label)})});
+    return ftxui::hbox({ftxui::gauge(fraction) | ftxui::xflex, ftxui::text("  " + label)});
+}
+
+ftxui::Element progress_panel(const TuiModel& model, int64_t now) {
+    return panel("Progress", {progress_line(model, now)});
 }
 
 ftxui::Element playback_panel(const PlayerView& view) {
@@ -397,7 +400,27 @@ ftxui::Element server_panel(const PlayerView& view) {
     return panel("Server", std::move(lines));
 }
 
-ftxui::Element footer(const TuiState& state, int64_t now) {
+/// Now playing, volumes, progress and playback in one panel, for terminals too short for the rest.
+ftxui::Element compact_panel(const TuiModel& model, int64_t now) {
+    const PlayerView& view = model.view();
+    const bool known = view.group_state_known;
+    ftxui::Elements lines;
+    if (view.title.empty() && view.artist.empty()) {
+        lines.push_back(ftxui::text("Press <space> to play"));
+    } else {
+        lines.push_back(ftxui::text(or_unknown(view.title)) | ftxui::bold);
+        lines.push_back(ftxui::text(or_unknown(view.artist)));
+    }
+    lines.push_back(progress_line(model, now));
+    lines.push_back(ftxui::text("Player: " + format_volume(view.player_volume, view.player_muted)));
+    lines.push_back(ftxui::text(
+        "Group:  " + (known ? format_volume(view.group_volume, view.group_muted) : "--")));
+    lines.push_back(ftxui::text("Repeat: " + (known ? or_unknown(view.repeat) : "--") +
+                                "  Shuffle: " + (known ? (view.shuffle ? "on" : "off") : "--")));
+    return panel("Now Playing", std::move(lines));
+}
+
+ftxui::Element footer(const TuiState& state, int64_t now, int width) {
     ftxui::Elements left;
     const std::string notice = state.model.notice(now);
     if (!notice.empty()) {
@@ -411,31 +434,52 @@ ftxui::Element footer(const TuiState& state, int64_t now) {
                                                               : "unavailable";
         left.push_back(ftxui::text("Pairing token: " + shown));
     }
-    return ftxui::hbox(
-        {ftxui::vbox(std::move(left)) | ftxui::flex, hint("p pairing token  q quit")});
+    ftxui::Element hints = hint("p pairing token  q quit");
+    if (width < WIDE_COLUMNS) {
+        // Its own row, so a notice keeps the width.
+        left.push_back(std::move(hints) | ftxui::align_right);
+        return ftxui::vbox(std::move(left));
+    }
+    return ftxui::hbox({ftxui::vbox(std::move(left)) | ftxui::flex, std::move(hints)});
 }
 
-ftxui::Element main_screen(const TuiState& state, int64_t now, int width) {
+ftxui::Element main_screen(const TuiState& state, int64_t now, int width, int height) {
     const TuiModel& model = state.model;
     const PlayerView& view = model.view();
+    ftxui::Element panels;
     if (width < WIDE_COLUMNS) {
-        // Clipped from the top when short, rather than every panel squashed empty.
-        return ftxui::vbox({now_playing_panel(model), volume_panel(view),
-                            progress_panel(model, now), playback_panel(view), stream_panel(view),
-                            server_panel(view), footer(state, now)}) |
-               ftxui::yframe;
+        panels =
+            ftxui::vbox({now_playing_panel(model), volume_panel(view), progress_panel(model, now),
+                         playback_panel(view), stream_panel(view), server_panel(view)});
+    } else {
+        panels = ftxui::vbox({
+            ftxui::hbox(
+                {now_playing_panel(model) | ftxui::flex,
+                 volume_panel(view) | ftxui::size(ftxui::WIDTH, ftxui::EQUAL, VOLUME_PANEL_WIDTH)}),
+            progress_panel(model, now),
+            // Fixed thirds: flex would hand the Server panel's paragraph the whole row.
+            ftxui::hbox({playback_panel(view) | ftxui::size(ftxui::WIDTH, ftxui::EQUAL, width / 3),
+                         stream_panel(view) | ftxui::size(ftxui::WIDTH, ftxui::EQUAL, width / 3),
+                         server_panel(view) | ftxui::flex}),
+        });
     }
-    return ftxui::vbox({
-        ftxui::hbox(
-            {now_playing_panel(model) | ftxui::flex,
-             volume_panel(view) | ftxui::size(ftxui::WIDTH, ftxui::EQUAL, VOLUME_PANEL_WIDTH)}),
-        progress_panel(model, now),
-        // Fixed thirds: flex would hand the Server panel's paragraph the whole row.
-        ftxui::hbox({playback_panel(view) | ftxui::size(ftxui::WIDTH, ftxui::EQUAL, width / 3),
-                     stream_panel(view) | ftxui::size(ftxui::WIDTH, ftxui::EQUAL, width / 3),
-                     server_panel(view) | ftxui::flex}),
-        footer(state, now),
-    });
+    ftxui::Element bottom = footer(state, now, width);
+    bottom->ComputeRequirement();
+    const int room = height - bottom->requirement().min_y;
+    const auto fits = [room](const ftxui::Element& element) {
+        element->ComputeRequirement();
+        return element->requirement().min_y <= room;
+    };
+    if (!fits(panels)) {
+        panels = compact_panel(model, now);
+    }
+    // The footer is never clipped; on a terminal too short even for the compact panel, the
+    // panel is.
+    if (!fits(panels)) {
+        panels =
+            panels | ftxui::yframe | ftxui::size(ftxui::HEIGHT, ftxui::EQUAL, std::max(room, 0));
+    }
+    return ftxui::vbox({std::move(panels), std::move(bottom)});
 }
 
 /// Fills the terminal with `lines`, centred, so a pairing cannot be missed.
@@ -507,7 +551,7 @@ ftxui::Element render(const TuiState& state, const std::string& path) {
                 {model.no_player_reason(),
                  "It has no status-kv. Restart it on this version of sendspin-cli."});
         case TuiScreen::Main:
-            return main_screen(state, now, size.dimx);
+            return main_screen(state, now, size.dimx, size.dimy);
         case TuiScreen::PairingCode:
             return pairing_code_screen(model.view(), size.dimx, size.dimy);
         case TuiScreen::PairingConfirm:
