@@ -217,8 +217,11 @@ public:
     PairingServer(const PairingServer&) = delete;
     PairingServer& operator=(const PairingServer&) = delete;
 
-    /// Call before start().
-    void set_handler(Handler handler) {
+    using Admit = std::function<bool(const std::string& remote_ip)>;
+
+    /// Call before start(). A peer `admit` refuses gets 403 before any of its request is read.
+    void set_handler(Admit admit, Handler handler) {
+        this->admit_ = std::move(admit);
         this->handler_ = std::move(handler);
     }
 
@@ -248,6 +251,12 @@ private:
 
     void handleConnection(std::unique_ptr<ix::Socket> socket,
                           std::shared_ptr<ix::ConnectionState> state) override {
+        if (!this->admit_(state->getRemoteIp())) {
+            send_reply(PairingReply{403, "forbidden"}, socket);
+            state->setTerminated();
+            return;
+        }
+
         // Byte by byte to the blank line, so neither a long head nor a body is ever buffered.
         const ix::CancellationRequest deadline =
             ix::makeCancellationRequestWithTimeout(TIMEOUT_SECS, this->cancel_);
@@ -274,15 +283,19 @@ private:
             reply = PairingReply{431, "request header fields too large"};
         }
         if (reply.has_value()) {
-            ix::WebSocketHttpHeaders headers;
-            headers["Content-Type"] = "text/plain";
-            headers["Cache-Control"] = "no-store";
-            ix::Http::sendResponse(std::make_shared<ix::HttpResponse>(
-                                       reply->status, reply->status == 200 ? "OK" : "Error",
-                                       ix::HttpErrorCode::Ok, headers, reply->body),
-                                   socket);
+            send_reply(*reply, socket);
         }
         state->setTerminated();
+    }
+
+    static void send_reply(const PairingReply& reply, std::unique_ptr<ix::Socket>& socket) {
+        ix::WebSocketHttpHeaders headers;
+        headers["Content-Type"] = "text/plain";
+        headers["Cache-Control"] = "no-store";
+        ix::Http::sendResponse(
+            std::make_shared<ix::HttpResponse>(reply.status, reply.status == 200 ? "OK" : "Error",
+                                               ix::HttpErrorCode::Ok, headers, reply.body),
+            socket);
     }
 
     size_t getConnectedClientsCount() override {
@@ -291,6 +304,7 @@ private:
 
     std::shared_ptr<std::atomic<size_t>> live_ = std::make_shared<std::atomic<size_t>>(0);
     std::atomic<bool> cancel_{false};
+    Admit admit_;
     Handler handler_;
 };
 
@@ -535,14 +549,19 @@ void PairingEndpoint::start(const std::string& token) {
         return;
     }
     this->server_->set_handler(
-        [token, address = this->host_, port = this->port_, subnet = this->subnet_](
+        // A peer off the address's own subnet came in through a route, from somewhere else.
+        [subnet = this->subnet_](const std::string& remote_ip) {
+            const bool admitted = subnet_contains(subnet, remote_ip);
+            if (!admitted) {
+                log_line(sendspin::LogLevel::DEBUG, LOG_TAG,
+                         "Pairing token endpoint refused %s: not on its subnet", remote_ip.c_str());
+            }
+            return admitted;
+        },
+        [token, address = this->host_, port = this->port_](
             const std::string& method, const std::string& uri, const std::string& host,
             const std::string& remote_ip) {
-            // A peer off the address's own subnet came in through a route, from somewhere else.
-            const PairingReply reply =
-                subnet_contains(subnet, remote_ip)
-                    ? pairing_token_reply(method, uri, host, address, port, token)
-                    : PairingReply{403, "forbidden"};
+            const PairingReply reply = pairing_token_reply(method, uri, host, address, port, token);
             // The URI and Host are the caller's text, so they stay out of the log.
             log_line(sendspin::LogLevel::DEBUG, LOG_TAG,
                      "Pairing token endpoint answered %s with %d", remote_ip.c_str(), reply.status);

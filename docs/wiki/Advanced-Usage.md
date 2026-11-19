@@ -329,12 +329,13 @@ How it stays local:
   server's host can reach, never the LAN address. The port must be 1024–65535, the range
   Music Assistant fetches from.
 - **It answers only that address's own subnet.** The player looks up the network interface
-  that holds the address and refuses, with `403`, any peer outside its subnet:
+  that holds the address and refuses, with `403` and before reading its request, any peer outside its subnet:
   `172.30.32.0/23` for Home Assistant OS's `172.30.32.1`, `127.0.0.0/8` for `127.0.0.1`. A
   machine on the LAN that routes packets to the address is refused.
-- **It serves only until a server pairs.** Once a pairing record exists the endpoint closes,
-  and a player that is already paired at startup neither listens nor advertises the role. To
-  pair a further server, use `sendspin-cli pair-token`.
+- **It serves only until a server pairs.** Once a server pairs the endpoint closes, even if
+  the pairing record could not be saved, and a player that is already paired at startup
+  neither listens nor advertises the role. To pair a further server, use
+  `sendspin-cli pair-token`.
 - **Anything on that subnet can pair while it serves.** On Home Assistant OS that is every app
   on the hassio network; on a loopback address it is every process on the host, other users'
   included, which `pair-token`'s owner-only control socket would not allow. Turn the option on

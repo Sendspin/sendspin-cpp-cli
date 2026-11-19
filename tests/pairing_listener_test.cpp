@@ -78,6 +78,19 @@ TEST(PairingListener, AnOutcomeEndsTheAttempt) {
     EXPECT_EQ(listener.server_id(), "");
 }
 
+TEST(PairingListener, RemembersThatAServerPairedThroughLaterAttempts) {
+    PairingListener listener;
+    EXPECT_FALSE(listener.has_paired());
+    listener.on_pairing_attempt(SERVER);
+    listener.on_pairing_aborted(SERVER, sendspin::SendspinPairAbortReason::USER_CANCELLED);
+    EXPECT_FALSE(listener.has_paired());
+
+    listener.on_paired(SERVER);
+    listener.on_pairing_attempt(OTHER_SERVER);
+    listener.on_pairing_aborted(OTHER_SERVER, sendspin::SendspinPairAbortReason::USER_CANCELLED);
+    EXPECT_TRUE(listener.has_paired());
+}
+
 TEST(PairingListener, AWithdrawnPromptEndsTheAttempt) {
     // How an attempt that showed a code or a window ends when the server cancels it.
     PairingListener listener;

@@ -60,6 +60,11 @@ public:
         return this->window_open_;
     }
 
+    /// Whether a server has paired during this run, whether or not its record was saved.
+    bool has_paired() const {
+        return this->has_paired_;
+    }
+
 private:
     void forget_attempt();
 
@@ -72,6 +77,7 @@ private:
     bool attempt_prompted_{false};
     std::string code_;
     bool window_open_{false};
+    bool has_paired_{false};
 };
 
 }  // namespace sendspin_cli

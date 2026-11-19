@@ -1033,9 +1033,11 @@ int main(int argc, char* argv[]) {
         const bool paired = client.is_paired();
         pairing_listener.tick(client.is_connected(), paired, now_ms);
         // Once a server has paired, the token has done its job.
-        if (pairing_endpoint && now_ms >= next_pairing_record_check_ms) {
+        // The latch covers a pairing whose record failed to save; the library still holds it.
+        if (pairing_endpoint &&
+            (pairing_listener.has_paired() || now_ms >= next_pairing_record_check_ms)) {
             next_pairing_record_check_ms = now_ms + PAIRING_RECORD_CHECK_MS;
-            if (state_store.has_pairing_record()) {
+            if (pairing_listener.has_paired() || state_store.has_pairing_record()) {
                 pairing_endpoint->stop();
                 pairing_endpoint.reset();
                 log_line(LogLevel::INFO, LOG_TAG,

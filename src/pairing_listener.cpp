@@ -86,6 +86,7 @@ void PairingListener::on_pairing_attempt(std::string_view server_id) {
 
 void PairingListener::on_paired(std::string_view server_id) {
     this->forget_attempt();
+    this->has_paired_ = true;
     log_line(LogLevel::INFO, LOG_TAG, "Paired with server %.*s", static_cast<int>(server_id.size()),
              server_id.data());
 }
