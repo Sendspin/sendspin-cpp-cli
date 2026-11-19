@@ -97,7 +97,7 @@ public:
     /// Releases the device. Called once, during shutdown.
     virtual void stop() {}
 
-    /// True when the last configure() failed because another process holds the device.
+    /// True when the last open attempt found the device held by another process.
     virtual bool device_busy() const {
         return false;
     }
