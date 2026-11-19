@@ -130,7 +130,7 @@ private:
     struct OpenFormat {
         sendspin::AudioFormat format;
         bool refused{false};
-        /// Refused because the device was busy; the sink may reopen it mid-stream.
+        /// Refused because the device was busy, until poll() sees the sink reopen it.
         bool busy{false};
     };
 

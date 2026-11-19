@@ -437,6 +437,7 @@ bool AlsaAudioSink::open_device_(uint32_t sample_rate, uint8_t channels, uint8_t
     this->bytes_per_frame_ =
         static_cast<size_t>(channels) * (static_cast<size_t>(bits_per_sample) / 8U);
     this->failed_.store(false);
+    this->open_.store(true);
 
     cli_log(LogLevel::INFO,
             "alsa: '%s' open at %u Hz, %u ch, %u-bit (%zu bytes/frame, %lu-frame ring, "
@@ -452,6 +453,7 @@ void AlsaAudioSink::close_device_() {
     }
     snd_pcm_close(this->pcm_);
     this->pcm_ = nullptr;
+    this->open_.store(false);
     this->rate_ = 0;
     this->channels_ = 0;
     this->bits_ = 0;
@@ -769,6 +771,10 @@ void AlsaAudioSink::release() {
 
 bool AlsaAudioSink::device_busy() const {
     return this->busy_.load();
+}
+
+bool AlsaAudioSink::device_open() const {
+    return this->open_.load();
 }
 
 void AlsaAudioSink::stop() {

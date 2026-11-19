@@ -102,6 +102,11 @@ public:
         return false;
     }
 
+    /// True while the device is open; read after a busy refusal to see that a rescan got it back.
+    virtual bool device_open() const {
+        return false;
+    }
+
     /// Applies playback volume, 0-100.
     virtual void set_volume(uint8_t /*volume*/) {}
 

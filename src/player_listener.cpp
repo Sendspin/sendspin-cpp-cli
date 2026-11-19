@@ -60,8 +60,7 @@ size_t PlayerListener::on_audio_output(std::span<const uint8_t> pcm,
         }
         // The open format is wanted again, e.g. after a stream/clear, so a pending switch is stale.
         this->requested_.reset();
-        // Once a busy device is reopened, its writes play rather than discard.
-        refused = this->open_->refused && (!this->open_->busy || this->sink_.device_busy());
+        refused = this->open_->refused;
     }
 
     // Still handed to the sink when refused: its write() discards, reports, and retries the open.
@@ -80,6 +79,22 @@ void PlayerListener::poll(int64_t now_us) {
     sendspin::AudioFormat wanted;
     bool holds_audio = false;
     bool refused = false;
+    std::optional<sendspin::AudioFormat> recovered;
+    {
+        const std::lock_guard<std::mutex> lock(this->format_mutex_);
+        // The sink's rescan got a busy device back: its writes play from here on.
+        if (this->open_.has_value() && this->open_->busy && this->sink_.device_open()) {
+            this->open_->refused = false;
+            this->open_->busy = false;
+            recovered = this->open_->format;
+        }
+    }
+    if (recovered.has_value()) {
+        this->stream_format_ =
+            StreamFormat{recovered->sample_rate, recovered->channels, recovered->bits_per_sample};
+        cli_log(LogLevel::INFO, "Output device '%s' is free -- playing",
+                this->sink_.name().c_str());
+    }
     {
         const std::lock_guard<std::mutex> lock(this->format_mutex_);
         if (!this->requested_.has_value()) {

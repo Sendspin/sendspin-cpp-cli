@@ -82,11 +82,16 @@ public:
     bool device_busy() const override {
         return this->busy;
     }
+    bool device_open() const override {
+        return this->open;
+    }
 
     /// What configure() answers.
     bool accepts{true};
     /// What device_busy() answers.
     bool busy{false};
+    /// What device_open() answers.
+    bool open{false};
 
 private:
     std::vector<std::string>& log_;
@@ -472,12 +477,53 @@ TEST(PlayerListener, WritesAfterABusyDeviceComesBackAreNotCountedAsDiscarded) {
 
     // The sink's poll() reopened the device.
     harness.sink.busy = false;
+    harness.sink.open = true;
+    harness.listener.poll(1000);
     harness.listener.on_audio_output(audio, CD, 0);
 
     testing::internal::CaptureStderr();
     harness.listener.on_stream_end();
     const std::string logged = testing::internal::GetCapturedStderr();
     EXPECT_NE(logged.find("Stream ended: 40 bytes discarded"), std::string::npos) << logged;
+}
+
+TEST(PlayerListener, ABusyDeviceThatComesBackReportsItsFormat) {
+    RecordingHarness harness;
+    harness.sink.accepts = false;
+    harness.sink.busy = true;
+    harness.listener.on_stream_start();
+    const std::vector<uint8_t> audio = pcm(CD, 10);
+    harness.listener.on_audio_output(audio, CD, 0);
+    harness.listener.poll(0);
+    EXPECT_FALSE(harness.listener.stream_format().has_value());
+
+    harness.sink.busy = false;
+    harness.sink.open = true;
+    harness.listener.poll(1000);
+
+    ASSERT_TRUE(harness.listener.stream_format().has_value());
+    EXPECT_EQ(harness.listener.stream_format()->sample_rate, 44100U);
+}
+
+TEST(PlayerListener, ABusyDeviceThatFailsAnotherWayIsStillCountedAsDiscarding) {
+    RecordingHarness harness;
+    harness.sink.accepts = false;
+    harness.sink.busy = true;
+    harness.listener.on_stream_start();
+    const std::vector<uint8_t> audio = pcm(CD, 10);
+    harness.listener.on_audio_output(audio, CD, 0);
+    harness.listener.poll(0);
+
+    // A rescan failed with something other than EBUSY: no longer busy, but not open either.
+    harness.sink.busy = false;
+    harness.listener.poll(1000);
+    harness.listener.on_audio_output(audio, CD, 0);
+
+    testing::internal::CaptureStderr();
+    harness.listener.on_stream_end();
+    const std::string logged = testing::internal::GetCapturedStderr();
+    EXPECT_NE(logged.find("Stream ended: 40 bytes discarded"), std::string::npos) << logged;
+    EXPECT_FALSE(harness.listener.stream_format().has_value());
 }
 
 TEST(PlayerListener, ARefusedFormatStillPointsAtTheDeviceList) {

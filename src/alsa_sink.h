@@ -58,6 +58,7 @@ public:
     void release() override;
     void stop() override;
     bool device_busy() const override;
+    bool device_open() const override;
     void set_volume(uint8_t volume) override;
     void set_muted(bool muted) override;
 
@@ -173,6 +174,8 @@ private:
     std::atomic<bool> failed_{false};
     /// The last open failed with -EBUSY; cleared by the next open that succeeds.
     std::atomic<bool> busy_{false};
+    /// Mirrors pcm_ != nullptr for readers without device_mutex_.
+    std::atomic<bool> open_{false};
 
     /// Guarded by device_mutex_, except SinkRecovery::pending().
     SinkRecovery recovery_;
