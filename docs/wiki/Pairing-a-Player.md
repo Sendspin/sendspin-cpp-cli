@@ -111,4 +111,5 @@ W cli: Pairing with server wn_sX1iDNhQ… failed: the pairing code did not match
   [Running as a Service](Running-as-a-Service).
 
 To let any server play without pairing at all, see
-[`--allow-unpaired`](Advanced-Usage#pairing-and-unpaired-access).
+[`--allow-unpaired`](Advanced-Usage#pairing-and-unpaired-access). The Linux and Windows
+get-started scripts turn it on unless you answer no.

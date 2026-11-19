@@ -30,7 +30,7 @@ It prints what it is about to do, as you, and waits for you to say yes:
 Go ahead? [y/N]
 ```
 
-Then it asks two things, the name a server shows for the player and what it plays through:
+Then it asks the name a server shows for the player and what it plays through:
 
 ```
 ==> What it plays through
@@ -43,12 +43,17 @@ Then it asks two things, the name a server shows for the player and what it play
 ```
 
 `0` follows Windows' default as you change it; a number pins that device, written to the
-config as `output = portaudio:directsound:<name>`. Neither is asked again once the config
-sets it, so running the script again to upgrade asks nothing.
+config as `output = portaudio:directsound:<name>`.
 
-`-Name kitchen` and `-Output "portaudio:directsound:Speakers (USB DAC)"` answer them up
-front. `-Yes` skips every prompt, and is required when there is no console to ask on; with it,
-only those two flags set anything. `-Version v0.5.0` installs a specific release instead of
+Last, `Let any server on your network play here without pairing first? [Y/n]` defaults to yes
+and writes `allow-unpaired = true`; answer `n` to require each server to
+[pair](Pairing-a-Player) first. None of the three is asked again once the config sets it, so
+running the script again to upgrade asks nothing.
+
+`-Name kitchen`, `-Output "portaudio:directsound:Speakers (USB DAC)"` and `-AllowUnpaired` or
+`-NoAllowUnpaired` answer them up front. `-Yes` skips every prompt, and is required when there
+is no console to ask on; with it, only those flags set anything, except that a fresh install
+also gets `allow-unpaired = true` unless `-NoAllowUnpaired` is passed. `-Version v0.5.0` installs a specific release instead of
 the newest. `-Firewall` adds the firewall rule without asking, though Windows still asks for
 administrator approval.
 
@@ -63,8 +68,8 @@ administrator approval.
    already running from there is stopped cleanly first, so running the script again upgrades
    it.
 5. **Copies the annotated example config** to `AppData\Roaming\sendspin-cli\config` if you
-   have none, then **asks for a name and an output** unless the config already sets an
-   output, and writes your answers into it.
+   have none, then **asks for a name, an output and unpaired access** unless the config
+   already sets an output, and writes your answers into it.
 6. **Adds the install folder to your user PATH**, so `sendspin-cli status` works in any
    terminal opened afterwards. One already open keeps the old PATH, and VS Code's terminals
    do until VS Code restarts, so the script prints the full path to use straight away.

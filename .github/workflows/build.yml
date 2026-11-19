@@ -727,6 +727,37 @@ jobs:
 
             /usr/local/bin/sendspin-cli --version || fail "--version failed"
             /usr/local/bin/sendspin-cli -l || fail "-l failed"
+
+            # The container has no systemd; stand-ins reach the path that writes the config.
+            mkdir -p /run/systemd/system
+            printf "%s\n" "#!/bin/sh" "case \"\$1\" in is-*) exit 1 ;; esac" >/usr/bin/systemctl
+            printf "%s\n" "#!/bin/sh" \
+              "getent passwd sendspin-cli >/dev/null || useradd --system --no-create-home sendspin-cli" \
+              >/usr/bin/systemd-sysusers
+            chmod +x /usr/bin/systemctl /usr/bin/systemd-sysusers
+            conf=/etc/sendspin-cli.conf
+            install_with() {
+              SENDSPIN_CLI_TARBALL="$TARBALL" /src/scripts/get_started_linux.sh --yes "$@" </dev/null 2>&1 |
+                tee /tmp/install.log
+            }
+
+            rm -f "$conf"
+            install_with
+            grep -qx "allow-unpaired = true" "$conf" || fail "--yes on a fresh install did not allow unpaired"
+
+            install_with --no-allow-unpaired
+            grep -q "already sets allow-unpaired, so --no-allow-unpaired is ignored" /tmp/install.log ||
+              fail "a flag against a config that sets allow-unpaired was not reported as ignored"
+            grep -qx "allow-unpaired = true" "$conf" || fail "an existing allow-unpaired was replaced"
+
+            rm -f "$conf"
+            install_with --no-allow-unpaired
+            grep -qx "allow-unpaired = false" "$conf" || fail "--no-allow-unpaired did not write false"
+
+            ! /src/scripts/get_started_linux.sh --allow-unpaired --no-allow-unpaired </dev/null \
+              >/tmp/install.log 2>&1 || fail "contradicting unpaired flags were accepted"
+            grep -q "contradict each other" /tmp/install.log ||
+              fail "contradicting unpaired flags failed without saying why"
           '
 
           # bookworm has glibc 2.36, under this build's floor: the script must refuse before installing.

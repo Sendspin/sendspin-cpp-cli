@@ -19,13 +19,17 @@
 # optional firewall rule, asked for apart. uninstall_windows.ps1 removes it all again.
 #
 # Usage: get_started_windows.ps1 [-Version <tag>] [-Name <name>] [-Output <device>] [-Yes]
-#                                [-Firewall]
+#                                [-AllowUnpaired | -NoAllowUnpaired] [-Firewall]
 #
 #   -Version <tag>    install this release instead of the latest, e.g. -Version v0.5.0
 #   -Name <name>      the name a server shows for this player, instead of being asked.
 #                     Ignored when the config already sets one
 #   -Output <device>  the output device, e.g. "portaudio:directsound:Speakers (USB DAC)",
 #                     instead of being asked. Ignored when the config already sets one
+#   -AllowUnpaired    let any server on the network play without pairing first, instead of
+#                     being asked. A fresh install with -Yes does this too
+#   -NoAllowUnpaired  require each server to pair before it can play, instead of being asked.
+#                     Either is ignored when the config already sets allow-unpaired
 #   -Yes              do not ask anything, taking the name and output only from the flags
 #                     above. Required when there is no console to ask on
 #   -Firewall         also add the firewall rule without asking (still needs a UAC prompt)
@@ -42,6 +46,8 @@ param(
     [string]$Name = '',
     [string]$Output = '',
     [switch]$Yes,
+    [switch]$AllowUnpaired,
+    [switch]$NoAllowUnpaired,
     [switch]$Firewall,
     [switch]$Help
 )
@@ -165,6 +171,10 @@ if ($Help) {
         }
     }
     exit 0
+}
+
+if ($AllowUnpaired -and $NoAllowUnpaired) {
+    Fail '-AllowUnpaired and -NoAllowUnpaired contradict each other; pass one'
 }
 
 # Is this a host this can work on at all
@@ -323,12 +333,30 @@ try {
     if ("$Name$Output" -match '[\r\n]') {
         Fail '-Name and -Output are one line each'
     }
+    $UnpairedFlag = if ($AllowUnpaired) { '-AllowUnpaired' } elseif ($NoAllowUnpaired) { '-NoAllowUnpaired' } else { '' }
+    $UnpairedFrom = 'none'
+    $Unpaired = ''
+    if (Test-ConfigSets 'allow-unpaired') {
+        if ($UnpairedFlag) {
+            Say "  note: $Config already sets allow-unpaired, so $UnpairedFlag is ignored"
+        }
+    } elseif ($UnpairedFlag) {
+        $UnpairedFrom = 'flag'
+        $Unpaired = if ($AllowUnpaired) { 'true' } else { 'false' }
+    } elseif (-not $Yes -and -not (Test-ConfigSets 'output')) {
+        $UnpairedFrom = 'ask'
+    } elseif ($Yes -and $SeedConfig) {
+        $UnpairedFrom = 'default'
+        $Unpaired = 'true'
+    }
 
     $Choosing = @()
     if ($NameFrom -eq 'flag') { $Choosing += "name = $Name" }
     if ($NameFrom -eq 'ask') { $Choosing += 'the name you choose' }
     if ($OutputFrom -eq 'flag') { $Choosing += "output = $Output" }
     if ($OutputFrom -eq 'ask') { $Choosing += 'the output you choose' }
+    if ($Unpaired) { $Choosing += "allow-unpaired = $Unpaired" }
+    if ($UnpairedFrom -eq 'ask') { $Choosing += 'whether unpaired servers may play' }
     $Setting = if ($Choosing) { ", setting $($Choosing -join ' and ')" } else { '' }
 
     Step 'This is what it will do, as you, with no administrator rights'
@@ -436,7 +464,22 @@ try {
             "portaudio:directsound:$($choices[$number - 1].Name)"
         }
     }
-    if ($NameFrom -ne 'none' -or $OutputFrom -ne 'none') {
+    if ($UnpairedFrom -eq 'ask') {
+        Step 'Unpaired access'
+        Say ''
+        Say '  On, any Sendspin server on your network can play here straight away. Off, each'
+        Say '  server must pair with this player first (see Pairing-a-Player in the wiki).'
+        Say ''
+        while (-not $Unpaired) {
+            $answer = (Read-Host '  Let any server on your network play here without pairing first? [Y/n]').Trim()
+            if ($answer -eq '' -or $answer -match '^(y|yes)$') {
+                $Unpaired = 'true'
+            } elseif ($answer -match '^(n|no)$') {
+                $Unpaired = 'false'
+            }
+        }
+    }
+    if ($NameFrom -ne 'none' -or $OutputFrom -ne 'none' -or $Unpaired) {
         Step "Writing $Config"
         Say ''
         if ($NameFrom -ne 'none') {
@@ -446,6 +489,10 @@ try {
         if ($OutputFrom -ne 'none') {
             Set-ConfigKey 'output' $Output
             Say "  output = $Output"
+        }
+        if ($Unpaired) {
+            Set-ConfigKey 'allow-unpaired' $Unpaired
+            Say "  allow-unpaired = $Unpaired"
         }
     }
 
@@ -548,7 +595,12 @@ try {
     Say "  Plain 'sendspin-cli status' works in terminals opened from now on. One already open,"
     Say "  this one included, still has the old PATH; so do VS Code's until VS Code restarts."
     Say ''
-    Say '  Pair it from your Sendspin server: when the server asks for a code, it is in the log.'
+    if ($Unpaired -eq 'true') {
+        Say "  Unpaired access is on, so any server can play; 'allow-unpaired = false' in the config"
+        Say '  turns that off. To pair it from your Sendspin server, the code it asks for is in the log.'
+    } else {
+        Say '  Pair it from your Sendspin server: when the server asks for a code, it is in the log.'
+    }
     Say ''
     Say "    Get-Content '$LogFile' -Wait -Tail 20"
     Say ''

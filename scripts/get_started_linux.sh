@@ -19,6 +19,7 @@
 # Every root command is printed first and confirmed, or pre-authorised with --yes.
 #
 # Usage: get_started_linux.sh [--version <tag>] [--name <name>] [--output <device>]
+#                             [--allow-unpaired | --no-allow-unpaired]
 #                             [--user-service | --system-service] [--yes]
 #        curl -fsSL <raw url of this file> | bash -s -- [the same flags]
 #
@@ -57,6 +58,7 @@ step() {
 usage() {
     cat <<'USAGE'
 Usage: get_started_linux.sh [--version <tag>] [--name <name>] [--output <device>]
+                            [--allow-unpaired | --no-allow-unpaired]
                             [--user-service | --system-service] [--yes]
 
   --version <tag>   install this release instead of the latest, e.g. --version v0.3.0
@@ -64,6 +66,11 @@ Usage: get_started_linux.sh [--version <tag>] [--name <name>] [--output <device>
                     Ignored when the config already sets one
   --output <device> the output device, e.g. hw:1,0, instead of being asked.
                     Ignored when the config already sets one
+  --allow-unpaired  let any server on the network play without pairing first, instead
+                    of being asked. A fresh install with --yes does this too
+  --no-allow-unpaired
+                    require each server to pair before it can play, instead of being
+                    asked. Either is ignored when the config already sets allow-unpaired
   --system-service  run as the unprivileged 'sendspin-cli' account, configured in
                     /etc/sendspin-cli.conf. The default
   --user-service    run as you instead, as a systemd user service that follows your
@@ -365,6 +372,7 @@ main() {
     # What was asked for
 
     local version_tag='' assume_yes='no' want_name='' want_output='' want_mode=''
+    local want_unpaired=''
 
     while [ "$#" -gt 0 ]; do
         case "$1" in
@@ -382,6 +390,12 @@ main() {
                 { [ "$#" -ge 2 ] && [ -n "$2" ]; } || fail '--output needs a device, e.g. --output hw:1,0'
                 want_output=$2
                 shift 2
+                ;;
+            --allow-unpaired | --no-allow-unpaired)
+                [ -z "$want_unpaired" ] || [ "$want_unpaired" = "$1" ] ||
+                    fail '--allow-unpaired and --no-allow-unpaired contradict each other; pass one'
+                want_unpaired=$1
+                shift
                 ;;
             --user-service)
                 want_mode='user'
@@ -704,9 +718,10 @@ main() {
     fi
     readonly CONFIG_EXISTS
 
-    # flag, ask, or none -- a key the config already sets is never asked for or replaced.
+    # flag, ask, default, or none -- a key the config already sets is never asked for or replaced.
     NAME_FROM='none'
     OUTPUT_FROM='none'
+    UNPAIRED_FROM='none'
     CONFIG_HAS_OUTPUT='no'
     if [ "$HAVE_SYSTEMD" = 'yes' ]; then
         if config_sets output; then
@@ -725,11 +740,21 @@ main() {
         elif [ "$OUTPUT_FROM" = 'ask' ]; then
             NAME_FROM='ask'
         fi
+        if config_sets allow-unpaired; then
+            [ -z "$want_unpaired" ] || say "  note: $CONFIG already sets allow-unpaired, so $want_unpaired is ignored"
+        elif [ -n "$want_unpaired" ]; then
+            UNPAIRED_FROM='flag'
+        elif [ "$assume_yes" != 'yes' ] && [ "$CONFIG_HAS_OUTPUT" != 'yes' ]; then
+            UNPAIRED_FROM='ask'
+        elif [ "$assume_yes" = 'yes' ] && [ "$CONFIG_EXISTS" != 'yes' ]; then
+            UNPAIRED_FROM='default'
+        fi
     fi
-    readonly NAME_FROM OUTPUT_FROM CONFIG_HAS_OUTPUT
+    readonly NAME_FROM OUTPUT_FROM UNPAIRED_FROM CONFIG_HAS_OUTPUT
 
     WRITE_CONFIG='no'
-    if [ "$CONFIG_EXISTS" != 'yes' ] || [ "$NAME_FROM" != 'none' ] || [ "$OUTPUT_FROM" != 'none' ]; then
+    if [ "$CONFIG_EXISTS" != 'yes' ] || [ "$NAME_FROM" != 'none' ] || [ "$OUTPUT_FROM" != 'none' ] ||
+        [ "$UNPAIRED_FROM" != 'none' ]; then
         WRITE_CONFIG='yes'
     fi
     readonly WRITE_CONFIG
@@ -812,13 +837,14 @@ main() {
             else
                 say "$NEW_CONFIG will be the installed example config with"
             fi
-            case "$NAME_FROM:$OUTPUT_FROM" in
-                ask:* | *:ask)
-                    say 'the name and the output device you are asked for next filled in. The lines it'
+            case "$NAME_FROM:$OUTPUT_FROM:$UNPAIRED_FROM" in
+                *ask*)
+                    say 'your flags and your answers to the questions that follow filled in. The lines it'
                     say 'sets are printed before it is copied.'
                     ;;
-                none:none) say 'nothing changed: every line in it is commented out.' ;;
-                *) say 'the --name and --output you passed filled in.' ;;
+                none:none:none) say 'nothing changed: every line in it is commented out.' ;;
+                none:none:default) say 'allow-unpaired = true set, and nothing else changed.' ;;
+                *) say 'the flags you passed filled in. The lines it sets are printed before it is copied.' ;;
             esac
         fi
         if [ "$CONFIG_HAS_OUTPUT" != 'yes' ] && [ "$OUTPUT_FROM" = 'none' ]; then
@@ -882,8 +908,8 @@ main() {
             say "  $SYSTEM_CONFIG  (from the installed example; everything in it is commented out)"
         fi
         step 'Not touching a service'
-        [ -z "$want_name$want_output" ] ||
-            say '  --name and --output configure the service, so they were not used.'
+        [ -z "$want_name$want_output$want_unpaired" ] ||
+            say '  --name, --output and --allow-unpaired configure the service, so they were not used.'
         say '  systemd is not running here, so there is nothing to enable. The binary is'
         say '  installed and runs in the foreground:'
         say ''
@@ -1004,7 +1030,29 @@ main() {
             OUTPUT=$REPLY
             ;;
     esac
-    readonly NAME OUTPUT
+    ALLOW_UNPAIRED=''
+    case "$UNPAIRED_FROM" in
+        flag)
+            ALLOW_UNPAIRED='true'
+            [ "$want_unpaired" = '--allow-unpaired' ] || ALLOW_UNPAIRED='false'
+            ;;
+        default) ALLOW_UNPAIRED='true' ;;
+        ask)
+            step 'Unpaired access'
+            say ''
+            say '  On, any Sendspin server on your network can play here straight away. Off, each'
+            say '  server must pair with this player first (see Pairing-a-Player in the wiki).'
+            say ''
+            while [ -z "$ALLOW_UNPAIRED" ]; do
+                ask '  Let any server on your network play here without pairing first? [Y/n] ' y
+                case "$REPLY" in
+                    y | Y | yes | YES) ALLOW_UNPAIRED='true' ;;
+                    n | N | no | NO) ALLOW_UNPAIRED='false' ;;
+                esac
+            done
+            ;;
+    esac
+    readonly NAME OUTPUT ALLOW_UNPAIRED
 
     if [ "$WRITE_CONFIG" = 'yes' ]; then
         if [ "$CONFIG_EXISTS" = 'yes' ]; then
@@ -1022,7 +1070,11 @@ main() {
             set_key "$NEW_CONFIG" output "$OUTPUT"
             say "  output = $OUTPUT"
         fi
-        if [ -z "$NAME$OUTPUT" ]; then
+        if [ -n "$ALLOW_UNPAIRED" ]; then
+            set_key "$NEW_CONFIG" allow-unpaired "$ALLOW_UNPAIRED"
+            say "  allow-unpaired = $ALLOW_UNPAIRED"
+        fi
+        if [ -z "$NAME$OUTPUT$ALLOW_UNPAIRED" ]; then
             say '  (the annotated example; everything in it is commented out)'
         fi
         if [ "$MODE" = 'user' ]; then
@@ -1069,8 +1121,14 @@ main() {
         say "       ${SUDO_P}$BINARY pair-token --control-socket $CONTROL_SOCKET"
     fi
     say ''
-    say '  The player advertises itself over mDNS, so the server finds it by itself; pairing is'
-    say "  what lets it play. To dial a server instead, set 'server' in $CONFIG."
+    if [ "$ALLOW_UNPAIRED" = 'true' ]; then
+        say '  The player advertises itself over mDNS, so the server finds it by itself. Unpaired'
+        say "  access is on, so any server can play without pairing; 'allow-unpaired = false' in"
+        say "  $CONFIG turns that off. To dial a server instead, set 'server' there."
+    else
+        say '  The player advertises itself over mDNS, so the server finds it by itself; pairing is'
+        say "  what lets it play. To dial a server instead, set 'server' in $CONFIG."
+    fi
     say ''
     say '  Watch it:'
     say ''
