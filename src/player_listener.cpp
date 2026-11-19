@@ -18,59 +18,178 @@
 
 #include <sendspin/client.h>
 
+#include <algorithm>
+
 namespace sendspin_cli {
 
 using sendspin::LogLevel;
 
 static constexpr const char* LOG_TAG = LOG_TAG_PLAYER;
 
+namespace {
+
+/// How long poll() waits for the old format to play out before reopening anyway.
+constexpr int64_t PLAYOUT_TIMEOUT_US = 5'000'000;
+
+constexpr int64_t US_PER_S = 1'000'000;
+
+size_t bytes_per_frame(const sendspin::AudioFormat& format) {
+    return static_cast<size_t>(format.channels) *
+           (static_cast<size_t>(format.bits_per_sample) / 8U);
+}
+
+}  // namespace
+
 PlayerListener::PlayerListener(sendspin::PlayerRole& player, AudioSink& sink, StateStore* store)
     : player_(player), sink_(sink), store_(store) {
     // Capture the address, not the reference parameter, which dies with this frame.
-    this->sink_.on_frames_played = [target = &player](uint32_t frames, int64_t timestamp) {
+    this->sink_.on_frames_played = [this, target = &player](uint32_t frames, int64_t timestamp) {
+        this->played_frames_.fetch_add(frames, std::memory_order_relaxed);
+        int64_t end = this->playout_end_us_.load(std::memory_order_relaxed);
+        while (timestamp > end && !this->playout_end_us_.compare_exchange_weak(
+                                      end, timestamp, std::memory_order_relaxed)) {}
         target->notify_audio_played(frames, timestamp);
     };
 }
 
-size_t PlayerListener::on_audio_write(uint8_t* data, size_t length, uint32_t timeout_ms) {
-    const size_t written = this->sink_.write(data, length, timeout_ms);
-    if (this->stream_refused_.load(std::memory_order_relaxed)) {
-        this->refused_bytes_.fetch_add(written, std::memory_order_relaxed);
+size_t PlayerListener::on_audio_output(std::span<const uint8_t> pcm,
+                                       const sendspin::AudioFormat& format, uint32_t timeout_ms) {
+    bool refused = false;
+    {
+        const std::lock_guard<std::mutex> lock(this->format_mutex_);
+        if (!this->open_.has_value() || this->open_->format != format) {
+            this->requested_ = format;
+            return 0;
+        }
+        refused = this->open_->refused;
+    }
+
+    const size_t frame = bytes_per_frame(format);
+    if (refused) {
+        // Discarded, but reported played on a virtual clock so sync neither stalls nor races.
+        if (frame == 0 || format.sample_rate == 0) {
+            return pcm.size();
+        }
+        const size_t frames = pcm.size() / frame;
+        this->refused_playhead_us_ =
+            std::max(this->refused_playhead_us_, sendspin::SendspinClient::now_us()) +
+            (static_cast<int64_t>(frames) * US_PER_S) / static_cast<int64_t>(format.sample_rate);
+        if (frames > 0) {
+            this->player_.notify_audio_played(static_cast<uint32_t>(frames),
+                                              this->refused_playhead_us_);
+        }
+        this->refused_bytes_.fetch_add(frames * frame, std::memory_order_relaxed);
+        return frames * frame;
+    }
+
+    const size_t written = this->sink_.write(pcm.data(), pcm.size(), timeout_ms);
+    if (frame != 0) {
+        this->written_frames_.fetch_add(written / frame, std::memory_order_relaxed);
     }
     return written;
 }
 
-void PlayerListener::on_stream_start() {
-    // Cleared here, not at stream end: the early return below never reaches one.
-    this->stream_refused_.store(false, std::memory_order_relaxed);
-    this->refused_bytes_.store(0, std::memory_order_relaxed);
-    // Before the guards, so an incomplete or refused stream still reports as streaming.
-    this->streaming_ = true;
+void PlayerListener::poll(int64_t now_us) {
+    sendspin::AudioFormat wanted;
+    bool holds_audio = false;
+    {
+        const std::lock_guard<std::mutex> lock(this->format_mutex_);
+        if (!this->requested_.has_value()) {
+            return;
+        }
+        wanted = *this->requested_;
+        holds_audio = this->open_.has_value() && !this->open_->refused;
+    }
+
+    if (holds_audio) {
+        if (!this->requested_since_us_.has_value()) {
+            this->requested_since_us_ = now_us;
+        }
+        const bool drained = this->played_frames_.load(std::memory_order_relaxed) >=
+                                 this->written_frames_.load(std::memory_order_relaxed) &&
+                             now_us >= this->playout_end_us_.load(std::memory_order_relaxed);
+        if (!drained) {
+            if (now_us - *this->requested_since_us_ < PLAYOUT_TIMEOUT_US) {
+                return;
+            }
+            cli_log(LogLevel::WARN,
+                    "'%s' has not played out the previous format's audio -- reopening anyway",
+                    this->sink_.name().c_str());
+        }
+    }
+    this->open_sink(wanted);
+}
+
+void PlayerListener::open_sink(const sendspin::AudioFormat& format) {
+    // Nothing of the old format is left to report, so the counts start over.
+    this->written_frames_.store(0, std::memory_order_relaxed);
+    this->played_frames_.store(0, std::memory_order_relaxed);
+    this->requested_since_us_.reset();
+
+    const bool accepted =
+        this->sink_.configure(format.sample_rate, format.channels, format.bits_per_sample);
+    if (accepted) {
+        this->stream_format_ =
+            StreamFormat{format.sample_rate, format.channels, format.bits_per_sample};
+    } else {
+        cli_log(LogLevel::ERROR,
+                "Output device '%s' refused %u Hz / %u ch / %u-bit -- audio in this format will "
+                "be discarded. Run with -l to see what the device accepts.",
+                this->sink_.name().c_str(), format.sample_rate, format.channels,
+                format.bits_per_sample);
+        this->stream_format_.reset();
+    }
+
+    const std::lock_guard<std::mutex> lock(this->format_mutex_);
+    this->open_ = OpenFormat{format, !accepted};
+    this->requested_.reset();
+}
+
+void PlayerListener::reset_format() {
+    {
+        const std::lock_guard<std::mutex> lock(this->format_mutex_);
+        this->open_.reset();
+        this->requested_.reset();
+    }
+    this->requested_since_us_.reset();
     this->stream_format_.reset();
+    this->written_frames_.store(0, std::memory_order_relaxed);
+    this->played_frames_.store(0, std::memory_order_relaxed);
+}
+
+void PlayerListener::on_stream_start() {
+    // Also fired for a stream/start that updates the running stream; its writes reopen the sink.
+    const bool fresh = !this->streaming_;
+    this->streaming_ = true;
 
     // Fire the start hook before any guard can return, so it always matches `streaming`.
     if (this->on_stream_event) {
         this->on_stream_event(true);
     }
 
-    const sendspin::ServerPlayerStreamObject& params = this->player_.get_current_stream_params();
-    if (!params.is_complete()) {
-        cli_log(LogLevel::WARN,
-                "Stream started without complete parameters -- sink not configured");
+    const std::optional<sendspin::PlayerStreamInfo> info = this->player_.stream_info();
+    if (!fresh) {
+        if (info.has_value()) {
+            cli_log(LogLevel::INFO, "Stream updated: %u Hz / %u ch / %u-bit", info->sample_rate,
+                    info->channels, info->bit_depth);
+        }
         return;
     }
 
     cli_log(LogLevel::INFO, "Stream started");
-    if (!this->sink_.configure(*params.sample_rate, *params.channels, *params.bit_depth)) {
-        cli_log(LogLevel::ERROR,
-                "Output device '%s' refused %u Hz / %u ch / %u-bit -- this stream's audio will be "
-                "discarded. Run with -l to see what the device accepts.",
-                this->sink_.name().c_str(), *params.sample_rate, *params.channels,
-                *params.bit_depth);
-        this->stream_refused_.store(true, std::memory_order_relaxed);
+    this->refused_bytes_.store(0, std::memory_order_relaxed);
+    if (!info.has_value()) {
         return;
     }
-    this->stream_format_ = StreamFormat{*params.sample_rate, *params.channels, *params.bit_depth};
+    {
+        const std::lock_guard<std::mutex> lock(this->format_mutex_);
+        if (this->open_.has_value()) {
+            return;
+        }
+    }
+    // Opened ahead of the first write to save its latency; writes are rounded to whole bytes.
+    const auto container_bits = static_cast<uint8_t>((info->bit_depth + 7U) / 8U * 8U);
+    this->open_sink(sendspin::AudioFormat{info->sample_rate, info->channels, container_bits});
 }
 
 void PlayerListener::on_stream_end() {
@@ -78,15 +197,12 @@ void PlayerListener::on_stream_end() {
     if (!this->streaming_) {
         return;
     }
-    // Clear the flag before taking the counter, so a racing write cannot add to a spent total.
-    const bool refused = this->stream_refused_.exchange(false, std::memory_order_relaxed);
     const uint64_t discarded = this->refused_bytes_.exchange(0, std::memory_order_relaxed);
     this->streaming_ = false;
-    this->stream_format_.reset();
-    if (refused) {
+    this->reset_format();
+    if (discarded > 0) {
         cli_log(LogLevel::ERROR,
-                "Stream ended having played nothing: %llu bytes discarded, because '%s' refused "
-                "its format",
+                "Stream ended: %llu bytes discarded, because '%s' refused their format",
                 static_cast<unsigned long long>(discarded), this->sink_.name().c_str());
     } else {
         cli_log(LogLevel::INFO, "Stream ended");

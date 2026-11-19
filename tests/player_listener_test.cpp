@@ -64,10 +64,13 @@ public:
     std::string name() const override {
         return "recording";
     }
-    bool configure(uint32_t /*sample_rate*/, uint8_t /*channels*/, uint8_t /*bits*/) override {
-        return true;
+    bool configure(uint32_t sample_rate, uint8_t channels, uint8_t bits) override {
+        this->log_.push_back("configure " + std::to_string(sample_rate) + "/" +
+                             std::to_string(channels) + "/" + std::to_string(bits));
+        return this->accepts;
     }
     size_t write(const uint8_t* /*data*/, size_t length, uint32_t /*timeout_ms*/) override {
+        this->log_.push_back("write " + std::to_string(length));
         return length;
     }
     void clear() override {
@@ -76,6 +79,9 @@ public:
     void release() override {
         this->log_.emplace_back("release");
     }
+
+    /// What configure() answers.
+    bool accepts{true};
 
 private:
     std::vector<std::string>& log_;
@@ -209,6 +215,122 @@ TEST(PlayerListener, AStreamEndReleasesTheDeviceBeforeTheStopEventWhenAsked) {
     harness.listener.on_stream_end();
 
     EXPECT_EQ(harness.log, (std::vector<std::string>{"start", "release", "stop"}));
+}
+
+constexpr sendspin::AudioFormat CD{44100, 2, 16};
+constexpr sendspin::AudioFormat HI_RES{96000, 2, 24};
+
+/// `frames` whole frames of silence in `format`.
+std::vector<uint8_t> pcm(const sendspin::AudioFormat& format, size_t frames) {
+    return std::vector<uint8_t>(frames * format.channels * (format.bits_per_sample / 8U));
+}
+
+TEST(PlayerListener, AStreamStartAloneDoesNotConfigureTheSink) {
+    RecordingHarness harness;
+
+    harness.listener.on_stream_start();
+    harness.listener.poll(0);
+
+    EXPECT_EQ(harness.log, (std::vector<std::string>{"start"}));
+    EXPECT_FALSE(harness.listener.stream_format().has_value());
+}
+
+TEST(PlayerListener, TheFirstWriteConfiguresTheSinkInItsFormat) {
+    RecordingHarness harness;
+    harness.listener.on_stream_start();
+    const std::vector<uint8_t> audio = pcm(CD, 10);
+
+    EXPECT_EQ(harness.listener.on_audio_output(audio, CD, 0), 0U);
+    harness.listener.poll(0);
+    EXPECT_EQ(harness.listener.on_audio_output(audio, CD, 0), audio.size());
+
+    EXPECT_EQ(harness.log, (std::vector<std::string>{"start", "configure 44100/2/16", "write 40"}));
+    ASSERT_TRUE(harness.listener.stream_format().has_value());
+    EXPECT_EQ(harness.listener.stream_format()->sample_rate, 44100U);
+    EXPECT_EQ(harness.listener.stream_format()->bit_depth, 16U);
+}
+
+TEST(PlayerListener, ANewFormatReopensOnlyOnceTheOldAudioHasPlayed) {
+    RecordingHarness harness;
+    harness.listener.on_stream_start();
+    const std::vector<uint8_t> old_audio = pcm(CD, 100);
+    const std::vector<uint8_t> new_audio = pcm(HI_RES, 100);
+    harness.listener.on_audio_output(old_audio, CD, 0);
+    harness.listener.poll(0);
+    ASSERT_EQ(harness.listener.on_audio_output(old_audio, CD, 0), old_audio.size());
+    harness.log.clear();
+
+    EXPECT_EQ(harness.listener.on_audio_output(new_audio, HI_RES, 0), 0U);
+    harness.listener.poll(1000);  // nothing reported played yet
+    harness.sink.on_frames_played(100, 5000);
+    harness.listener.poll(2000);  // reported, but still sounding until 5000
+    EXPECT_TRUE(harness.log.empty());
+    EXPECT_EQ(harness.listener.on_audio_output(new_audio, HI_RES, 0), 0U);
+    EXPECT_EQ(harness.listener.stream_format()->sample_rate, 44100U);
+
+    harness.listener.poll(5000);
+    EXPECT_EQ(harness.listener.on_audio_output(new_audio, HI_RES, 0), new_audio.size());
+    EXPECT_EQ(harness.log, (std::vector<std::string>{"configure 96000/2/24", "write 600"}));
+    EXPECT_EQ(harness.listener.stream_format()->sample_rate, 96000U);
+}
+
+TEST(PlayerListener, ASinkThatNeverReportsIsReopenedAfterATimeout) {
+    RecordingHarness harness;
+    harness.listener.on_stream_start();
+    const std::vector<uint8_t> old_audio = pcm(CD, 100);
+    harness.listener.on_audio_output(old_audio, CD, 0);
+    harness.listener.poll(0);
+    harness.listener.on_audio_output(old_audio, CD, 0);
+    harness.log.clear();
+
+    harness.listener.on_audio_output(pcm(HI_RES, 1), HI_RES, 0);
+    harness.listener.poll(1'000'000);
+    harness.listener.poll(5'999'999);
+    EXPECT_TRUE(harness.log.empty());
+    harness.listener.poll(6'000'000);
+
+    EXPECT_EQ(harness.log, (std::vector<std::string>{"configure 96000/2/24"}));
+}
+
+TEST(PlayerListener, ARefusedFormatIsDiscardedAndTheNextFormatRetries) {
+    RecordingHarness harness;
+    harness.sink.accepts = false;
+    harness.listener.on_stream_start();
+    const std::vector<uint8_t> refused = pcm(HI_RES, 10);
+
+    harness.listener.on_audio_output(refused, HI_RES, 0);
+    harness.listener.poll(0);
+    EXPECT_EQ(harness.listener.on_audio_output(refused, HI_RES, 0), refused.size());
+    EXPECT_FALSE(harness.listener.stream_format().has_value());
+
+    // Nothing of the refused format is in the sink, so the next one opens at once.
+    harness.sink.accepts = true;
+    const std::vector<uint8_t> audio = pcm(CD, 10);
+    EXPECT_EQ(harness.listener.on_audio_output(audio, CD, 0), 0U);
+    harness.listener.poll(0);
+    EXPECT_EQ(harness.listener.on_audio_output(audio, CD, 0), audio.size());
+
+    EXPECT_EQ(harness.log, (std::vector<std::string>{"start", "configure 96000/2/24",
+                                                     "configure 44100/2/16", "write 40"}));
+    EXPECT_TRUE(harness.listener.stream_format().has_value());
+}
+
+TEST(PlayerListener, AStreamEndForgetsTheFormatSoTheNextStreamReopens) {
+    RecordingHarness harness;
+    harness.listener.release_device_between_streams();
+    const std::vector<uint8_t> audio = pcm(CD, 10);
+    harness.listener.on_stream_start();
+    harness.listener.on_audio_output(audio, CD, 0);
+    harness.listener.poll(0);
+
+    harness.listener.on_stream_end();
+    EXPECT_FALSE(harness.listener.stream_format().has_value());
+    harness.listener.on_stream_start();
+    EXPECT_EQ(harness.listener.on_audio_output(audio, CD, 0), 0U);
+    harness.listener.poll(0);
+
+    EXPECT_EQ(harness.log, (std::vector<std::string>{"start", "configure 44100/2/16", "release",
+                                                     "stop", "start", "configure 44100/2/16"}));
 }
 
 }  // namespace
