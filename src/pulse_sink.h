@@ -224,6 +224,8 @@ private:
 
     /// Bumped on open, close or flush; a write() that waited compares it on waking.
     uint64_t stream_generation_{0};
+    /// Corked by clear(), so module-suspend-on-idle can suspend the sink between streams.
+    bool corked_{false};
 
     /// Set before stop() takes the mutex so a waiting write() bails out; latches.
     std::atomic<bool> stopping_{false};
