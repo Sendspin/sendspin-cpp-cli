@@ -219,6 +219,8 @@ TEST(PlayerListener, AStreamEndReleasesTheDeviceBeforeTheStopEventWhenAsked) {
 
 constexpr sendspin::AudioFormat CD{44100, 2, 16};
 constexpr sendspin::AudioFormat HI_RES{96000, 2, 24};
+constexpr sendspin::AudioFormat DAT{48000, 2, 16};
+constexpr sendspin::AudioFormat STUDIO{192000, 2, 24};
 
 /// `frames` whole frames of silence in `format`.
 std::vector<uint8_t> pcm(const sendspin::AudioFormat& format, size_t frames) {
@@ -408,6 +410,28 @@ TEST(PlayerListener, AStreamEndForgetsTheFormatSoTheNextStreamReopens) {
 
     EXPECT_EQ(harness.log, (std::vector<std::string>{"start", "configure 44100/2/16", "release",
                                                      "stop", "start", "configure 44100/2/16"}));
+}
+
+TEST(PlayerListener, AMidStreamSwitchFrom48k16To192k24ReopensInTheNewFormat) {
+    RecordingHarness harness;
+    harness.listener.on_stream_start();
+    const std::vector<uint8_t> old_audio = pcm(DAT, 48);
+    const std::vector<uint8_t> new_audio = pcm(STUDIO, 192);
+    harness.listener.on_audio_output(old_audio, DAT, 0);
+    harness.listener.poll(0);
+    ASSERT_EQ(harness.listener.on_audio_output(old_audio, DAT, 0), old_audio.size());
+
+    EXPECT_EQ(harness.listener.on_audio_output(new_audio, STUDIO, 0), 0U);
+    harness.sink.on_frames_played(48, 1000);
+    harness.listener.poll(1000);
+    EXPECT_EQ(harness.listener.on_audio_output(new_audio, STUDIO, 0), new_audio.size());
+
+    EXPECT_EQ(harness.log, (std::vector<std::string>{"start", "configure 48000/2/16", "write 192",
+                                                     "configure 192000/2/24", "write 1152"}));
+    ASSERT_TRUE(harness.listener.stream_format().has_value());
+    EXPECT_EQ(harness.listener.stream_format()->sample_rate, 192000U);
+    EXPECT_EQ(harness.listener.stream_format()->bit_depth, 24U);
+    EXPECT_TRUE(harness.listener.streaming());
 }
 
 }  // namespace
