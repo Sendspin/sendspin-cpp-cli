@@ -37,9 +37,18 @@ namespace {
 /// The longest reply this will read, in bytes.
 constexpr size_t MAX_REPLY_BYTES = 64 * 1024;
 
-/// How long one send or receive may wait, so a wedged player cannot hang the caller.
+/// How long a whole exchange may take, so a wedged player cannot hang the caller.
 constexpr unsigned ANSWER_TIMEOUT_MS = 3000;
 constexpr const char* ANSWER_TIMEOUT_REASON = "the player did not answer within 3 s";
+
+using Clock = std::chrono::steady_clock;
+
+/// Milliseconds left before `deadline`, at least 1: a zero timeout means no bound to setsockopt.
+unsigned ms_left(Clock::time_point deadline) {
+    const int64_t left =
+        std::chrono::duration_cast<std::chrono::milliseconds>(deadline - Clock::now()).count();
+    return static_cast<unsigned>(std::clamp<int64_t>(left, 1, ANSWER_TIMEOUT_MS));
+}
 
 /// Everything up to the first newline, and everything after it.
 void split_first_line(const std::string& reply, std::string& first, std::string& rest) {
@@ -55,7 +64,8 @@ void split_first_line(const std::string& reply, std::string& first, std::string&
 
 /// Connects to `path`, or explains why not in `result`: NoDaemon for no socket, nothing
 /// accepting or no permission, Failed for a player that would not make room in time.
-socket_t connect_to_socket(const std::string& path, ControlExchange& result) {
+socket_t connect_to_socket(const std::string& path, Clock::time_point deadline,
+                           ControlExchange& result) {
     result.status = ControlStatus::NoDaemon;
     result.denied = false;
     std::string& error = result.reason;
@@ -79,7 +89,7 @@ socket_t connect_to_socket(const std::string& path, ControlExchange& result) {
 
     // Before connect(): on Linux, a wedged player's full backlog would otherwise block it forever.
     // Windows refuses a full backlog at once, and its connect() takes no bound from this.
-    if (!set_io_timeout(fd, ANSWER_TIMEOUT_MS)) {
+    if (!set_io_timeout(fd, ms_left(deadline))) {
         result.status = ControlStatus::Failed;
         error = "cannot bound the wait for the player: " + socket_error_text(socket_error());
         close_socket(fd);
@@ -153,15 +163,13 @@ bool write_all(socket_t fd, const std::string& text, std::string& error, bool& t
     return true;
 }
 
-/// Reads until the daemon closes, which is its end-of-reply marker, within ANSWER_TIMEOUT_MS.
-bool read_reply(socket_t fd, std::string& reply, std::string& error) {
+/// Reads until the daemon closes, which is its end-of-reply marker, or `deadline` passes.
+bool read_reply(socket_t fd, Clock::time_point deadline, std::string& reply, std::string& error) {
     char buffer[4096];
-    const auto deadline =
-        std::chrono::steady_clock::now() + std::chrono::milliseconds(ANSWER_TIMEOUT_MS);
     while (true) {
         // Wait first, so the read never blocks: see wait_readable() for why that matters.
-        const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
-            deadline - std::chrono::steady_clock::now());
+        const auto left =
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - Clock::now());
         const int ready = wait_readable(fd, static_cast<int>(std::max<int64_t>(left.count(), 0)));
         if (ready == 0) {
             error = ANSWER_TIMEOUT_REASON;
@@ -220,7 +228,8 @@ ControlExchange exchange_control_request(const ControlRequest& request, const st
         return result;
     }
 
-    const socket_t fd = connect_to_socket(path, result);
+    const Clock::time_point deadline = Clock::now() + std::chrono::milliseconds(ANSWER_TIMEOUT_MS);
+    const socket_t fd = connect_to_socket(path, deadline, result);
     if (fd == INVALID_SOCKET_HANDLE) {
         return result;
     }
@@ -228,6 +237,8 @@ ControlExchange exchange_control_request(const ControlRequest& request, const st
 
     std::string error;
     bool timed_out = false;
+    // Only what the connect left; on failure the connect's longer bound still applies.
+    (void)set_io_timeout(fd, ms_left(deadline));
     const bool sent = write_all(fd, encode_control_request(request) + "\n", error, timed_out);
     if (timed_out) {
         // Reading too would wait out a second bound for the same silent player.
@@ -239,7 +250,7 @@ ControlExchange exchange_control_request(const ControlRequest& request, const st
 
     std::string reply;
     // Read even after a failed write: the daemon's `error` reply beats our guess.
-    const bool received = read_reply(fd, reply, error);
+    const bool received = read_reply(fd, deadline, reply, error);
     close_socket(fd);
 
     result.status = ControlStatus::Failed;

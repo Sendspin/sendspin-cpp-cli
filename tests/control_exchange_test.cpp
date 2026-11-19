@@ -260,6 +260,62 @@ TEST(ControlExchange, AFullBacklogTimesOutTheConnect) {
     EXPECT_GE(elapsed, std::chrono::milliseconds(2500));
     EXPECT_LT(elapsed, std::chrono::milliseconds(4500));
 }
+
+TEST(ControlExchange, OneDeadlineCoversADelayedAcceptAndASilentPeer) {
+    const ScratchDir dir;
+    ASSERT_TRUE(dir.created());
+    // A listener of our own, so the test decides when a backlog slot frees and never replies.
+    const int listener = ::socket(AF_UNIX, SOCK_STREAM, 0);
+    ASSERT_GE(listener, 0);
+    sockaddr_un address = {};
+    address.sun_family = AF_UNIX;
+    std::strncpy(address.sun_path, dir.socket_path().c_str(), sizeof(address.sun_path) - 1);
+    ASSERT_EQ(::bind(listener, reinterpret_cast<const sockaddr*>(&address), sizeof(address)), 0);
+    ASSERT_EQ(::listen(listener, 1), 0);
+
+    std::vector<int> fillers;
+    bool full = false;
+    while (!full && fillers.size() < 64) {
+        const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+        ASSERT_GE(fd, 0);
+        ASSERT_EQ(::fcntl(fd, F_SETFL, ::fcntl(fd, F_GETFL, 0) | O_NONBLOCK), 0);
+        if (::connect(fd, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == 0) {
+            fillers.push_back(fd);
+            continue;
+        }
+        ::close(fd);
+        full = true;
+    }
+    ASSERT_TRUE(full) << "the backlog never filled";
+
+    std::promise<ControlExchange> promise;
+    std::future<ControlExchange> future = promise.get_future();
+    const auto start = std::chrono::steady_clock::now();
+    std::thread client([&promise, &dir] {
+        promise.set_value(exchange_control_request(ControlRequest{}, dir.socket_path(), ""));
+    });
+    // Free one slot halfway through: the client connects, and then nothing ever answers.
+    std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+    const int accepted = ::accept(listener, nullptr, nullptr);
+    const bool answered = future.wait_for(std::chrono::seconds(6)) == std::future_status::ready;
+    ::close(listener);
+    client.join();
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+    if (accepted >= 0) {
+        ::close(accepted);
+    }
+    for (const int fd : fillers) {
+        ::close(fd);
+    }
+
+    ASSERT_GE(accepted, 0);
+    ASSERT_TRUE(answered) << "the exchange was still waiting after 7.5 s";
+    const ControlExchange result = future.get();
+    EXPECT_EQ(result.status, ControlStatus::Failed);
+    EXPECT_EQ(result.reason, "the player did not answer within 3 s");
+    EXPECT_GE(elapsed, std::chrono::milliseconds(2500));
+    EXPECT_LT(elapsed, std::chrono::milliseconds(3500));
+}
 #endif
 
 }  // namespace
