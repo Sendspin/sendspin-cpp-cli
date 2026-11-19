@@ -203,6 +203,8 @@ private:
 
     /// Bumped on open, close or flush; a write() that waited compares it on waking.
     uint64_t stream_generation_{0};
+    /// Paused by clear(), so the session manager can suspend the sink between streams.
+    bool paused_{false};
 
     /// Set before stop() takes the mutex so a blocked write() bails out; latches.
     std::atomic<bool> stopping_{false};

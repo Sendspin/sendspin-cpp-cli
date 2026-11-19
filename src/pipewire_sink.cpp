@@ -399,6 +399,13 @@ size_t PipeWireSink::write(const uint8_t* data, size_t length, uint32_t timeout_
     const uint64_t target = this->target_multiplier_.load(std::memory_order_relaxed);
     const uint8_t* src = this->stage_(data, frames_total, start, target);
 
+    if (this->paused_) {
+        // A clear() still pending in the ring drops what lands before the first process().
+        const LoopLock loop_lock(this->loop_);
+        pw_stream_set_active(this->stream_, true);
+        this->paused_ = false;
+    }
+
     // The stream is alive, so an outage's gap can go to the process callback: it has the
     // timestamp to retire the gap against, and this thread does not.
     this->gap_handoff_.add(this->recovery_.take_discarded_frames());
@@ -460,6 +467,10 @@ void PipeWireSink::clear() {
     if (this->stream_alive_()) {
         // The consumer owns the read position, so it drains on its next read.
         this->ring_.request_clear();
+        const LoopLock loop_lock(this->loop_);
+        if (pw_stream_set_active(this->stream_, false) == 0) {
+            this->paused_ = true;
+        }
         return;
     }
     // No consumer running, so drop now rather than leave a clear pending for the next stream.
@@ -810,6 +821,7 @@ void PipeWireSink::close_stream_() {
     }
 
     ++this->stream_generation_;
+    this->paused_ = false;
     this->rate_ = 0;
     this->channels_ = 0;
     this->bits_ = 0;
