@@ -118,7 +118,7 @@ later:
   loads there.
 - **Drift guards.** Nothing checks that every key in `packaging/sendspin-cli.conf.example` is
   still accepted (feed the uncommented file through `config_file`), or that the artifact names
-  spelled out in `docs/wiki/` match `project(VERSION)` — they still say `0.1.0`.
+  spelled out in `docs/wiki/` match `project(VERSION)`, so they go stale with every release.
 
 ### 11. Device-recovery hardware passes
 

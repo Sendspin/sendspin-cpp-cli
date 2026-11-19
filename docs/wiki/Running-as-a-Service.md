@@ -208,7 +208,7 @@ Everything goes to the journal, and every line carries a level letter and a subs
 
 ```console
 $ journalctl -u sendspin-cli -f
-I cli: sendspin-cli 0.1.0 listening on port 8928 as "kitchen" (output: hw:1,0, mDNS: dns_sd (avahi-compat))
+I cli: sendspin-cli 1.0.0 listening on port 8928 as "kitchen" (output: hw:1,0, mDNS: dns_sd (avahi-compat))
 I mdns: advertising _sendspin._tcp as "kitchen" on port 8928 (path /sendspin)
 I sendspin.ws_server: Starting server on port: 8928 (max connections: 4)
 ```

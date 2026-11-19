@@ -30,7 +30,7 @@ root without printing the exact commands first and waiting for you to say yes:
 ```
 ==> These are the commands that need root
 
-  sudo tar -xzf /tmp/tmp.XXXX/sendspin-cli-0.3.0-linux-arm64.tar.gz --strip-components=1 -C / sendspin-cli-0.3.0-linux-arm64/usr
+  sudo tar -xzf /tmp/tmp.XXXX/sendspin-cli-1.0.0-linux-arm64.tar.gz --strip-components=1 -C / sendspin-cli-1.0.0-linux-arm64/usr
   sudo systemd-sysusers
   sudo systemctl daemon-reload
   sudo systemctl enable sendspin-cli
@@ -136,8 +136,8 @@ If you would rather do it by hand, or the script refuses this host:
 
 ```bash
 # 1. Install — see the Installation page for the checksum step
-sudo tar -xzf sendspin-cli-0.1.0-linux-arm64.tar.gz --strip-components=1 -C / \
-  sendspin-cli-0.1.0-linux-arm64/usr
+sudo tar -xzf sendspin-cli-1.0.0-linux-arm64.tar.gz --strip-components=1 -C / \
+  sendspin-cli-1.0.0-linux-arm64/usr
 
 # 2. Find a device
 sendspin-cli -l
@@ -198,7 +198,7 @@ journalctl -u sendspin-cli -f
 A healthy start looks like this:
 
 ```
-I cli: sendspin-cli 0.1.0 listening on port 8928 as "kitchen" (output: hw:1,0, mDNS: dns_sd (avahi-compat))
+I cli: sendspin-cli 1.0.0 listening on port 8928 as "kitchen" (output: hw:1,0, mDNS: dns_sd (avahi-compat))
 I mdns: advertising _sendspin._tcp as "kitchen" on port 8928 (path /sendspin)
 I control: Listening on /run/sendspin-cli/control.sock
 ```
