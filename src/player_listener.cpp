@@ -78,6 +78,7 @@ size_t PlayerListener::on_audio_output(std::span<const uint8_t> pcm,
 void PlayerListener::poll(int64_t now_us) {
     sendspin::AudioFormat wanted;
     bool holds_audio = false;
+    bool refused = false;
     {
         const std::lock_guard<std::mutex> lock(this->format_mutex_);
         if (!this->requested_.has_value()) {
@@ -86,7 +87,8 @@ void PlayerListener::poll(int64_t now_us) {
             return;
         }
         wanted = *this->requested_;
-        holds_audio = this->open_.has_value() && !this->open_->refused;
+        holds_audio = this->open_.has_value();
+        refused = holds_audio && this->open_->refused;
     }
 
     if (holds_audio) {
@@ -95,8 +97,12 @@ void PlayerListener::poll(int64_t now_us) {
         }
         // Count first: the acquire makes the finish time at least as new as the frames counted.
         const uint64_t played = this->played_frames_.load(std::memory_order_acquire);
-        const bool drained = played >= this->written_frames_.load(std::memory_order_relaxed) &&
-                             now_us >= this->playout_end_us_.load(std::memory_order_relaxed);
+        // A refused open may since have recovered in write(), so its reported audio is waited
+        // out too; frames it never reported are not, or leaving it would always time out.
+        const bool counted =
+            refused || played >= this->written_frames_.load(std::memory_order_relaxed);
+        const bool drained =
+            counted && now_us >= this->playout_end_us_.load(std::memory_order_relaxed);
         if (!drained) {
             if (now_us - *this->requested_since_us_ < PLAYOUT_TIMEOUT_US) {
                 return;

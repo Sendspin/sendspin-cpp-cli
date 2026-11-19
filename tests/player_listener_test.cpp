@@ -372,6 +372,26 @@ TEST(PlayerListener, ARefusedFormatStillReachesTheSinkAndTheNextFormatRetries) {
     EXPECT_TRUE(harness.listener.stream_format().has_value());
 }
 
+TEST(PlayerListener, ARefusedOpenThatRecoveredIsPlayedOutBeforeASwitch) {
+    RecordingHarness harness;
+    harness.sink.accepts = false;
+    harness.listener.on_stream_start();
+    const std::vector<uint8_t> audio = pcm(HI_RES, 100);
+    harness.listener.on_audio_output(audio, HI_RES, 0);
+    harness.listener.poll(0);
+    harness.listener.on_audio_output(audio, HI_RES, 0);
+    // The sink's write() reopened the device and is playing what it took.
+    harness.sink.on_frames_played(100, 5000);
+    harness.sink.accepts = true;
+    harness.log.clear();
+
+    harness.listener.on_audio_output(pcm(CD, 1), CD, 0);
+    harness.listener.poll(1000);
+    EXPECT_TRUE(harness.log.empty());
+    harness.listener.poll(5000);
+    EXPECT_EQ(harness.log, (std::vector<std::string>{"configure 44100/2/16"}));
+}
+
 TEST(PlayerListener, AStreamEndForgetsTheFormatSoTheNextStreamReopens) {
     RecordingHarness harness;
     harness.listener.release_device_between_streams();
