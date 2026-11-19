@@ -135,6 +135,8 @@ sendspin-cli -n living-room -o hw:1,0    # play through one of them
 
 `--release-device` closes the device when a stream ends and reopens it for the next one, so
 other players can share an exclusive device such as an ALSA `hw:` DAC. ALSA and PortAudio only.
+`--keep-output-alive <s>` instead keeps an ALSA output running on silence for `<s>` seconds after
+the last audio, so an HDMI or S/PDIF receiver keeps its lock across a switch between streams.
 See [Choosing an output](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Advanced-Usage#choosing-an-output).
 
 ### Preferred audio format
