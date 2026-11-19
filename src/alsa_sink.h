@@ -23,6 +23,7 @@
 #include <alsa/asoundlib.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
@@ -56,11 +57,16 @@ public:
     void clear() override;
     void release() override;
     void stop() override;
+    bool device_busy() const override;
+    bool device_open() const override;
     void set_volume(uint8_t volume) override;
     void set_muted(bool muted) override;
 
     /// Reopens a device that died mid-stream once SinkRecovery's delay is up.
     void poll(int64_t now_ms) override;
+
+    /// Keeps the PCM running on silence for `seconds` after the last audio; 0 turns that off.
+    void set_keep_alive(uint32_t seconds) override;
 
     /// What this PCM will take; opens the device briefly.
     SinkCapabilities capabilities() const override;
@@ -92,6 +98,12 @@ private:
     bool handle_device_loss_();
     /// Sets target_multiplier_ from volume_ and muted_ for the software-gain path.
     void update_target_multiplier_();
+    /// Discards queued audio without stopping the PCM. Caller holds device_mutex_.
+    void flush_keeping_alive_();
+    /// Tops an idle ring up with silence; stops the PCM when the window ends. Holds device_mutex_.
+    void keep_alive_top_up_(bool force);
+    /// Keep-alive: (re)opens the window, from now. Caller holds device_mutex_.
+    void keep_alive_extend_();
 
     /// Opens the mixer for `mixer_spec`; caller closes *handle even on a null element.
     static snd_mixer_elem_t* open_mixer_(const std::string& mixer_spec, snd_mixer_t** handle);
@@ -138,6 +150,19 @@ private:
     uint8_t channels_{0};
     uint8_t bits_{0};
     size_t bytes_per_frame_{0};
+    /// Ring and period of the open PCM, in frames; zero while closed.
+    snd_pcm_uframes_t buffer_frames_{0};
+    snd_pcm_uframes_t period_frames_{0};
+    /// --keep-output-alive, in seconds; 0 is off.
+    std::atomic<uint32_t> keep_alive_s_{0};
+    /// End of the keep-alive window; guarded by device_mutex_.
+    std::chrono::steady_clock::time_point keep_alive_until_{};
+    /// The window ran out and the PCM was stopped; guarded by device_mutex_.
+    bool keep_alive_expired_{true};
+    /// When write() last handed real audio to the PCM; guarded by device_mutex_.
+    std::chrono::steady_clock::time_point last_audio_write_{};
+    /// Zeroed scratch for keep-alive silence, reused across top-ups.
+    std::vector<uint8_t> silence_;
     /// The format last announced; survives close_device_() so poll() can reopen at it.
     StreamFormat last_format_{};
     /// Scratch for volume-scaled samples, reused across writes.
@@ -147,6 +172,10 @@ private:
     std::atomic<bool> stopping_{false};
     /// Latches once the device is unusable, so write() discards instead of spinning.
     std::atomic<bool> failed_{false};
+    /// The last open failed with -EBUSY; cleared by the next open that succeeds.
+    std::atomic<bool> busy_{false};
+    /// Mirrors pcm_ != nullptr for readers without device_mutex_.
+    std::atomic<bool> open_{false};
 
     /// Guarded by device_mutex_, except SinkRecovery::pending().
     SinkRecovery recovery_;

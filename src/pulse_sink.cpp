@@ -396,6 +396,15 @@ size_t PulseAudioSink::write(const uint8_t* data, size_t length, uint32_t timeou
     }
     const size_t frames_total = usable / bytes_per_frame;
 
+    if (this->corked_) {
+        const MainloopLock ml(this->conn_.mainloop());
+        pa_operation* op = pa_stream_cork(this->stream_, 0, nullptr, nullptr);
+        if (op != nullptr) {
+            pa_operation_unref(op);
+        }
+        this->corked_ = false;
+    }
+
     // Scale the whole buffer up front; commit the ramp only by frames written.
     const uint64_t start = this->current_multiplier_;
     const uint64_t target = this->target_multiplier_.load(std::memory_order_relaxed);
@@ -512,10 +521,15 @@ void PulseAudioSink::clear() {
         return;
     }
     const MainloopLock ml(this->conn_.mainloop());
-    // Fire and forget: the flush is ordered ahead of later writes.
+    // Fire and forget: the flush and cork are ordered ahead of later writes.
     pa_operation* op = pa_stream_flush(this->stream_, nullptr, nullptr);
     if (op != nullptr) {
         pa_operation_unref(op);
+    }
+    op = pa_stream_cork(this->stream_, 1, nullptr, nullptr);
+    if (op != nullptr) {
+        pa_operation_unref(op);
+        this->corked_ = true;
     }
 }
 
@@ -640,6 +654,7 @@ bool PulseAudioSink::open_stream_(uint32_t sample_rate, uint8_t channels, uint8_
 
     // Bump the generation so a write() parked on the previous stream cannot feed this one.
     ++this->stream_generation_;
+    this->corked_ = false;
     this->rate_ = sample_rate;
     this->channels_ = channels;
     this->bits_ = bits_per_sample;

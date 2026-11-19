@@ -84,6 +84,7 @@ enum LongOnly {
     OPT_ALSA_MIXER_CURVE,
     OPT_RELEASE_DEVICE,
     OPT_PAIRING_TOKEN_ENDPOINT,
+    OPT_KEEP_OUTPUT_ALIVE,
 };
 
 /// An option a config file may set: its key (the long flag name) and how diagnostics name it.
@@ -128,6 +129,7 @@ const std::vector<SettableOption>& settable_options() {
         {Opt::AlsaMixerCurve, "alsa-mixer-curve", "--alsa-mixer-curve"},
         {Opt::ReleaseDevice, "release-device", "--release-device"},
         {Opt::TokenEndpoint, "pairing-token-endpoint", "--pairing-token-endpoint"},
+        {Opt::KeepAlive, "keep-output-alive", "--keep-output-alive"},
     };
     return table;
 }
@@ -208,6 +210,19 @@ bool parse_output_delay(const std::string& str, uint16_t& delay_ms) {
         return false;
     }
     delay_ms = static_cast<uint16_t>(value);
+    return true;
+}
+
+/// Parses --keep-output-alive seconds: digits only, 0 to MAX_KEEP_OUTPUT_ALIVE_S.
+bool parse_keep_output_alive(const std::string& str, uint32_t& seconds) {
+    if (!is_all_digits(str)) {
+        return false;
+    }
+    const unsigned long value = std::strtoul(str.c_str(), nullptr, 10);
+    if (value > MAX_KEEP_OUTPUT_ALIVE_S) {
+        return false;
+    }
+    seconds = static_cast<uint32_t>(value);
     return true;
 }
 
@@ -451,6 +466,13 @@ bool apply_option(const SettableOption& option, const std::string& value, Option
                 return false;
             }
             break;
+        case Opt::KeepAlive:
+            if (!parse_keep_output_alive(value, out.keep_output_alive_s)) {
+                error = "invalid --keep-output-alive '" + value + "' -- expected 0-" +
+                        std::to_string(MAX_KEEP_OUTPUT_ALIVE_S) + " seconds";
+                return false;
+            }
+            break;
         case Opt::PairingCode:
             // The value is a credential, so the message does not repeat it.
             if (value.size() != 8 || value.find_first_not_of("0123456789") != std::string::npos) {
@@ -641,6 +663,7 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
         {"alsa-mixer-curve", required_argument, nullptr, OPT_ALSA_MIXER_CURVE},
         {"release-device", no_argument, nullptr, OPT_RELEASE_DEVICE},
         {"pairing-token-endpoint", required_argument, nullptr, OPT_PAIRING_TOKEN_ENDPOINT},
+        {"keep-output-alive", required_argument, nullptr, OPT_KEEP_OUTPUT_ALIVE},
         {nullptr, 0, nullptr, 0},
     };
 
@@ -797,6 +820,9 @@ bool parse_options(int argc, char* argv[], Options& out, std::FILE* err) {
                 break;
             case OPT_PAIRING_TOKEN_ENDPOINT:
                 apply(Opt::TokenEndpoint, optarg);
+                break;
+            case OPT_KEEP_OUTPUT_ALIVE:
+                apply(Opt::KeepAlive, optarg);
                 break;
             case OPT_MANUFACTURER:
                 apply(Opt::Manufacturer, optarg);
@@ -1180,6 +1206,16 @@ void print_usage(std::FILE* out, const char* prog) {
     std::fprintf(out, "                device such as an ALSA hw: DAC. Another app may then\n");
     std::fprintf(out, "                hold it when a stream starts, and that stream is\n");
     std::fprintf(out, "                discarded. ALSA and PortAudio only\n");
+    std::fprintf(out, "  --keep-output-alive <s>\n");
+    std::fprintf(out, "                Keep the output device running on silence for <s>\n");
+    std::fprintf(out, "                seconds after the last audio instead of stopping it at\n");
+    std::fprintf(out, "                once: for an HDMI or S/PDIF receiver that re-locks (and\n");
+    std::fprintf(out, "                swallows the start of the next stream) whenever the\n");
+    std::fprintf(out, "                digital signal stops. A few seconds bridge a switch\n");
+    std::fprintf(out, "                between streams and still let the receiver go to standby\n");
+    std::fprintf(out, "                later. 0-%u, default 0 (off). ALSA outputs only; other\n",
+                 MAX_KEEP_OUTPUT_ALIVE_S);
+    std::fprintf(out, "                backends, and --release-device, ignore it\n");
     std::fprintf(out, "  --allow-unpaired\n");
     std::fprintf(out, "                Let a server that has not paired with this player play\n");
     std::fprintf(out, "                on it. Off by default: every connection is encrypted,\n");

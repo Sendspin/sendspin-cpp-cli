@@ -535,5 +535,34 @@ TEST(SinkRecovery, ResetDuringAnOutageCancelsWhatWasOwed) {
     EXPECT_EQ(rescan_fires_at(recovery, T0, T0 + 10 * SINK_RESCAN_DELAY_MS), -1);
 }
 
+TEST(SinkRecovery, RearmingOwesARescanAfterTheFirstDelayAndKeepsTheGap) {
+    SinkRecovery recovery;
+    recovery.discard_frames(480);
+
+    recovery.rearm();
+
+    EXPECT_TRUE(recovery.pending());
+    EXPECT_FALSE(recovery.reopen_due());
+    EXPECT_EQ(rescan_fires_at(recovery, T0, T0 + 10'000), T0 + SINK_RESCAN_DELAY_MS);
+    EXPECT_EQ(recovery.take_discarded_frames(), 480U);
+}
+
+TEST(SinkRecovery, RearmingAfterASpentBudgetStartsANewCycle) {
+    SinkRecovery recovery;
+    escalate(recovery);
+    int64_t now = T0;
+    for (int i = 0; i < SINK_RESCAN_ATTEMPTS; ++i) {
+        now = rescan_fires_at(recovery, now, now + 10 * SINK_RESCAN_MAX_DELAY_MS);
+        ASSERT_GE(now, 0);
+        recovery.rescan_done(false);
+    }
+    ASSERT_FALSE(recovery.pending());
+
+    recovery.rearm();
+
+    EXPECT_TRUE(recovery.pending());
+    EXPECT_EQ(rescan_fires_at(recovery, now, now + 10'000), now + SINK_RESCAN_DELAY_MS);
+}
+
 }  // namespace
 }  // namespace sendspin_cli

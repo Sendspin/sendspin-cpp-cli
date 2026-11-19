@@ -79,6 +79,22 @@ void PlayerListener::poll(int64_t now_us) {
     sendspin::AudioFormat wanted;
     bool holds_audio = false;
     bool refused = false;
+    std::optional<sendspin::AudioFormat> recovered;
+    {
+        const std::lock_guard<std::mutex> lock(this->format_mutex_);
+        // The sink's rescan got a busy device back: its writes play from here on.
+        if (this->open_.has_value() && this->open_->busy && this->sink_.device_open()) {
+            this->open_->refused = false;
+            this->open_->busy = false;
+            recovered = this->open_->format;
+        }
+    }
+    if (recovered.has_value()) {
+        this->stream_format_ =
+            StreamFormat{recovered->sample_rate, recovered->channels, recovered->bits_per_sample};
+        cli_log(LogLevel::INFO, "Output device '%s' is free -- playing",
+                this->sink_.name().c_str());
+    }
     {
         const std::lock_guard<std::mutex> lock(this->format_mutex_);
         if (!this->requested_.has_value()) {
@@ -137,9 +153,17 @@ void PlayerListener::open_sink(const sendspin::AudioFormat& format) {
         this->player_.notify_audio_played(static_cast<uint32_t>(written - played),
                                           sendspin::SendspinClient::now_us());
     }
+    const bool busy = !accepted && this->sink_.device_busy();
+    this->refused_busy_ = this->refused_busy_ || busy;
     if (accepted) {
         this->stream_format_ =
             StreamFormat{format.sample_rate, format.channels, format.bits_per_sample};
+    } else if (busy) {
+        cli_log(LogLevel::ERROR,
+                "Output device '%s' is busy (held by another process) -- audio is discarded "
+                "until it is free",
+                this->sink_.name().c_str());
+        this->stream_format_.reset();
     } else {
         cli_log(LogLevel::ERROR,
                 "Output device '%s' refused %u Hz / %u ch / %u-bit -- audio in this format will "
@@ -150,7 +174,7 @@ void PlayerListener::open_sink(const sendspin::AudioFormat& format) {
     }
 
     const std::lock_guard<std::mutex> lock(this->format_mutex_);
-    this->open_ = OpenFormat{format, !accepted};
+    this->open_ = OpenFormat{format, !accepted, busy};
     if (this->requested_ == format) {
         this->requested_.reset();
     }
@@ -187,6 +211,7 @@ void PlayerListener::on_stream_start() {
 
     cli_log(LogLevel::INFO, "Stream started");
     this->refused_bytes_.store(0, std::memory_order_relaxed);
+    this->refused_busy_ = false;
     if (!info.has_value()) {
         return;
     }
@@ -210,9 +235,9 @@ void PlayerListener::on_stream_end() {
     this->streaming_ = false;
     this->reset_format();
     if (discarded > 0) {
-        cli_log(LogLevel::ERROR,
-                "Stream ended: %llu bytes discarded, because '%s' refused their format",
-                static_cast<unsigned long long>(discarded), this->sink_.name().c_str());
+        cli_log(LogLevel::ERROR, "Stream ended: %llu bytes discarded, because '%s' %s",
+                static_cast<unsigned long long>(discarded), this->sink_.name().c_str(),
+                this->refused_busy_ ? "was busy" : "refused their format");
     } else {
         cli_log(LogLevel::INFO, "Stream ended");
     }

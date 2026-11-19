@@ -51,6 +51,13 @@ constexpr unsigned int PERIODS_PER_BUFFER = 5;
 /// Longest snd_pcm_wait() slice, bounding how long shutdown waits on a busy device.
 constexpr int WAIT_SLICE_MS = 20;
 
+/// Idle time before keep-alive adds silence, so it never lands between a running stream's writes.
+constexpr auto KEEP_ALIVE_IDLE = std::chrono::milliseconds(60);
+/// Keep-alive: periods of audio kept queued while idle; small, so a new stream is not delayed.
+constexpr snd_pcm_uframes_t KEEP_ALIVE_PERIODS = 2;
+/// Floor on the keep-alive reserve: a few main-loop ticks, so the PCM survives between top-ups.
+constexpr uint32_t KEEP_ALIVE_RESERVE_MS = 40;
+
 /// snd_pcm_resume() retries before falling back to prepare(), after a system suspend.
 constexpr int RESUME_TRIES = 10;
 constexpr auto RESUME_PAUSE = std::chrono::milliseconds(10);
@@ -314,6 +321,7 @@ void list_alsa_pcms(std::FILE* out, snd_pcm_stream_t stream,
 }
 
 bool AlsaAudioSink::open_device_(uint32_t sample_rate, uint8_t channels, uint8_t bits_per_sample) {
+    const bool was_busy = this->busy_.exchange(false);
     snd_pcm_format_t format = SND_PCM_FORMAT_UNKNOWN;
     if (!alsa_format_for(bits_per_sample, format)) {
         cli_log(LogLevel::ERROR, "alsa: unsupported bit depth %u", bits_per_sample);
@@ -326,9 +334,12 @@ bool AlsaAudioSink::open_device_(uint32_t sample_rate, uint8_t channels, uint8_t
     }
 
     int err = snd_pcm_open(&this->pcm_, this->device_.c_str(), SND_PCM_STREAM_PLAYBACK, 0);
+    const bool still_busy = err == -EBUSY && was_busy;
+    this->busy_.store(err == -EBUSY);
     if (err < 0) {
-        cli_log(LogLevel::ERROR, "alsa: cannot open '%s': %s", this->device_.c_str(),
-                snd_strerror(err));
+        // A rescan finding the device still held is expected; it was reported once already.
+        cli_log(still_busy ? LogLevel::DEBUG : LogLevel::ERROR, "alsa: cannot open '%s': %s",
+                this->device_.c_str(), snd_strerror(err));
         this->pcm_ = nullptr;
         return false;
     }
@@ -421,9 +432,12 @@ bool AlsaAudioSink::open_device_(uint32_t sample_rate, uint8_t channels, uint8_t
     this->rate_ = sample_rate;
     this->channels_ = channels;
     this->bits_ = bits_per_sample;
+    this->buffer_frames_ = buffer_size;
+    this->period_frames_ = period_size;
     this->bytes_per_frame_ =
         static_cast<size_t>(channels) * (static_cast<size_t>(bits_per_sample) / 8U);
     this->failed_.store(false);
+    this->open_.store(true);
 
     cli_log(LogLevel::INFO,
             "alsa: '%s' open at %u Hz, %u ch, %u-bit (%zu bytes/frame, %lu-frame ring, "
@@ -439,10 +453,15 @@ void AlsaAudioSink::close_device_() {
     }
     snd_pcm_close(this->pcm_);
     this->pcm_ = nullptr;
+    this->open_.store(false);
     this->rate_ = 0;
     this->channels_ = 0;
     this->bits_ = 0;
     this->bytes_per_frame_ = 0;
+    this->buffer_frames_ = 0;
+    this->period_frames_ = 0;
+    // A reopened device has no window until real audio or a stream boundary opens one.
+    this->keep_alive_expired_ = true;
 }
 
 bool AlsaAudioSink::recover_(int err) {
@@ -514,6 +533,21 @@ bool AlsaAudioSink::configure(uint32_t sample_rate, uint8_t channels, uint8_t bi
 
     if (this->pcm_ != nullptr && this->rate_ == sample_rate && this->channels_ == channels &&
         this->bits_ == bits_per_sample) {
+        const snd_pcm_state_t state = snd_pcm_state(this->pcm_);
+        const bool keepable = state == SND_PCM_STATE_RUNNING || state == SND_PCM_STATE_PREPARED ||
+                              state == SND_PCM_STATE_XRUN;
+        if (this->keep_alive_s_.load() != 0 && keepable) {
+            // Keep-alive: flush without stopping, so the receiver keeps its lock.
+            this->flush_keeping_alive_();
+            const snd_pcm_state_t after = snd_pcm_state(this->pcm_);
+            if (after == SND_PCM_STATE_RUNNING || after == SND_PCM_STATE_PREPARED) {
+                cli_log(LogLevel::DEBUG,
+                        "alsa: reusing '%s' at %u Hz, %u ch, %u-bit (kept running)",
+                        this->device_.c_str(), sample_rate, channels, bits_per_sample);
+                this->recovery_.reset();
+                return true;
+            }
+        }
         // Same format: keep the device and restart from a clean ring.
         snd_pcm_drop(this->pcm_);
         const int err = snd_pcm_prepare(this->pcm_);
@@ -532,6 +566,10 @@ bool AlsaAudioSink::configure(uint32_t sample_rate, uint8_t channels, uint8_t bi
     this->close_device_();
     if (!this->open_device_(sample_rate, channels, bits_per_sample)) {
         this->failed_.store(true);
+        if (this->busy_.load()) {
+            // Owe poll() a rescan, so the stream picks up once the other process lets go.
+            this->recovery_.rearm();
+        }
         return false;
     }
     this->recovery_.reset();
@@ -645,6 +683,8 @@ size_t AlsaAudioSink::write(const uint8_t* data, size_t length, uint32_t timeout
                 continue;
             }
             frames_done += static_cast<size_t>(written);
+            this->last_audio_write_ = std::chrono::steady_clock::now();
+            this->keep_alive_extend_();
         }
 
         // Commit the ramp by frames written, not scaled: an unwritten tail is re-presented.
@@ -654,9 +694,11 @@ size_t AlsaAudioSink::write(const uint8_t* data, size_t length, uint32_t timeout
         if (frames_done > 0 && this->pcm_ != nullptr && this->rate_ > 0) {
             snd_pcm_sframes_t delay = 0;
             if (snd_pcm_delay(this->pcm_, &delay) == 0 && delay >= 0) {
-                finish_us = SendspinClient::now_us() +
-                            ((static_cast<int64_t>(delay) * 1000000) / this->rate_);
+                const int64_t delay_us = (static_cast<int64_t>(delay) * 1000000) / this->rate_;
+                finish_us = SendspinClient::now_us() + delay_us;
                 have_timing = true;
+                // The keep-alive window runs from when this audio finishes playing.
+                this->keep_alive_until_ += std::chrono::microseconds(delay_us);
                 // Taken with the timestamp under the same lock, so nothing reports between them.
                 gap_frames = this->recovery_.take_discarded_frames();
             }
@@ -690,6 +732,13 @@ void AlsaAudioSink::clear() {
     this->recovery_.forget_discarded_frames();
 
     if (this->pcm_ == nullptr) {
+        // The stream is over, so a rescan must not reopen the device for nobody.
+        this->recovery_.cancel();
+        return;
+    }
+
+    if (this->keep_alive_s_.load() != 0 && !this->keep_alive_expired_) {
+        this->flush_keeping_alive_();
         return;
     }
 
@@ -718,6 +767,14 @@ void AlsaAudioSink::release() {
     snd_pcm_drop(this->pcm_);
     this->close_device_();
     cli_log(LogLevel::INFO, "alsa: '%s' released", this->device_.c_str());
+}
+
+bool AlsaAudioSink::device_busy() const {
+    return this->busy_.load();
+}
+
+bool AlsaAudioSink::device_open() const {
+    return this->open_.load();
 }
 
 void AlsaAudioSink::stop() {
@@ -760,6 +817,13 @@ void AlsaAudioSink::set_muted(bool muted) {
 void AlsaAudioSink::poll(int64_t now_ms) {
     // Before the fast path: a ramp step and an external mixer change are both due on every tick.
     this->poll_mixer_();
+    if (this->keep_alive_s_.load() != 0 && !this->stopping_.load()) {
+        // try_lock: a write() parked in snd_pcm_wait() needs no top-up and must not stall the loop.
+        std::unique_lock<std::mutex> lock(this->device_mutex_, std::try_to_lock);
+        if (lock.owns_lock()) {
+            this->keep_alive_top_up_(false);
+        }
+    }
 
     // Unlocked fast path: nothing to do on almost every tick.
     if (!this->recovery_.pending() || this->stopping_.load()) {
@@ -780,6 +844,10 @@ void AlsaAudioSink::poll(int64_t now_ms) {
     if (!this->open_device_(format.sample_rate, format.channels, format.bit_depth)) {
         // Failure buys another attempt after a longer delay.
         this->recovery_.rescan_done(false);
+        if (this->busy_.load() && !this->recovery_.pending()) {
+            // Held, not gone: keep trying for as long as the stream lasts; clear() ends it.
+            this->recovery_.rearm();
+        }
         const bool retrying = this->recovery_.pending();
         cli_log(retrying ? LogLevel::DEBUG : LogLevel::WARN, "alsa: '%s' is not back%s",
                 this->device_.c_str(),
@@ -796,6 +864,118 @@ void AlsaAudioSink::poll(int64_t now_ms) {
     this->recovery_.rescan_done(true);
     cli_log(LogLevel::INFO, "alsa: '%s' is back -- recovered without waiting for the next stream",
             this->device_.c_str());
+}
+
+void AlsaAudioSink::set_keep_alive(uint32_t seconds) {
+    this->keep_alive_s_.store(seconds);
+    if (seconds != 0) {
+        cli_log(LogLevel::INFO,
+                "alsa: keeping '%s' running on silence for %u s after the last audio",
+                this->device_.c_str(), seconds);
+    }
+}
+
+void AlsaAudioSink::keep_alive_extend_() {
+    this->keep_alive_until_ =
+        std::chrono::steady_clock::now() + std::chrono::seconds(this->keep_alive_s_.load());
+    this->keep_alive_expired_ = false;
+}
+
+void AlsaAudioSink::flush_keeping_alive_() {
+    if (this->pcm_ == nullptr || this->bytes_per_frame_ == 0) {
+        return;
+    }
+    if (snd_pcm_state(this->pcm_) == SND_PCM_STATE_RUNNING) {
+        // Leave a period ahead of the hardware pointer: the DMA may already have fetched it.
+        const snd_pcm_sframes_t rewindable = snd_pcm_rewindable(this->pcm_);
+        const auto margin = static_cast<snd_pcm_sframes_t>(this->period_frames_);
+        if (rewindable > margin) {
+            const snd_pcm_sframes_t rewound =
+                snd_pcm_rewind(this->pcm_, static_cast<snd_pcm_uframes_t>(rewindable - margin));
+            if (rewound < 0) {
+                // Not fatal: the queued tail just plays out before the next stream.
+                cli_log(LogLevel::DEBUG, "alsa: keep-alive rewind failed: %s",
+                        snd_strerror(static_cast<int>(rewound)));
+            }
+        }
+    }
+    // A stream boundary: bridge it for the whole window, from now, topping up from the next tick.
+    this->keep_alive_extend_();
+    this->last_audio_write_ = {};
+    // Refill now rather than on the next tick: after the rewind only the margin is queued.
+    this->keep_alive_top_up_(true);
+}
+
+void AlsaAudioSink::keep_alive_top_up_(bool force) {
+    if (this->pcm_ == nullptr || this->bytes_per_frame_ == 0 || this->period_frames_ == 0) {
+        return;
+    }
+    if (this->keep_alive_expired_) {
+        return;  // stopped until real audio or the next stream boundary reopens the window
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= this->keep_alive_until_) {
+        // Window over: stop, so the receiver sees the signal end and can go to standby.
+        this->keep_alive_expired_ = true;
+        snd_pcm_drop(this->pcm_);
+        const int err = snd_pcm_prepare(this->pcm_);
+        cli_log(LogLevel::INFO, "alsa: no audio for %u s -- stopping '%s' until the next stream",
+                this->keep_alive_s_.load(), this->device_.c_str());
+        if (err < 0) {
+            cli_log(LogLevel::WARN, "alsa: could not re-prepare '%s' after keep-alive: %s",
+                    this->device_.c_str(), snd_strerror(err));
+        }
+        return;
+    }
+    if (!force && now - this->last_audio_write_ < KEEP_ALIVE_IDLE) {
+        return;
+    }
+
+    const snd_pcm_state_t state = snd_pcm_state(this->pcm_);
+    if (state == SND_PCM_STATE_XRUN || state == SND_PCM_STATE_SETUP) {
+        // The ring ran dry (e.g. the end of a stream before clear()): restart on silence.
+        if (snd_pcm_prepare(this->pcm_) < 0) {
+            return;  // write() and poll()'s recovery deal with a device that is gone
+        }
+    } else if (state != SND_PCM_STATE_RUNNING && state != SND_PCM_STATE_PREPARED) {
+        return;  // suspended, disconnected, ...: leave it to the regular recovery paths
+    }
+
+    snd_pcm_sframes_t avail = snd_pcm_avail_update(this->pcm_);
+    if (avail == -EPIPE) {
+        if (snd_pcm_prepare(this->pcm_) < 0) {
+            return;
+        }
+        avail = snd_pcm_avail_update(this->pcm_);
+    }
+    if (avail < 0) {
+        return;
+    }
+
+    const auto reserve = static_cast<snd_pcm_uframes_t>(
+        (static_cast<uint64_t>(this->rate_) * KEEP_ALIVE_RESERVE_MS) / 1000U);
+    const snd_pcm_uframes_t low_water = std::min(
+        std::max(this->period_frames_ * KEEP_ALIVE_PERIODS, reserve), this->buffer_frames_);
+    const auto free_frames = static_cast<snd_pcm_uframes_t>(avail);
+    const snd_pcm_uframes_t queued =
+        (free_frames >= this->buffer_frames_) ? 0 : this->buffer_frames_ - free_frames;
+    if (queued >= low_water) {
+        return;
+    }
+    const snd_pcm_uframes_t frames = std::min(low_water - queued, free_frames);
+    if (frames == 0) {
+        return;
+    }
+
+    const size_t bytes = frames * this->bytes_per_frame_;
+    if (this->silence_.size() < bytes) {
+        this->silence_.assign(bytes, 0);  // signed PCM: zero is silence
+    }
+    const snd_pcm_sframes_t written = snd_pcm_writei(this->pcm_, this->silence_.data(), frames);
+    if (written < 0 && written != -EAGAIN) {
+        cli_log(LogLevel::DEBUG, "alsa: keep-alive silence not written: %s",
+                snd_strerror(static_cast<int>(written)));
+    }
 }
 
 void AlsaAudioSink::update_target_multiplier_() {

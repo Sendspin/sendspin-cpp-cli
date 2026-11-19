@@ -71,6 +71,25 @@ It verifies the release, installs it for your user and starts it whenever you lo
 [Getting Started on Windows](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Getting-Started-on-Windows)
 for the walkthrough, including the firewall rule a server needs to reach it.
 
+### Building from source
+
+`cmake -B build && cmake --build build` fetches sendspin-cpp and its dependencies on the first
+configure. For an offline build, e.g. distro packaging, point CMake at local copies instead:
+
+```bash
+cmake -B build -DFETCHCONTENT_FULLYDISCONNECTED=ON \
+  -DFETCHCONTENT_SOURCE_DIR_SENDSPIN=/src/sendspin-cpp \
+  -DFETCHCONTENT_SOURCE_DIR_ARDUINOJSON=/src/ArduinoJson \
+  -DFETCHCONTENT_SOURCE_DIR_MICRO_FLAC=/src/micro-flac \
+  -DFETCHCONTENT_SOURCE_DIR_MICRO_OPUS=/src/micro-opus \
+  -DFETCHCONTENT_SOURCE_DIR_IXWEBSOCKET=/src/IXWebSocket \
+  -DFETCHCONTENT_SOURCE_DIR_NOISE_C=/src/noise-c \
+  -DSENDSPIN_CLI_BUILD_TESTS=OFF
+```
+
+See [Build from source](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Installation#build-from-source)
+for which tag each copy must be at.
+
 ## Updating
 
 **Linux and Windows:** re-run the guided installer from [Installation](#installation). It stops
@@ -149,6 +168,8 @@ sendspin-cli -n living-room -o hw:1,0    # play through one of them
 
 `--release-device` closes the device when a stream ends and reopens it for the next one, so
 other players can share an exclusive device such as an ALSA `hw:` DAC. ALSA and PortAudio only.
+`--keep-output-alive <s>` instead keeps an ALSA output running on silence for `<s>` seconds after
+the last audio, so an HDMI or S/PDIF receiver keeps its lock across a switch between streams.
 See [Choosing an output](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Advanced-Usage#choosing-an-output).
 
 ### Preferred audio format

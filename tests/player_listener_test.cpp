@@ -79,9 +79,19 @@ public:
     void release() override {
         this->log_.emplace_back("release");
     }
+    bool device_busy() const override {
+        return this->busy;
+    }
+    bool device_open() const override {
+        return this->open;
+    }
 
     /// What configure() answers.
     bool accepts{true};
+    /// What device_busy() answers.
+    bool busy{false};
+    /// What device_open() answers.
+    bool open{false};
 
 private:
     std::vector<std::string>& log_;
@@ -219,6 +229,8 @@ TEST(PlayerListener, AStreamEndReleasesTheDeviceBeforeTheStopEventWhenAsked) {
 
 constexpr sendspin::AudioFormat CD{44100, 2, 16};
 constexpr sendspin::AudioFormat HI_RES{96000, 2, 24};
+constexpr sendspin::AudioFormat DAT{48000, 2, 16};
+constexpr sendspin::AudioFormat STUDIO{192000, 2, 24};
 
 /// `frames` whole frames of silence in `format`.
 std::vector<uint8_t> pcm(const sendspin::AudioFormat& format, size_t frames) {
@@ -408,6 +420,125 @@ TEST(PlayerListener, AStreamEndForgetsTheFormatSoTheNextStreamReopens) {
 
     EXPECT_EQ(harness.log, (std::vector<std::string>{"start", "configure 44100/2/16", "release",
                                                      "stop", "start", "configure 44100/2/16"}));
+}
+
+TEST(PlayerListener, AMidStreamSwitchFrom48k16To192k24ReopensInTheNewFormat) {
+    RecordingHarness harness;
+    harness.listener.on_stream_start();
+    const std::vector<uint8_t> old_audio = pcm(DAT, 48);
+    const std::vector<uint8_t> new_audio = pcm(STUDIO, 192);
+    harness.listener.on_audio_output(old_audio, DAT, 0);
+    harness.listener.poll(0);
+    ASSERT_EQ(harness.listener.on_audio_output(old_audio, DAT, 0), old_audio.size());
+
+    EXPECT_EQ(harness.listener.on_audio_output(new_audio, STUDIO, 0), 0U);
+    harness.sink.on_frames_played(48, 1000);
+    harness.listener.poll(1000);
+    EXPECT_EQ(harness.listener.on_audio_output(new_audio, STUDIO, 0), new_audio.size());
+
+    EXPECT_EQ(harness.log, (std::vector<std::string>{"start", "configure 48000/2/16", "write 192",
+                                                     "configure 192000/2/24", "write 1152"}));
+    ASSERT_TRUE(harness.listener.stream_format().has_value());
+    EXPECT_EQ(harness.listener.stream_format()->sample_rate, 192000U);
+    EXPECT_EQ(harness.listener.stream_format()->bit_depth, 24U);
+    EXPECT_TRUE(harness.listener.streaming());
+}
+
+TEST(PlayerListener, ABusyDeviceIsReportedAsBusyNotAsARefusedFormat) {
+    RecordingHarness harness;
+    harness.sink.accepts = false;
+    harness.sink.busy = true;
+    harness.listener.on_stream_start();
+    const std::vector<uint8_t> audio = pcm(CD, 10);
+    harness.listener.on_audio_output(audio, CD, 0);
+
+    testing::internal::CaptureStderr();
+    harness.listener.poll(0);
+    harness.listener.on_audio_output(audio, CD, 0);
+    harness.listener.on_stream_end();
+    const std::string logged = testing::internal::GetCapturedStderr();
+
+    EXPECT_NE(logged.find("'recording' is busy (held by another process)"), std::string::npos)
+        << logged;
+    EXPECT_NE(logged.find("because 'recording' was busy"), std::string::npos) << logged;
+    EXPECT_EQ(logged.find("-l"), std::string::npos) << logged;
+    EXPECT_EQ(logged.find("refused"), std::string::npos) << logged;
+}
+
+TEST(PlayerListener, WritesAfterABusyDeviceComesBackAreNotCountedAsDiscarded) {
+    RecordingHarness harness;
+    harness.sink.accepts = false;
+    harness.sink.busy = true;
+    harness.listener.on_stream_start();
+    const std::vector<uint8_t> audio = pcm(CD, 10);
+    harness.listener.on_audio_output(audio, CD, 0);
+    harness.listener.poll(0);
+    harness.listener.on_audio_output(audio, CD, 0);
+
+    // The sink's poll() reopened the device.
+    harness.sink.busy = false;
+    harness.sink.open = true;
+    harness.listener.poll(1000);
+    harness.listener.on_audio_output(audio, CD, 0);
+
+    testing::internal::CaptureStderr();
+    harness.listener.on_stream_end();
+    const std::string logged = testing::internal::GetCapturedStderr();
+    EXPECT_NE(logged.find("Stream ended: 40 bytes discarded"), std::string::npos) << logged;
+}
+
+TEST(PlayerListener, ABusyDeviceThatComesBackReportsItsFormat) {
+    RecordingHarness harness;
+    harness.sink.accepts = false;
+    harness.sink.busy = true;
+    harness.listener.on_stream_start();
+    const std::vector<uint8_t> audio = pcm(CD, 10);
+    harness.listener.on_audio_output(audio, CD, 0);
+    harness.listener.poll(0);
+    EXPECT_FALSE(harness.listener.stream_format().has_value());
+
+    harness.sink.busy = false;
+    harness.sink.open = true;
+    harness.listener.poll(1000);
+
+    ASSERT_TRUE(harness.listener.stream_format().has_value());
+    EXPECT_EQ(harness.listener.stream_format()->sample_rate, 44100U);
+}
+
+TEST(PlayerListener, ABusyDeviceThatFailsAnotherWayIsStillCountedAsDiscarding) {
+    RecordingHarness harness;
+    harness.sink.accepts = false;
+    harness.sink.busy = true;
+    harness.listener.on_stream_start();
+    const std::vector<uint8_t> audio = pcm(CD, 10);
+    harness.listener.on_audio_output(audio, CD, 0);
+    harness.listener.poll(0);
+
+    // A rescan failed with something other than EBUSY: no longer busy, but not open either.
+    harness.sink.busy = false;
+    harness.listener.poll(1000);
+    harness.listener.on_audio_output(audio, CD, 0);
+
+    testing::internal::CaptureStderr();
+    harness.listener.on_stream_end();
+    const std::string logged = testing::internal::GetCapturedStderr();
+    EXPECT_NE(logged.find("Stream ended: 40 bytes discarded"), std::string::npos) << logged;
+    EXPECT_FALSE(harness.listener.stream_format().has_value());
+}
+
+TEST(PlayerListener, ARefusedFormatStillPointsAtTheDeviceList) {
+    RecordingHarness harness;
+    harness.sink.accepts = false;
+    harness.listener.on_stream_start();
+    const std::vector<uint8_t> audio = pcm(HI_RES, 10);
+    harness.listener.on_audio_output(audio, HI_RES, 0);
+
+    testing::internal::CaptureStderr();
+    harness.listener.poll(0);
+    const std::string logged = testing::internal::GetCapturedStderr();
+
+    EXPECT_NE(logged.find("refused 96000 Hz / 2 ch / 24-bit"), std::string::npos) << logged;
+    EXPECT_NE(logged.find("Run with -l"), std::string::npos) << logged;
 }
 
 }  // namespace

@@ -566,6 +566,34 @@ TEST(ParseOptions, ReleaseDeviceIsOffUnlessAsked) {
     EXPECT_TRUE(on.options().release_device);
 }
 
+TEST(ParseOptions, KeepOutputAliveIsOffUnlessAsked) {
+    Parse off({});
+    Parse on({"--keep-output-alive", "10"});
+
+    ASSERT_TRUE(off.ok()) << off.diagnostics();
+    ASSERT_TRUE(on.ok()) << on.diagnostics();
+    EXPECT_EQ(off.options().keep_output_alive_s, 0U);
+    EXPECT_EQ(on.options().keep_output_alive_s, 10U);
+}
+
+TEST(ParseOptions, KeepOutputAliveEdgesAreAccepted) {
+    Parse low({"--keep-output-alive", "0"});
+    Parse high({"--keep-output-alive", std::to_string(MAX_KEEP_OUTPUT_ALIVE_S)});
+
+    ASSERT_TRUE(low.ok()) << low.diagnostics();
+    ASSERT_TRUE(high.ok()) << high.diagnostics();
+    EXPECT_EQ(low.options().keep_output_alive_s, 0U);
+    EXPECT_EQ(high.options().keep_output_alive_s, MAX_KEEP_OUTPUT_ALIVE_S);
+}
+
+TEST(ParseOptions, KeepOutputAliveRejectsBadValues) {
+    for (const std::string& bad : {std::to_string(MAX_KEEP_OUTPUT_ALIVE_S + 1), std::string("-1"),
+                                   std::string("10s"), std::string("true"), std::string("")}) {
+        Parse parse({"--keep-output-alive", bad});
+        EXPECT_FALSE(parse.ok()) << "accepted '" << bad << "'";
+    }
+}
+
 TEST(ParseOptions, OutputDelayDefaultsToNoDelay) {
     Parse parse({});
 

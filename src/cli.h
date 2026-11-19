@@ -54,6 +54,8 @@ inline constexpr uint32_t DEFAULT_BUFFER_MS = 100;
 /// What --buffer-ms will accept, either side inclusive.
 inline constexpr uint32_t MIN_BUFFER_MS = 10;
 inline constexpr uint32_t MAX_BUFFER_MS = 2000;
+/// --keep-output-alive upper bound, in seconds.
+inline constexpr uint32_t MAX_KEEP_OUTPUT_ALIVE_S = 3600;
 
 /// Every option whose provenance the parser tracks, so a config file can layer under argv.
 enum class Opt : unsigned {
@@ -88,6 +90,7 @@ enum class Opt : unsigned {
     AlsaMixerCurve,  ///< --alsa-mixer-curve
     ReleaseDevice,   ///< --release-device
     TokenEndpoint,   ///< --pairing-token-endpoint
+    KeepAlive,       ///< --keep-output-alive
 };
 
 /// Everything the flag surface configures.
@@ -137,6 +140,8 @@ struct Options {
     /// --pairing-token-endpoint <address>:<port>: serve the pairing token there; port 0 is off.
     std::string pairing_endpoint_host;
     uint16_t pairing_endpoint_port{0};
+    /// --keep-output-alive <s>: seconds of silence to keep the output running after the last audio.
+    uint32_t keep_output_alive_s{0};
 
     /// --no-mdns: do not advertise `_sendspin._tcp`.
     bool no_mdns{false};

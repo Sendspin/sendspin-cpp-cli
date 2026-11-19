@@ -97,6 +97,16 @@ public:
     /// Releases the device. Called once, during shutdown.
     virtual void stop() {}
 
+    /// True when the last open attempt found the device held by another process.
+    virtual bool device_busy() const {
+        return false;
+    }
+
+    /// True while the device is open; read after a busy refusal to see that a rescan got it back.
+    virtual bool device_open() const {
+        return false;
+    }
+
     /// Applies playback volume, 0-100.
     virtual void set_volume(uint8_t /*volume*/) {}
 
@@ -106,6 +116,9 @@ public:
     /// Main-loop slice for work write()'s thread must not do; must stay cheap on an ordinary tick.
     /// @param now_ms Monotonic milliseconds; derive timing from this, not from counting calls.
     virtual void poll(int64_t /*now_ms*/) {}
+
+    /// Seconds to keep the device running on silence after the last audio; 0 is off.
+    virtual void set_keep_alive(uint32_t /*seconds*/) {}
 
     /// What the device will take, probed once before start().
     /// An unprobeable device must answer SinkCapabilities::permissive(), never an empty set.

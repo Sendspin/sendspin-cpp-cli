@@ -379,6 +379,24 @@ TEST(ConfigPrecedence, ReleaseDeviceIsSettableAndOffByDefault) {
     EXPECT_FALSE(defaulted.options().release_device);
 }
 
+TEST(ConfigPrecedence, KeepOutputAliveIsSettableAndOffByDefault) {
+    ScratchDir scratch;
+    ASSERT_TRUE(scratch.created());
+    const std::string on = scratch.write("on", "keep-output-alive = 10\n");
+    const std::string off = scratch.write("off", "keep-output-alive = 0\n");
+    const std::string empty = scratch.write("empty", "name = kitchen\n");
+
+    Parse enabled({}, on);
+    Parse disabled({}, off);
+    Parse defaulted({}, empty);
+    ASSERT_TRUE(enabled.ok()) << enabled.diagnostics();
+    ASSERT_TRUE(disabled.ok()) << disabled.diagnostics();
+    ASSERT_TRUE(defaulted.ok()) << defaulted.diagnostics();
+    EXPECT_EQ(enabled.options().keep_output_alive_s, 10U);
+    EXPECT_EQ(disabled.options().keep_output_alive_s, 0U);
+    EXPECT_EQ(defaulted.options().keep_output_alive_s, 0U);
+}
+
 TEST(ConfigPrecedence, PairingCodeIsSettableAndLosesToTheCommandLine) {
     ScratchDir scratch;
     ASSERT_TRUE(scratch.created());

@@ -29,6 +29,7 @@
 #include <gtest/gtest.h>
 #include <sys/stat.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <optional>
@@ -444,8 +445,9 @@ TEST(StateStore, DoesNotCountASlotTheLibraryWouldNotLoad) {
 
     // Too short to be a record, and a record whose PSK half is all zeroes.
     const std::vector<uint8_t> short_blob(sendspin::persistence_keys::RECORD_SLOT_SIZE / 2, 0x5a);
-    std::vector<uint8_t> zero_psk(sendspin::persistence_keys::PAIRING_PSK_SIZE, 0);
-    zero_psk.resize(sendspin::persistence_keys::RECORD_SLOT_SIZE, 0x5a);
+    // Built full-size then zeroed: a grow-and-fill resize() trips GCC 16's -Warray-bounds.
+    std::vector<uint8_t> zero_psk(sendspin::persistence_keys::RECORD_SLOT_SIZE, 0x5a);
+    std::fill_n(zero_psk.begin(), sendspin::persistence_keys::PAIRING_PSK_SIZE, uint8_t{0});
     ASSERT_TRUE(store.set_blob(slot_key(0), short_blob.data(), short_blob.size()));
     ASSERT_TRUE(store.set_blob(slot_key(1), zero_psk.data(), zero_psk.size()));
     EXPECT_EQ(store.pairing_record_count(), 0U);
