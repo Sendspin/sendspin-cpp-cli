@@ -89,11 +89,11 @@ them needs a player on hardware with a device configured, listened to. Do the fo
 sitting; `DeviceAllow=char-alsa rw` with `DevicePolicy=closed` is what the first three are
 reaching for.
 
-### 9. Interactive TUI mode
+### 9. TUI follow-ups
 
-Done: `sendspin-cli tui`, described in
-[Using the TUI](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Using-the-TUI). What it
-leaves for later:
+What `sendspin-cli tui`
+([Using the TUI](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Using-the-TUI)) leaves for
+later:
 
 - **Access without `sudo` under the system service.** A `sendspin-cli` group with a `0660`
   socket would let its members run the TUI and the other subcommands. The cost is that group
@@ -142,17 +142,7 @@ not. CoreAudio has had its pass. Owed:
 - **`extra_startup_silence_ms`** stays at the library's 50 ms until underflow is measured on
   real hardware across backends.
 
-### 12. ALSA hardware mixer (`-V`)
-
-`snd_mixer_*` where the device has a real control to drive — chiefly `hw:` output straight
-to a card, where a hardware mixer is the actual volume rather than a scaling of the samples.
-
-Keep `src/pcm_volume.{h,cpp}` for plugin devices: the usual `default` PCM is PipeWire's ALSA
-plugin, where a mixer element is either absent or moves something other than this stream.
-One path or the other per device, chosen at open time — never both stacked, which would
-square the taper.
-
-### 13. Avahi-native mDNS backend
+### 12. Avahi-native mDNS backend
 
 Linux only, and a *second* backend beside the `dns_sd.h` one rather than a replacement. The
 `MdnsService` seam (`src/mdns.h`, one implementation per build chosen by CMake) is what makes it
@@ -172,7 +162,7 @@ What it buys, all of it specific to `libavahi-compat-libdnssd`:
 - **A first-class address resolver**, in place of the `DNSServiceQueryRecord` workaround for
   the `DNSServiceGetAddrInfo` the shim lacks.
 
-### 14. PipeWire's ring is sized before the graph says what it wants
+### 13. PipeWire's ring is sized before the graph says what it wants
 
 `process()` asks for a whole quantum, and a ring that cannot hold one zero-fills part of every
 cycle for the life of the stream. The sink requests a latency (`PW_KEY_NODE_LATENCY`) and warns
@@ -187,7 +177,7 @@ on its first `process()` — a reconnect inside the audible path, so it wants th
 `-Wno-error=restrict` for the same sites (`scripts/build_armv6_container.sh`). Rewriting them
 lets both legs drop their exemption.
 
-### 15. `--interface`
+### 14. `--interface`
 
 Bind the inbound listener — and scope the advertisement — to one interface, instead of every
 address the host holds. **Still blocked upstream at v0.10.0:** `src/host/ws_server.cpp:69`
@@ -220,7 +210,7 @@ mDNS half lands under its own name.
 The Python CLI's `--interface` takes an IP address only, and `aiosendspin` binds to it without
 scoping its advertisement, so this flag is a superset of it.
 
-### 16. Windows
+### 15. Windows
 
 The player runs on Windows 10 1809+ at parity with Linux and macOS, from a per-user install
 that starts at logon. Still owed:
@@ -236,5 +226,5 @@ that starts at logon. Still owed:
 - **Log rotation.** There is no SIGHUP to reopen `-f` on, so the logfile only grows.
 - **Logoff and shutdown** are handled through the console control events and are untested.
 - **PortAudio picks MME's default device**, with around 180 ms of device latency; WASAPI
-  would cut that. `-l` lists the WASAPI devices, and `-o portaudio:<index>` picks one.
+  would cut that. `-l` lists the WASAPI devices, and `-o portaudio:wasapi:<name>` picks one.
 - **A no-mDNS build's `-s mdns:` refusal** names Linux packages to install, even on Windows.
