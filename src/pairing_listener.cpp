@@ -47,8 +47,25 @@ const char* pair_abort_reason(sendspin::SendspinPairAbortReason reason) {
 
 void PairingListener::tick(bool connected, bool paired, int64_t now_ms) {
     // Only an attempt an earlier tick saw: one this loop() delivered may be the next session's.
-    if (this->connected_ && !connected && this->attempt_seen_ms_.has_value()) {
-        this->forget_attempt();
+    if (this->connected_ && !connected) {
+        if (this->attempt_seen_ms_.has_value()) {
+            this->forget_attempt();
+            this->tracker_.ended();
+        }
+        if (this->dismissed_ms_.has_value()) {
+            this->tracker_.ended();
+            this->dismissed_ = false;
+            this->dismissed_ms_.reset();
+        }
+    }
+    if (this->dismissed_) {
+        if (!this->dismissed_ms_.has_value()) {
+            this->dismissed_ms_ = now_ms;
+        } else if (now_ms - *this->dismissed_ms_ >= DISMISSED_ATTEMPT_LIMIT_MS) {
+            this->tracker_.ended();
+            this->dismissed_ = false;
+            this->dismissed_ms_.reset();
+        }
     }
     if (!this->server_id_.empty()) {
         if (!this->attempt_seen_ms_.has_value()) {
@@ -59,6 +76,7 @@ void PairingListener::tick(bool connected, bool paired, int64_t now_ms) {
             log_line(LogLevel::INFO, LOG_TAG, "Pairing with server %s is no longer in progress",
                      this->server_id_.c_str());
             this->forget_attempt();
+            this->tracker_.ended();
         }
     }
     if (connected && (!this->connected_ || paired != this->paired_)) {
@@ -72,14 +90,21 @@ void PairingListener::tick(bool connected, bool paired, int64_t now_ms) {
 // The views are valid only for the callback, and not NUL-terminated: copied, and printed by length.
 
 void PairingListener::forget_attempt() {
-    this->tracker_.ended();
     this->server_id_.clear();
     this->attempt_seen_ms_.reset();
     this->attempt_prompted_ = false;
 }
 
+void PairingListener::note_dismissed() {
+    if (!this->server_id_.empty()) {
+        this->dismissed_ = true;
+    }
+}
+
 void PairingListener::on_pairing_attempt(std::string_view server_id) {
     this->forget_attempt();
+    this->dismissed_ = false;
+    this->dismissed_ms_.reset();
     this->server_id_ = std::string(server_id);
     this->tracker_.started(this->server_id_);
     log_line(LogLevel::INFO, LOG_TAG, "Pairing started with server %.*s",
@@ -88,6 +113,8 @@ void PairingListener::on_pairing_attempt(std::string_view server_id) {
 
 void PairingListener::on_paired(std::string_view server_id) {
     this->tracker_.succeeded(std::string(server_id));
+    this->dismissed_ = false;
+    this->dismissed_ms_.reset();
     this->forget_attempt();
     this->has_paired_ = true;
     log_line(LogLevel::INFO, LOG_TAG, "Paired with server %.*s", static_cast<int>(server_id.size()),
@@ -97,6 +124,8 @@ void PairingListener::on_paired(std::string_view server_id) {
 void PairingListener::on_pairing_aborted(std::string_view server_id,
                                          sendspin::SendspinPairAbortReason reason) {
     this->tracker_.failed(std::string(server_id), pair_abort_reason(reason));
+    this->dismissed_ = false;
+    this->dismissed_ms_.reset();
     this->forget_attempt();
     log_line(LogLevel::WARN, LOG_TAG, "Pairing with server %.*s failed: %s",
              static_cast<int>(server_id.size()), server_id.data(), pair_abort_reason(reason));
@@ -113,6 +142,7 @@ void PairingListener::on_pairing_code(std::string_view code,
 
 void PairingListener::on_clear_pairing_code() {
     // Also how an attempt the server abandoned ends: neither outcome callback fires for it.
+    this->note_dismissed();
     this->forget_attempt();
     this->code_.clear();
     log_line(LogLevel::INFO, LOG_TAG, "Pairing code withdrawn");
@@ -128,6 +158,7 @@ void PairingListener::on_open_pairing_window() {
 
 void PairingListener::on_close_pairing_window() {
     // Fires when the attempt concludes, like on_clear_pairing_code().
+    this->note_dismissed();
     this->forget_attempt();
     this->window_open_ = false;
     log_line(LogLevel::INFO, LOG_TAG, "No longer waiting for 'pair confirm'");
