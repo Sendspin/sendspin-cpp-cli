@@ -208,6 +208,38 @@ Needs CMake ≥ 3.16, a C++20 compiler, and network access on the first configur
 sendspin-cpp is pulled in with `FetchContent` at a pinned tag and fetches its own
 dependencies in turn.
 
+### Offline builds
+
+A build with no network access, e.g. for distro packaging, hands CMake a local copy of
+each fetched dependency with `FETCHCONTENT_SOURCE_DIR_<NAME>`, and
+`FETCHCONTENT_FULLYDISCONNECTED=ON` makes any it was not given fail rather than download:
+
+| Variable | Repository | Tag |
+|---|---|---|
+| `FETCHCONTENT_SOURCE_DIR_SENDSPIN` | `github.com/Sendspin/sendspin-cpp` | `SENDSPIN_GIT_TAG` in `CMakeLists.txt` |
+| `FETCHCONTENT_SOURCE_DIR_ARDUINOJSON` | `github.com/bblanchon/ArduinoJson` | as pinned in sendspin-cpp's `cmake/host.cmake` |
+| `FETCHCONTENT_SOURCE_DIR_MICRO_FLAC` | `github.com/esphome-libs/micro-flac`, with its submodules | as pinned in sendspin-cpp's `cmake/host.cmake` |
+| `FETCHCONTENT_SOURCE_DIR_MICRO_OPUS` | `github.com/esphome-libs/micro-opus`, with its submodules | as pinned in sendspin-cpp's `cmake/host.cmake` |
+| `FETCHCONTENT_SOURCE_DIR_IXWEBSOCKET` | `github.com/machinezone/IXWebSocket` | as pinned in sendspin-cpp's `cmake/host.cmake` |
+| `FETCHCONTENT_SOURCE_DIR_NOISE_C` | `github.com/esphome-libs/noise-c` | as pinned in sendspin-cpp's `cmake/host.cmake` |
+| `FETCHCONTENT_SOURCE_DIR_GOOGLETEST` | `github.com/google/googletest` | `GOOGLETEST_GIT_TAG` in `CMakeLists.txt`; not needed with `-DSENDSPIN_CLI_BUILD_TESTS=OFF` |
+| `FETCHCONTENT_SOURCE_DIR_PORTAUDIO` | `github.com/PortAudio/portaudio` | Windows only, `v19.7.0` |
+
+```bash
+cmake -B build -DFETCHCONTENT_FULLYDISCONNECTED=ON \
+  -DFETCHCONTENT_SOURCE_DIR_SENDSPIN=/src/sendspin-cpp \
+  -DFETCHCONTENT_SOURCE_DIR_ARDUINOJSON=/src/ArduinoJson \
+  -DFETCHCONTENT_SOURCE_DIR_MICRO_FLAC=/src/micro-flac \
+  -DFETCHCONTENT_SOURCE_DIR_MICRO_OPUS=/src/micro-opus \
+  -DFETCHCONTENT_SOURCE_DIR_IXWEBSOCKET=/src/IXWebSocket \
+  -DFETCHCONTENT_SOURCE_DIR_NOISE_C=/src/noise-c \
+  -DSENDSPIN_CLI_BUILD_TESTS=OFF
+cmake --build build
+```
+
+sendspin-cpp installs no CMake package config yet, so a system-installed copy of the
+library cannot stand in for the source tree.
+
 **The audio backends and mDNS are optional and auto-detected**, so read the configure
 output rather than assuming; a missing `-dev` package does not fail a configure, it just
 produces a binary that cannot do that thing:
