@@ -57,6 +57,7 @@ enum class VolumeSource {
     Server,       ///< a server sent a volume or mute command this run
     Fixed,        ///< --fixed-volume: full gain, unmuted, and no server may change it
     Hardware,     ///< --alsa-mixer: read from the hardware mixer at startup
+    Local,        ///< set on this player itself, e.g. by `player-vol`
 };
 
 /// The parameters configure() takes, as one value.

@@ -16,6 +16,8 @@
 
 #pragma once
 
+#include "pairing_tracker.h"
+
 #include <sendspin/client.h>
 
 #include <cstdint>
@@ -27,6 +29,10 @@ namespace sendspin_cli {
 
 /// The library's 120 s attempt timeout plus margin: an attempt with no prompt is over by then.
 inline constexpr int64_t UNPROMPTED_ATTEMPT_LIMIT_MS = 150000;
+
+/// How long a withdrawn prompt waits for its outcome before the attempt counts as abandoned:
+/// a success is reported only after the server's pair-finalize round trip.
+inline constexpr int64_t DISMISSED_ATTEMPT_LIMIT_MS = 30000;
 
 /// Logs session and pairing progress, and caches pairing progress for `status`. Main loop only.
 class PairingListener final : public sendspin::SendspinClientListener {
@@ -65,8 +71,15 @@ public:
         return this->has_paired_;
     }
 
+    /// How the last attempt ended; attempt 0 when none has.
+    const PairingAttemptResult& last_pairing() const {
+        return this->tracker_.last();
+    }
+
 private:
     void forget_attempt();
+    /// The prompt went away with the attempt still open in the tracker.
+    void note_dismissed();
 
     bool connected_{false};
     bool paired_{false};
@@ -78,6 +91,10 @@ private:
     std::string code_;
     bool window_open_{false};
     bool has_paired_{false};
+    PairingTracker tracker_;
+    bool dismissed_{false};
+    /// When a tick first saw the dismissal; unset until one has.
+    std::optional<int64_t> dismissed_ms_;
 };
 
 }  // namespace sendspin_cli

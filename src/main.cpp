@@ -31,7 +31,11 @@
 #include "persistence_provider.h"
 #include "player_listener.h"
 #include "state_store.h"
+#include "status_kv.h"
 #include "supported_formats.h"
+#ifdef SENDSPIN_CLI_HAVE_TUI
+#include "tui.h"
+#endif
 
 #include <sendspin/client.h>
 #include <sendspin/config.h>
@@ -128,6 +132,7 @@ struct HostNetworkProvider : sendspin::SendspinNetworkProvider {
 struct TrackState {
     std::optional<std::string> artist;
     std::optional<std::string> title;
+    std::optional<std::string> album;
     std::optional<sendspin::MetadataProgressObject> progress;
 };
 
@@ -139,7 +144,8 @@ std::optional<std::string> owned(const std::optional<std::string_view>& view) {
 /// Logs server metadata and caches the latest for `status`. Main loop only.
 struct MetadataLogger : sendspin::MetadataRoleListener {
     void on_track_metadata(const sendspin::TrackMetadata& metadata) override {
-        this->state_ = TrackState{owned(metadata.artist), owned(metadata.title), metadata.progress};
+        this->state_ = TrackState{owned(metadata.artist), owned(metadata.title),
+                                  owned(metadata.album), metadata.progress};
         if (!this->state_->title.has_value()) {
             return;
         }
@@ -308,10 +314,9 @@ public:
     ControlDispatcher(const Options& opts, sendspin::SendspinClient& client,
                       sendspin::ControllerRole& controller, sendspin::MetadataRole& metadata,
                       const MetadataLogger& metadata_logger,
-                      const PairingListener& pairing_listener,
-                      const PlayerListener& player_listener, sendspin::PlayerRole& player,
-                      const AudioSink& sink, const SourceCapture* capture,
-                      const StateStore& state_store)
+                      const PairingListener& pairing_listener, PlayerListener& player_listener,
+                      sendspin::PlayerRole& player, const AudioSink& sink,
+                      const SourceCapture* capture, const StateStore& state_store)
         : opts_(opts),
           client_(client),
           controller_(controller),
@@ -348,6 +353,15 @@ public:
             return encode_control_reply(ControlStatus::Ok, "", format_status(this->status()));
         }
 
+        if (request.command == ControlCommand::StatusKv) {
+            return encode_control_reply(ControlStatus::Ok, "", format_status_kv(this->status()));
+        }
+
+        if (request.command == ControlCommand::Tui) {
+            return encode_control_reply(ControlStatus::Usage,
+                                        "tui runs in your terminal, not over the socket", "");
+        }
+
         if (request.command == ControlCommand::PairToken) {
             const auto token = this->client_.client_pairing_token();
             if (!token.has_value()) {
@@ -367,6 +381,29 @@ public:
             }
             log_line(LogLevel::INFO, LOG_TAG, "Pairing window %s locally",
                      confirm ? "confirmed" : "cancelled");
+            return encode_control_reply(ControlStatus::Ok, "", "");
+        }
+
+        // Handled locally: the listener applies, publishes and persists the level.
+        if (request.command == ControlCommand::PlayerVolume ||
+            request.command == ControlCommand::PlayerMute) {
+            const bool applied =
+                request.command == ControlCommand::PlayerVolume
+                    ? this->player_listener_.set_local_volume(
+                          request.volume.value_or(DEFAULT_SINK_VOLUME))
+                    : this->player_listener_.set_local_muted(request.flag.value_or(false));
+            if (!applied) {
+                return encode_control_reply(ControlStatus::Usage,
+                                            "--fixed-volume pins this player's volume at 100", "");
+            }
+            // As for `delay`: nothing else logs a level set here.
+            if (request.command == ControlCommand::PlayerVolume) {
+                log_line(LogLevel::INFO, LOG_TAG_PLAYER, "Player volume set to %u locally",
+                         static_cast<unsigned>(request.volume.value_or(DEFAULT_SINK_VOLUME)));
+            } else {
+                log_line(LogLevel::INFO, LOG_TAG_PLAYER, "Player %s locally",
+                         request.flag.value_or(false) ? "muted" : "unmuted");
+            }
             return encode_control_reply(ControlStatus::Ok, "", "");
         }
 
@@ -412,6 +449,7 @@ private:
         }
         snapshot.pairing_code = this->pairing_listener_.code();
         snapshot.pairing_window_open = this->pairing_listener_.window_open();
+        snapshot.last_pairing = this->pairing_listener_.last_pairing();
         const std::optional<sendspin::ServerInformation> info = this->client_.server_information();
         if (info.has_value()) {
             snapshot.server_id = std::string(info->server_id);
@@ -422,6 +460,7 @@ private:
         if (metadata.has_value()) {
             snapshot.artist = metadata->artist.value_or("");
             snapshot.title = metadata->title.value_or("");
+            snapshot.album = metadata->album.value_or("");
             if (metadata->progress.has_value()) {
                 // Only a progress object makes transport state and position knowable.
                 snapshot.playback_speed = metadata->progress->playback_speed;
@@ -433,6 +472,12 @@ private:
         // Read separately: a refused format is still streaming.
         snapshot.streaming = this->player_listener_.streaming();
         snapshot.format = this->player_listener_.stream_format();
+        if (snapshot.streaming) {
+            const std::optional<sendspin::PlayerStreamInfo> stream = this->player_.stream_info();
+            if (stream.has_value()) {
+                snapshot.codec = stream->codec;
+            }
+        }
 
         const sendspin::ServerStateControllerObject& controller =
             this->controller_.get_controller_state();
@@ -442,6 +487,9 @@ private:
         snapshot.group_muted = controller.muted;
         snapshot.group_repeat = controller.repeat;
         snapshot.group_shuffle = controller.shuffle;
+        if (snapshot.connected) {
+            snapshot.group_name = std::string(this->client_.group_state().group_name.value_or(""));
+        }
 
         // From the listener, the only thing that knows what the sink was told.
         snapshot.player_volume = this->player_listener_.applied_volume();
@@ -464,7 +512,8 @@ private:
     sendspin::MetadataRole& metadata_;
     const MetadataLogger& metadata_logger_;
     const PairingListener& pairing_listener_;
-    const PlayerListener& player_listener_;
+    /// Non-const only for `player-vol` and `player-mute`.
+    PlayerListener& player_listener_;
     /// Non-const only for `delay`.
     sendspin::PlayerRole& player_;
     const AudioSink& sink_;
@@ -570,6 +619,14 @@ int main(int argc, char* argv[]) {
         if (!parse_control_request(opts.subcommand, opts.subcommand_args, request, error)) {
             std::fprintf(stderr, "error: %s\n", error.c_str());
             return static_cast<int>(ControlStatus::Usage);
+        }
+        if (request.command == ControlCommand::Tui) {
+#ifdef SENDSPIN_CLI_HAVE_TUI
+            return run_tui(opts.control_socket, opts.control_absent_reason);
+#else
+            std::fprintf(stderr, "error: this build has no TUI\n");
+            return 1;
+#endif
         }
         return static_cast<int>(run_control_subcommand(request, opts.control_socket,
                                                        opts.control_absent_reason, stdout));

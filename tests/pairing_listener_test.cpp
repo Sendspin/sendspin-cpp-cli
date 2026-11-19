@@ -141,5 +141,57 @@ TEST(PairingListener, ANewAttemptRestartsTheTimeout) {
     EXPECT_EQ(listener.server_id(), OTHER_SERVER);
 }
 
+TEST(PairingListener, ASuccessAfterTheWindowClosesRecordsPaired) {
+    // The library closes the window at pair-confirm, a round trip before it reports the success.
+    PairingListener listener;
+    listener.tick(true, false, 0);
+    listener.on_pairing_attempt(SERVER);
+    listener.on_open_pairing_window();
+    listener.tick(true, false, 10);
+    listener.on_close_pairing_window();
+    listener.tick(true, false, 20);
+    listener.tick(true, false, 500);
+    EXPECT_EQ(listener.last_pairing().outcome, PairingOutcome::None);
+    listener.on_paired(SERVER);
+    EXPECT_EQ(listener.last_pairing().attempt, 1u);
+    EXPECT_EQ(listener.last_pairing().outcome, PairingOutcome::Paired);
+    EXPECT_EQ(listener.last_pairing().server_id, SERVER);
+}
+
+TEST(PairingListener, ADroppedConnectionRecordsTheAttemptAbandoned) {
+    PairingListener listener;
+    listener.tick(true, false, 0);
+    listener.on_pairing_attempt(SERVER);
+    listener.tick(true, false, 10);
+    listener.tick(false, false, 20);
+    EXPECT_EQ(listener.last_pairing().attempt, 1u);
+    EXPECT_EQ(listener.last_pairing().outcome, PairingOutcome::Abandoned);
+}
+
+TEST(PairingListener, AWithdrawnPromptWithNoOutcomeIsAbandonedInTime) {
+    PairingListener listener;
+    listener.tick(true, false, 0);
+    listener.on_pairing_attempt(SERVER);
+    listener.on_pairing_code("123456", sendspin::SendspinPairingCodeFormat{});
+    listener.on_clear_pairing_code();
+    listener.tick(true, false, 10);
+    listener.tick(true, false, 10 + DISMISSED_ATTEMPT_LIMIT_MS - 1);
+    EXPECT_EQ(listener.last_pairing().outcome, PairingOutcome::None);
+    listener.tick(true, false, 10 + DISMISSED_ATTEMPT_LIMIT_MS);
+    EXPECT_EQ(listener.last_pairing().attempt, 1u);
+    EXPECT_EQ(listener.last_pairing().outcome, PairingOutcome::Abandoned);
+}
+
+TEST(PairingListener, AWithdrawnPromptIsAbandonedWhenTheConnectionDrops) {
+    PairingListener listener;
+    listener.tick(true, false, 0);
+    listener.on_pairing_attempt(SERVER);
+    listener.on_open_pairing_window();
+    listener.on_close_pairing_window();
+    listener.tick(true, false, 10);
+    listener.tick(false, false, 20);
+    EXPECT_EQ(listener.last_pairing().outcome, PairingOutcome::Abandoned);
+}
+
 }  // namespace
 }  // namespace sendspin_cli
