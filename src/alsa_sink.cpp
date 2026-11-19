@@ -320,6 +320,7 @@ void list_alsa_pcms(std::FILE* out, snd_pcm_stream_t stream,
 }
 
 bool AlsaAudioSink::open_device_(uint32_t sample_rate, uint8_t channels, uint8_t bits_per_sample) {
+    const bool was_busy = this->busy_.exchange(false);
     snd_pcm_format_t format = SND_PCM_FORMAT_UNKNOWN;
     if (!alsa_format_for(bits_per_sample, format)) {
         cli_log(LogLevel::ERROR, "alsa: unsupported bit depth %u", bits_per_sample);
@@ -332,7 +333,7 @@ bool AlsaAudioSink::open_device_(uint32_t sample_rate, uint8_t channels, uint8_t
     }
 
     int err = snd_pcm_open(&this->pcm_, this->device_.c_str(), SND_PCM_STREAM_PLAYBACK, 0);
-    const bool still_busy = err == -EBUSY && this->busy_.load();
+    const bool still_busy = err == -EBUSY && was_busy;
     this->busy_.store(err == -EBUSY);
     if (err < 0) {
         // A rescan finding the device still held is expected; it was reported once already.
@@ -557,8 +558,7 @@ bool AlsaAudioSink::configure(uint32_t sample_rate, uint8_t channels, uint8_t bi
         this->failed_.store(true);
         if (this->busy_.load()) {
             // Owe poll() a rescan, so the stream picks up once the other process lets go.
-            this->recovery_.reset();
-            this->handle_device_loss_();
+            this->recovery_.rearm();
         }
         return false;
     }
@@ -720,6 +720,8 @@ void AlsaAudioSink::clear() {
     this->recovery_.forget_discarded_frames();
 
     if (this->pcm_ == nullptr) {
+        // The stream is over, so a rescan must not reopen the device for nobody.
+        this->recovery_.cancel();
         return;
     }
 
@@ -827,6 +829,10 @@ void AlsaAudioSink::poll(int64_t now_ms) {
     if (!this->open_device_(format.sample_rate, format.channels, format.bit_depth)) {
         // Failure buys another attempt after a longer delay.
         this->recovery_.rescan_done(false);
+        if (this->busy_.load() && !this->recovery_.pending()) {
+            // Held, not gone: keep trying for as long as the stream lasts; clear() ends it.
+            this->recovery_.rearm();
+        }
         const bool retrying = this->recovery_.pending();
         cli_log(retrying ? LogLevel::DEBUG : LogLevel::WARN, "alsa: '%s' is not back%s",
                 this->device_.c_str(),

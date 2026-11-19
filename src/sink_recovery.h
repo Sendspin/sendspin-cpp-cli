@@ -82,6 +82,9 @@ public:
     /// Refills the budget; call only when configure() really opened a stream.
     void reset();
 
+    /// Refills the budget and owes a rescan, keeping the gap; for a device another process holds.
+    void rearm();
+
 private:
     void escalate_();
     /// Refills the attempt budget, leaving the discarded-frame count alone.

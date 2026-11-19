@@ -126,6 +126,12 @@ void SinkRecovery::reset() {
     this->discarded_frames_ = 0;
 }
 
+void SinkRecovery::rearm() {
+    this->refill_();
+    this->reopen_spent_ = true;
+    this->escalate_();
+}
+
 void SinkRecovery::refill_() {
     this->reopen_spent_ = false;
     this->rescan_spent_ = false;
