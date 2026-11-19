@@ -225,7 +225,7 @@ std::vector<uint8_t> pcm(const sendspin::AudioFormat& format, size_t frames) {
     return std::vector<uint8_t>(frames * format.channels * (format.bits_per_sample / 8U));
 }
 
-TEST(PlayerListener, AStreamStartAloneDoesNotConfigureTheSink) {
+TEST(PlayerListener, AStreamStartWithoutStreamInfoLeavesTheOpenToTheFirstWrite) {
     RecordingHarness harness;
 
     harness.listener.on_stream_start();
@@ -272,6 +272,27 @@ TEST(PlayerListener, ANewFormatReopensOnlyOnceTheOldAudioHasPlayed) {
     EXPECT_EQ(harness.listener.on_audio_output(new_audio, HI_RES, 0), new_audio.size());
     EXPECT_EQ(harness.log, (std::vector<std::string>{"configure 96000/2/24", "write 600"}));
     EXPECT_EQ(harness.listener.stream_format()->sample_rate, 96000U);
+}
+
+TEST(PlayerListener, ACancelledSwitchDoesNotShortenTheNextWait) {
+    RecordingHarness harness;
+    harness.listener.on_stream_start();
+    const std::vector<uint8_t> audio = pcm(CD, 100);
+    harness.listener.on_audio_output(audio, CD, 0);
+    harness.listener.poll(0);
+    harness.listener.on_audio_output(audio, CD, 0);
+
+    harness.listener.on_audio_output(pcm(HI_RES, 1), HI_RES, 0);
+    harness.listener.poll(0);  // starts the wait
+    harness.listener.on_audio_output(audio, CD, 0);
+    harness.listener.poll(1'000'000);  // cancelled
+    harness.log.clear();
+
+    harness.listener.on_audio_output(pcm(HI_RES, 1), HI_RES, 0);
+    harness.listener.poll(5'500'000);
+    EXPECT_TRUE(harness.log.empty());
+    harness.listener.poll(10'500'000);
+    EXPECT_EQ(harness.log, (std::vector<std::string>{"configure 96000/2/24"}));
 }
 
 TEST(PlayerListener, AFinishTimeFromAnEndedStreamDoesNotHoldUpTheNext) {

@@ -67,7 +67,9 @@ size_t PlayerListener::on_audio_output(std::span<const uint8_t> pcm,
     const size_t written = this->sink_.write(pcm.data(), pcm.size(), timeout_ms);
     if (refused) {
         this->refused_bytes_.fetch_add(written, std::memory_order_relaxed);
-    } else if (const size_t frame = bytes_per_frame(format); frame != 0) {
+    }
+    // Refused frames count too: the next open reports any the sink dropped without reporting.
+    if (const size_t frame = bytes_per_frame(format); frame != 0) {
         this->written_frames_.fetch_add(written / frame, std::memory_order_relaxed);
     }
     return written;
@@ -79,6 +81,8 @@ void PlayerListener::poll(int64_t now_us) {
     {
         const std::lock_guard<std::mutex> lock(this->format_mutex_);
         if (!this->requested_.has_value()) {
+            // A cancelled switch must not leave its wait counting toward the next one.
+            this->requested_since_us_.reset();
             return;
         }
         wanted = *this->requested_;
@@ -107,15 +111,23 @@ void PlayerListener::poll(int64_t now_us) {
 
 void PlayerListener::open_sink(const sendspin::AudioFormat& format) {
     this->requested_since_us_.reset();
+    bool replacing = false;
+    {
+        // Closed first, so no write reaches the device while configure() reopens it.
+        const std::lock_guard<std::mutex> lock(this->format_mutex_);
+        replacing = this->open_.has_value();
+        this->open_.reset();
+    }
     const bool accepted =
         this->sink_.configure(format.sample_rate, format.channels, format.bits_per_sample);
 
-    // configure() closed the old stream, so none of its reports can follow these resets.
+    // configure() closed the old stream and no write ran since, so nothing adds to these after.
     const uint64_t written = this->written_frames_.exchange(0, std::memory_order_relaxed);
     const uint64_t played = this->played_frames_.exchange(0, std::memory_order_acquire);
     this->playout_end_us_.store(0, std::memory_order_relaxed);
-    if (written > played) {
-        // Frames a timed-out play-out abandoned; the player counts them queued until reported.
+    // Only within a stream: at a fresh start the counts are the last stream's, whose queue is gone.
+    if (replacing && written > played) {
+        // Frames the sink dropped unreported; the player counts them queued until reported.
         this->player_.notify_audio_played(static_cast<uint32_t>(written - played),
                                           sendspin::SendspinClient::now_us());
     }
@@ -204,11 +216,6 @@ void PlayerListener::on_stream_end() {
     } else {
         this->sink_.clear();
     }
-    // After the clear, so a report of the dropped audio cannot leak into the next stream; the
-    // player discards its own queue at stream end, so nothing is owed.
-    this->written_frames_.store(0, std::memory_order_relaxed);
-    this->played_frames_.store(0, std::memory_order_relaxed);
-    this->playout_end_us_.store(0, std::memory_order_relaxed);
     if (this->on_stream_event) {
         this->on_stream_event(false);
     }
