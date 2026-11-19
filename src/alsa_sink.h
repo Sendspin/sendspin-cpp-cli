@@ -64,8 +64,7 @@ public:
     /// Reopens a device that died mid-stream once SinkRecovery's delay is up.
     void poll(int64_t now_ms) override;
 
-    /// Keeps the PCM running on silence for `seconds` after the last audio instead of dropping
-    /// it between streams; 0 turns that off.
+    /// Keeps the PCM running on silence for `seconds` after the last audio; 0 turns that off.
     void set_keep_alive(uint32_t seconds) override;
 
     /// What this PCM will take; opens the device briefly.
@@ -98,11 +97,9 @@ private:
     bool handle_device_loss_();
     /// Sets target_multiplier_ from volume_ and muted_ for the software-gain path.
     void update_target_multiplier_();
-    /// Keep-alive: discards queued audio without stopping the PCM (rewind, then silence).
-    /// Caller holds device_mutex_.
+    /// Discards queued audio without stopping the PCM. Caller holds device_mutex_.
     void flush_keeping_alive_();
-    /// Keep-alive: tops the ring up with silence once no audio has been written for a while, and
-    /// stops the PCM once the keep-alive window has run out. Caller holds device_mutex_.
+    /// Tops an idle ring up with silence; stops the PCM when the window ends. Holds device_mutex_.
     void keep_alive_top_up_(bool force);
     /// Keep-alive: (re)opens the window, from now. Caller holds device_mutex_.
     void keep_alive_extend_();

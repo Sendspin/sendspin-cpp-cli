@@ -51,8 +51,7 @@ constexpr unsigned int PERIODS_PER_BUFFER = 5;
 /// Longest snd_pcm_wait() slice, bounding how long shutdown waits on a busy device.
 constexpr int WAIT_SLICE_MS = 20;
 
-/// Keep-alive: silence is only added once write() has been idle this long, so it never lands
-/// between the writes of a running stream.
+/// Idle time before keep-alive adds silence, so it never lands between a running stream's writes.
 constexpr auto KEEP_ALIVE_IDLE = std::chrono::milliseconds(60);
 /// Keep-alive: periods of audio kept queued while idle; small, so a new stream is not delayed.
 constexpr snd_pcm_uframes_t KEEP_ALIVE_PERIODS = 2;
@@ -805,8 +804,7 @@ void AlsaAudioSink::poll(int64_t now_ms) {
     // Before the fast path: a ramp step and an external mixer change are both due on every tick.
     this->poll_mixer_();
     if (this->keep_alive_s_.load() != 0 && !this->stopping_.load()) {
-        // try_lock: a write() blocked in snd_pcm_wait() holds the mutex, and that is a stream
-        // that needs no help. Never stall the main loop behind it.
+        // try_lock: a write() parked in snd_pcm_wait() needs no top-up and must not stall the loop.
         std::unique_lock<std::mutex> lock(this->device_mutex_, std::try_to_lock);
         if (lock.owns_lock()) {
             this->keep_alive_top_up_(false);
@@ -874,8 +872,7 @@ void AlsaAudioSink::flush_keeping_alive_() {
         return;
     }
     if (snd_pcm_state(this->pcm_) == SND_PCM_STATE_RUNNING) {
-        // Take back queued audio, but leave a period in front of the hardware pointer: the DMA
-        // may already have fetched it, and rewinding right up to it risks an underrun.
+        // Leave a period ahead of the hardware pointer: the DMA may already have fetched it.
         const snd_pcm_sframes_t rewindable = snd_pcm_rewindable(this->pcm_);
         const auto margin = static_cast<snd_pcm_sframes_t>(this->period_frames_);
         if (rewindable > margin) {
@@ -903,8 +900,7 @@ void AlsaAudioSink::keep_alive_top_up_(bool force) {
     }
     const auto now = std::chrono::steady_clock::now();
     if (now >= this->keep_alive_until_) {
-        // Window over: stop as the player does without keep-alive, so the receiver sees the
-        // signal end and can go to standby. The next stream starts the PCM again.
+        // Window over: stop, so the receiver sees the signal end and can go to standby.
         this->keep_alive_expired_ = true;
         snd_pcm_drop(this->pcm_);
         const int err = snd_pcm_prepare(this->pcm_);

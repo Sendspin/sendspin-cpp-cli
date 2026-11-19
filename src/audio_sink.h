@@ -112,8 +112,7 @@ public:
     /// @param now_ms Monotonic milliseconds; derive timing from this, not from counting calls.
     virtual void poll(int64_t /*now_ms*/) {}
 
-    /// --keep-output-alive: keep the device running on silence for this many seconds after the
-    /// last audio; 0 stops it between streams. Backends that cannot do that ignore it.
+    /// Seconds to keep the device running on silence after the last audio; 0 is off.
     virtual void set_keep_alive(uint32_t /*seconds*/) {}
 
     /// What the device will take, probed once before start().

@@ -140,9 +140,7 @@ struct Options {
     /// --pairing-token-endpoint <address>:<port>: serve the pairing token there; port 0 is off.
     std::string pairing_endpoint_host;
     uint16_t pairing_endpoint_port{0};
-    /// --keep-output-alive <s>: keep the output running on silence for this long after the last
-    /// audio (ALSA only), for an HDMI/S/PDIF receiver that re-locks whenever the digital signal
-    /// stops. 0, the default, stops the output between streams as before.
+    /// --keep-output-alive <s>: seconds of silence to keep the output running after the last audio.
     uint32_t keep_output_alive_s{0};
 
     /// --no-mdns: do not advertise `_sendspin._tcp`.
