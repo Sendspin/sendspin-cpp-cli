@@ -843,6 +843,7 @@ main() {
                     say 'in. The lines it sets are printed before it is copied.'
                     ;;
                 none:none:none) say 'nothing changed: every line in it is commented out.' ;;
+                none:none:default) say 'allow-unpaired = true set, and nothing else changed.' ;;
                 *) say 'the flags you passed filled in. The lines it sets are printed before it is copied.' ;;
             esac
         fi
@@ -907,8 +908,8 @@ main() {
             say "  $SYSTEM_CONFIG  (from the installed example; everything in it is commented out)"
         fi
         step 'Not touching a service'
-        [ -z "$want_name$want_output" ] ||
-            say '  --name and --output configure the service, so they were not used.'
+        [ -z "$want_name$want_output$want_unpaired" ] ||
+            say '  --name, --output and --allow-unpaired configure the service, so they were not used.'
         say '  systemd is not running here, so there is nothing to enable. The binary is'
         say '  installed and runs in the foreground:'
         say ''
