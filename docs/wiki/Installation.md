@@ -46,7 +46,7 @@ cannot load; a 32-bit Raspberry Pi OS takes the `linux-armv6` deb instead, which
 Pi. Raspberry Pi OS calls itself armhf on both, so `dpkg` cannot tell the two apart for you.
 
 ```bash
-VERSION=0.1.0
+VERSION=1.0.0
 LEG=linux-x86_64        # or linux-arm64, linux-armv7, linux-armv6
 BASE=https://github.com/Sendspin/sendspin-cpp-cli/releases/download/v$VERSION
 ```
@@ -94,7 +94,7 @@ Every tarball is a staged `cmake --install` payload, which means **every path un
 is the path the file installs to** (the Windows zip is flat instead; see [Windows](#windows)):
 
 ```
-sendspin-cli-0.1.0-linux-arm64/
+sendspin-cli-1.0.0-linux-arm64/
 ├── BUILD-INFO.txt                                          # what this build is, and what it needs
 └── usr/local/
     ├── bin/sendspin-cli
@@ -116,7 +116,7 @@ nothing. Read `BUILD-INFO.txt` first; it names the runtime packages that build n
 
 ```bash
 # 1. Take the archive for this machine's architecture, and the checksums
-VERSION=0.1.0
+VERSION=1.0.0
 # The *userland*, not `uname -m`: a 32-bit Raspberry Pi OS on a Pi 4 runs a 64-bit kernel
 # and reports aarch64, and the arm64 archive will not load there.
 case "$(dpkg --print-architecture)" in
@@ -172,8 +172,8 @@ sudo pacman -S --needed alsa-lib portaudio libpulse libpipewire avahi
 To run it without installing anywhere, unpack it and use it in place:
 
 ```bash
-tar -xzf sendspin-cli-0.1.0-linux-arm64.tar.gz
-./sendspin-cli-0.1.0-linux-arm64/usr/local/bin/sendspin-cli --help
+tar -xzf sendspin-cli-1.0.0-linux-arm64.tar.gz
+./sendspin-cli-1.0.0-linux-arm64/usr/local/bin/sendspin-cli --help
 ```
 
 Then [Running as a Service](Running-as-a-Service) for the systemd half.
@@ -183,7 +183,7 @@ Then [Running as a Service](Running-as-a-Service) for the systemd half.
 The installer is the easier of the two:
 
 ```bash
-sudo installer -pkg sendspin-cli-0.1.0-macos-arm64.pkg -target /
+sudo installer -pkg sendspin-cli-1.0.0-macos-arm64.pkg -target /
 sendspin-cli --version
 ```
 
@@ -199,8 +199,8 @@ worked. To undo it: remove the four files and
 Or take the tarball, and **unpack it from a terminal, not in Finder**:
 
 ```bash
-tar -xzf sendspin-cli-0.1.0-macos-arm64.tar.gz
-./sendspin-cli-0.1.0-macos-arm64/usr/local/bin/sendspin-cli --version
+tar -xzf sendspin-cli-1.0.0-macos-arm64.tar.gz
+./sendspin-cli-1.0.0-macos-arm64/usr/local/bin/sendspin-cli --version
 ```
 
 **Neither the binary nor the `.pkg` is signed or notarized.** They are ad-hoc signed — the
@@ -209,7 +209,7 @@ to check. Whether you notice depends entirely on the quarantine flag, which `tar
 `unzip` do not propagate and Finder's Archive Utility does. If macOS refuses it:
 
 ```bash
-xattr -d com.apple.quarantine ./sendspin-cli-0.1.0-macos-arm64/usr/local/bin/sendspin-cli
+xattr -d com.apple.quarantine ./sendspin-cli-1.0.0-macos-arm64/usr/local/bin/sendspin-cli
 ```
 
 A Developer ID signature and notarization are owed and tracked as roadmap item 7, so
@@ -228,10 +228,10 @@ alongside it** — PortAudio is linked in, and mDNS is Windows' own.
 starting at logon. By hand:
 
 ```powershell
-Get-FileHash .\sendspin-cli-0.5.0-windows-x86_64.zip -Algorithm SHA256   # compare with SHA256SUMS
-Expand-Archive .\sendspin-cli-0.5.0-windows-x86_64.zip .
-Get-ChildItem .\sendspin-cli-0.5.0-windows-x86_64 | Unblock-File
-.\sendspin-cli-0.5.0-windows-x86_64\sendspin-cli.exe --version
+Get-FileHash .\sendspin-cli-1.0.0-windows-x86_64.zip -Algorithm SHA256   # compare with SHA256SUMS
+Expand-Archive .\sendspin-cli-1.0.0-windows-x86_64.zip .
+Get-ChildItem .\sendspin-cli-1.0.0-windows-x86_64 | Unblock-File
+.\sendspin-cli-1.0.0-windows-x86_64\sendspin-cli.exe --version
 ```
 
 **The binary is not signed**, so SmartScreen may warn the first time it runs; that is what

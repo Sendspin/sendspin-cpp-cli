@@ -53,7 +53,7 @@ running the script again to upgrade asks nothing.
 `-Name kitchen`, `-Output "portaudio:directsound:Speakers (USB DAC)"` and `-AllowUnpaired` or
 `-NoAllowUnpaired` answer them up front. `-Yes` skips every prompt, and is required when there
 is no console to ask on; with it, only those flags set anything, except that a fresh install
-also gets `allow-unpaired = true` unless `-NoAllowUnpaired` is passed. `-Version v0.5.0` installs a specific release instead of
+also gets `allow-unpaired = true` unless `-NoAllowUnpaired` is passed. `-Version v1.0.0` installs a specific release instead of
 the newest. `-Firewall` adds the firewall rule without asking, though Windows still asks for
 administrator approval.
 
@@ -188,11 +188,11 @@ Take `sendspin-cli-<version>-windows-x86_64.zip` and `SHA256SUMS` from
 other, and run it from wherever you unpacked it:
 
 ```powershell
-Get-FileHash .\sendspin-cli-0.5.0-windows-x86_64.zip -Algorithm SHA256   # compare with SHA256SUMS
-Expand-Archive .\sendspin-cli-0.5.0-windows-x86_64.zip .
-Get-ChildItem .\sendspin-cli-0.5.0-windows-x86_64 | Unblock-File
-.\sendspin-cli-0.5.0-windows-x86_64\sendspin-cli.exe -l
-.\sendspin-cli-0.5.0-windows-x86_64\sendspin-cli.exe
+Get-FileHash .\sendspin-cli-1.0.0-windows-x86_64.zip -Algorithm SHA256   # compare with SHA256SUMS
+Expand-Archive .\sendspin-cli-1.0.0-windows-x86_64.zip .
+Get-ChildItem .\sendspin-cli-1.0.0-windows-x86_64 | Unblock-File
+.\sendspin-cli-1.0.0-windows-x86_64\sendspin-cli.exe -l
+.\sendspin-cli-1.0.0-windows-x86_64\sendspin-cli.exe
 ```
 
 `-l` lists what it can play through. Windows lists each device once per host API, so pick one
