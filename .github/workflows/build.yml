@@ -229,7 +229,9 @@ jobs:
           done
 
           sudo apt-get update
+          # Multi-Arch: same libraries must match across arches, so take phased updates rather than hold amd64 back.
           sudo apt-get install --no-install-recommends -y \
+            -o APT::Get::Always-Include-Phased-Updates=true \
             crossbuild-essential-armhf \
             qemu-user-static \
             pkg-config \
