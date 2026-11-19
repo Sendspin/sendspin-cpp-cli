@@ -28,7 +28,7 @@ jobs:
       fail-fast: false
       # Spell every key on every leg, false included: a missing key reads as false and silently disables that leg's work.
       # A publish: true leg also needs entries in both asset sets release.yml diffs (macOS: tarball and .pkg;
-      # Windows: zip).
+      # Windows: zip; Linux: tarball, .deb, .rpm and .pkg.tar.zst), and Linux ones in build_linux_packages.sh.
       matrix:
         include:
           - name: linux-x86_64
@@ -634,6 +634,51 @@ jobs:
             exit 1
           }
 
+      # The tested binary restaged at /usr: a reconfigure regenerates the units' ExecStart without recompiling.
+      # Before the real-prefix install below, whose root-owned manifest would break this unprivileged one.
+      - name: Package (deb, rpm, Arch)
+        if: matrix.publish && runner.os == 'Linux'
+        env:
+          NAME: ${{ steps.package.outputs.name }}
+          VERSION: ${{ steps.package.outputs.version }}
+          LEG: ${{ matrix.name }}
+          ARM32: ${{ matrix.arm32 }}
+        run: |
+          reconfigure() {
+            if [ -n "$ARM32" ]; then
+              scripts/build_arm32.sh "$ARM32" build "-DCMAKE_INSTALL_PREFIX=$1" >/dev/null
+            else
+              cmake -B build "-DCMAKE_INSTALL_PREFIX=$1" >/dev/null
+            fi
+          }
+          reconfigure /usr
+          DESTDIR="$PWD/pkgstage" cmake --install build --component sendspin-cli
+          # Back to the tarball's prefix for the steps that install it.
+          reconfigure /usr/local
+
+          cmp "stage/$NAME/usr/local/bin/sendspin-cli" pkgstage/usr/bin/sendspin-cli || {
+            echo '::error::the packages would carry a different binary from the tarball'
+            exit 1
+          }
+          scripts/build_linux_packages.sh "$LEG" "$VERSION" pkgstage packages
+
+      - name: Assert each package's files, architecture and dependencies
+        if: matrix.publish && runner.os == 'Linux'
+        env:
+          VERSION: ${{ steps.package.outputs.version }}
+          LEG: ${{ matrix.name }}
+        run: |
+          sudo apt-get install --no-install-recommends -y rpm zstd
+          scripts/assert_linux_packages.sh "$LEG" "$VERSION" packages
+
+      # Native containers only: the cross legs' packages are asserted above but not installed.
+      - name: Install the packages on clean distributions
+        if: matrix.publish && runner.os == 'Linux' && !matrix.arm32
+        env:
+          VERSION: ${{ steps.package.outputs.version }}
+          LEG: ${{ matrix.name }}
+        run: scripts/test_linux_packages.sh "$LEG" "$VERSION" packages
+
       # The installer against this payload on images that lack its runtime libraries, as a fresh Pi OS does.
       - name: Run get_started_linux.sh on clean Debian trixie and bookworm
         if: matrix.publish && runner.os == 'Linux' && !matrix.arm32
@@ -963,6 +1008,15 @@ jobs:
           name: ${{ steps.package.outputs.name }}
           path: ${{ steps.package.outputs.name }}.tar.gz
           # Long enough to bisect; releases take their own copy.
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Upload the Linux packages
+        if: matrix.publish && runner.os == 'Linux'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ${{ steps.package.outputs.name }}-packages
+          path: packages/
           retention-days: 14
           if-no-files-found: error
 

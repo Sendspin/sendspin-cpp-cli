@@ -17,6 +17,9 @@ on:
     paths:
       - .github/workflows/build-armv6.yml
       - scripts/build_armv6_container.sh
+      - scripts/build_linux_packages.sh
+      - scripts/assert_linux_packages.sh
+      - packaging/**
       - CMakeLists.txt
 
   # Opt a branch in; only works once this file is on the default branch.
@@ -277,6 +280,7 @@ jobs:
 
           tar -czf "$name.tar.gz" -C stage "$name"
           echo "name=$name" >>"$GITHUB_OUTPUT"
+          echo "version=$version" >>"$GITHUB_OUTPUT"
 
       # Assert the exact payload; keep in step with build.yml's list of the same.
       - name: Assert the payload holds exactly what it should
@@ -318,6 +322,32 @@ jobs:
             exit 1
           }
 
+      # The tested binary restaged at /usr; nfpm runs on the runner, the reconfigure in the container.
+      - name: Package (deb, Arch)
+        env:
+          NAME: ${{ steps.package.outputs.name }}
+          VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          scripts/build_armv6_container.sh configure build -DCMAKE_INSTALL_PREFIX=/usr >/dev/null
+          scripts/build_armv6_container.sh run \
+            env DESTDIR="$PWD/pkgstage" cmake --install build --component sendspin-cli
+          scripts/build_armv6_container.sh configure build -DCMAKE_INSTALL_PREFIX=/usr/local >/dev/null
+
+          cmp "stage/$NAME/usr/local/bin/sendspin-cli" pkgstage/usr/bin/sendspin-cli || {
+            echo '::error::the packages would carry a different binary from the tarball'
+            exit 1
+          }
+          scripts/build_linux_packages.sh "$LEG" "$VERSION" pkgstage packages
+
+      # Not installed anywhere: there is no ARMv6 container to install into short of the build one.
+      - name: Assert each package's files, architecture and dependencies
+        env:
+          VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y rpm zstd
+          scripts/assert_linux_packages.sh "$LEG" "$VERSION" packages
+
       # The unit is not run here: MemoryDenyWriteExecute= forbids qemu-user's JIT.
       - name: Upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
@@ -325,6 +355,14 @@ jobs:
           name: ${{ steps.package.outputs.name }}
           path: ${{ steps.package.outputs.name }}.tar.gz
           # Long enough to bisect; releases take their own copy.
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Upload the Linux packages
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ${{ steps.package.outputs.name }}-packages
+          path: packages/
           retention-days: 14
           if-no-files-found: error
 

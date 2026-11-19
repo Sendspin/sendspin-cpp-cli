@@ -36,6 +36,20 @@ PulseAudio. The [Linux guide](https://github.com/Sendspin/sendspin-cpp-cli/wiki/
 and the [Raspberry Pi guide](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Getting-Started-on-a-Raspberry-Pi)
 have the full walkthrough.
 
+**Linux packages:**
+
+Every release also carries a `.deb` (Debian trixie, Ubuntu 24.04+, Raspberry Pi OS), an `.rpm`
+(Fedora) and an Arch `.pkg.tar.zst` for each architecture:
+
+```bash
+sudo apt install ./sendspin-cli-<version>-linux-x86_64.deb      # or dnf install / pacman -U
+sudo systemctl enable --now sendspin-cli
+```
+
+Packages install under `/usr`, the guided installer under `/usr/local`; use one or the other.
+[Installation → Packages](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Installation#packages)
+says which package fits which release.
+
 **macOS:**
 
 Download the Apple-silicon `.pkg` installer or tarball from
