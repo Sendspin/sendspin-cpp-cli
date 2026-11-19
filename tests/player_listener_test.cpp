@@ -79,9 +79,14 @@ public:
     void release() override {
         this->log_.emplace_back("release");
     }
+    bool device_busy() const override {
+        return this->busy;
+    }
 
     /// What configure() answers.
     bool accepts{true};
+    /// What device_busy() answers.
+    bool busy{false};
 
 private:
     std::vector<std::string>& log_;
@@ -432,6 +437,62 @@ TEST(PlayerListener, AMidStreamSwitchFrom48k16To192k24ReopensInTheNewFormat) {
     EXPECT_EQ(harness.listener.stream_format()->sample_rate, 192000U);
     EXPECT_EQ(harness.listener.stream_format()->bit_depth, 24U);
     EXPECT_TRUE(harness.listener.streaming());
+}
+
+TEST(PlayerListener, ABusyDeviceIsReportedAsBusyNotAsARefusedFormat) {
+    RecordingHarness harness;
+    harness.sink.accepts = false;
+    harness.sink.busy = true;
+    harness.listener.on_stream_start();
+    const std::vector<uint8_t> audio = pcm(CD, 10);
+    harness.listener.on_audio_output(audio, CD, 0);
+
+    testing::internal::CaptureStderr();
+    harness.listener.poll(0);
+    harness.listener.on_audio_output(audio, CD, 0);
+    harness.listener.on_stream_end();
+    const std::string logged = testing::internal::GetCapturedStderr();
+
+    EXPECT_NE(logged.find("'recording' is busy (held by another process)"), std::string::npos)
+        << logged;
+    EXPECT_NE(logged.find("because 'recording' was busy"), std::string::npos) << logged;
+    EXPECT_EQ(logged.find("-l"), std::string::npos) << logged;
+    EXPECT_EQ(logged.find("refused"), std::string::npos) << logged;
+}
+
+TEST(PlayerListener, WritesAfterABusyDeviceComesBackAreNotCountedAsDiscarded) {
+    RecordingHarness harness;
+    harness.sink.accepts = false;
+    harness.sink.busy = true;
+    harness.listener.on_stream_start();
+    const std::vector<uint8_t> audio = pcm(CD, 10);
+    harness.listener.on_audio_output(audio, CD, 0);
+    harness.listener.poll(0);
+    harness.listener.on_audio_output(audio, CD, 0);
+
+    // The sink's poll() reopened the device.
+    harness.sink.busy = false;
+    harness.listener.on_audio_output(audio, CD, 0);
+
+    testing::internal::CaptureStderr();
+    harness.listener.on_stream_end();
+    const std::string logged = testing::internal::GetCapturedStderr();
+    EXPECT_NE(logged.find("Stream ended: 40 bytes discarded"), std::string::npos) << logged;
+}
+
+TEST(PlayerListener, ARefusedFormatStillPointsAtTheDeviceList) {
+    RecordingHarness harness;
+    harness.sink.accepts = false;
+    harness.listener.on_stream_start();
+    const std::vector<uint8_t> audio = pcm(HI_RES, 10);
+    harness.listener.on_audio_output(audio, HI_RES, 0);
+
+    testing::internal::CaptureStderr();
+    harness.listener.poll(0);
+    const std::string logged = testing::internal::GetCapturedStderr();
+
+    EXPECT_NE(logged.find("refused 96000 Hz / 2 ch / 24-bit"), std::string::npos) << logged;
+    EXPECT_NE(logged.find("Run with -l"), std::string::npos) << logged;
 }
 
 }  // namespace

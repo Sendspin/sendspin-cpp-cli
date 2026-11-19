@@ -57,6 +57,7 @@ public:
     void clear() override;
     void release() override;
     void stop() override;
+    bool device_busy() const override;
     void set_volume(uint8_t volume) override;
     void set_muted(bool muted) override;
 
@@ -173,6 +174,8 @@ private:
     std::atomic<bool> stopping_{false};
     /// Latches once the device is unusable, so write() discards instead of spinning.
     std::atomic<bool> failed_{false};
+    /// The last open failed with -EBUSY; cleared by the next open that succeeds.
+    std::atomic<bool> busy_{false};
 
     /// Guarded by device_mutex_, except SinkRecovery::pending().
     SinkRecovery recovery_;

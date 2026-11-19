@@ -130,6 +130,8 @@ private:
     struct OpenFormat {
         sendspin::AudioFormat format;
         bool refused{false};
+        /// Refused because the device was busy; the sink may reopen it mid-stream.
+        bool busy{false};
     };
 
     /// Guards open_ and requested_, the hand-off between the sync thread and poll().
@@ -148,6 +150,8 @@ private:
 
     /// Bytes of refused formats handed to the sink this stream.
     std::atomic<uint64_t> refused_bytes_{0};
+    /// A refusal this stream was a busy device rather than a format. Main loop only.
+    bool refused_busy_{false};
 };
 
 }  // namespace sendspin_cli

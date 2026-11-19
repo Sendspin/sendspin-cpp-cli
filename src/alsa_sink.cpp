@@ -332,9 +332,12 @@ bool AlsaAudioSink::open_device_(uint32_t sample_rate, uint8_t channels, uint8_t
     }
 
     int err = snd_pcm_open(&this->pcm_, this->device_.c_str(), SND_PCM_STREAM_PLAYBACK, 0);
+    const bool still_busy = err == -EBUSY && this->busy_.load();
+    this->busy_.store(err == -EBUSY);
     if (err < 0) {
-        cli_log(LogLevel::ERROR, "alsa: cannot open '%s': %s", this->device_.c_str(),
-                snd_strerror(err));
+        // A rescan finding the device still held is expected; it was reported once already.
+        cli_log(still_busy ? LogLevel::DEBUG : LogLevel::ERROR, "alsa: cannot open '%s': %s",
+                this->device_.c_str(), snd_strerror(err));
         this->pcm_ = nullptr;
         return false;
     }
@@ -552,6 +555,11 @@ bool AlsaAudioSink::configure(uint32_t sample_rate, uint8_t channels, uint8_t bi
     this->close_device_();
     if (!this->open_device_(sample_rate, channels, bits_per_sample)) {
         this->failed_.store(true);
+        if (this->busy_.load()) {
+            // Owe poll() a rescan, so the stream picks up once the other process lets go.
+            this->recovery_.reset();
+            this->handle_device_loss_();
+        }
         return false;
     }
     this->recovery_.reset();
@@ -745,6 +753,10 @@ void AlsaAudioSink::release() {
     snd_pcm_drop(this->pcm_);
     this->close_device_();
     cli_log(LogLevel::INFO, "alsa: '%s' released", this->device_.c_str());
+}
+
+bool AlsaAudioSink::device_busy() const {
+    return this->busy_.load();
 }
 
 void AlsaAudioSink::stop() {
