@@ -1,22 +1,92 @@
 # Installation
 
-Five ways in, depending on what you have. If you are on Linux and want the short version,
+Several ways in, depending on what you have. If you are on Linux and want the short version,
 [Getting Started on Linux](Getting-Started-on-Linux) does all of this in one command;
 [Getting Started on Windows](Getting-Started-on-Windows) is the same for Windows.
 
 | You have | Take |
 |---|---|
-| A Linux box or a Raspberry Pi | The `linux-x86_64`, `linux-arm64`, `linux-armv7` or `linux-armv6` tarball |
+| Debian, Ubuntu, Raspberry Pi OS, Fedora or Arch | The [`.deb`, `.rpm` or `.pkg.tar.zst` package](#packages) |
+| Any other Linux box | The `linux-x86_64`, `linux-arm64`, `linux-armv7` or `linux-armv6` tarball |
 | An Apple-silicon Mac | The `macos-arm64` installer `.pkg`, or the tarball |
 | A Windows 10 1809+ or Windows 11 PC | The `windows-x86_64` zip |
 | Anything else | [Build from source](#build-from-source) |
 
 Everything published is on the
 [Releases page](https://github.com/Sendspin/sendspin-cpp-cli/releases), and every release
-carries all seven archives. Per-commit builds of unreleased work are under the repository's
-Actions tab and expire after 14 days — six archives per commit there, `linux-armv6` being
-built by a workflow of its own rather than on every push. See
+carries all seven archives and the Linux packages beside them. Per-commit builds of
+unreleased work are under the repository's Actions tab and expire after 14 days — every
+archive and package but `linux-armv6`'s there, that leg being built by a workflow of its own
+rather than on every push. See
 [the Actions tab](https://github.com/Sendspin/sendspin-cpp-cli/actions).
+
+## Packages
+
+Every release carries native packages for each Linux architecture, built from the same binary
+as the tarball. They are named like the tarballs, after the build rather than the distribution's
+own architecture name, so the two 32-bit ARM builds never collide:
+
+```
+sendspin-cli-<version>-<leg>.deb
+sendspin-cli-<version>-<leg>.rpm
+sendspin-cli-<version>-<leg>.pkg.tar.zst
+```
+
+| Leg | `.deb` | `.rpm` | `.pkg.tar.zst` |
+|---|---|---|---|
+| `linux-x86_64` | amd64: Debian trixie, Ubuntu 24.04 and later | x86_64: current Fedora | x86_64: Arch Linux |
+| `linux-arm64` | arm64: Debian trixie, Ubuntu 24.04, 64-bit Raspberry Pi OS trixie | aarch64: current Fedora | aarch64: Arch Linux ARM |
+| `linux-armv7` | armhf: Debian trixie on an ARMv7 board | armv7hl (untested) | armv7h: Arch Linux ARM |
+| `linux-armv6` | armhf: 32-bit Raspberry Pi OS bookworm and trixie, any Pi | — | armv6h (untested) |
+
+The x86_64 and arm64 packages are installed, run and removed on clean Debian trixie, Ubuntu
+24.04 and Fedora (and Arch, on x86_64) on every CI build. **The `linux-armv7` deb needs glibc
+2.38**, so bookworm refuses it on its `libc6` dependency rather than installing a binary that
+cannot load; a 32-bit Raspberry Pi OS takes the `linux-armv6` deb instead, which runs on every
+Pi. Raspberry Pi OS calls itself armhf on both, so `dpkg` cannot tell the two apart for you.
+
+```bash
+VERSION=0.1.0
+LEG=linux-x86_64        # or linux-arm64, linux-armv7, linux-armv6
+BASE=https://github.com/Sendspin/sendspin-cpp-cli/releases/download/v$VERSION
+```
+
+Then, with the package for your distribution, verify it and install:
+
+```bash
+# Debian, Ubuntu, Raspberry Pi OS
+curl -fLO "$BASE/sendspin-cli-$VERSION-$LEG.deb" -O "$BASE/SHA256SUMS"
+sha256sum --ignore-missing -c SHA256SUMS
+sudo apt install "./sendspin-cli-$VERSION-$LEG.deb"
+
+# Fedora
+curl -fLO "$BASE/sendspin-cli-$VERSION-$LEG.rpm" -O "$BASE/SHA256SUMS"
+sha256sum --ignore-missing -c SHA256SUMS
+sudo dnf install "./sendspin-cli-$VERSION-$LEG.rpm"
+
+# Arch Linux, Arch Linux ARM
+curl -fLO "$BASE/sendspin-cli-$VERSION-$LEG.pkg.tar.zst" -O "$BASE/SHA256SUMS"
+sha256sum --ignore-missing -c SHA256SUMS
+sudo pacman -U "./sendspin-cli-$VERSION-$LEG.pkg.tar.zst"
+```
+
+`apt`, `dnf` and `pacman` pull in the runtime libraries the binary needs. Installing creates the
+`sendspin-cli` account and reloads systemd, but **does not enable or start the service** —
+configure it in `/etc/sendspin-cli.conf` first, then:
+
+```bash
+sudo systemctl enable --now sendspin-cli
+```
+
+Removing the package stops and disables the unit and leaves `/var/lib/sendspin-cli` and the
+account in place. There is no apt or dnf repository yet, so upgrades are the same install with
+the newer package, followed by `sudo systemctl restart sendspin-cli`: an upgrade leaves the
+running player alone.
+
+**Packages install under `/usr`; the tarball and the getting-started script install under
+`/usr/local`.** Use one or the other on a machine, not both: the `/usr/local` unit shadows the
+packaged one, so a package installed over a tarball install would still run the old binary.
+Run `scripts/uninstall_linux.sh` (or remove the tarball's files) before switching to a package.
 
 ## What is in the archive
 

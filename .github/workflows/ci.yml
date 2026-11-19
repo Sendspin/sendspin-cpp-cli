@@ -23,7 +23,7 @@ defaults:
     shell: bash
 
 jobs:
-  # Lints scripts/ with shellcheck; tags skip this job but still run the scripts.
+  # Lints scripts/ and the package maintainer scripts with shellcheck; tags skip this job but still run the scripts.
   shellcheck:
     name: shellcheck
     runs-on: ubuntu-24.04
@@ -33,7 +33,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Lint the shell scripts
-        run: shellcheck scripts/*.sh
+        run: shellcheck scripts/*.sh packaging/*.sh
 
   clang-format:
     name: clang-format

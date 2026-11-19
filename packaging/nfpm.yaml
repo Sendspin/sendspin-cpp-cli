@@ -1,0 +1,108 @@
+# deb, rpm and Arch packages from a /usr-prefix stage. scripts/build_linux_packages.sh fills the placeholders
+# and runs nfpm where stage/ and packaging/ resolve.
+name: sendspin-cli
+version: @VERSION@
+release: 1
+arch: @DEB_ARCH@
+platform: linux
+section: sound
+priority: optional
+maintainer: sendspin-cpp-cli Contributors
+description: |-
+  Sendspin audio player.
+  Plays a Sendspin server's stream through ALSA, PortAudio, PulseAudio or PipeWire,
+  runnable as a hardened systemd service under its own account.
+homepage: https://github.com/Sendspin/sendspin-cpp-cli
+license: Apache-2.0
+
+contents:
+  - src: stage/usr/bin/sendspin-cli
+    dst: /usr/bin/sendspin-cli
+    file_info:
+      mode: 0755
+  - src: stage/usr/lib/systemd/system/sendspin-cli.service
+    dst: /usr/lib/systemd/system/sendspin-cli.service
+    file_info:
+      mode: 0644
+  - src: stage/usr/lib/systemd/user/sendspin-cli.service
+    dst: /usr/lib/systemd/user/sendspin-cli.service
+    file_info:
+      mode: 0644
+  - src: stage/usr/lib/sysusers.d/sendspin-cli.conf
+    dst: /usr/lib/sysusers.d/sendspin-cli.conf
+    file_info:
+      mode: 0644
+  - src: stage/usr/share/doc/sendspin-cli/README.md
+    dst: /usr/share/doc/sendspin-cli/README.md
+    file_info:
+      mode: 0644
+  - src: stage/usr/share/doc/sendspin-cli/contributors.md
+    dst: /usr/share/doc/sendspin-cli/contributors.md
+    file_info:
+      mode: 0644
+  - src: stage/usr/share/doc/sendspin-cli/LICENSE
+    dst: /usr/share/doc/sendspin-cli/LICENSE
+    file_info:
+      mode: 0644
+  - src: stage/usr/share/doc/sendspin-cli/sendspin-cli.conf.example
+    dst: /usr/share/doc/sendspin-cli/sendspin-cli.conf.example
+    file_info:
+      mode: 0644
+
+scripts:
+  postinstall: packaging/postinstall.sh
+  preremove: packaging/preremove.sh
+  postremove: packaging/postremove.sh
+
+# Keep in step with scripts/assert_linux_packages.sh, which spells the same lists out.
+overrides:
+  deb:
+    depends:
+      - libc6 (>= @GLIBC_FLOOR@)
+      - libstdc++6
+      - libgcc-s1
+      - libasound2t64 | libasound2
+      - libportaudio2
+      - libpulse0
+      - libpipewire-0.3-0t64 | libpipewire-0.3-0
+      - libavahi-compat-libdnssd1
+      # Dropped on every leg but linux-armv6.
+      - libatomic1
+      # postinstall runs systemd-sysusers.
+      - systemd | systemd-standalone-sysusers
+    recommends:
+      - avahi-daemon
+  rpm:
+    depends:
+      - glibc >= @GLIBC_FLOOR@
+      - libstdc++
+      - alsa-lib
+      - portaudio
+      - pulseaudio-libs
+      - pipewire-libs
+      - avahi-compat-libdns_sd
+      - systemd
+    recommends:
+      - avahi
+  archlinux:
+    depends:
+      - glibc>=@GLIBC_FLOOR@
+      - gcc-libs
+      - alsa-lib
+      - portaudio
+      - libpulse
+      - libpipewire
+      - avahi
+      - systemd
+
+deb:
+  arch: @DEB_ARCH@
+rpm:
+  arch: @RPM_ARCH@
+  group: Applications/Multimedia
+  summary: Sendspin audio player
+archlinux:
+  arch: @ARCH_ARCH@
+  packager: sendspin-cpp-cli Contributors
+  scripts:
+    postupgrade: packaging/postinstall.sh

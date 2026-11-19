@@ -50,7 +50,8 @@ separate because it runs under emulation; it is required for releases.
 - `src/` contains the player, command-line interface, output backends, discovery, and
   local control implementation.
 - `tests/` contains the GoogleTest unit suite.
-- `packaging/` contains the system and user service units, sysusers, and configuration-file payload.
+- `packaging/` contains the system and user service units, sysusers, configuration-file payload,
+  and the nfpm config and maintainer scripts for the Linux packages.
 - `scripts/` contains installer, uninstaller, packaging, and smoke-test scripts.
 - `docs/wiki/` contains the source for the published wiki.
 
@@ -60,6 +61,6 @@ Release tags use the exact form `vMAJOR.MINOR.PATCH` and must match the version 
 `CMakeLists.txt`. Before pushing a release tag, add
 `docs/release-notes/<version>.md` using the existing release notes as a template.
 
-Pushing the tag runs the release workflow, builds the platform archives and macOS
-installer, verifies the expected assets, and publishes the GitHub Release only when all
-required builds succeed.
+Pushing the tag runs the release workflow, builds the platform archives, macOS
+installer and Linux `.deb`/`.rpm`/`.pkg.tar.zst` packages, verifies the expected assets,
+and publishes the GitHub Release only when all required builds succeed.

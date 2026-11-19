@@ -119,7 +119,7 @@ jobs:
           }
           echo "no release claims $TAG yet"
 
-  # The five build.yml legs, after preflight.
+  # The build.yml legs, after preflight.
   build:
     needs: preflight
     uses: ./.github/workflows/build.yml
@@ -154,11 +154,19 @@ jobs:
       # Diff the downloaded set against the expected assets: a green build may have uploaded nothing.
       - name: Assert the release is complete before creating anything
         run: |
-          # File names, spelled out; macOS contributes a tarball and a .pkg, Windows a zip.
+          # File names, spelled out; macOS contributes a tarball and a .pkg, Windows a zip, Linux a tarball and packages.
           expected=$(mktemp)
           {
             for leg in linux-x86_64 linux-arm64 linux-armv7 linux-armv6 macos-arm64; do
               echo "sendspin-cli-$VERSION-$leg.tar.gz"
+            done
+            # No rpm for linux-armv6.
+            for leg in linux-x86_64 linux-arm64 linux-armv7 linux-armv6; do
+              echo "sendspin-cli-$VERSION-$leg.deb"
+              echo "sendspin-cli-$VERSION-$leg.pkg.tar.zst"
+            done
+            for leg in linux-x86_64 linux-arm64 linux-armv7; do
+              echo "sendspin-cli-$VERSION-$leg.rpm"
             done
             echo "sendspin-cli-$VERSION-macos-arm64.pkg"
             echo "sendspin-cli-$VERSION-windows-x86_64.zip"
@@ -178,8 +186,8 @@ jobs:
       - name: Checksum what is being published
         run: |
           cd dist
-          # The .pkg and .zip are checksummed too; an unmatched glob errors under -e, and the set is already asserted.
-          sha256sum -- *.tar.gz *.pkg *.zip >SHA256SUMS
+          # Every asset; an unmatched glob errors under -e, and the set is already asserted.
+          sha256sum -- *.tar.gz *.pkg *.zip *.deb *.rpm *.pkg.tar.zst >SHA256SUMS
           cat SHA256SUMS
 
       - name: Write the release notes
@@ -208,7 +216,9 @@ jobs:
           [wiki](https://github.com/@REPO@/wiki) — [Installation](https://github.com/@REPO@/wiki/Installation),
           or [Getting Started on a Raspberry Pi](https://github.com/@REPO@/wiki/Getting-Started-on-a-Raspberry-Pi)
           for the two 32-bit ARM archives. Each archive also carries its own `BUILD-INFO.txt`,
-          with the install command already filled in for its platform.
+          with the install command already filled in for its platform. The `.deb`, `.rpm` and
+          `.pkg.tar.zst` packages install the same binary under `/usr`; see
+          [Packages](https://github.com/@REPO@/wiki/Installation#packages).
 
           The macOS binary and the `.pkg` around it are **unsigned** — ad-hoc signed, which is
           the minimum an arm64 Mach-O needs to execute at all, and carries no developer identity
@@ -249,7 +259,8 @@ jobs:
             --title "sendspin-cli $VERSION" \
             --notes-file notes.md \
             --draft \
-            dist/*.tar.gz dist/*.pkg dist/*.zip dist/SHA256SUMS | tee created.txt
+            dist/*.tar.gz dist/*.pkg dist/*.zip dist/*.deb dist/*.rpm dist/*.pkg.tar.zst dist/SHA256SUMS |
+            tee created.txt
 
           # Resolve the draft's numeric id from its html_url once; later steps use the REST id endpoints.
           url="$(tail -n1 created.txt)"
@@ -274,6 +285,14 @@ jobs:
             echo SHA256SUMS
             for leg in linux-x86_64 linux-arm64 linux-armv7 linux-armv6 macos-arm64; do
               echo "sendspin-cli-$VERSION-$leg.tar.gz"
+            done
+            # No rpm for linux-armv6.
+            for leg in linux-x86_64 linux-arm64 linux-armv7 linux-armv6; do
+              echo "sendspin-cli-$VERSION-$leg.deb"
+              echo "sendspin-cli-$VERSION-$leg.pkg.tar.zst"
+            done
+            for leg in linux-x86_64 linux-arm64 linux-armv7; do
+              echo "sendspin-cli-$VERSION-$leg.rpm"
             done
             echo "sendspin-cli-$VERSION-macos-arm64.pkg"
             echo "sendspin-cli-$VERSION-windows-x86_64.zip"
