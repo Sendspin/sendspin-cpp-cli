@@ -43,6 +43,8 @@ Every release also carries a `.deb` (Debian trixie, Ubuntu 24.04+, Raspberry Pi 
 
 ```bash
 sudo apt install ./sendspin-cli-<version>-linux-x86_64.deb      # or dnf install / pacman -U
+sendspin-cli -l                                                  # find a device
+sudoedit /etc/sendspin-cli.conf                                  # set output, e.g. hw:1,0
 sudo systemctl enable --now sendspin-cli
 ```
 

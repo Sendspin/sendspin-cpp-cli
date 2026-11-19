@@ -21,9 +21,10 @@ output-delay = 40
 control-socket = /run/sendspin-cli/control.sock
 ```
 
-An annotated example is installed at
-`/usr/local/share/doc/sendspin-cli/sendspin-cli.conf.example`, with every line commented
-out. Copying it is the intended way to start:
+An annotated example is installed at `/usr/share/doc/sendspin-cli/sendspin-cli.conf.example`
+by the packages and `/usr/local/share/doc/sendspin-cli/sendspin-cli.conf.example` by the
+tarball, with every line commented out. **A package install already has it as
+`/etc/sendspin-cli.conf`**, so just edit that. After a tarball install, copy it:
 
 ```bash
 sudo cp /usr/local/share/doc/sendspin-cli/sendspin-cli.conf.example /etc/sendspin-cli.conf

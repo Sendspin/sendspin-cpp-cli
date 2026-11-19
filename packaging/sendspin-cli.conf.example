@@ -1,4 +1,4 @@
-# Example sendspin-cli config: copy to /etc/sendspin-cli.conf and edit.
+# sendspin-cli config: edit, then restart the service. Tarballs: copy to /etc/sendspin-cli.conf.
 #
 # Keys are long flag names without dashes, one 'key = value' per line; `sendspin-cli --help`
 # is the reference. '#' starts a comment only at the start of a line, the last duplicate

@@ -58,6 +58,12 @@ check_installed() {
     esac
     grep -q "^ExecStart=/usr/bin/sendspin-cli " /usr/lib/systemd/system/sendspin-cli.service ||
         fail "the installed unit does not start /usr/bin/sendspin-cli"
+    # Images such as ubuntu drop /usr/share/doc, so the example cannot be compared against.
+    grep -q "^#output = " /etc/sendspin-cli.conf || fail "/etc/sendspin-cli.conf is not the packaged example"
+    if grep -qv "^#\|^$" /etc/sendspin-cli.conf; then
+        fail "/etc/sendspin-cli.conf sets an option out of the box"
+    fi
+    [ "$(stat -c %a /etc/sendspin-cli.conf)" = 644 ] || fail "/etc/sendspin-cli.conf is not mode 644"
     # Never enabled by the package.
     [ ! -e /etc/systemd/system/multi-user.target.wants/sendspin-cli.service ] ||
         fail "installing the package enabled the unit"
@@ -70,10 +76,30 @@ enable_unit() {
         fail "enabling the unit made no multi-user.target.wants symlink"
 }
 
-# Every non-directory path the package owned must be gone, and the enablement with them.
+edit_config() {
+    cp /etc/sendspin-cli.conf /tmp/packaged.conf
+    echo "# edited" >>/etc/sendspin-cli.conf
+}
+
+# Reinstalling over an edited config must keep the edit without a prompt or a .rpmnew/.pacnew/.dpkg-*.
+check_config_kept() {
+    grep -qx "# edited" /etc/sendspin-cli.conf ||
+        fail "reinstalling the package lost the edit to /etc/sendspin-cli.conf"
+    for stray in /etc/sendspin-cli.conf?*; do
+        [ ! -e "$stray" ] || fail "reinstalling the package left $stray"
+    done
+}
+
+# Every non-directory path the package owned must be gone, but for the paths named, which must stay.
 check_removed() {
     status=0
     while read -r path; do
+        case " $* " in
+            *" $path "*)
+                [ -e "$path" ] || fail "removal deleted $path, which it keeps"
+                continue
+                ;;
+        esac
         if [ -e "$path" ] && [ ! -d "$path" ]; then
             echo "::error::$IMAGE: $path is still there after removal"
             status=1
@@ -99,9 +125,14 @@ apt-get update -qq
 apt-get install -y "/packages/$NAME.deb"
 check_installed
 dpkg -L sendspin-cli >/tmp/owned
+edit_config
+dpkg -i "/packages/$NAME.deb" </dev/null
+check_config_kept
 enable_unit
 apt-get remove -y sendspin-cli
-check_removed
+check_removed /etc/sendspin-cli.conf
+apt-get purge -y sendspin-cli
+[ ! -e /etc/sendspin-cli.conf ] || fail "purge left /etc/sendspin-cli.conf"
 '
 in_container debian:trixie "$deb_install"
 in_container ubuntu:24.04 "$deb_install"
@@ -121,6 +152,11 @@ in_container fedora:latest '
 dnf install -y "/packages/$NAME.rpm"
 check_installed
 rpm -ql sendspin-cli >/tmp/owned
+edit_config
+dnf reinstall -y "/packages/$NAME.rpm"
+check_config_kept
+# Unmodified, so removal deletes it rather than saving a .rpmsave.
+cp /tmp/packaged.conf /etc/sendspin-cli.conf
 enable_unit
 dnf remove -y sendspin-cli
 check_removed
@@ -133,6 +169,11 @@ pacman -Sy --noconfirm
 pacman -U --noconfirm "/packages/$NAME.pkg.tar.zst"
 check_installed
 pacman -Qlq sendspin-cli >/tmp/owned
+edit_config
+pacman -U --noconfirm "/packages/$NAME.pkg.tar.zst"
+check_config_kept
+# Unmodified, so removal deletes it rather than saving a .pacsave.
+cp /tmp/packaged.conf /etc/sendspin-cli.conf
 enable_unit
 pacman -R --noconfirm sendspin-cli
 check_removed

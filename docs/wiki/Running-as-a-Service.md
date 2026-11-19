@@ -45,6 +45,9 @@ the unit runs as, out of a declaration installed beside the unit, and a tarball 
 | `/usr/local/share/doc/sendspin-cli/LICENSE` | Apache 2.0 |
 | `/usr/local/share/doc/sendspin-cli/sendspin-cli.conf.example` | an annotated config |
 
+The packages install the same files under `/usr` instead of `/usr/local`, and also install the
+example as `/etc/sendspin-cli.conf`, ready to edit; see [Installation → Packages](Installation#packages).
+
 The unit goes in `lib/systemd/system` and not a multiarch `libdir` because a unit file is
 architecture-independent, and systemd reads `/usr/lib/systemd/system` and
 `/usr/local/lib/systemd/system` — never `lib/x86_64-linux-gnu/systemd/system`. The account
@@ -241,7 +244,8 @@ If the player should follow your desktop session's sound server, run it as a use
 state take their defaults, subcommands need neither `sudo` nor a flag, and
 `output = default` works as it does from your shell.
 
-`get_started_linux.sh --user-service` does all of it. By hand:
+`get_started_linux.sh --user-service` does all of it. By hand (from a package, the example is
+under `/usr/share/doc/sendspin-cli/` instead):
 
 ```bash
 sudo systemctl disable --now sendspin-cli      # the two listen on the same port

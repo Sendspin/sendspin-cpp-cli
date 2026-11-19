@@ -71,17 +71,31 @@ sudo pacman -U "./sendspin-cli-$VERSION-$LEG.pkg.tar.zst"
 ```
 
 `apt`, `dnf` and `pacman` pull in the runtime libraries the binary needs. Installing creates the
-`sendspin-cli` account and reloads systemd, but **does not enable or start the service** —
-configure it in `/etc/sendspin-cli.conf` first, then:
+`sendspin-cli` account, installs `/etc/sendspin-cli.conf` with every line commented out, and
+reloads systemd, but **does not enable or start the service**. Configure it first:
 
 ```bash
+sendspin-cli -l                          # find a device
+sudoedit /etc/sendspin-cli.conf          # output = hw:1,0; optionally name, allow-unpaired
 sudo systemctl enable --now sendspin-cli
 ```
 
+**Name a card for `output`, not `default`**: the system unit has no session for ALSA's `default`
+to follow. [Configuration](Configuration) covers every key, and
+[Pairing a Player](Pairing-a-Player) covers what `allow-unpaired` changes. To follow your desktop
+session's sound server instead, run the user unit with `~/.config/sendspin-cli/config` and
+`systemctl --user`; see [Running as a Service](Running-as-a-Service#a-user-unit-instead).
+
+**Upgrades keep your edits to `/etc/sendspin-cli.conf`.** If the file already existed before
+the package was first installed, it is kept too: `dpkg` asks which to keep (the default, `N`,
+keeps yours; unattended installs need `-o Dpkg::Options::=--force-confold`), `dnf` writes the
+packaged one beside it as `.rpmnew` and `pacman` as `.pacnew`.
+
 Removing the package stops and disables the unit and leaves `/var/lib/sendspin-cli` and the
-account in place. There is no apt or dnf repository yet, so upgrades are the same install with
-the newer package, followed by `sudo systemctl restart sendspin-cli`: an upgrade leaves the
-running player alone.
+account in place; `apt remove` also keeps `/etc/sendspin-cli.conf` (`apt purge` deletes it),
+and `dnf` and `pacman` save an edited one as `.rpmsave` or `.pacsave`. There is no apt or dnf
+repository yet, so upgrades are the same install with the newer package, followed by
+`sudo systemctl restart sendspin-cli`: an upgrade leaves the running player alone.
 
 **Packages install under `/usr`; the tarball and the getting-started script install under
 `/usr/local`.** Use one or the other on a machine, not both: the `/usr/local` unit shadows the

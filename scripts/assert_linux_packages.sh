@@ -67,6 +67,7 @@ diff -u "$WORK/expected-set" "$WORK/actual-set" || error "$DIR does not hold exa
 
 # Files only, as "<mode> <path>": directories are left to the distribution.
 cat >"$WORK/expected-files" <<'FILES'
+-rw-r--r-- /etc/sendspin-cli.conf
 -rw-r--r-- /usr/lib/systemd/system/sendspin-cli.service
 -rw-r--r-- /usr/lib/systemd/user/sendspin-cli.service
 -rw-r--r-- /usr/lib/sysusers.d/sendspin-cli.conf
@@ -120,6 +121,7 @@ check_field 'the deb Architecture' "$(dpkg-deb -f "$deb" Architecture)" "$deb_ar
 check_field 'the deb Depends' "$(dpkg-deb -f "$deb" Depends)" \
     "libc6 (>= $floor), libstdc++6, libgcc-s1, libasound2t64 | libasound2, libportaudio2, libpulse0, libpipewire-0.3-0t64 | libpipewire-0.3-0, libavahi-compat-libdnssd1$deb_extra, systemd | systemd-standalone-sysusers"
 check_field 'the deb Recommends' "$(dpkg-deb -f "$deb" Recommends)" avahi-daemon
+check_field 'the deb conffiles' "$(dpkg-deb -I "$deb" conffiles | paste -sd,)" /etc/sendspin-cli.conf
 
 # rpm
 if [ -n "$rpm_arch" ]; then
@@ -139,6 +141,10 @@ if [ -n "$rpm_arch" ]; then
     check_field 'the rpm Requires' "$(paste -sd, "$WORK/rpm-requires")" \
         "glibc >= $floor,libstdc++,alsa-lib,portaudio,pulseaudio-libs,pipewire-libs,avahi-compat-libdns_sd,systemd"
     check_field 'the rpm Recommends' "$(rpm -qp --recommends "$rpm" | paste -sd,)" avahi
+    # c is %config, n is noreplace.
+    check_field 'the rpm config files' \
+        "$(rpm -qp --qf '[%{FILEFLAGS:fflags} %{FILENAMES}\n]' "$rpm" | awk 'NF == 2 && $1 ~ /c/' | paste -sd,)" \
+        'cn /etc/sendspin-cli.conf'
 fi
 
 # Arch
@@ -159,6 +165,7 @@ check_field 'the Arch pkgver' "$(pkginfo pkgver)" "$VERSION-1"
 check_field 'the Arch arch' "$(pkginfo arch)" "$arch_arch"
 check_field 'the Arch depends' "$(pkginfo depend)" \
     "glibc>=$floor,gcc-libs,alsa-lib,portaudio,libpulse,libpipewire,avahi,systemd"
+check_field 'the Arch backup' "$(pkginfo backup)" etc/sendspin-cli.conf
 for hook in post_install post_upgrade pre_remove post_remove; do
     grep -Eq "^(function )?$hook\(\)" "$WORK/arch/.INSTALL" || error "the Arch .INSTALL defines no $hook()"
 done
