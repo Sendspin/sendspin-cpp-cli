@@ -294,6 +294,21 @@ TEST(PlayerListener, AFinishTimeFromAnEndedStreamDoesNotHoldUpTheNext) {
     EXPECT_EQ(harness.log, (std::vector<std::string>{"configure 96000/2/24"}));
 }
 
+TEST(PlayerListener, AWriteInTheOpenFormatCancelsAPendingSwitch) {
+    RecordingHarness harness;
+    harness.listener.on_stream_start();
+    const std::vector<uint8_t> audio = pcm(CD, 10);
+    harness.listener.on_audio_output(audio, CD, 0);
+    harness.listener.poll(0);
+    harness.log.clear();
+
+    harness.listener.on_audio_output(pcm(HI_RES, 10), HI_RES, 0);
+    EXPECT_EQ(harness.listener.on_audio_output(audio, CD, 0), audio.size());
+    harness.listener.poll(10'000'000);
+
+    EXPECT_EQ(harness.log, (std::vector<std::string>{"write 40"}));
+}
+
 TEST(PlayerListener, ASinkThatNeverReportsIsReopenedAfterATimeout) {
     RecordingHarness harness;
     harness.listener.on_stream_start();
@@ -312,7 +327,7 @@ TEST(PlayerListener, ASinkThatNeverReportsIsReopenedAfterATimeout) {
     EXPECT_EQ(harness.log, (std::vector<std::string>{"configure 96000/2/24"}));
 }
 
-TEST(PlayerListener, ARefusedFormatIsDiscardedAndTheNextFormatRetries) {
+TEST(PlayerListener, ARefusedFormatStillReachesTheSinkAndTheNextFormatRetries) {
     RecordingHarness harness;
     harness.sink.accepts = false;
     harness.listener.on_stream_start();
@@ -330,7 +345,8 @@ TEST(PlayerListener, ARefusedFormatIsDiscardedAndTheNextFormatRetries) {
     harness.listener.poll(0);
     EXPECT_EQ(harness.listener.on_audio_output(audio, CD, 0), audio.size());
 
-    EXPECT_EQ(harness.log, (std::vector<std::string>{"start", "configure 96000/2/24",
+    // The refused write still reaches the sink, whose write() owns discarding and recovery.
+    EXPECT_EQ(harness.log, (std::vector<std::string>{"start", "configure 96000/2/24", "write 60",
                                                      "configure 44100/2/16", "write 40"}));
     EXPECT_TRUE(harness.listener.stream_format().has_value());
 }

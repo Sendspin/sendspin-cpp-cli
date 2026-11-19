@@ -120,7 +120,7 @@ private:
     /// Configures the sink for `format` and publishes the result to the sync thread.
     void open_sink(const sendspin::AudioFormat& format);
 
-    /// Forgets the open format and the play-out accounting, at stream end.
+    /// Forgets the open format, at stream end.
     void reset_format();
 
     /// Mirror of open_ for `status`; main loop only.
@@ -146,10 +146,8 @@ private:
     /// The latest finish time the sink reported, in now_us.
     std::atomic<int64_t> playout_end_us_{0};
 
-    /// Bytes of refused formats discarded this stream.
+    /// Bytes of refused formats handed to the sink this stream.
     std::atomic<uint64_t> refused_bytes_{0};
-    /// When the last discarded frame would have finished; sync thread only.
-    int64_t refused_playhead_us_{0};
 };
 
 }  // namespace sendspin_cli
