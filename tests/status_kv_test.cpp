@@ -29,7 +29,7 @@ StatusSnapshot full_snapshot() {
     snapshot.connected = true;
     snapshot.server_name = "Music Assistant";
     snapshot.server_id = "OraobU4l";
-    snapshot.trust = sendspin::ConnectionTrust::USER;
+    snapshot.paired = true;
     snapshot.paired_servers = 2;
     snapshot.pairing_server_id = "other-server";
     snapshot.pairing_code = "123456";

@@ -38,6 +38,10 @@
 namespace sendspin_cli {
 namespace {
 
+std::string slot_key(size_t slot) {
+    return std::string(sendspin::persistence_keys::RecordSlotKey(slot).view());
+}
+
 /// A scratch directory under the build tree, per test, removed afterwards.
 class ScratchDir {
 public:
@@ -401,8 +405,7 @@ TEST(StateStore, APairingRecordIsAnOccupiedSlotNotAFreedOne) {
 
     // The library zeroes a slot it frees rather than deleting it.
     const std::vector<uint8_t> freed(sendspin::persistence_keys::RECORD_SLOT_SIZE, 0);
-    ASSERT_TRUE(
-        store.set_blob(sendspin::persistence_keys::record_slot_key(0), freed.data(), freed.size()));
+    ASSERT_TRUE(store.set_blob(slot_key(0), freed.data(), freed.size()));
     // The Pairing PSK and keypair are not pairings.
     const std::vector<uint8_t> key(32, 0x5a);
     ASSERT_TRUE(store.set_blob(sendspin::persistence_keys::PAIRING_PSK, key.data(), key.size()));
@@ -410,8 +413,7 @@ TEST(StateStore, APairingRecordIsAnOccupiedSlotNotAFreedOne) {
     EXPECT_FALSE(store.has_pairing_record());
 
     const std::vector<uint8_t> record(sendspin::persistence_keys::RECORD_SLOT_SIZE, 0x5a);
-    ASSERT_TRUE(store.set_blob(sendspin::persistence_keys::record_slot_key(3), record.data(),
-                               record.size()));
+    ASSERT_TRUE(store.set_blob(slot_key(3), record.data(), record.size()));
     EXPECT_TRUE(store.has_pairing_record());
     EXPECT_TRUE(loaded(scratch.file()).has_pairing_record());
 }
@@ -424,18 +426,14 @@ TEST(StateStore, CountsEachOccupiedPairingSlot) {
 
     const std::vector<uint8_t> record(sendspin::persistence_keys::RECORD_SLOT_SIZE, 0x5a);
     const std::vector<uint8_t> freed(sendspin::persistence_keys::RECORD_SLOT_SIZE, 0);
-    ASSERT_TRUE(store.set_blob(sendspin::persistence_keys::record_slot_key(0), record.data(),
-                               record.size()));
-    ASSERT_TRUE(
-        store.set_blob(sendspin::persistence_keys::record_slot_key(1), freed.data(), freed.size()));
-    ASSERT_TRUE(store.set_blob(sendspin::persistence_keys::record_slot_key(2), record.data(),
-                               record.size()));
+    ASSERT_TRUE(store.set_blob(slot_key(0), record.data(), record.size()));
+    ASSERT_TRUE(store.set_blob(slot_key(1), freed.data(), freed.size()));
+    ASSERT_TRUE(store.set_blob(slot_key(2), record.data(), record.size()));
     EXPECT_EQ(store.pairing_record_count(), 2U);
     EXPECT_EQ(loaded(scratch.file()).pairing_record_count(), 2U);
 
     // Unpairing zeroes the slot, which no longer counts.
-    ASSERT_TRUE(
-        store.set_blob(sendspin::persistence_keys::record_slot_key(0), freed.data(), freed.size()));
+    ASSERT_TRUE(store.set_blob(slot_key(0), freed.data(), freed.size()));
     EXPECT_EQ(store.pairing_record_count(), 1U);
 }
 
@@ -448,10 +446,8 @@ TEST(StateStore, DoesNotCountASlotTheLibraryWouldNotLoad) {
     const std::vector<uint8_t> short_blob(sendspin::persistence_keys::RECORD_SLOT_SIZE / 2, 0x5a);
     std::vector<uint8_t> zero_psk(sendspin::persistence_keys::PAIRING_PSK_SIZE, 0);
     zero_psk.resize(sendspin::persistence_keys::RECORD_SLOT_SIZE, 0x5a);
-    ASSERT_TRUE(store.set_blob(sendspin::persistence_keys::record_slot_key(0), short_blob.data(),
-                               short_blob.size()));
-    ASSERT_TRUE(store.set_blob(sendspin::persistence_keys::record_slot_key(1), zero_psk.data(),
-                               zero_psk.size()));
+    ASSERT_TRUE(store.set_blob(slot_key(0), short_blob.data(), short_blob.size()));
+    ASSERT_TRUE(store.set_blob(slot_key(1), zero_psk.data(), zero_psk.size()));
     EXPECT_EQ(store.pairing_record_count(), 0U);
     EXPECT_FALSE(store.has_pairing_record());
 }

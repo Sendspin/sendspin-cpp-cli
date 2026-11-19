@@ -436,6 +436,44 @@ TEST(ParseOptions, AllowUnpairedIsOffUnlessAsked) {
     EXPECT_TRUE(on.options().allow_unpaired);
 }
 
+TEST(ParseOptions, PairingTokenEndpointIsOffUnlessAsked) {
+    Parse off({});
+    Parse v4({"--pairing-token-endpoint", "172.30.32.1:8930"});
+    Parse v6({"--pairing-token-endpoint", "[fd00::1]:8931"});
+
+    ASSERT_TRUE(off.ok()) << off.diagnostics();
+    ASSERT_TRUE(v4.ok()) << v4.diagnostics();
+    ASSERT_TRUE(v6.ok()) << v6.diagnostics();
+    EXPECT_EQ(off.options().pairing_endpoint_port, 0U);
+    EXPECT_EQ(v4.options().pairing_endpoint_host, "172.30.32.1");
+    EXPECT_EQ(v4.options().pairing_endpoint_port, 8930U);
+    EXPECT_EQ(v6.options().pairing_endpoint_host, "fd00::1");
+    EXPECT_EQ(v6.options().pairing_endpoint_port, 8931U);
+}
+
+TEST(ParseOptions, PairingTokenEndpointNeedsAnExplicitAddress) {
+    for (const char* value :
+         {"8930", ":8930", "0.0.0.0:8930", "[::]:8930", "[::ffff:0.0.0.0]:8930", "localhost:8930",
+          "fd00::1:8930", "[fd00::1:8930", "172.30.32.1:", "172.30.32.1:0", "172.30.32.1:80",
+          "172.30.32.1:1023", "172.30.32.1:65536", "172.30.32.1:+80"}) {
+        Parse parse({"--pairing-token-endpoint", value});
+        EXPECT_FALSE(parse.ok()) << "accepted --pairing-token-endpoint '" << value << "'";
+        EXPECT_NE(parse.diagnostics().find("invalid --pairing-token-endpoint"), std::string::npos)
+            << parse.diagnostics();
+    }
+}
+
+TEST(ParseOptions, PairingTokenEndpointTakesNoPortBelow1024) {
+    Parse lowest({"--pairing-token-endpoint", "172.30.32.1:1024"});
+    Parse below({"--pairing-token-endpoint", "172.30.32.1:1023"});
+
+    ASSERT_TRUE(lowest.ok()) << lowest.diagnostics();
+    EXPECT_EQ(lowest.options().pairing_endpoint_port, 1024U);
+    EXPECT_FALSE(below.ok());
+    EXPECT_NE(below.diagnostics().find("expected a port of 1024-65535"), std::string::npos)
+        << below.diagnostics();
+}
+
 TEST(ParseOptions, FixedVolumeIsOffUnlessAsked) {
     Parse off({});
     Parse on({"--fixed-volume"});

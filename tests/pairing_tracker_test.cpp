@@ -21,51 +21,42 @@
 using sendspin_cli::PairingOutcome;
 using sendspin_cli::PairingTracker;
 
-TEST(PairingTracker, ASuccessAfterTheCodeIsWithdrawnRecordsPaired) {
+TEST(PairingTracker, ASuccessAfterThePromptIsWithdrawnRecordsPaired) {
     PairingTracker tracker;
     tracker.started("S");
-    tracker.code_shown("123456");
-    // The library clears the code before it reports the success.
-    tracker.code_cleared();
-    EXPECT_EQ(tracker.in_progress_server_id(), "S");
-    EXPECT_EQ(tracker.code(), "");
-    EXPECT_EQ(tracker.last().attempt, 0u);
+    // The library withdraws the prompt before it reports the success.
+    tracker.ended();
+    EXPECT_EQ(tracker.last().outcome, PairingOutcome::Abandoned);
 
     tracker.succeeded("S");
     EXPECT_EQ(tracker.last().attempt, 1u);
     EXPECT_EQ(tracker.last().outcome, PairingOutcome::Paired);
     EXPECT_EQ(tracker.last().server_id, "S");
-    EXPECT_EQ(tracker.in_progress_server_id(), "");
 }
 
 TEST(PairingTracker, AFailureKeepsItsReason) {
     PairingTracker tracker;
     tracker.started("S");
     tracker.failed("S", "the pairing code did not match");
-    tracker.code_cleared();
+    tracker.ended();
     EXPECT_EQ(tracker.last().attempt, 1u);
     EXPECT_EQ(tracker.last().outcome, PairingOutcome::Failed);
     EXPECT_EQ(tracker.last().server_id, "S");
     EXPECT_EQ(tracker.last().reason, "the pairing code did not match");
-    EXPECT_EQ(tracker.in_progress_server_id(), "");
 }
 
-TEST(PairingTracker, ADroppedConnectionAbandonsAnOpenAttempt) {
+TEST(PairingTracker, AnEndedAttemptIsAbandoned) {
     PairingTracker tracker;
     tracker.started("S");
-    tracker.code_shown("123456");
-    tracker.code_cleared();
-    tracker.connection_ended();
+    tracker.ended();
     EXPECT_EQ(tracker.last().attempt, 1u);
     EXPECT_EQ(tracker.last().outcome, PairingOutcome::Abandoned);
     EXPECT_EQ(tracker.last().server_id, "S");
-    EXPECT_EQ(tracker.code(), "");
-    EXPECT_EQ(tracker.in_progress_server_id(), "");
 }
 
-TEST(PairingTracker, ConnectionEndingWithNoAttemptRecordsNothing) {
+TEST(PairingTracker, EndingWithNoAttemptRecordsNothing) {
     PairingTracker tracker;
-    tracker.connection_ended();
+    tracker.ended();
     EXPECT_EQ(tracker.last().attempt, 0u);
     EXPECT_EQ(tracker.last().outcome, PairingOutcome::None);
 }
@@ -77,7 +68,6 @@ TEST(PairingTracker, ANewAttemptAbandonsTheOpenOne) {
     EXPECT_EQ(tracker.last().attempt, 1u);
     EXPECT_EQ(tracker.last().server_id, "A");
     EXPECT_EQ(tracker.last().outcome, PairingOutcome::Abandoned);
-    EXPECT_EQ(tracker.in_progress_server_id(), "B");
 
     tracker.succeeded("B");
     EXPECT_EQ(tracker.last().attempt, 2u);
@@ -85,11 +75,11 @@ TEST(PairingTracker, ANewAttemptAbandonsTheOpenOne) {
     EXPECT_EQ(tracker.last().outcome, PairingOutcome::Paired);
 }
 
-TEST(PairingTracker, TheWindowFlagFollowsOpenAndClose) {
+TEST(PairingTracker, AnOutcomeForAnotherServerIsItsOwnAttempt) {
     PairingTracker tracker;
-    EXPECT_FALSE(tracker.window_open());
-    tracker.window_opened();
-    EXPECT_TRUE(tracker.window_open());
-    tracker.window_closed();
-    EXPECT_FALSE(tracker.window_open());
+    tracker.started("A");
+    tracker.ended();
+    tracker.failed("B", "x");
+    EXPECT_EQ(tracker.last().attempt, 2u);
+    EXPECT_EQ(tracker.last().server_id, "B");
 }

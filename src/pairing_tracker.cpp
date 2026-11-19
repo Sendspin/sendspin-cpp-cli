@@ -17,9 +17,7 @@
 namespace sendspin_cli {
 
 void PairingTracker::started(const std::string& server_id) {
-    if (!this->server_id_.empty()) {
-        this->finish_(this->server_id_, PairingOutcome::Abandoned, "");
-    }
+    this->ended();
     this->server_id_ = server_id;
     this->attempts_++;
 }
@@ -32,49 +30,23 @@ void PairingTracker::failed(const std::string& server_id, const std::string& rea
     this->finish_(server_id, PairingOutcome::Failed, reason);
 }
 
-void PairingTracker::code_shown(const std::string& code) {
-    this->code_ = code;
-}
-
-void PairingTracker::code_cleared() {
-    this->code_.clear();
-}
-
-void PairingTracker::window_opened() {
-    this->window_open_ = true;
-}
-
-void PairingTracker::window_closed() {
-    this->window_open_ = false;
-}
-
-void PairingTracker::connection_ended() {
+void PairingTracker::ended() {
     if (!this->server_id_.empty()) {
-        this->finish_(this->server_id_, PairingOutcome::Abandoned, "");
+        this->last_ = {this->attempts_, this->server_id_, PairingOutcome::Abandoned, ""};
+        this->server_id_.clear();
     }
-}
-
-const std::string& PairingTracker::in_progress_server_id() const {
-    return this->server_id_;
-}
-
-const std::string& PairingTracker::code() const {
-    return this->code_;
-}
-
-bool PairingTracker::window_open() const {
-    return this->window_open_;
-}
-
-const PairingAttemptResult& PairingTracker::last() const {
-    return this->last_;
 }
 
 void PairingTracker::finish_(const std::string& server_id, PairingOutcome outcome,
                              const std::string& reason) {
     if (this->server_id_.empty()) {
-        // A result with no start seen: still an attempt.
-        this->attempts_++;
+        // The library withdraws the prompt before it reports the outcome.
+        const bool trails_prompt = this->last_.outcome == PairingOutcome::Abandoned &&
+                                   this->last_.server_id == server_id &&
+                                   this->last_.attempt == this->attempts_;
+        if (!trails_prompt) {
+            this->attempts_++;
+        }
     }
     this->last_ = {this->attempts_, server_id, outcome, reason};
     this->server_id_.clear();

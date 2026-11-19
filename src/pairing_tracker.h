@@ -31,39 +31,27 @@ struct PairingAttemptResult {
     std::string reason;  ///< set for Failed only
 };
 
-/// Folds the library's pairing callbacks into the open attempt, the code and window on show,
-/// and the result of the last attempt. Main loop only; no logging, no library types.
-///
-/// The library clears the code before reporting a success, after reporting a failure, and alone
-/// when a connection drops, so clearing the code or closing the window never ends an attempt.
-/// Only a result, a new handshake or connection loss, or a new attempt does.
+/// Numbers pairing attempts and records how the last one ended. Main loop only; no library types.
 class PairingTracker {
 public:
+    /// A new attempt; one still open is recorded as abandoned.
     void started(const std::string& server_id);
     void succeeded(const std::string& server_id);
     void failed(const std::string& server_id, const std::string& reason);
-    void code_shown(const std::string& code);
-    void code_cleared();
-    void window_opened();
-    void window_closed();
 
-    /// A new handshake, or the connection dropped: an open attempt will never report its end.
-    void connection_ended();
+    /// The open attempt ended without an outcome callback (prompt withdrawn, connection lost).
+    void ended();
 
-    /// The server an attempt is open with, or empty.
-    const std::string& in_progress_server_id() const;
-    const std::string& code() const;
-    bool window_open() const;
-    const PairingAttemptResult& last() const;
+    const PairingAttemptResult& last() const {
+        return this->last_;
+    }
 
 private:
-    /// Records the open attempt (or a result that arrived without a start) as ended.
+    /// Records an outcome; one that trails ended() for the same server upgrades that record.
     void finish_(const std::string& server_id, PairingOutcome outcome, const std::string& reason);
 
     std::string server_id_;  ///< empty when no attempt is open
     uint32_t attempts_{0};   ///< attempts begun so far
-    std::string code_;
-    bool window_open_{false};
     PairingAttemptResult last_;
 };
 

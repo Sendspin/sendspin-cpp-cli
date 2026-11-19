@@ -192,7 +192,7 @@ size_t StateStore::pairing_record_count() const {
     size_t count = 0;
     for (size_t slot = 0; slot < slots; ++slot) {
         const std::optional<std::vector<uint8_t>> record =
-            this->blob(sendspin::persistence_keys::record_slot_key(slot));
+            this->blob(std::string(sendspin::persistence_keys::RecordSlotKey(slot).view()));
         // Counted as the library loads them: a freed slot is kept as zeroes, which it rejects
         // along with any other blob it could not use.
         if (record.has_value() &&

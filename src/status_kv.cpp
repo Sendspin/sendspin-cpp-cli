@@ -112,10 +112,7 @@ std::string format_status_kv(const StatusSnapshot& snapshot) {
     append_kv(out, "connected", flag(snapshot.connected));
     append_kv(out, "server_name", snapshot.server_name);
     append_kv(out, "server_id", snapshot.server_id);
-    append_kv(out, "trust",
-              !snapshot.connected || !snapshot.trust.has_value()
-                  ? ""
-                  : (*snapshot.trust == sendspin::ConnectionTrust::USER ? "paired" : "unpaired"));
+    append_kv(out, "trust", !snapshot.connected ? "" : (snapshot.paired ? "paired" : "unpaired"));
     append_kv(out, "paired_servers", number(static_cast<uint32_t>(snapshot.paired_servers)));
     append_kv(out, "pairing_server_id", snapshot.pairing_server_id);
     append_kv(out, "pairing_code", snapshot.pairing_code);

@@ -25,22 +25,28 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <mutex>
 #include <optional>
+#include <span>
 
 namespace sendspin_cli {
 
 /// Connects sendspin's player role to whichever AudioSink -o selected.
-/// on_audio_write() runs on the sync task's thread, every other callback on the main loop.
+/// on_audio_output() runs on the sync task's thread, every other method on the main loop.
+/// The sink opens in each write's format; configure() stays on the main loop, in poll().
 class PlayerListener final : public sendspin::PlayerRoleListener {
 public:
-    /// Wires sink.on_frames_played to player.notify_audio_played(); arguments must outlive this.
+    /// Wires sink.on_frames_played to player.notify_audio_played(); arguments must outlive this,
+    /// and the sink must be stopped before this is destroyed, since its reports reach this.
     /// @param store Where server-set volume and mute persist; null opts out.
     PlayerListener(sendspin::PlayerRole& player, AudioSink& sink, StateStore* store = nullptr);
 
     /// Fired on the main loop at stream start (true) and end (false), refused formats included.
     std::function<void(bool started)> on_stream_event;
 
-    size_t on_audio_write(uint8_t* data, size_t length, uint32_t timeout_ms) override;
+    /// Writes in the open format; a new format returns 0 until poll() has reopened the sink.
+    size_t on_audio_output(std::span<const uint8_t> pcm, const sendspin::AudioFormat& format,
+                           uint32_t timeout_ms) override;
     void on_stream_start() override;
     void on_stream_end() override;
     void on_volume_changed(uint8_t volume) override;
@@ -48,6 +54,10 @@ public:
 
     /// Logs a server-set output delay; the library already applies and persists it.
     void on_output_delay_changed(uint16_t delay_ms) override;
+
+    /// Reopens the sink in a format a write asked for, once the old format's audio has played.
+    /// @param now_us SendspinClient::now_us(), the clock on_frames_played timestamps are in.
+    void poll(int64_t now_us);
 
     /// True between a stream start and its end, even when the device refused the format.
     bool streaming() const {
@@ -90,7 +100,7 @@ public:
         this->release_device_ = true;
     }
 
-    /// The format the sink was configured for; absent between streams and for a refused one.
+    /// The format the sink is open in; absent between streams and for a refused one.
     const std::optional<StreamFormat>& stream_format() const {
         return this->stream_format_;
     }
@@ -112,12 +122,36 @@ private:
     bool applied_muted_{false};
     VolumeSource volume_source_{VolumeSource::SinkDefault};
 
-    /// Set at stream start once the sink accepts the format, cleared at stream end.
+    /// Configures the sink for `format` and publishes the result to the sync thread.
+    void open_sink(const sendspin::AudioFormat& format);
+
+    /// Forgets the open format, at stream end.
+    void reset_format();
+
+    /// Mirror of open_ for `status`; main loop only.
     std::optional<StreamFormat> stream_format_;
 
-    /// Set when configure() refuses this stream's format, until the next stream start.
-    std::atomic<bool> stream_refused_{false};
-    /// Bytes handed to a sink while stream_refused_ was set.
+    /// The format configure() last ran for, and whether the sink refused it.
+    struct OpenFormat {
+        sendspin::AudioFormat format;
+        bool refused{false};
+    };
+
+    /// Guards open_ and requested_, the hand-off between the sync thread and poll().
+    std::mutex format_mutex_;
+    std::optional<OpenFormat> open_;
+    /// A format a write is waiting on; poll() opens it.
+    std::optional<sendspin::AudioFormat> requested_;
+    /// When poll() first saw requested_, in now_us; bounds the wait for the old audio to play.
+    std::optional<int64_t> requested_since_us_;
+
+    /// Frames of the open format the sink took, and frames it reported played since the last open.
+    std::atomic<uint64_t> written_frames_{0};
+    std::atomic<uint64_t> played_frames_{0};
+    /// The latest finish time the sink reported, in now_us.
+    std::atomic<int64_t> playout_end_us_{0};
+
+    /// Bytes of refused formats handed to the sink this stream.
     std::atomic<uint64_t> refused_bytes_{0};
 };
 

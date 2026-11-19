@@ -36,7 +36,7 @@ endif()
 
 # sendspin-cpp
 
-set(SENDSPIN_GIT_TAG "b0fcf5bb369b470ddc4987280c19f0919e9a9084" CACHE STRING
+set(SENDSPIN_GIT_TAG "v0.10.0" CACHE STRING
     "sendspin-cpp git tag or commit to build against")
 
 # player, metadata, controller (group transport verbs) and source; no FORCE, so -D overrides still win.
@@ -58,7 +58,7 @@ include(FetchContent)
 FetchContent_Declare(
     sendspin
     GIT_REPOSITORY https://github.com/Sendspin/sendspin-cpp.git
-    # No GIT_SHALLOW: older CMake cannot shallow-fetch a commit SHA that is not a branch tip.
+    # No GIT_SHALLOW: an overriding commit SHA that is not a branch tip will not shallow-fetch.
     GIT_TAG        ${SENDSPIN_GIT_TAG}
 )
 FetchContent_MakeAvailable(sendspin)
@@ -314,9 +314,12 @@ add_library(sendspin-cli-core STATIC
     src/null_sink.cpp
     src/null_source.cpp
     src/outbound.cpp
+    src/pairing_endpoint.cpp
+    src/pairing_listener.cpp
     src/pairing_tracker.cpp
     src/pcm_ring.cpp
     src/pcm_volume.cpp
+    src/persistence_provider.cpp
     src/player_listener.cpp
     src/sink_recovery.cpp
     src/status_kv.cpp
@@ -331,7 +334,7 @@ if(WIN32)
     # POSIX names (open, close, unlink, ...) without the CRT's deprecation warnings.
     target_compile_definitions(sendspin-cli-core PUBLIC
         NOMINMAX WIN32_LEAN_AND_MEAN NOGDI _CRT_NONSTDC_NO_WARNINGS _CRT_SECURE_NO_WARNINGS)
-    target_link_libraries(sendspin-cli-core PUBLIC ws2_32 advapi32 shell32 ole32)
+    target_link_libraries(sendspin-cli-core PUBLIC ws2_32 advapi32 shell32 ole32 iphlpapi)
 else()
     target_sources(sendspin-cli-core PRIVATE src/daemon.cpp src/hooks_posix.cpp)
 endif()
@@ -536,9 +539,12 @@ if(SENDSPIN_CLI_BUILD_TESTS)
         tests/discovery_test.cpp
         tests/hooks_test.cpp
         tests/null_sink_test.cpp
+        tests/pairing_endpoint_test.cpp
+        tests/pairing_listener_test.cpp
         tests/pairing_tracker_test.cpp
         tests/pcm_ring_test.cpp
         tests/pcm_volume_test.cpp
+        tests/persistence_provider_test.cpp
         tests/pipewire_sink_test.cpp
         tests/player_listener_test.cpp
         tests/portaudio_device_test.cpp
