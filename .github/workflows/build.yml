@@ -698,8 +698,10 @@ jobs:
             install_with --no-allow-unpaired
             grep -qx "allow-unpaired = false" "$conf" || fail "--no-allow-unpaired did not write false"
 
-            ! /src/scripts/get_started_linux.sh --allow-unpaired --no-allow-unpaired </dev/null ||
-              fail "contradicting unpaired flags were accepted"
+            ! /src/scripts/get_started_linux.sh --allow-unpaired --no-allow-unpaired </dev/null \
+              >/tmp/install.log 2>&1 || fail "contradicting unpaired flags were accepted"
+            grep -q "contradict each other" /tmp/install.log ||
+              fail "contradicting unpaired flags failed without saying why"
           '
 
           # bookworm has glibc 2.36, under this build's floor: the script must refuse before installing.
