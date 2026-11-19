@@ -220,6 +220,18 @@ jobs:
           Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
           SOURCES
 
+          # Multi-Arch: same libraries must match ports' armhf version, which the runner's mirror can lag behind.
+          if [ "$host_arch" = amd64 ]; then
+            sudo tee /etc/apt/sources.list.d/ubuntu-archive-amd64.sources >/dev/null <<SOURCES
+          Types: deb
+          URIs: http://archive.ubuntu.com/ubuntu/
+          Suites: $VERSION_CODENAME-updates $VERSION_CODENAME-security
+          Components: main restricted universe multiverse
+          Architectures: amd64
+          Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+          SOURCES
+          fi
+
           echo 'What apt will read:'
           cat /etc/apt/sources.list.d/*.sources
           for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list; do
@@ -229,7 +241,9 @@ jobs:
           done
 
           sudo apt-get update
+          # Multi-Arch: same libraries must match across arches, so take phased updates rather than hold amd64 back.
           sudo apt-get install --no-install-recommends -y \
+            -o APT::Get::Always-Include-Phased-Updates=true \
             crossbuild-essential-armhf \
             qemu-user-static \
             pkg-config \
