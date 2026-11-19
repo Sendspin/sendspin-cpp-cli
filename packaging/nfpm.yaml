@@ -48,6 +48,12 @@ contents:
     dst: /usr/share/doc/sendspin-cli/sendspin-cli.conf.example
     file_info:
       mode: 0644
+  # deb conffile, rpm %config(noreplace), Arch backup: an edited config survives upgrades.
+  - src: stage/usr/share/doc/sendspin-cli/sendspin-cli.conf.example
+    dst: /etc/sendspin-cli.conf
+    type: config|noreplace
+    file_info:
+      mode: 0644
 
 scripts:
   postinstall: packaging/postinstall.sh
