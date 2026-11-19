@@ -744,7 +744,7 @@ main() {
             [ -z "$want_unpaired" ] || say "  note: $CONFIG already sets allow-unpaired, so $want_unpaired is ignored"
         elif [ -n "$want_unpaired" ]; then
             UNPAIRED_FROM='flag'
-        elif [ "$OUTPUT_FROM" = 'ask' ]; then
+        elif [ "$assume_yes" != 'yes' ] && [ "$CONFIG_HAS_OUTPUT" != 'yes' ]; then
             UNPAIRED_FROM='ask'
         elif [ "$assume_yes" = 'yes' ] && [ "$CONFIG_EXISTS" != 'yes' ]; then
             UNPAIRED_FROM='default'
@@ -839,8 +839,8 @@ main() {
             fi
             case "$NAME_FROM:$OUTPUT_FROM:$UNPAIRED_FROM" in
                 *ask*)
-                    say 'the name, the output device and unpaired access you are asked about next filled'
-                    say 'in. The lines it sets are printed before it is copied.'
+                    say 'your flags and your answers to the questions that follow filled in. The lines it'
+                    say 'sets are printed before it is copied.'
                     ;;
                 none:none:none) say 'nothing changed: every line in it is commented out.' ;;
                 none:none:default) say 'allow-unpaired = true set, and nothing else changed.' ;;

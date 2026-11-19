@@ -343,7 +343,7 @@ try {
     } elseif ($UnpairedFlag) {
         $UnpairedFrom = 'flag'
         $Unpaired = if ($AllowUnpaired) { 'true' } else { 'false' }
-    } elseif ($OutputFrom -eq 'ask') {
+    } elseif (-not $Yes -and -not (Test-ConfigSets 'output')) {
         $UnpairedFrom = 'ask'
     } elseif ($Yes -and $SeedConfig) {
         $UnpairedFrom = 'default'
