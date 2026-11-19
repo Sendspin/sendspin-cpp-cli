@@ -30,6 +30,9 @@ inline constexpr const char* LOCAL_PAIRING_ROLE = "_ohf_local_pairing@v1";
 /// The only path the endpoint answers.
 inline constexpr const char* PAIRING_TOKEN_PATH = "/";
 
+/// The lowest port --pairing-token-endpoint takes; Music Assistant ignores a lower one.
+inline constexpr uint16_t PAIRING_ENDPOINT_MIN_PORT = 1024;
+
 /// Connections served at once; a further one is closed as soon as it is accepted.
 inline constexpr int PAIRING_ENDPOINT_MAX_CONNECTIONS = 4;
 

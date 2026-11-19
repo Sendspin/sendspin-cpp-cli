@@ -340,8 +340,8 @@ bool parse_pairing_endpoint(const std::string& value, std::string& host, uint16_
     }
 
     uint16_t number = 0;
-    if (!parse_port(port_text, number)) {
-        error = "expected a port of 1-65535";
+    if (!parse_port(port_text, number) || number < PAIRING_ENDPOINT_MIN_PORT) {
+        error = "expected a port of " + std::to_string(PAIRING_ENDPOINT_MIN_PORT) + "-65535";
         return false;
     }
 

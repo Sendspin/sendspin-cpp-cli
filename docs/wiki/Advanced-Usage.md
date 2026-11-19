@@ -326,7 +326,8 @@ How it stays local:
 
 - **It listens on one address only.** The address is required and must be a numeric IP; a
   wildcard (`0.0.0.0`, `::`) or a bare port is refused at startup. Pick an address only the
-  server's host can reach, never the LAN address.
+  server's host can reach, never the LAN address. The port must be 1024–65535, the range
+  Music Assistant fetches from.
 - **It answers only that address's own subnet.** The player looks up the network interface
   that holds the address and refuses, with `403`, any peer outside its subnet:
   `172.30.32.0/23` for Home Assistant OS's `172.30.32.1`, `127.0.0.0/8` for `127.0.0.1`. A
