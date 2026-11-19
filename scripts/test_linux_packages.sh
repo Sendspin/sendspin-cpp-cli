@@ -63,7 +63,14 @@ check_installed() {
         fail "installing the package enabled the unit"
 }
 
-# Every non-directory path the package owned must be gone.
+# Enabled offline, as in a chroot, so removal must clear the symlink without a booted systemd.
+enable_unit() {
+    systemctl enable sendspin-cli.service || fail "systemctl could not enable the installed unit offline"
+    [ -L /etc/systemd/system/multi-user.target.wants/sendspin-cli.service ] ||
+        fail "enabling the unit made no multi-user.target.wants symlink"
+}
+
+# Every non-directory path the package owned must be gone, and the enablement with them.
 check_removed() {
     status=0
     while read -r path; do
@@ -74,6 +81,8 @@ check_removed() {
     done </tmp/owned
     [ "$status" -eq 0 ] || exit 1
     [ ! -e /usr/bin/sendspin-cli ] || fail "removal left /usr/bin/sendspin-cli"
+    [ ! -L /etc/systemd/system/multi-user.target.wants/sendspin-cli.service ] ||
+        fail "removal left the unit enabled"
 }
 '
 
@@ -90,6 +99,7 @@ apt-get update -qq
 apt-get install -y "/packages/$NAME.deb"
 check_installed
 dpkg -L sendspin-cli >/tmp/owned
+enable_unit
 apt-get remove -y sendspin-cli
 check_removed
 '
@@ -111,6 +121,7 @@ in_container fedora:latest '
 dnf install -y "/packages/$NAME.rpm"
 check_installed
 rpm -ql sendspin-cli >/tmp/owned
+enable_unit
 dnf remove -y sendspin-cli
 check_removed
 '
@@ -122,6 +133,7 @@ pacman -Sy --noconfirm
 pacman -U --noconfirm "/packages/$NAME.pkg.tar.zst"
 check_installed
 pacman -Qlq sendspin-cli >/tmp/owned
+enable_unit
 pacman -R --noconfirm sendspin-cli
 check_removed
 '

@@ -9,6 +9,10 @@ case "${1:-}" in
     *) exit 0 ;;
 esac
 
+# Disabling only edits /etc symlinks, so it runs without a booted systemd too; stopping needs one.
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl --no-reload disable sendspin-cli.service >/dev/null 2>&1 || true
+fi
 if [ -d /run/systemd/system ]; then
-    systemctl disable --now sendspin-cli.service >/dev/null 2>&1 || true
+    systemctl stop sendspin-cli.service >/dev/null 2>&1 || true
 fi
