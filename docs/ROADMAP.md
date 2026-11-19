@@ -34,7 +34,7 @@ passing such a URL today.
 ### 3. Upstream gaps in sendspin-cpp
 
 Each needs a library change; nothing this repo can call fixes them. Re-check on every
-`SENDSPIN_GIT_TAG` bump (currently `78b13d5e`, past v0.9.5).
+`SENDSPIN_GIT_TAG` bump (currently v0.10.0; all three still hold there).
 
 - **No log sink hook.** The host `SS_LOG*` macros are bare `fprintf(stderr, ...)` gated on one
   global level. So library lines carry no timestamp under `-f`, cannot be filtered per tag
@@ -184,9 +184,10 @@ lets both legs drop their exemption.
 ### 15. `--interface`
 
 Bind the inbound listener — and scope the advertisement — to one interface, instead of every
-address the host holds. **Still blocked upstream at v0.9.5:** `src/host/ws_server.cpp:61`
+address the host holds. **Still blocked upstream at v0.10.0:** `src/host/ws_server.cpp:69`
 constructs `ix::WebSocketServer(server_port_, "0.0.0.0", ...)`, and `SendspinClientConfig`
-carries `server_port` and `server_max_connections` but no bind address. (Its `mac_address`
+carries `server_port`, `server_max_connections` and `accept_inbound_connections` but no bind
+address. (Its `mac_address`
 override is identity in `client/hello`, not a socket.) The library needs a bind address threaded
 through `ConnectionManager` into `SendspinWsServer`; there is no other route.
 

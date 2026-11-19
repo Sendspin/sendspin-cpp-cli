@@ -36,7 +36,7 @@ endif()
 
 # sendspin-cpp
 
-set(SENDSPIN_GIT_TAG "78b13d5edcd38b9c95295722884edb60d7a3284d" CACHE STRING
+set(SENDSPIN_GIT_TAG "v0.10.0" CACHE STRING
     "sendspin-cpp git tag or commit to build against")
 
 # player, metadata, controller (group transport verbs) and source; no FORCE, so -D overrides still win.
@@ -58,7 +58,7 @@ include(FetchContent)
 FetchContent_Declare(
     sendspin
     GIT_REPOSITORY https://github.com/Sendspin/sendspin-cpp.git
-    # No GIT_SHALLOW: older CMake cannot shallow-fetch a commit SHA that is not a branch tip.
+    # No GIT_SHALLOW: an overriding commit SHA that is not a branch tip will not shallow-fetch.
     GIT_TAG        ${SENDSPIN_GIT_TAG}
 )
 FetchContent_MakeAvailable(sendspin)
@@ -298,6 +298,7 @@ add_library(sendspin-cli-core STATIC
     src/pairing_listener.cpp
     src/pcm_ring.cpp
     src/pcm_volume.cpp
+    src/persistence_provider.cpp
     src/player_listener.cpp
     src/sink_recovery.cpp
     src/state_store.cpp
@@ -507,6 +508,7 @@ if(SENDSPIN_CLI_BUILD_TESTS)
         tests/pairing_listener_test.cpp
         tests/pcm_ring_test.cpp
         tests/pcm_volume_test.cpp
+        tests/persistence_provider_test.cpp
         tests/pipewire_sink_test.cpp
         tests/player_listener_test.cpp
         tests/portaudio_device_test.cpp

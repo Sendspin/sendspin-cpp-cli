@@ -28,6 +28,7 @@
 #include "outbound.h"
 #include "pairing_endpoint.h"
 #include "pairing_listener.h"
+#include "persistence_provider.h"
 #include "player_listener.h"
 #include "state_store.h"
 #include "supported_formats.h"
@@ -119,24 +120,6 @@ struct HostNetworkProvider : sendspin::SendspinNetworkProvider {
     bool is_network_ready() override {
         return true;
     }
-};
-
-/// The library's byte store (identity key, pairings, output delay), backed by the state store.
-class CliPersistenceProvider final : public sendspin::SendspinPersistenceProvider {
-public:
-    /// `store` must outlive this provider, which must in turn outlive the client.
-    explicit CliPersistenceProvider(StateStore& store) : store_(store) {}
-
-    std::optional<std::vector<uint8_t>> load_blob(const std::string& key) override {
-        return this->store_.blob(key);
-    }
-
-    bool save_blob(const std::string& key, const uint8_t* data, size_t len) override {
-        return this->store_.set_blob(key, data, len);
-    }
-
-private:
-    StateStore& store_;
 };
 
 /// What `status` reports of the server's metadata, copied out of the library's views.
@@ -1052,6 +1035,7 @@ int main(int argc, char* argv[]) {
             outbound->tick(client, now_ms);
         }
         // Main-loop work a sink cannot do on the sync task's thread.
+        player_listener.poll(sendspin::SendspinClient::now_us());
         sink->poll(now_ms);
         hooks.poll();
         // Not in the SIGHUP handler: the reopen is not async-signal-safe.
