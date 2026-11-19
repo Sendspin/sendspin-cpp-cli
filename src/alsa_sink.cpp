@@ -55,6 +55,8 @@ constexpr int WAIT_SLICE_MS = 20;
 constexpr auto KEEP_ALIVE_IDLE = std::chrono::milliseconds(60);
 /// Keep-alive: periods of audio kept queued while idle; small, so a new stream is not delayed.
 constexpr snd_pcm_uframes_t KEEP_ALIVE_PERIODS = 2;
+/// Floor on the keep-alive reserve: a few main-loop ticks, so the PCM survives between top-ups.
+constexpr uint32_t KEEP_ALIVE_RESERVE_MS = 40;
 
 /// snd_pcm_resume() retries before falling back to prepare(), after a system suspend.
 constexpr int RESUME_TRIES = 10;
@@ -535,10 +537,14 @@ bool AlsaAudioSink::configure(uint32_t sample_rate, uint8_t channels, uint8_t bi
         if (this->keep_alive_s_.load() != 0 && keepable) {
             // Keep-alive: flush without stopping, so the receiver keeps its lock.
             this->flush_keeping_alive_();
-            cli_log(LogLevel::DEBUG, "alsa: reusing '%s' at %u Hz, %u ch, %u-bit (kept running)",
-                    this->device_.c_str(), sample_rate, channels, bits_per_sample);
-            this->recovery_.reset();
-            return true;
+            const snd_pcm_state_t after = snd_pcm_state(this->pcm_);
+            if (after == SND_PCM_STATE_RUNNING || after == SND_PCM_STATE_PREPARED) {
+                cli_log(LogLevel::DEBUG,
+                        "alsa: reusing '%s' at %u Hz, %u ch, %u-bit (kept running)",
+                        this->device_.c_str(), sample_rate, channels, bits_per_sample);
+                this->recovery_.reset();
+                return true;
+            }
         }
         // Same format: keep the device and restart from a clean ring.
         snd_pcm_drop(this->pcm_);
@@ -686,9 +692,11 @@ size_t AlsaAudioSink::write(const uint8_t* data, size_t length, uint32_t timeout
         if (frames_done > 0 && this->pcm_ != nullptr && this->rate_ > 0) {
             snd_pcm_sframes_t delay = 0;
             if (snd_pcm_delay(this->pcm_, &delay) == 0 && delay >= 0) {
-                finish_us = SendspinClient::now_us() +
-                            ((static_cast<int64_t>(delay) * 1000000) / this->rate_);
+                const int64_t delay_us = (static_cast<int64_t>(delay) * 1000000) / this->rate_;
+                finish_us = SendspinClient::now_us() + delay_us;
                 have_timing = true;
+                // The keep-alive window runs from when this audio finishes playing.
+                this->keep_alive_until_ += std::chrono::microseconds(delay_us);
                 // Taken with the timestamp under the same lock, so nothing reports between them.
                 gap_frames = this->recovery_.take_discarded_frames();
             }
@@ -885,8 +893,9 @@ void AlsaAudioSink::flush_keeping_alive_() {
             }
         }
     }
-    // A stream boundary: bridge it for the whole window, from now.
+    // A stream boundary: bridge it for the whole window, from now, topping up from the next tick.
     this->keep_alive_extend_();
+    this->last_audio_write_ = {};
     // Refill now rather than on the next tick: after the rewind only the margin is queued.
     this->keep_alive_top_up_(true);
 }
@@ -937,8 +946,10 @@ void AlsaAudioSink::keep_alive_top_up_(bool force) {
         return;
     }
 
-    const snd_pcm_uframes_t low_water =
-        std::min(this->period_frames_ * KEEP_ALIVE_PERIODS, this->buffer_frames_);
+    const auto reserve = static_cast<snd_pcm_uframes_t>(
+        (static_cast<uint64_t>(this->rate_) * KEEP_ALIVE_RESERVE_MS) / 1000U);
+    const snd_pcm_uframes_t low_water = std::min(
+        std::max(this->period_frames_ * KEEP_ALIVE_PERIODS, reserve), this->buffer_frames_);
     const auto free_frames = static_cast<snd_pcm_uframes_t>(avail);
     const snd_pcm_uframes_t queued =
         (free_frames >= this->buffer_frames_) ? 0 : this->buffer_frames_ - free_frames;

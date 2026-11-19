@@ -68,6 +68,8 @@ using sendspin::LogLevel;
 
 /// Sleep between client.loop() calls; bounds main-loop reaction time only.
 constexpr int LOOP_INTERVAL_MS = 10;
+/// Smallest --buffer-ms whose keep-alive silence outlasts a few LOOP_INTERVAL_MS ticks.
+constexpr uint32_t KEEP_ALIVE_MIN_BUFFER_MS = 40;
 
 /// How often the main loop asks whether a server has paired, while the token endpoint runs.
 constexpr int64_t PAIRING_RECORD_CHECK_MS = 1000;
@@ -665,6 +667,12 @@ int main(int argc, char* argv[]) {
         log_line(LogLevel::INFO, LOG_TAG_AUDIO,
                  "--keep-output-alive is ignored with --release-device");
     } else {
+        if (opts.keep_output_alive_s != 0 && opts.buffer_ms < KEEP_ALIVE_MIN_BUFFER_MS) {
+            log_line(LogLevel::WARN, LOG_TAG_AUDIO,
+                     "--keep-output-alive with --buffer-ms under %u may underrun between main-loop "
+                     "ticks",
+                     KEEP_ALIVE_MIN_BUFFER_MS);
+        }
         sink->set_keep_alive(opts.keep_output_alive_s);
     }
 
