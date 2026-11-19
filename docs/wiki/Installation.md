@@ -80,7 +80,8 @@ sudo systemctl enable --now sendspin-cli
 
 Removing the package stops and disables the unit and leaves `/var/lib/sendspin-cli` and the
 account in place. There is no apt or dnf repository yet, so upgrades are the same install with
-the newer package.
+the newer package, followed by `sudo systemctl restart sendspin-cli`: an upgrade leaves the
+running player alone.
 
 **Packages install under `/usr`; the tarball and the getting-started script install under
 `/usr/local`.** Use one or the other on a machine, not both: the `/usr/local` unit shadows the

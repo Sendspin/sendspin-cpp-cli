@@ -41,7 +41,7 @@ readonly LEG VERSION STAGE
 PACKAGING=$(cd "$(dirname "$0")/../packaging" && pwd)
 readonly PACKAGING
 
-# deb, rpm and Arch spellings of each leg's architecture; '-' skips that format.
+# deb, rpm and Arch spellings of each leg's architecture; 'none' skips that format.
 LIBATOMIC=no
 case "$LEG" in
     linux-x86_64) DEB_ARCH=amd64 RPM_ARCH=x86_64 ARCH_ARCH=x86_64 ;;
@@ -49,7 +49,7 @@ case "$LEG" in
     linux-armv7) DEB_ARCH=armhf RPM_ARCH=armv7hl ARCH_ARCH=armv7h ;;
     # Raspberry Pi OS armhf is ARMv6, so the deb is armhf; no rpm distribution targets ARMv6.
     linux-armv6)
-        DEB_ARCH=armhf RPM_ARCH=- ARCH_ARCH=armv6h
+        DEB_ARCH=armhf RPM_ARCH=none ARCH_ARCH=armv6h
         LIBATOMIC=yes
         ;;
     *) fail "no package architectures are recorded for leg '$LEG'" ;;
@@ -103,7 +103,7 @@ name="sendspin-cli-$VERSION-$LEG"
 for format in deb:deb rpm:rpm archlinux:pkg.tar.zst; do
     packager=${format%%:*}
     extension=${format#*:}
-    if [ "$packager" = rpm ] && [ "$RPM_ARCH" = - ]; then
+    if [ "$packager" = rpm ] && [ "$RPM_ARCH" = none ]; then
         continue
     fi
     (cd "$WORK" && "$TOOLS/nfpm" package --config nfpm.yaml --packager "$packager" \
