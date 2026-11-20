@@ -375,7 +375,7 @@ where the same libraries are spelled `libasound2` and `libpipewire-0.3-0`. The n
 Clear the quarantine flag:
 
 ```bash
-xattr -d com.apple.quarantine ./sendspin-cli-1.0.0-macos-arm64/usr/local/bin/sendspin-cli
+xattr -d com.apple.quarantine ./sendspin-cli-1.0.1-macos-arm64/usr/local/bin/sendspin-cli
 ```
 
 Unpacking from a terminal avoids it in the first place, and `sudo installer -pkg … -target /`
