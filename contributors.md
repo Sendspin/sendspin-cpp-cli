@@ -43,7 +43,8 @@ Audio backends and mDNS are optional and auto-detected. Use
   behavior changes.
 
 GitHub Actions builds and tests Linux, macOS, and ARM targets. The ARMv6 build is
-separate because it runs under emulation; it is required for releases.
+separate because it runs under emulation. A release publishes without waiting for it, and
+`release-armv6` adds the ARMv6 assets once it finishes.
 
 ## Project layout
 
@@ -63,4 +64,6 @@ Release tags use the exact form `vMAJOR.MINOR.PATCH` and must match the version 
 
 Pushing the tag runs the release workflow, builds the platform archives, macOS
 installer and Linux `.deb`/`.rpm`/`.pkg.tar.zst` packages, verifies the expected assets,
-and publishes the GitHub Release only when all required builds succeed.
+and publishes the GitHub Release once every leg but ARMv6 has succeeded. The ARMv6 archive
+and packages follow when that build finishes, typically half an hour later; if it fails,
+re-run the failed jobs and `release-armv6` uploads them.
