@@ -1,8 +1,8 @@
 name: Build ARMv6
 
 # The linux-armv6 archive, built natively in an emulated Raspbian container (Debian armhf is ARMv7).
-# ~23 minutes, so it runs post-merge, on a path filter and on dispatch rather than every push;
-# release.yml calls it and blocks on it.
+# ~23-35 minutes, so it runs post-merge, on a path filter and on dispatch rather than every push;
+# release.yml calls it and publishes it after the other legs.
 on:
   # release.yml, on a tag.
   workflow_call:
@@ -47,8 +47,8 @@ jobs:
     # Matches the archive's LEG name, which release.yml diffs.
     name: linux-armv6
     runs-on: ubuntu-24.04
-    # 23 minutes measured, plus margin.
-    timeout-minutes: 40
+    # 23-35 minutes measured; a tag run can share runners with the main push of the same commit.
+    timeout-minutes: 75
     env:
       # Raspbian ARMv6 userland (gcc --with-arch=armv6), pinned by digest; bookworm keeps glibc loadable on trixie too.
       IMAGE: 'balenalib/rpi-raspbian:bookworm@sha256:0f3c33faa9d7b1dac778e8afb5854080dcfbddeac7437265598c6076bb0ffc82'

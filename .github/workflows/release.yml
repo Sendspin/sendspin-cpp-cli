@@ -124,14 +124,14 @@ jobs:
     needs: preflight
     uses: ./.github/workflows/build.yml
 
-  # linux-armv6, blocking: a red ARMv6 build fails the release.
+  # linux-armv6, non-blocking: release-armv6 adds it to the published release.
   build-armv6:
     needs: preflight
     uses: ./.github/workflows/build-armv6.yml
 
   release:
     name: release
-    needs: [preflight, build, build-armv6]
+    needs: [preflight, build]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     # The only write scope on this repository.
@@ -151,21 +151,22 @@ jobs:
           path: dist
           merge-multiple: true
 
+      # An ARMv6 build that beat the others here is release-armv6's to publish.
+      - name: Leave linux-armv6 to release-armv6
+        run: rm -fv dist/*-linux-armv6.*
+
       # Diff the downloaded set against the expected assets: a green build may have uploaded nothing.
       - name: Assert the release is complete before creating anything
         run: |
           # File names, spelled out; macOS contributes a tarball and a .pkg, Windows a zip, Linux a tarball and packages.
           expected=$(mktemp)
           {
-            for leg in linux-x86_64 linux-arm64 linux-armv7 linux-armv6 macos-arm64; do
+            for leg in linux-x86_64 linux-arm64 linux-armv7 macos-arm64; do
               echo "sendspin-cli-$VERSION-$leg.tar.gz"
             done
-            # No rpm for linux-armv6.
-            for leg in linux-x86_64 linux-arm64 linux-armv7 linux-armv6; do
+            for leg in linux-x86_64 linux-arm64 linux-armv7; do
               echo "sendspin-cli-$VERSION-$leg.deb"
               echo "sendspin-cli-$VERSION-$leg.pkg.tar.zst"
-            done
-            for leg in linux-x86_64 linux-arm64 linux-armv7; do
               echo "sendspin-cli-$VERSION-$leg.rpm"
             done
             echo "sendspin-cli-$VERSION-macos-arm64.pkg"
@@ -283,15 +284,12 @@ jobs:
           expected=$(mktemp)
           {
             echo SHA256SUMS
-            for leg in linux-x86_64 linux-arm64 linux-armv7 linux-armv6 macos-arm64; do
+            for leg in linux-x86_64 linux-arm64 linux-armv7 macos-arm64; do
               echo "sendspin-cli-$VERSION-$leg.tar.gz"
             done
-            # No rpm for linux-armv6.
-            for leg in linux-x86_64 linux-arm64 linux-armv7 linux-armv6; do
+            for leg in linux-x86_64 linux-arm64 linux-armv7; do
               echo "sendspin-cli-$VERSION-$leg.deb"
               echo "sendspin-cli-$VERSION-$leg.pkg.tar.zst"
-            done
-            for leg in linux-x86_64 linux-arm64 linux-armv7; do
               echo "sendspin-cli-$VERSION-$leg.rpm"
             done
             echo "sendspin-cli-$VERSION-macos-arm64.pkg"
@@ -312,3 +310,75 @@ jobs:
           # -F, not -f: -f sends the string "false", leaving a draft.
           gh api -X PATCH "repos/$GH_REPO/releases/$RELEASE_ID" -F draft=false --silent
           echo "Published: $(gh api "repos/$GH_REPO/releases/$RELEASE_ID" --jq .html_url)"
+
+  # Adds linux-armv6 to the published release, and its lines to SHA256SUMS. Re-run failed jobs if it goes red.
+  release-armv6:
+    name: release-armv6
+    needs: [preflight, release, build-armv6]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.ref_name }}
+      VERSION: ${{ needs.preflight.outputs.version }}
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Download the linux-armv6 build
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          path: dist
+          pattern: '*-linux-armv6*'
+          merge-multiple: true
+
+      # No rpm for linux-armv6.
+      - name: Assert the linux-armv6 set is complete
+        run: |
+          expected=$(mktemp)
+          printf 'sendspin-cli-%s-linux-armv6.%s\n' "$VERSION" tar.gz "$VERSION" deb "$VERSION" pkg.tar.zst |
+            sort >"$expected"
+          actual=$(mktemp)
+          (cd dist && find . ! -type d | sed 's|^\./||') | sort >"$actual"
+          diff -u "$expected" "$actual" || {
+            echo "::error::the linux-armv6 build did not hand over the set $TAG is supposed to publish"
+            exit 1
+          }
+
+      # Lines for other legs are kept byte for byte, so a SHA256SUMS fetched before this still verifies them.
+      - name: Add the linux-armv6 checksums to SHA256SUMS
+        run: |
+          gh release download "$TAG" --pattern SHA256SUMS --dir sums
+          grep -v -- '-linux-armv6\.' sums/SHA256SUMS >dist/SHA256SUMS || true
+          (cd dist && sha256sum -- *-linux-armv6.*) >>dist/SHA256SUMS
+          cat dist/SHA256SUMS
+
+      - name: Upload to the release
+        run: |
+          gh release upload "$TAG" --clobber \
+            dist/*-linux-armv6.tar.gz dist/*-linux-armv6.deb dist/*-linux-armv6.pkg.tar.zst dist/SHA256SUMS
+
+          expected=$(mktemp)
+          {
+            echo SHA256SUMS
+            for leg in linux-x86_64 linux-arm64 linux-armv7 linux-armv6 macos-arm64; do
+              echo "sendspin-cli-$VERSION-$leg.tar.gz"
+            done
+            # No rpm for linux-armv6.
+            for leg in linux-x86_64 linux-arm64 linux-armv7 linux-armv6; do
+              echo "sendspin-cli-$VERSION-$leg.deb"
+              echo "sendspin-cli-$VERSION-$leg.pkg.tar.zst"
+            done
+            for leg in linux-x86_64 linux-arm64 linux-armv7; do
+              echo "sendspin-cli-$VERSION-$leg.rpm"
+            done
+            echo "sendspin-cli-$VERSION-macos-arm64.pkg"
+            echo "sendspin-cli-$VERSION-windows-x86_64.zip"
+          } | sort >"$expected"
+
+          actual=$(mktemp)
+          gh release view "$TAG" --json assets --jq '.assets[].name' | sort >"$actual"
+          diff -u "$expected" "$actual" || {
+            echo "::error::$TAG does not hold the full asset set after the linux-armv6 upload"
+            exit 1
+          }
