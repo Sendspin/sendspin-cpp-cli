@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace sendspin_cli {
 
@@ -65,6 +66,12 @@ bool parse_ip(const std::string& text, int& family, std::array<unsigned char, 16
 /// Whether `ip` is an address inside `subnet`.
 bool subnet_contains(const IpSubnet& subnet, const std::string& ip);
 
+/// Every address this machine's interfaces hold, each with its prefix length.
+bool local_addresses(std::vector<IpSubnet>& addresses, std::string& error);
+
+/// Whether `ip` is exactly one of `addresses`.
+bool is_local_address(const std::vector<IpSubnet>& addresses, const std::string& ip);
+
 /// The subnet of the local interface `address` belongs to, the narrowest if several hold it.
 bool local_subnet_of(const std::string& address, IpSubnet& subnet, std::string& error);
 
@@ -88,7 +95,8 @@ PairingReply pairing_token_reply(const std::string& method, const std::string& u
 
 class PairingServer;
 
-/// The HTTP listener. Answers only peers on its address's own subnet; stops in its destructor.
+/// The HTTP listener. Answers only peers on its address's own subnet or holding one of this
+/// host's addresses; stops in its destructor.
 class PairingEndpoint {
 public:
     PairingEndpoint(std::string host, uint16_t port);

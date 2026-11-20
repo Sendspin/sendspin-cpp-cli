@@ -392,23 +392,8 @@ bool subnet_contains(const IpSubnet& subnet, const std::string& ip) {
            same_prefix(address, subnet.address, subnet.prefix);
 }
 
-bool local_subnet_of(const std::string& address, IpSubnet& subnet, std::string& error) {
-    int family = 0;
-    std::array<unsigned char, 16> bytes{};
-    if (!parse_ip(address, family, bytes)) {
-        error = "'" + address + "' is not a numeric address";
-        return false;
-    }
-
-    // Containment rather than equality: Linux answers on all of 127.0.0.0/8, listing only .1.
-    std::optional<IpSubnet> best;
-    const auto consider = [&](const IpSubnet& candidate) {
-        if (candidate.family == family && same_prefix(bytes, candidate.address, candidate.prefix) &&
-            (!best.has_value() || candidate.prefix > best->prefix)) {
-            best = candidate;
-        }
-    };
-
+bool local_addresses(std::vector<IpSubnet>& addresses, std::string& error) {
+    addresses.clear();
 #ifdef _WIN32
     ULONG size = 16 * 1024;
     std::vector<unsigned char> buffer;
@@ -430,7 +415,7 @@ bool local_subnet_of(const std::string& address, IpSubnet& subnet, std::string& 
             IpSubnet candidate;
             if (from_sockaddr(unicast->Address.lpSockaddr, candidate)) {
                 candidate.prefix = unicast->OnLinkPrefixLength;
-                consider(candidate);
+                addresses.push_back(candidate);
             }
         }
     }
@@ -444,12 +429,45 @@ bool local_subnet_of(const std::string& address, IpSubnet& subnet, std::string& 
         IpSubnet candidate;
         if (entry->ifa_netmask != nullptr && from_sockaddr(entry->ifa_addr, candidate)) {
             candidate.prefix = mask_length(entry->ifa_netmask, candidate.family);
-            consider(candidate);
+            addresses.push_back(candidate);
         }
     }
     freeifaddrs(interfaces);
 #endif
+    return true;
+}
 
+bool is_local_address(const std::vector<IpSubnet>& addresses, const std::string& ip) {
+    int family = 0;
+    std::array<unsigned char, 16> bytes{};
+    if (!parse_ip(ip, family, bytes)) {
+        return false;
+    }
+    return std::any_of(addresses.begin(), addresses.end(), [&](const IpSubnet& local) {
+        return local.family == family && local.address == bytes;
+    });
+}
+
+bool local_subnet_of(const std::string& address, IpSubnet& subnet, std::string& error) {
+    int family = 0;
+    std::array<unsigned char, 16> bytes{};
+    if (!parse_ip(address, family, bytes)) {
+        error = "'" + address + "' is not a numeric address";
+        return false;
+    }
+    std::vector<IpSubnet> addresses;
+    if (!local_addresses(addresses, error)) {
+        return false;
+    }
+
+    // Containment rather than equality: Linux answers on all of 127.0.0.0/8, listing only .1.
+    std::optional<IpSubnet> best;
+    for (const IpSubnet& candidate : addresses) {
+        if (candidate.family == family && same_prefix(bytes, candidate.address, candidate.prefix) &&
+            (!best.has_value() || candidate.prefix > best->prefix)) {
+            best = candidate;
+        }
+    }
     if (!best.has_value()) {
         error = "no network interface on this machine holds " + address;
         return false;
@@ -549,14 +567,21 @@ void PairingEndpoint::start(const std::string& token) {
         return;
     }
     this->server_->set_handler(
-        // A peer off the address's own subnet came in through a route, from somewhere else.
         [subnet = this->subnet_](const std::string& remote_ip) {
-            const bool admitted = subnet_contains(subnet, remote_ip);
-            if (!admitted) {
-                log_line(sendspin::LogLevel::DEBUG, LOG_TAG,
-                         "Pairing token endpoint refused %s: not on its subnet", remote_ip.c_str());
+            if (subnet_contains(subnet, remote_ip)) {
+                return true;
             }
-            return admitted;
+            // A host-network process reaching a bridge address can arrive masqueraded as one of
+            // this host's own addresses; anything else off the subnet was routed in.
+            std::vector<IpSubnet> addresses;
+            std::string error;
+            if (local_addresses(addresses, error) && is_local_address(addresses, remote_ip)) {
+                return true;
+            }
+            log_line(sendspin::LogLevel::DEBUG, LOG_TAG,
+                     "Pairing token endpoint refused %s: not on its subnet or this host",
+                     remote_ip.c_str());
+            return false;
         },
         [token, address = this->host_, port = this->port_](
             const std::string& method, const std::string& uri, const std::string& host,
