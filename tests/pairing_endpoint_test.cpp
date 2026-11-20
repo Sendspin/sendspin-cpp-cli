@@ -147,6 +147,31 @@ TEST(PairingEndpoint, KnowsWhichPeersShareASubnet) {
     EXPECT_FALSE(subnet_contains(loopback, ""));
 }
 
+TEST(PairingEndpoint, KnowsWhichPeersAreThisHost) {
+    // On Home Assistant OS a host-network server reaching 172.30.32.1 arrives masqueraded as the
+    // host's LAN address, which is off the endpoint's subnet but still this host.
+    const std::vector<IpSubnet> host{subnet_of("172.30.32.1", 23), subnet_of("10.0.0.16", 24),
+                                     subnet_of("fd00::16", 64)};
+    EXPECT_TRUE(is_local_address(host, "10.0.0.16"));
+    EXPECT_TRUE(is_local_address(host, "fd00::16"));
+
+    // A neighbour on the LAN shares the host's subnet but none of its addresses.
+    EXPECT_FALSE(is_local_address(host, "10.0.0.17"));
+    EXPECT_FALSE(is_local_address(host, "fd00::17"));
+    EXPECT_FALSE(is_local_address(host, "192.168.1.20"));
+    EXPECT_FALSE(is_local_address(host, "localhost"));
+    EXPECT_FALSE(is_local_address({}, "10.0.0.16"));
+}
+
+TEST(PairingEndpoint, ListsThisMachinesAddresses) {
+    std::vector<IpSubnet> addresses;
+    std::string error;
+    ASSERT_TRUE(local_addresses(addresses, error)) << error;
+    EXPECT_TRUE(is_local_address(addresses, "127.0.0.1"));
+    // TEST-NET-1, reserved for documentation, so no machine running this test holds it.
+    EXPECT_FALSE(is_local_address(addresses, "192.0.2.1"));
+}
+
 TEST(PairingEndpoint, FindsTheLoopbackSubnet) {
     IpSubnet subnet;
     std::string error;

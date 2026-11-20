@@ -124,8 +124,8 @@ without pairing. See [Pairing a Player](https://github.com/Sendspin/sendspin-cpp
 
 For a server on the same host, such as Music Assistant on Home Assistant OS,
 `--pairing-token-endpoint 172.30.32.1:8930` lets it fetch the pairing token and pair on its
-own. The player answers only that address's subnet and stops once a server pairs. See
-[Pairing with a server on the same host](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Advanced-Usage#pairing-with-a-server-on-the-same-host).
+own. The player answers only that address's subnet and this host, and stops once a server
+pairs. See [Pairing with a server on the same host](https://github.com/Sendspin/sendspin-cpp-cli/wiki/Advanced-Usage#pairing-with-a-server-on-the-same-host).
 
 ## Configuration
 
