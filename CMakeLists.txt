@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 project(sendspin-cpp-cli
-    VERSION 1.0.0
+    VERSION 1.0.1
     DESCRIPTION "Headless CLI/daemon Sendspin audio player"
     HOMEPAGE_URL "https://github.com/Sendspin/sendspin-cpp"
     LANGUAGES CXX
